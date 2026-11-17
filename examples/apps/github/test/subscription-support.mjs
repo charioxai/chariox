@@ -2,6 +2,7 @@
 // doubles that enforce what the real ones enforce (declared events, one route per id, one automation per agent).
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.mjs';
+import { tools as declaredTools } from '../src/catalog.mjs';
 import { incoming } from '../src/event-types.mjs';
 import { fakeGitHub, memoryState, REPO } from './support.mjs';
 
@@ -10,12 +11,29 @@ export const SHA = '271de153c2b8c196681165cc32ff2688634e1238';
 export const AGENT = { kind: 'agent', id: 'agent-1' };
 export const PERSON = { kind: 'human', id: 'owner' };
 
+const refused = () => { throw { code: 'NOT_ALLOWED', message: 'not allowed' }; };
+/** Whom the kernel says a routing call acts for (`Acting::of`): from the callers of the calls in progress, never from the App. */
+function acting(callers) {
+  const agents = new Map();
+  let person = false;
+  let background = false;
+  for (const caller of callers) {
+    if (caller.kind === 'agent') agents.set(caller.id, (agents.get(caller.id) ?? true) && caller.approved === true);
+    if (caller.kind === 'human') person = true;
+    if (caller.kind === 'background') background = true;
+  }
+  if (agents.size > 1) return refused();
+  if (agents.size === 1) { const [[id, approved]] = agents; return { kind: approved ? 'approved' : 'agent', id }; }
+  if (person) return { kind: 'person' };
+  return background ? { kind: 'background' } : refused();
+}
+
 export function kernelRouting({ resources = [], maxRoutes = 200, outside = [] } = {}) {
   const routes = new Map();
   const targets = new Map();
   const log = [];
   const api = {
-    routes, targets, log,
+    routes, targets, log, callers: [], failUnbind: 0,
     ensureRoute: async spec => {
       assert.ok(Object.values(incoming).includes(spec.sourceEventType), `an undeclared type ${spec.sourceEventType}`);
       assert.ok(Object.hasOwn(incoming, spec.event), `an undeclared event ${spec.event}`);
@@ -32,16 +50,24 @@ export function kernelRouting({ resources = [], maxRoutes = 200, outside = [] } 
     startAuthorization: async () => ({ authorizationId: 'a1', url: 'https://github.com/apps/x/installations/new' }),
     bindAgent: async (event, agentId) => {
       assert.equal(event, 'github_notification');
+      const who = acting(api.callers);
+      if (who.kind === 'background' || (who.kind === 'agent' && who.id !== agentId)) refused();
       const id = `auto-${agentId}`;
       targets.set(id, { automationId: id, event, kind: 'agent', agentId, state: 'active' });
       return targets.get(id);
     },
     bindWorkflow: async (event, sessionId, publicationRef, queueRef) => {
+      if (!['person', 'approved'].includes(acting(api.callers).kind)) refused();
       const id = `auto-wf-${publicationRef}`;
       targets.set(id, { automationId: id, event, kind: 'workflow', agentId: null, state: 'active', sessionId, queueRef });
       return targets.get(id);
     },
-    unbindTarget: async id => { if (!targets.delete(id)) throw { code: 'TARGET_NOT_FOUND', message: id }; },
+    unbindTarget: async id => {
+      const who = acting(api.callers);
+      if (who.kind === 'agent' && targets.get(id)?.agentId !== who.id) refused();
+      if (api.failUnbind > 0) { api.failUnbind--; throw { code: 'STORAGE_UNAVAILABLE', message: 'try again' }; }
+      if (!targets.delete(id)) throw { code: 'TARGET_NOT_FOUND', message: id };
+    },
     listTargets: async () => [...targets.values()],
   };
   return api;
@@ -82,10 +108,21 @@ export function harness({ override, routing, state = memoryState(), clock = { no
   const { emitted, notified, wakes, rejecting } = imports;
   const definition = createApp({ state, routing: imports.routing, now: () => clock.now, events: imports.events, host: imports.host, schedule: imports.schedule });
   const context = actor => ({ fetch: double.fetch, signal: new AbortController().signal, actor, agentId: actor?.kind === 'agent' ? actor.id : null, roomId: 'room-1' });
-  const call = (name, input = {}, actor = PERSON) => definition.tools[name](input, context(actor));
-  const deliver = (name, payload) => definition.events[name](payload, { ...context(null), occurrenceId: `o-${Math.random()}` });
-  const wake = id => definition.wake({ id, dueAtMs: 0n, revision: null, overdue: false }, context(null));
-  return { ...double, state, routing: imports.routing, call, deliver, wake, emitted, notified, wakes, rejecting, clock, definition };
+  /** The kernel attributes a call to its actor, and says it was approved when the person approved its effect. */
+  const within = async (caller, run) => {
+    imports.routing.callers = [caller];
+    try { return await run(); } finally { imports.routing.callers = []; }
+  };
+  const call = (name, input = {}, actor = PERSON) => {
+    const approved = ['approval', 'person_confirmed'].includes(declaredTools.find(tool => tool.name === name)?.effect);
+    return within({ ...actor, approved }, () => definition.tools[name](input, context(actor)));
+  };
+  const background = id => ({ kind: 'background', id });
+  const deliver = (name, payload) => within(background('inbox:route'), () => definition.events[name](payload, { ...context(background('inbox:route')), occurrenceId: `o-${Math.random()}` }));
+  /** A due wake as the kernel fires it: the due time and revision the App armed. */
+  const fire = armed => within(background('schedule'), () => definition.wake({ id: armed.id, dueAtMs: armed.dueAtMs ?? 0n, revision: armed.revision ?? null, overdue: false }, context(background('schedule'))));
+  const wake = id => fire({ id, ...wakes.get(id) });
+  return { ...double, state, routing: imports.routing, call, deliver, wake, fire, emitted, notified, wakes, rejecting, clock, definition };
 }
 
 export const payload = (name, metadata, text = 'GitHub says so') => ({

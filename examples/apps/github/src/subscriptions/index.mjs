@@ -3,7 +3,7 @@
 // inbox routes; no other path exists.
 import { finishesChecks, kinds as eventKinds } from '../event-types.mjs';
 import { checkState, NO_CHECKS_MS } from './ci.mjs';
-import { filterReason, matchedKinds, needsPaths, normalize, pathsMatch, inScope } from './matcher.mjs';
+import { conclusionReason, filterReason, matchedKinds, needsPaths, normalize, pathsMatch, inScope } from './matcher.mjs';
 import { FAILURES_BEFORE_DISABLED, assertRoom, parseSubscription } from './model.mjs';
 import { reconcile } from './routes.mjs';
 import { createStore } from './store.mjs';
@@ -39,10 +39,32 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
     await arm(wakeIds.daily, now() + DAY);
     return reconcile({ routing, subscriptions });
   }
-  async function endsWith(subscription) {
-    await schedule.cancel(wakeIds.end(subscription.id)).catch(() => {});
-    await schedule.cancel(wakeIds.none(subscription.id)).catch(() => {});
-    await targets.release(subscription.automationId, await store.subscriptions());
+  /** A one-shot's wakes follow its settings: it ends at its expiry, and "no checks" is said 15 minutes after `since`. */
+  async function armOnce(subscription, since) {
+    if (!subscription.once) return;
+    await arm(wakeIds.end(subscription.id), subscription.once.expiresAt);
+    if (subscription.events.includes('ci.finished')) await arm(wakeIds.none(subscription.id), since + NO_CHECKS_MS);
+    else await schedule.cancel(wakeIds.none(subscription.id)).catch(() => {});
+  }
+
+  /**
+   * Let go of automations no subscription uses any more. A release the kernel refuses stays on the list and is tried
+   * again by the next removal and the daily reconcile, so a subscription never ends with its automation left behind.
+   */
+  async function settleReleases() {
+    const pending = await store.releases();
+    if (pending.length === 0) return;
+    const subscriptions = await store.subscriptions();
+    const done = [];
+    for (const automationId of pending) {
+      try { await targets.release(automationId, subscriptions); done.push(automationId); } catch { /* kept for the next try */ }
+    }
+    if (done.length) await store.updateReleases(items => { items.splice(0, items.length, ...items.filter(id => !done.includes(id))); });
+  }
+  async function release(automationIds) {
+    const named = automationIds.filter(Boolean);
+    if (named.length) await store.updateReleases(items => { items.push(...named.filter(id => !items.includes(id))); });
+    await settleReleases();
   }
 
   /** Remove subscriptions by id and what only they held: automation, wakes and routes. */
@@ -52,8 +74,14 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
       items.splice(0, items.length, ...items.filter(item => !ids.includes(item.id)));
       return out;
     });
-    for (const subscription of gone) await endsWith(subscription);
-    if (gone.length) await sync(await store.subscriptions());
+    for (const subscription of gone) {
+      await schedule.cancel(wakeIds.end(subscription.id)).catch(() => {});
+      await schedule.cancel(wakeIds.none(subscription.id)).catch(() => {});
+    }
+    if (gone.length) {
+      await release(gone.map(subscription => subscription.automationId));
+      await sync(await store.subscriptions());
+    }
     return gone;
   }
 
@@ -67,10 +95,7 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
     if (automationId) subscription.automationId = automationId;
     await store.updateSubscriptions(items => { assertRoom(items.length); items.push(subscription); });
     try {
-      if (subscription.once) {
-        await arm(wakeIds.end(subscription.id), subscription.once.expiresAt);
-        if (subscription.events.includes('ci.finished')) await arm(wakeIds.none(subscription.id), at + NO_CHECKS_MS);
-      }
+      await armOnce(subscription, at);
       return { subscription, sources: await sync(await store.subscriptions()) };
     } catch (error) {
       await remove([subscription.id]).catch(() => {});
@@ -81,19 +106,23 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
   async function update(input, ctx, { others = false } = {}) {
     const current = await find(input.id);
     mayChange(current, ctx);
-    const merged = { ...current, ...Object.fromEntries(['name', 'scope', 'events', 'filters', 'target', 'once'].filter(key => input[key] !== undefined).map(key => [key, input[key]])) };
+    const merged = { ...current, ...Object.fromEntries(['name', 'scope', 'events', 'filters', 'target'].filter(key => input[key] !== undefined).map(key => [key, input[key]])), ...(input.once ? { once: { ...current.once, ...input.once } } : {}) };
     const next = { ...current, ...parseSubscription(merged, { now: now(), actor: current.createdBy, context: ctx, account: current.account }), id: current.id, createdAt: current.createdAt, createdBy: current.createdBy, enabled: current.enabled, failures: 0 };
     selfOnly(next.target, ctx, others);
     const retarget = JSON.stringify(next.target) !== JSON.stringify(current.target);
     if (retarget) next.automationId = await targets.bind(next.target) ?? undefined;
     await store.updateSubscriptions(items => { items[items.findIndex(item => item.id === next.id)] = next; });
-    if (retarget) await targets.release(current.automationId, await store.subscriptions());
+    if (retarget) await release([current.automationId]);
+    const rescheduled = JSON.stringify(next.once) !== JSON.stringify(current.once) || next.events.includes('ci.finished') !== current.events.includes('ci.finished');
+    if (rescheduled) await armOnce(next, now());
     return { subscription: next, sources: await sync(await store.subscriptions()) };
   }
 
   async function setEnabled({ id }, ctx, enabled) {
     mayChange(await find(id), ctx);
     const subscription = await store.updateSubscriptions(items => { const item = items.find(entry => entry.id === id); item.enabled = enabled; item.failures = 0; return item; });
+    // A paused one-shot's "no checks" firing is skipped, so it hears the wait again from its resume.
+    if (enabled && subscription.once && subscription.events.includes('ci.finished') && !(await schedule.list()).some(armed => armed.id === wakeIds.none(id))) await arm(wakeIds.none(id), now() + NO_CHECKS_MS);
     return { subscription, sources: await sync(await store.subscriptions()) };
   }
 
@@ -111,6 +140,12 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
     };
   }
 
+  /** One line of the delivery ring about `subject`, a notification's data or a delivered event. */
+  const entry = (subscription, subject, kind, result, reason) => ({
+    at: now(), subscription: subscription.id, name: subscription.name, repo: subject.repo, event: kind, subject: subject.number ? `#${subject.number}` : null,
+    result, ...(reason ? { reason } : {}), target: subscription.target.kind,
+  });
+
   async function logins(cache, github, account) {
     if (!cache.has(account)) cache.set(account, github.get(account, '/user', {}).then(({ data }) => [data.login], () => []));
     return cache.get(account);
@@ -123,7 +158,7 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
     const files = new Map();
     const picked = [];
     const records = [];
-    const record = (subscription, kind, result, reason) => records.push({ at: now(), subscription: subscription.id, name: subscription.name, repo: event.repo, event: kind, subject: event.number ? `#${event.number}` : null, result, ...(reason ? { reason } : {}), target: subscription.target.kind });
+    const record = (subscription, kind, result, reason) => records.push(entry(subscription, event, kind, result, reason));
     for (const subscription of (await store.subscriptions()).filter(item => item.enabled)) {
       if (!inScope(subscription.scope, event.repo)) continue;
       const pinned = subscription.once?.pr ?? subscription.watch?.pr;
@@ -135,16 +170,21 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
       if (pinned && !event.prNumbers.includes(pinned.number) && event.number !== pinned.number) continue;
       const why = filterReason(subscription, event, { logins: accountLogins });
       if (why) { for (const kind of kinds) record(subscription, kind, 'filtered', why); continue; }
+      // The conclusion filter judges the event's own check here, and the commit's whole result for `ci.finished` below.
+      const own = conclusionReason(subscription, event.conclusion);
+      if (own) for (const kind of kinds) record(subscription, kind, 'filtered', own);
+      const wanted = own ? [] : kinds;
+      if (wanted.length === 0 && !ciWatch) continue;
       if (needsPaths(subscription)) {
-        if (event.number === null) { for (const kind of kinds) record(subscription, kind, 'filtered', 'no changed files known'); continue; }
+        if (event.number === null) { for (const kind of wanted) record(subscription, kind, 'filtered', 'no changed files known'); continue; }
         const key = `${subscription.account}:${event.number}`;
         if (!files.has(key)) {
           const [owner, repo] = event.repo.split('/');
-          files.set(key, github.get(subscription.account, '/repos/{owner}/{repo}/pulls/{number}/files', { owner, repo, number: event.number }, { query: { per_page: 100 } }).then(({ data }) => data.map(file => file.filename)));
+          files.set(key, github.listAll(subscription.account, '/repos/{owner}/{repo}/pulls/{number}/files', { owner, repo, number: event.number }, { items: page => page.map(file => file.filename) }));
         }
-        if (!pathsMatch(subscription, await files.get(key))) { for (const kind of kinds) record(subscription, kind, 'filtered', 'no selected path changed'); continue; }
+        if (!pathsMatch(subscription, await files.get(key))) { for (const kind of wanted) record(subscription, kind, 'filtered', 'no selected path changed'); continue; }
       }
-      for (const kind of kinds) picked.push({ subscription, kind, notification: describe(subscription, kind, event) });
+      for (const kind of wanted) picked.push({ subscription, kind, notification: describe(subscription, kind, event) });
       if (ciWatch) {
         const checks = await checkState(github, subscription.account, event.repo, event.headSha);
         if (checks.finished) {
@@ -167,12 +207,12 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
       const key = `${kind}:${notification.at}:${notification.data.number}`;
       try {
         await targets.deliver(subscription, notification, key);
-        records.push({ at: now(), subscription: subscription.id, name: subscription.name, repo: notification.data.repo, event: kind, subject: notification.data.number ? `#${notification.data.number}` : null, result: 'delivered', target: subscription.target.kind });
+        records.push(entry(subscription, notification.data, kind, 'delivered'));
         used.add(subscription.id);
         if ((subscription.once && !subscription.watch) || subscription.endsOn?.includes(kind)) ended.add(subscription.id);
       } catch (error) {
         failures.set(subscription.id, (failures.get(subscription.id) ?? 0) + 1);
-        records.push({ at: now(), subscription: subscription.id, name: subscription.name, repo: notification.data.repo, event: kind, subject: notification.data.number ? `#${notification.data.number}` : null, result: 'failed', reason: String(error?.message ?? error?.payload?.message ?? error).slice(0, 300), target: subscription.target.kind });
+        records.push(entry(subscription, notification.data, kind, 'failed', String(error?.message ?? error?.payload?.message ?? error).slice(0, 300)));
       }
     }
     const disabled = [];
@@ -203,18 +243,29 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
   }
 
   /** A kernel-owned wake: a one-shot's expiry, its 15-minute "no checks", or the daily route reconcile. */
-  async function wake({ id }, ctx) {
+  async function wake({ id, revision }, ctx) {
     if (id === wakeIds.daily) {
       const subscriptions = await store.subscriptions();
       if (subscriptions.some(item => item.enabled)) await sync(subscriptions);
+      await settleReleases();
       return;
     }
     const [kind, subscriptionId] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
     const subscription = (await store.subscriptions()).find(item => item.id === subscriptionId);
-    if (!subscription) return;
-    const event = { repo: subscription.once?.pr?.repo ?? '', number: subscription.once?.pr?.number ?? null, title: null, url: null, conclusion: null, headSha: null, text: '', at: now() };
+    // A firing of an expiry the subscription has since moved is not its end.
+    if (!subscription || (kind === 'end' && revision !== String(subscription.once?.expiresAt))) return;
+    const subject = { repo: subscription.once?.pr?.repo ?? '', number: subscription.once?.pr?.number ?? null };
+    if (!subscription.enabled) {
+      // Paused: nobody is told. An expiry still ends it; the "no checks" wait starts again when it resumes.
+      if (kind === 'end') {
+        await store.addDeliveries([entry(subscription, subject, 'expired', 'filtered', 'paused when it ended')]);
+        await remove([subscription.id]);
+      }
+      return;
+    }
+    const event = { ...subject, title: null, url: null, conclusion: null, headSha: null, text: '', at: now() };
     if (kind === 'none') {
-      const { repo, number } = subscription.once.pr ?? {};
+      const { repo, number } = subject;
       if (!repo) return;
       const github = githubFor(ctx);
       const [owner, name] = repo.split('/');
@@ -223,7 +274,9 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
       await carryOut([{ subscription, kind: 'ci.finished', notification: describe(subscription, 'ci.finished', event, { line: `${repo} #${number}: no checks reported after 15 minutes`, data: { outcome: 'no_checks' } }) }], []);
       return;
     }
+    // The expiry ends it whether or not the notice arrived: an unreachable target must not keep a watch alive.
     await carryOut([{ subscription, kind: 'expired', notification: describe(subscription, 'expired', event, { line: `Your subscription ${subscription.name ?? subscription.id} ended without a result${event.repo ? ` for ${event.repo} #${event.number}` : ''}.`, data: { outcome: 'expired' } }) }], []);
+    await remove([subscription.id]);
   }
 
   // ---- tools ----

@@ -36,7 +36,9 @@ export function inScope(scope, repo) {
   return scope.repos.some(known => known.toLowerCase() === lower);
 }
 
-/** The filters that can be decided from the delivery alone; `needsPaths` says the changed files are still needed. */
+/** The filters that can be decided from the delivery alone; `needsPaths` says the changed files are still needed.
+ *  The conclusion filter is not one of them: it judges the event's own check (`conclusionReason`) or, for
+ *  `ci.finished`, the commit's result, which the delivery does not carry. */
 export function filterReason(subscription, event, { logins = [] } = {}) {
   const { filters = {} } = subscription;
   if (filters.branches?.length && !(event.branch !== null && listMatches(filters.branches, [event.branch], globs))) return `branch ${event.branch ?? '(none)'} is not selected`;
@@ -44,9 +46,14 @@ export function filterReason(subscription, event, { logins = [] } = {}) {
   if (filters.labels?.length && !listMatches(filters.labels, event.labels, foldedGlobs)) return 'no selected label';
   if (filters.draft === 'only' && event.draft !== true) return 'not a draft';
   if (filters.draft === 'hide' && event.draft === true) return 'a draft';
-  if (filters.conclusion?.length && event.conclusion !== null && !filters.conclusion.includes(event.conclusion)) return `conclusion ${event.conclusion ?? '(none)'} is not selected`;
   if (filters.excludeSelf && event.sender !== null && logins.some(login => same(login, event.sender))) return 'caused by the account itself';
   return null;
+}
+
+/** Why a conclusion filter refuses `conclusion`: the one of an event's own check, or of the whole commit. */
+export function conclusionReason(subscription, conclusion) {
+  const wanted = subscription.filters?.conclusion;
+  return wanted?.length && conclusion !== null && !wanted.includes(conclusion) ? `conclusion ${conclusion} is not selected` : null;
 }
 
 export const needsPaths = subscription => Boolean(subscription.filters?.paths?.length);
