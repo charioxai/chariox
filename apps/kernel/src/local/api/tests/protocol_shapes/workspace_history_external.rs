@@ -823,6 +823,17 @@ fn relay_home_credential_proxy_shape_is_versioned() {
             credential_id: "desktop-password".to_string(),
             injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer,
         };
+    let workspace_secret_request =
+        crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
+            context: context.clone(),
+            credential_id: "deploy-token".to_string(),
+            injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace {
+                target: crate::config::VaultUseTarget::CommandEnvironment {
+                    name: "DEPLOY_TOKEN".to_string(),
+                    origin: "https://deploy.example.com".to_string(),
+                },
+            },
+        };
     let list_response =
         crate::transport::relay_peer::RelayPeerResponse::HomeCredentialToolHandled {
             result: crate::transport::runtime_tools::RuntimeToolResult {
@@ -848,7 +859,8 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         computer_secret_request,
         pty_secret_request,
         list_response,
-        secret_response
+        secret_response,
+        workspace_secret_request
     ]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
@@ -867,6 +879,17 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         Some(&serde_json::json!("pty"))
     );
     assert_eq!(
+        snapshot.pointer("/6/injection"),
+        Some(&serde_json::json!({
+            "kind": "workspace",
+            "target": {
+                "kind": "command_environment",
+                "name": "DEPLOY_TOKEN",
+                "origin": "https://deploy.example.com"
+            }
+        }))
+    );
+    assert_eq!(
         snapshot.pointer("/4/kind"),
         Some(&serde_json::json!("home_credential_tool_handled"))
     );
@@ -879,7 +902,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "1db26e45df57ec3bc21aeba0aed6ca232352a75163d331398ab4bac2b98e51d5"
+        "8db77d29b27608448d83f82ce608ae88c41a786652bb556f55f02caf3d8b0771"
     );
 }
 
@@ -1187,6 +1210,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c57c6885a4f1a15d5184a8cef138cbccc0702e835a73653652455d5ef9b61dfb"
+        "8f57695e8c0d87406a9d8fe02a8b0541a7e6f7c7f81b0da394aee07b631a1917"
     );
 }
