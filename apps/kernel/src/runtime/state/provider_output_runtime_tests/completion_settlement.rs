@@ -163,7 +163,8 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
         .expect("delivery attempt must be recorded");
     // The PTY write is the only receipt this adapter has; an `uncertain`
     // receipt would block every task of the recipient after two minutes.
-    assert_eq!(delivered.state, "accepted");
+    // The prompt carried the message text, so the write settles it.
+    assert_eq!(delivered.state, "acknowledged");
 }
 
 // accam A02-S03: an explicitly stopped agent stays stopped. A later urgent
@@ -257,7 +258,7 @@ async fn stopped_agent_keeps_messages_pending_until_the_owner_prompts_it() {
             .unwrap()
             .expect("the owner's prompt ends the stop")
             .state,
-        "accepted"
+        "acknowledged"
     );
 }
 
@@ -342,7 +343,7 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
         .remove(0);
     assert_eq!(
         (retried.state.as_str(), quiet),
-        ("accepted", true),
+        ("acknowledged", true),
         "periodic sweep must retry taskless recipients without a rejection notice"
     );
 }
@@ -3356,7 +3357,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
         .unwrap();
     let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(
-        inbox[2].state, "accepted",
+        inbox[2].state, "acknowledged",
         "later urgent work must still steer the active turn"
     );
     assert_eq!(inbox[0].state, "pending");
@@ -3368,12 +3369,12 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
     runtime.sweep_agent_lifecycle().await.unwrap();
     assert_eq!(
         store.agent_inbox(session.id(), agent.id(), 0).unwrap()[0].state,
-        "accepted",
+        "acknowledged",
         "the refused message must wake when the existing turn ends"
     );
     let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(
-        inbox[1].state, "accepted",
+        inbox[1].state, "acknowledged",
         "the wake that ends the existing turn carries every pending row"
     );
     assert_eq!(inbox[1].prompt_id, inbox[0].prompt_id);

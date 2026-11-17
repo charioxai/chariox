@@ -71,10 +71,10 @@ async fn each_finished_child_is_one_inbox_item_and_its_wake_settles_the_delegati
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 (batchyield3/4): the first inbox call failed, the retry came with `after` = the lead
-// sequence and the agent acked through the last row. Every child_finished is still shown and settled, with a
-// wait_recheck in the same batch, and no cancel/resume card appears.
+// sequence and the agent acked through the last row. The wake carried every child_finished and settled them, so the
+// retry shows only the wait_recheck, and no cancel/resume card appears.
 #[tokio::test]
-async fn a_retry_after_the_lead_still_shows_all_three_children_and_the_ack_through_settles_them() {
+async fn a_retry_after_the_lead_shows_what_the_wake_left_open_and_the_ack_through_settles_it() {
     let team = family("child-receipts-retry", 3, Some(false), true).await;
     let store = &team.runtime.owned.durable_state_store;
     let parent_task = store
@@ -135,7 +135,8 @@ async fn a_retry_after_the_lead_still_shows_all_three_children_and_the_ack_throu
         .filter(|event| event["kind"] == "child_finished")
         .map(|event| event["sequence"].as_u64().unwrap())
         .collect();
-    assert_eq!(finished.len(), 3, "all three children are shown: {read}");
+    assert!(finished.is_empty(), "the wake settled the children: {read}");
+    assert_eq!(events.len(), 1, "only the recheck is left open: {read}");
     let last = events.last().unwrap()["sequence"].as_u64().unwrap();
     let acked = team
         .runtime
