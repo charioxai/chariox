@@ -294,9 +294,9 @@ impl KernelRuntimeState {
         Ok(sends)
     }
 
-    /// The owner cancelled the task the stop belongs to (or its workflow ended it): the work is not
-    /// theirs to go on with, so no resume starts it again. A stop whose task never existed still
-    /// resumes as a prompt.
+    /// The owner or an agent cancelled the task the stop belongs to (or its workflow ended it): the
+    /// work is not theirs to go on with, so no resume starts it again. A task the failure itself
+    /// cancelled, or one that never existed, still resumes.
     fn stopped_task_was_cancelled(
         &self,
         agent: &crate::agent::AgentInstance,
@@ -306,7 +306,7 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_turn_task(agent.session_id(), agent.id(), &stop.prompt_id)?
-            .is_some_and(|task| task.state == ExecutionState::Cancelled))
+            .is_some_and(|task| task.cancelled_on_purpose()))
     }
 
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {

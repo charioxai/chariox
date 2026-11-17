@@ -59,6 +59,13 @@ impl AgentTaskExecution {
         matches!(self.state, ExecutionState::Cancelled | ExecutionState::Done)
             && self.reason == super::supervision::OWNER_CANCELLED_REASON
     }
+    /// Someone stopped this task on purpose, the owner or an agent. A task a failure cancelled
+    /// carries the failure text as its reason, so it is not this.
+    pub(crate) fn cancelled_on_purpose(&self) -> bool {
+        self.state == ExecutionState::Cancelled
+            && (self.reason == super::supervision::OWNER_CANCELLED_REASON
+                || self.reason == super::supervision::AGENT_CANCELLED_REASON)
+    }
 }
 /// Who stops a running turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

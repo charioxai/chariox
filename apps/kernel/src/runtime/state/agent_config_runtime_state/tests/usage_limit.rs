@@ -719,8 +719,8 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     assert!(!team.has_turn(0), "a cancelled resume never fires");
 }
 
-/// A worker's prompt carries an obligation, so its stopped task is the one the stop must bring back.
-fn owe_work(team: &Team, lane: usize) -> String {
+/// The lane's turn as a plain task: nothing is owed on it, so a failed turn ends it Cancelled.
+fn admit_plain_task(team: &Team, lane: usize) {
     let agent = team.agent(lane);
     let session = team
         .rt()
@@ -742,6 +742,12 @@ fn owe_work(team: &Team, lane: usize) -> String {
             refresh_projection: false,
         })
         .unwrap();
+}
+
+/// A worker's prompt carries an obligation, so its stopped task is the one the stop must bring back.
+fn owe_work(team: &Team, lane: usize) -> String {
+    admit_plain_task(team, lane);
+    let agent = team.agent(lane);
     team.rt()
         .owned
         .durable_state_store
@@ -1232,4 +1238,29 @@ async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no
     tick(team.rt(), reset).await;
     assert!(!team.has_turn(0), "cancelled work is not started again");
     assert_eq!(team.stop(0), None, "the cancel ends the stop");
+}
+
+#[tokio::test]
+async fn a_plain_task_the_limit_cancelled_still_resumes_when_usage_is_back() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    admit_plain_task(&team, 0);
+
+    team.hit_the_limit(0).await;
+
+    assert_eq!(
+        team.task_state(0),
+        Some(ExecutionState::Cancelled),
+        "a failed plain turn ends its task Cancelled"
+    );
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset - 1).await;
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+
+    tick(team.rt(), reset).await;
+    assert!(team.has_turn(0), "the failure is not a decision to stop");
 }
