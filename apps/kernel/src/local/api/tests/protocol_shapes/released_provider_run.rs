@@ -136,11 +136,13 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         .as_object_mut()
         .unwrap()
         .remove("last_activity_at_ms");
+    // The released hash pins the example value it shipped with; the session type refuses an empty id, so it is set after decoding.
+    snapshot[3]["AgentForked"]["session"]["project_id"] = serde_json::json!("");
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c4a27a91d26f3bbdb5f21f82f0fabf027db8d9273fcb1522c1377b47c028ba14"
+        "d2b82ed473d960af8e53fbd35b4ecb2ed9ebafc67d0d3fecf4e02932d1a85569"
     );
 }
 
