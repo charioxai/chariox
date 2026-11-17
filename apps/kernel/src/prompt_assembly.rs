@@ -1606,6 +1606,43 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A short command in the shell costs one call; routing it through a job adds a
+    /// wake, an unread completion and often a correction turn.
+    #[test]
+    fn jobs_run_is_offered_only_for_commands_that_take_minutes() {
+        let root = temp_prompt_root("jobs-run-guidance");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let service = PromptAssemblyService::new(registry);
+        for sub_agent in [false, true] {
+            let base = service
+                .assemble_provider_turn(
+                    &claude_run(sub_agent),
+                    "Run the tests",
+                    None,
+                    Vec::new(),
+                    PromptAssemblyMode::NormalProviderTurn,
+                )
+                .unwrap()
+                .hidden_base;
+            for expected in [
+                "Run commands in your own shell",
+                "expect to take minutes",
+                "`chariox.jobs.run`",
+            ] {
+                assert!(
+                    base.contains(expected),
+                    "sub_agent={sub_agent}: missing {expected}"
+                );
+            }
+            assert!(
+                !base.contains("heavy commands"),
+                "sub_agent={sub_agent}: every heavy command still goes through a job"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.
     #[test]
     fn mp08_runtime_instructions_say_the_pane_renders_images() {
