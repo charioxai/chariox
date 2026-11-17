@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/commits/271de153c2b8c196681165cc32ff2688634e1238/status?per_page=100",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"f9766390967fe2ec2f53bfb1e43746f57132b10fa7ead9de24e1d662379b905c\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4889",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"state\": \"pending\",\n \"statuses\": [],\n \"sha\": \"271de153c2b8c196681165cc32ff2688634e1238\",\n \"total_count\": 0,\n \"repository\": {\n  \"id\": 1458262323,\n  \"name\": \"chariox-github-app-drill\",\n  \"full_name\": \"charioxai/chariox-github-app-drill\",\n  \"private\": true,\n  \"owner\": {\n   \"login\": \"charioxai\",\n   \"id\": 316136232,\n   \"avatar_url\": \"https://avatars.githubusercontent.com/u/316136232?v=4\",\n   \"html_url\": \"https://github.com/charioxai\",\n   \"type\": \"Organization\",\n   \"user_view_type\": \"public\",\n   \"site_admin\": false\n  },\n  \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill\",\n  \"description\": \"Sandbox for the Chariox GitHub App drills; deleted when the drills end\",\n  \"fork\": false\n }\n}"
+}

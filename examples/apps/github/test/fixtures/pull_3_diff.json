@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/pulls/3",
+ "status": 200,
+ "headers": {
+  "etag": "\"679ae7e3da3895905453eefd9ece08d06e5c521ec89ebe4f74ae19859bc52ab0\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4891",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/vnd.github.diff; charset=utf-8"
+ },
+ "body": "diff --git a/src/draft.js b/src/draft.js\nnew file mode 100644\nindex 0000000..82f98cb\n--- /dev/null\n+++ b/src/draft.js\n@@ -0,0 +1 @@\n+export const draft = true;\n"
+}

@@ -546,5 +546,6 @@ pub use workspace::*;
 /// and a Browser reply carries a mirror packet's deflated body, whole resources and a screenshot's picture as raw
 /// bytes (`CXT1`) instead of base64 text;
 /// a directory entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`);
-/// a card's browser region carries an optional `done_text`: the text whose appearance in the watched element closes the card.
+/// a card's browser region carries an optional `done_text`: the text whose appearance in the watched element closes the card;
+/// the owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the credentialed network destinations a signed manifest declares; the App-managed event routes (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`, `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`, `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the backend-supplied `AppConfirmationFrame.preview` rows.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

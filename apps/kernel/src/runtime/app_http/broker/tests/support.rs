@@ -72,6 +72,7 @@ impl Fixture {
             HttpContext {
                 limits: limits.clone(),
                 runtime: runtime.handle().clone(),
+                vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
             },
             network.clone(),
         )

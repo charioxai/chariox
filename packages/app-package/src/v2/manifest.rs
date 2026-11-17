@@ -17,6 +17,8 @@ pub enum RequiredFeature {
     AgentPanel,
     Connections,
     DirectedEvents,
+    CredentialedHttp,
+    EventRouting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +108,17 @@ impl ManifestV2 {
                 .as_ref()
                 .map(|_| RequiredFeature::DirectedEvents),
         );
+        if self
+            .capabilities
+            .network
+            .iter()
+            .any(|destination| destination.credential.is_some())
+        {
+            features.push(RequiredFeature::CredentialedHttp);
+        }
+        if self.capabilities.event_routing.is_some() {
+            features.push(RequiredFeature::EventRouting);
+        }
         features.sort_unstable();
         features
     }
@@ -142,6 +155,11 @@ impl ManifestV2 {
             ));
         }
         WorldId::parse(&self.world)?;
+        if self.capabilities.event_routing.is_some() && self.world != super::APP_WORLD_1_1 {
+            return Err(invalid(
+                "eventRouting needs the App world chariox:app/app@1.1.0",
+            ));
+        }
         if self.required_features != self.derive_features() {
             return Err(invalid(
                 "requiredFeatures must list exactly the features the package uses, sorted",

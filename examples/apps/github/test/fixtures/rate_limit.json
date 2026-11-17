@@ -1,0 +1,12 @@
+{
+ "path": "/rate_limit",
+ "status": 200,
+ "headers": {
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4906",
+  "x-ratelimit-reset": "1794722102",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"resources\": {\n  \"core\": {\n   \"limit\": 5000,\n   \"used\": 94,\n   \"remaining\": 4906,\n   \"reset\": 1794722102\n  },\n  \"search\": {\n   \"limit\": 30,\n   \"used\": 0,\n   \"remaining\": 30,\n   \"reset\": 1794720118\n  },\n  \"graphql\": {\n   \"limit\": 5000,\n   \"used\": 14,\n   \"remaining\": 4986,\n   \"reset\": 1794723169\n  },\n  \"integration_manifest\": {\n   \"limit\": 5000,\n   \"used\": 0,\n   \"remaining\": 5000,\n   \"reset\": 1794723658\n  },\n  \"source_import\": {\n   \"limit\": 100,\n   \"used\": 0,\n   \"remaining\": 100,\n   \"reset\": 1794720118\n  },\n  \"code_scanning_autofix\": {\n   \"limit\": 10,\n   \"used\": 0,\n   \"remaining\": 10,\n   \"reset\": 1794720118\n  },\n  \"actions_runner_registration\": {\n   \"limit\": 10000,\n   \"used\": 0,\n   \"remaining\": 10000,\n   \"reset\": 1794723658\n  },\n  \"scim\": {\n   \"limit\": 15000,\n   \"used\": 0,\n   \"remaining\": 15000,\n   \"reset\": 1794723658\n  },\n  \"dependency_snapshots\": {\n   \"limit\": 100,\n   \"used\": 0,\n   \"remaining\": 100,\n   \"reset\": 1794720118\n  },\n  \"dependency_sbom\": {\n   \"limit\": 100,\n   \"used\": 0,\n   \"remaining\": 100,\n   \"reset\": 1794720118\n  },\n  \"audit_log\": {\n   \"limit\": 1750,\n   \"used\": 0,\n   \"remaining\": 1750,\n   \"reset\": 1794723658\n  },\n  \"audit_log_streaming\": {\n   \"limit\": 15,\n   \"used\": 0,\n   \"remaining\": 15,\n   \"reset\": 1794723658\n  },\n  \"code_search\": {\n   \"limit\": 10,\n   \"used\": 0,\n   \"remaining\": 10,\n   \"reset\": 1794720118\n  },\n  \"copilot_usage_records\": {\n   \"limit\": 1750,\n   \"used\": 0,\n   \"remaining\": 1750,\n   \"reset\": 1794723658\n  },\n  \"enterprise_token_inventory\": {\n   \"limit\": 1750,\n   \"used\": 0,\n   \"remaining\": 1750,\n   \"reset\": 1794723658\n  }\n },\n \"rate\": {\n  \"limit\": 5000,\n  \"used\": 94,\n  \"remaining\": 4906,\n  \"reset\": 1794722102\n }\n}"
+}

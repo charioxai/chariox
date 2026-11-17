@@ -1,0 +1,12 @@
+{
+ "path": "/search/issues?q=is%3Apr%20repo%3Acharioxai%2Fchariox-github-app-drill%20is%3Amerged%20sort%3Aupdated-desc&per_page=25&page=1",
+ "status": 200,
+ "headers": {
+  "x-ratelimit-limit": "30",
+  "x-ratelimit-remaining": "28",
+  "x-ratelimit-reset": "1794720119",
+  "x-ratelimit-resource": "search",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"total_count\": 1,\n \"incomplete_results\": false,\n \"items\": [\n  {\n   \"repository_url\": \"https://api.github.com/repos/charioxai/chariox-github-app-drill\",\n   \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/pull/5\",\n   \"id\": 6400360443,\n   \"number\": 5,\n   \"title\": \"Add a doc that gets merged\",\n   \"user\": {\n    \"login\": \"mgutierrez09\",\n    \"id\": 33031955,\n    \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n    \"html_url\": \"https://github.com/mgutierrez09\",\n    \"type\": \"User\",\n    \"user_view_type\": \"public\",\n    \"site_admin\": false\n   },\n   \"labels\": [],\n   \"state\": \"closed\",\n   \"locked\": false,\n   \"assignees\": [],\n   \"milestone\": null,\n   \"comments\": 0,\n   \"created_at\": \"2026-11-15T05:20:40Z\",\n   \"updated_at\": \"2026-11-15T05:20:42Z\",\n   \"closed_at\": \"2026-11-15T05:20:42Z\",\n   \"assignee\": null,\n   \"author_association\": \"MEMBER\",\n   \"issue_field_values\": [],\n   \"type\": null,\n   \"active_lock_reason\": null,\n   \"draft\": false,\n   \"pull_request\": {\n    \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/pull/5\",\n    \"merged_at\": \"2026-11-15T05:20:42Z\"\n   },\n   \"body\": \"Merged by the seed.\",\n   \"reactions\": {\n    \"total_count\": 0,\n    \"+1\": 0,\n    \"-1\": 0,\n    \"laugh\": 0,\n    \"hooray\": 0,\n    \"confused\": 0,\n    \"heart\": 0,\n    \"rocket\": 0,\n    \"eyes\": 0\n   },\n   \"performed_via_github_app\": null,\n   \"state_reason\": null,\n   \"score\": 1\n  }\n ],\n \"search_type\": \"lexical\"\n}"
+}

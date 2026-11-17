@@ -397,6 +397,8 @@ fn package_build_ui(
                 chariox_app_package::HttpMethod::Get,
                 chariox_app_package::HttpMethod::Post,
             ],
+            credential: None,
+            routes: Vec::new(),
         }];
     }
     let mut files = BTreeMap::from([

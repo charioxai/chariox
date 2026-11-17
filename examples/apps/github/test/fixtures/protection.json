@@ -1,0 +1,12 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/branches/main/protection",
+ "status": 403,
+ "headers": {
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4886",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"message\": \"Upgrade to GitHub Pro or make this repository public to enable this feature.\",\n \"status\": \"403\"\n}"
+}

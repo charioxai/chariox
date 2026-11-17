@@ -81,6 +81,7 @@ async fn check(name: &str) {
         )]),
         protected_origins: BTreeSet::new(),
         protected_routes: BTreeMap::new(),
+        credentialed: BTreeMap::new(),
     };
     // This is the production policy, including request_headers. Do not replace
     // it with a broker success fixture: that hid the synthesized Host header.

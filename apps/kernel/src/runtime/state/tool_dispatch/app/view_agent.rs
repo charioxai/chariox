@@ -6,6 +6,7 @@
 //! only after known secret values are scrubbed.
 
 use super::*;
+use crate::durable_state::app_standing::StandingCommand;
 use crate::runtime::{
     app_view_authority::{self, AppViewAuthority},
     app_views::AppViewBinding,
@@ -19,7 +20,9 @@ use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionKind, RuntimeInteractionLevel,
 };
-use chariox_app_package::v2::{self as declared_actions, UiActionDeclaration, UiActionEffect};
+use chariox_app_package::v2::{
+    self as declared_actions, StandingUse, UiActionDeclaration, UiActionEffect,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -138,7 +141,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: INVOKE.into(),
-            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card, and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
+            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card (unless /sudo or a standing permission covers it), and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
             input_schema: json!({"type": "object", "properties": {"view": view, "action": {"type": "string"}, "input": input}, "required": ["view", "action"], "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -348,17 +351,118 @@ impl KernelRuntimeState {
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
         self.check_view_claimed(agent, context)?;
-        if action.effect == UiActionEffect::Approval {
+        let input = self.pin_standing_account(context, action, input).await;
+        let standing = self.standing_covers(context, action, &input).await?;
+        if action.effect == UiActionEffect::Approval && !standing {
             self.approve_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
         // The preview shares the page with the action, so the turn is held from the card to the run.
-        if action.effect == UiActionEffect::PersonConfirmed {
+        // A sudo task the owner started for this work is the person's consent to it; the action
+        // itself still checks the pull request's state and head.
+        if action.effect == UiActionEffect::PersonConfirmed
+            && !standing
+            && !self
+                .sudo_task_authorizes_agent(agent.session_id(), agent.id())
+                .await
+        {
             self.confirm_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         self.run_in_view(context, name, input).await
+    }
+
+    /// A call that names no account runs as the one its App picks (the repository's, the default,
+    /// else the first known). A backend-served App says which, and the input then names it, so the
+    /// permission is judged for, and the call runs as, the same account. An App that cannot say
+    /// leaves the input as it was: the account it names, else the only one bound, decides.
+    async fn pin_standing_account(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        mut input: Value,
+    ) -> Value {
+        let (Some(declared), ViewHost::Backend { .. }) = (&action.standing, &context.host) else {
+            return input;
+        };
+        let Some(StandingUse {
+            repo,
+            account: None,
+            ..
+        }) = action.standing_use(&input)
+        else {
+            return input;
+        };
+        // Not `view_call`: the run itself checks the release, and a label that is not a bound
+        // account covers nothing, so only the secret scrub applies here.
+        let answer = self
+            .backend_view_call(
+                context,
+                ViewAgentCallKind::Invoke,
+                Some((backend::ACCOUNT_TOOL, json!({ "repo": repo }))),
+                None,
+            )
+            .await;
+        let answer = self.scrub_answer(context, answer);
+        match answer {
+            Ok(answer) => match answer["account"].as_str().filter(|label| !label.is_empty()) {
+                Some(label) => input[&declared.account] = json!(label),
+                None => tracing::debug!("the App answered no account for a standing call"),
+            },
+            Err(error) => {
+                tracing::debug!(message = %error.message, "the App could not say which account runs a standing call")
+            }
+        }
+        input
+    }
+
+    /// Whether the owner's standing permission for this repository, account and action class
+    /// covers the call, so its card is not raised. Only what the signed declaration names can be covered,
+    /// read from the validated input; the use is counted for the owner to see.
+    async fn standing_covers(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        input: &Value,
+    ) -> Result<bool, ViewError> {
+        let Some(StandingUse {
+            class,
+            repo,
+            account,
+        }) = action.standing_use(input)
+        else {
+            return Ok(false);
+        };
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (
+            context.binding.owner.clone(),
+            context.binding.installation.clone(),
+        );
+        let covering = tokio::task::spawn_blocking(move || {
+            store.app_standing_command(StandingCommand::Use {
+                owner,
+                installation,
+                repo,
+                class,
+                account,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+        })
+        .await
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?;
+        Ok(covering.is_some())
     }
 
     /// An owner's App Tab is driven only by an agent that claimed it. Checked

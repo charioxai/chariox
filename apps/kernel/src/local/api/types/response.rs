@@ -91,6 +91,8 @@ pub enum LocalDaemonResponse {
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
+    AppAccounts { installation_id: String, credentials: Vec<AppCredentialSummary>, accounts: Vec<AppAccountSummary>, },
+    AppStanding { installation_id: String, standing: Vec<AppStandingSummary>, },
     /// Protocol 361: the caller's active installations and their configuration.
     AppSet { schema: String, installations: Vec<AppSetInstallation>, },
     /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,

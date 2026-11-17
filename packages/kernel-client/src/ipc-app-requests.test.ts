@@ -5,6 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRouteRequest, testAppInboxRouteRequest } from "./ipc-app-requests.js"
+import { pauseAppAutomationRequest, setAppInboxRoutePausedRequest } from "./ipc-app-requests.js"
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
@@ -56,6 +57,8 @@ test("inbox routes name an installation and its signed incoming event only", () 
     source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 1 } })
   assert.deepEqual(listAppInboxRoutesRequest("todo"), { ListAppInboxRoutes: { installation_id: "todo" } })
   assert.deepEqual(removeAppInboxRouteRequest("todo", "mail"), { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } })
+  assert.deepEqual(setAppInboxRoutePausedRequest("todo", "mail", true), { SetAppInboxRoutePaused: { installation_id: "todo", route_id: "mail", paused: true } })
+  assert.deepEqual(pauseAppAutomationRequest("todo", "reminders", 2), { PauseAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 2 } })
   assert.deepEqual(testAppInboxRouteRequest("todo", "mail", "occ-1", { title: "x" }),
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } })
 })
@@ -218,4 +221,68 @@ test("a collaborator's App picker names its Room", () => {
 test("App subscription controls can be scoped to the caller's Room", () => {
   assert.deepEqual(listAppAutomationsRequest("app", "room"), { ListAppAutomations: { installation_id: "app", session_id: "room" } })
   assert.deepEqual(disableAppAutomationRequest("app", "binding", 2, "room"), { DisableAppAutomation: { installation_id: "app", automation_id: "binding", expected_revision: 2, session_id: "room" } })
+})
+
+test("an owner binds, lists and revokes the accounts an App calls a service with", async () => {
+  const { grantAppAccountRequest, revokeAppAccountRequest, listAppAccountsRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(grantAppAccountRequest("github", "work", "github", "cpy-1", "write"),
+    { GrantAppAccount: { installation_id: "github", account: "work", credential: "github", vault_credential_id: "cpy-1", allow: "write" } })
+  assert.deepEqual(revokeAppAccountRequest("github", "work"), { RevokeAppAccount: { installation_id: "github", account: "work" } })
+  assert.deepEqual(listAppAccountsRequest("github"), { ListAppAccounts: { installation_id: "github" } })
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: unknown[] = []
+  const answer = { AppAccounts: { installation_id: "github",
+    credentials: [{ credential: "github", origin: "https://api.github.com", routes: 40, safety: "destructive" }],
+    accounts: [{ account: "work", credential: "github", vault_credential_id: "cpy-1", allow: "read", bound_at_ms: 1 }] } }
+  const client = { send: async (request: unknown) => { sent.push(request); return answer } }
+  const listed = await executeAppCommand(["account", "list", "github"], client)
+  assert.equal(listed.message, "needs github · https://api.github.com · 40 routes up to destructive\nwork · github · entry cpy-1 · allows read")
+  // Granting without a level is the safest level; the entry is named by id.
+  await executeAppCommand(["account", "grant", "github", "work", "github", "cpy-1"], client)
+  await executeAppCommand(["account", "grant", "github", "work", "github", "cpy-1", "--allow", "destructive"], client)
+  await executeAppCommand(["account", "revoke", "github", "work"], client)
+  assert.deepEqual(sent, [
+    listAppAccountsRequest("github"),
+    grantAppAccountRequest("github", "work", "github", "cpy-1", "read"),
+    grantAppAccountRequest("github", "work", "github", "cpy-1", "destructive"),
+    revokeAppAccountRequest("github", "work"),
+  ])
+  for (const bad of [["grant", "github", "work", "github"], ["grant", "github", "work", "github", "cpy-1", "--allow", "root"],
+    ["grant", "github", "work", "github", "cpy-1", "--allow"], ["revoke", "github"], ["list"]]) {
+    assert.equal((await executeAppCommand(["account", ...bad], { send: async () => ({}) })).ok, false, bad.join(" "))
+  }
+  const refused = await executeAppCommand(["account", "grant", "github", "work", "other", "cpy-1"], {
+    send: async () => ({ AppRequestFailed: { code: "invalid_request" } }),
+  })
+  assert.match(refused.message ?? "", /must declare this credential/)
+})
+
+test("an owner gives, lists and ends a standing permission, 30 days unless told otherwise", async () => {
+  const { grantAppStandingRequest, revokeAppStandingRequest, listAppStandingRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(grantAppStandingRequest("github", "work", "o/r", "merge", 5),
+    { GrantAppStanding: { installation_id: "github", account: "work", repo: "o/r", class: "merge", expires_at_ms: 5 } })
+  assert.deepEqual(grantAppStandingRequest("github", "work", "o/r", "review"), { GrantAppStanding: { installation_id: "github", account: "work", repo: "o/r", class: "review" } })
+  assert.deepEqual(revokeAppStandingRequest("github", "standing-1"), { RevokeAppStanding: { installation_id: "github", standing_id: "standing-1" } })
+  assert.deepEqual(listAppStandingRequest("github"), { ListAppStanding: { installation_id: "github" } })
+  const { executeAppCommand } = await import("./shell-app-command.js")
+  const sent: Record<string, Record<string, unknown>>[] = []
+  const answer = { AppStanding: { installation_id: "github", standing: [
+    { standing_id: "standing-1", account: "work", repo: "o/r", class: "merge", created_at_ms: 1, expires_at_ms: 86_400_000, uses: 2 },
+    { standing_id: "standing-2", account: "work", repo: "o/s", class: "close", created_at_ms: 1, uses: 0 }] } }
+  const client = { send: async (request: unknown) => { sent.push(request as Record<string, Record<string, unknown>>); return answer } }
+  const listed = await executeAppCommand(["standing", "list", "github"], client)
+  assert.equal(listed.message, "standing-1 · o/r · merge · account work · until 1970-01-02T00:00:00.000Z · used 2×\nstanding-2 · o/s · close · account work · until revoked · used 0×")
+  const before = Date.now()
+  await executeAppCommand(["standing", "grant", "github", "work", "o/r", "merge"], client)
+  await executeAppCommand(["standing", "grant", "github", "work", "o/r", "merge", "--days", "7"], client)
+  await executeAppCommand(["standing", "grant", "github", "work", "o/r", "merge", "--never"], client)
+  await executeAppCommand(["standing", "revoke", "github", "standing-1"], client)
+  const days = (index: number) => Math.round(((sent[index]!.GrantAppStanding!.expires_at_ms as number) - before) / 86_400_000)
+  assert.deepEqual([days(1), days(2)], [30, 7])
+  assert.equal("expires_at_ms" in sent[3]!.GrantAppStanding!, false, "--never sends no expiry")
+  assert.deepEqual(sent[4], revokeAppStandingRequest("github", "standing-1"))
+  for (const bad of [["grant", "github", "work", "o/r", "force_push"], ["grant", "github", "work", "o/r", "merge", "--days", "0"], ["grant", "github", "work", "o/r", "merge", "--days"],
+    ["grant", "github", "work", "o/r", "merge", "--forever"], ["revoke", "github"], ["list"]]) {
+    assert.equal((await executeAppCommand(["standing", ...bad], { send: async () => ({}) })).ok, false, bad.join(" "))
+  }
 })

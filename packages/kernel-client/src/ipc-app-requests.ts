@@ -117,6 +117,11 @@ export function disableAppAutomationRequest(installationId: string, automationId
   return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
+/** Protocol 1010: stops an automation delivering without ending it; `app automation add --revision` resumes it. */
+export function pauseAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number, sessionId?: string) {
+  return { PauseAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
+}
+
 /** An event generator connection an inbox route subscribes to (protocol 358). */
 export type AppInboxConnection = { generatorId: string; connectionId: string; connectionScope: string; filter?: unknown }
 
@@ -176,8 +181,47 @@ export function listAppConnectionsRequest(installationId: string) {
   return { ListAppConnections: { installation_id: installationId } }
 }
 
+export type AppAccountAllow = "read" | "write" | "destructive"
+
+/** The owner binds one of their Vault entries to a credentialed destination of the App's manifest. */
+export function grantAppAccountRequest(
+  installationId: string, account: string, credential: string, vaultCredentialId: string, allow: AppAccountAllow,
+) {
+  return { GrantAppAccount: { installation_id: installationId, account, credential, vault_credential_id: vaultCredentialId, allow } }
+}
+
+export function revokeAppAccountRequest(installationId: string, account: string) {
+  return { RevokeAppAccount: { installation_id: installationId, account } }
+}
+
+export function listAppAccountsRequest(installationId: string) {
+  return { ListAppAccounts: { installation_id: installationId } }
+}
+
+export type AppStandingClass = "merge" | "close" | "delete_branch" | "review"
+
+/** The owner lets an action class run without its card in one repository (`owner/name`), for a bound account. */
+export function grantAppStandingRequest(
+  installationId: string, account: string, repo: string, standingClass: AppStandingClass, expiresAtMs?: number,
+) {
+  return { GrantAppStanding: { installation_id: installationId, account, repo, class: standingClass, ...(expiresAtMs === undefined ? {} : { expires_at_ms: expiresAtMs }) } }
+}
+
+export function revokeAppStandingRequest(installationId: string, standingId: string) {
+  return { RevokeAppStanding: { installation_id: installationId, standing_id: standingId } }
+}
+
+export function listAppStandingRequest(installationId: string) {
+  return { ListAppStanding: { installation_id: installationId } }
+}
+
 export function removeAppInboxRouteRequest(installationId: string, routeId: string) {
   return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
+}
+
+/** Protocol 1010: pauses or resumes one inbox route; a paused route takes no occurrence. */
+export function setAppInboxRoutePausedRequest(installationId: string, routeId: string, paused: boolean) {
+  return { SetAppInboxRoutePaused: { installation_id: installationId, route_id: routeId, paused } }
 }
 
 export function listAppInboxRoutesRequest(installationId: string) {

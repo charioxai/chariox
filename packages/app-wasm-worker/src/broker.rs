@@ -1,7 +1,8 @@
 //! WIT-to-wire conversions. No ambient IO is linked by this module.
 use crate::{
-    bindings::chariox::app::{
-        app_types as types, connections, events, host, schedule, state, validation,
+    bindings::chariox::{
+        app1_0_0::{app_types as types, connections, events, host, schedule, state, validation},
+        app1_1_0::event_routing,
     },
     host::{app_error, json, Host},
     ipc::error,
@@ -461,5 +462,145 @@ impl<T: Send> validation::HostWithStore<T> for HasSelf<Host> {
             )
             .await?,
         )
+    }
+}
+
+fn route(value: &Value) -> Result<event_routing::Route, types::AppError> {
+    Ok(event_routing::Route {
+        route_id: text(value, "routeId")?,
+        event: text(value, "event")?,
+        repository: text(value, "repository")?,
+        source_event_type: text(value, "sourceEventType")?,
+        source_event_version: u32::try_from(number(value, "sourceEventVersion")?)
+            .map_err(|_| invalid())?,
+        active: value["active"].as_bool().ok_or_else(invalid)?,
+        pending: number(value, "pending")?,
+        delivered: number(value, "delivered")?,
+        failed: number(value, "failed")?,
+        expired: number(value, "expired")?,
+    })
+}
+fn target(value: &Value) -> Result<event_routing::Target, types::AppError> {
+    Ok(event_routing::Target {
+        automation_id: text(value, "automationId")?,
+        event: text(value, "event")?,
+        kind: text(value, "kind")?,
+        agent_id: value["agentId"].as_str().map(String::from),
+        state: text(value, "state")?,
+    })
+}
+fn list<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, types::AppError> {
+    value[key].as_array().ok_or_else(invalid)
+}
+impl event_routing::Host for Host {}
+impl<T: Send> event_routing::HostWithStore<T> for HasSelf<Host> {
+    async fn ensure_route(
+        accessor: &Accessor<T, Self>,
+        spec: event_routing::RouteSpec,
+    ) -> Result<event_routing::Route, types::AppError> {
+        let params = json!({
+            "routeId": spec.route_id, "event": spec.event, "repository": spec.repository,
+            "sourceEventType": spec.source_event_type, "sourceEventVersion": spec.source_event_version,
+        });
+        route(&call(accessor, "routing.ensure_route", params).await?)
+    }
+    async fn remove_route(
+        accessor: &Accessor<T, Self>,
+        route_id: String,
+    ) -> Result<(), types::AppError> {
+        call(
+            accessor,
+            "routing.remove_route",
+            json!({"routeId":route_id}),
+        )
+        .await?;
+        Ok(())
+    }
+    async fn set_route_active(
+        accessor: &Accessor<T, Self>,
+        route_id: String,
+        active: bool,
+    ) -> Result<event_routing::Route, types::AppError> {
+        let params = json!({"routeId":route_id,"active":active});
+        route(&call(accessor, "routing.set_route_active", params).await?)
+    }
+    async fn list_routes(
+        accessor: &Accessor<T, Self>,
+    ) -> Result<Vec<event_routing::Route>, types::AppError> {
+        let value = call(accessor, "routing.list_routes", json!({})).await?;
+        list(&value, "routes")?.iter().map(route).collect()
+    }
+    async fn connection_status(
+        accessor: &Accessor<T, Self>,
+    ) -> Result<event_routing::ConnectionState, types::AppError> {
+        let value = call(accessor, "routing.connection_status", json!({})).await?;
+        Ok(event_routing::ConnectionState {
+            generator_id: text(&value, "generatorId")?,
+            connection_id: value["connectionId"].as_str().map(String::from),
+            status: text(&value, "status")?,
+            max_routes: u32::try_from(number(&value, "maxRoutes")?).map_err(|_| invalid())?,
+            routes: u32::try_from(number(&value, "routes")?).map_err(|_| invalid())?,
+        })
+    }
+    async fn connection_resources(
+        accessor: &Accessor<T, Self>,
+        query: Option<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<String, types::AppError> {
+        let params = json!({"query":query,"cursor":cursor,"limit":limit});
+        let value = call(accessor, "routing.connection_resources", params).await?;
+        Ok(value.get("page").ok_or_else(invalid)?.to_string())
+    }
+    async fn start_authorization(
+        accessor: &Accessor<T, Self>,
+        return_url: Option<String>,
+    ) -> Result<event_routing::Authorization, types::AppError> {
+        let value = call(
+            accessor,
+            "routing.start_authorization",
+            json!({"returnUrl":return_url}),
+        )
+        .await?;
+        Ok(event_routing::Authorization {
+            authorization_id: text(&value, "authorizationId")?,
+            url: text(&value, "url")?,
+        })
+    }
+    async fn bind_agent(
+        accessor: &Accessor<T, Self>,
+        event: String,
+        agent_id: Option<String>,
+    ) -> Result<event_routing::Target, types::AppError> {
+        let params = json!({"event":event,"agentId":agent_id});
+        target(&call(accessor, "routing.bind_agent", params).await?)
+    }
+    async fn bind_workflow(
+        accessor: &Accessor<T, Self>,
+        event: String,
+        session_id: String,
+        publication_ref: String,
+        queue_ref: Option<String>,
+    ) -> Result<event_routing::Target, types::AppError> {
+        let params = json!({"event":event,"sessionId":session_id,"publicationRef":publication_ref,"queueRef":queue_ref});
+        target(&call(accessor, "routing.bind_workflow", params).await?)
+    }
+    async fn unbind_target(
+        accessor: &Accessor<T, Self>,
+        automation_id: String,
+    ) -> Result<(), types::AppError> {
+        call(
+            accessor,
+            "routing.unbind_target",
+            json!({"automationId":automation_id}),
+        )
+        .await?;
+        Ok(())
+    }
+    async fn list_targets(
+        accessor: &Accessor<T, Self>,
+    ) -> Result<Vec<event_routing::Target>, types::AppError> {
+        let value = call(accessor, "routing.list_targets", json!({})).await?;
+        list(&value, "targets")?.iter().map(target).collect()
     }
 }

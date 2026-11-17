@@ -38,7 +38,8 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
         .manifest
         .validate(&chariox_app_package::Limits::default())?;
     wasmtime::ensure!(
-        launch.manifest.world == chariox_app_wit::APP_WORLD,
+        [chariox_app_wit::APP_WORLD, chariox_app_wit::APP_WORLD_1_1]
+            .contains(&launch.manifest.world.as_str()),
         "backend requires App world"
     );
     let bytes = read(6, chariox_app_wit::MAX_COMPONENT_BYTES)?;

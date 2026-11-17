@@ -290,6 +290,16 @@
               "session",
               "waiting_room"
             ]
+          },
+          {
+            "id": "app-automation-pause",
+            "label": "pause",
+            "description": "Pause an App automation",
+            "value": "/app automation pause ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
           }
         ]
       },
@@ -328,6 +338,26 @@
             "label": "remove",
             "description": "Remove an App inbox route",
             "value": "/app inbox remove ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-pause",
+            "label": "pause",
+            "description": "Pause an App inbox route",
+            "value": "/app inbox pause ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-resume",
+            "label": "resume",
+            "description": "Resume a paused App inbox route",
+            "value": "/app inbox resume ",
             "surfaces": [
               "session",
               "waiting_room"
@@ -380,6 +410,90 @@
             "label": "revoke",
             "description": "Revoke an App's use of a connection",
             "value": "/app connection revoke ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-account",
+        "label": "account",
+        "description": "Choose the account an App calls a service with",
+        "value": "/app account ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-account-list",
+            "label": "list",
+            "description": "List the accounts an App may call a service with",
+            "value": "/app account list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-account-grant",
+            "label": "grant",
+            "description": "Let an App use one of your Vault entries (ACCOUNT CREDENTIAL ENTRY)",
+            "value": "/app account grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-account-revoke",
+            "label": "revoke",
+            "description": "Revoke an App's use of an account",
+            "value": "/app account revoke ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-standing",
+        "label": "standing",
+        "description": "Decide once that an action needs no card in one repository",
+        "value": "/app standing ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-standing-list",
+            "label": "list",
+            "description": "List the standing permissions you gave an App",
+            "value": "/app standing list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-standing-grant",
+            "label": "grant",
+            "description": "Skip the card for an action class in a repository (ACCOUNT OWNER/REPO CLASS)",
+            "value": "/app standing grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-standing-revoke",
+            "label": "revoke",
+            "description": "End a standing permission",
+            "value": "/app standing revoke ",
             "surfaces": [
               "session",
               "waiting_room"

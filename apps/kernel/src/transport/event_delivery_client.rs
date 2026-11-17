@@ -1083,6 +1083,8 @@ mod tests {
                             source_event_type: "thing.happened".into(),
                             source_event_version: 1,
                             active: true,
+                            paused: false,
+                            app_managed: false,
                             source: Some(chariox_app_runtime::app_inbox::InboxSource {
                                 generator_id: generator_id.into(),
                                 connection_id: "connection-1".into(),
@@ -1282,6 +1284,8 @@ mod tests {
                             source_event_type: "thing.happened".into(),
                             source_event_version: 1,
                             active: true,
+                            paused: false,
+                            app_managed: false,
                             source: Some(chariox_app_runtime::app_inbox::InboxSource {
                                 generator_id: "dev.chariox.up".into(),
                                 connection_id: connection_id.into(),

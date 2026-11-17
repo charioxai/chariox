@@ -1181,6 +1181,8 @@ fn install_app_route(harness: &LocalRouterTestHarness, channel: &str) {
                     source_event_type: "dummy.test".into(),
                     source_event_version: 1,
                     active: true,
+                    paused: false,
+                    app_managed: false,
                     source: Some(chariox_app_runtime::app_inbox::InboxSource {
                         generator_id: "dev.chariox.dummy".into(),
                         connection_id: "connection-local".into(),

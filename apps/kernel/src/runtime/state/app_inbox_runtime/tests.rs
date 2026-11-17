@@ -102,6 +102,8 @@ async fn quarantined_inbox_and_wake_keep_attempts_and_deliver_once_after_explici
                 source_event_type: "fixture.crash".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
+                app_managed: false,
                 source: None,
             },
             now_ms: crate::session::unix_epoch_ms(),

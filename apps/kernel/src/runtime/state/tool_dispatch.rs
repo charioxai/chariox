@@ -225,6 +225,7 @@ impl KernelRuntimeState {
             specs.extend(super::visual::visual_tool_specs());
             specs.extend(super::environment_tools::environment_tool_specs());
             specs.push(super::vault_command::capture_command_spec());
+            specs.push(super::vault_command::copy_for_use_spec());
             specs.push(super::vault_command::use_env_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
@@ -474,6 +475,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_CAPTURE_COMMAND {
             return Box::pin(self.vault_capture_command(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_COPY_FOR_USE {
+            return Box::pin(self.vault_copy_for_use(auth_token, arguments)).await;
         }
         if tool_name == super::vault_command::VAULT_USE_ENV {
             return Box::pin(self.vault_use_env(auth_token, arguments)).await;

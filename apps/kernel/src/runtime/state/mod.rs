@@ -53,13 +53,21 @@ mod failed_request_owned_state;
 mod native_prompt_handoff;
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
-mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_account_runtime;
+mod app_automation_owned_state;
 mod app_connection_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_control_requests;
 mod app_dev_runtime;
 mod app_event_delivery_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_routing_runtime;
+mod app_standing_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) use app_event_routing_runtime::{
+    Acting, ConnectionView, RouteSpec, RouteView, RoutingError, RoutingScope, TargetView,
+};
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
