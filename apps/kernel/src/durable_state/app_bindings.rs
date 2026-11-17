@@ -22,8 +22,17 @@ pub(crate) enum AppBindingError {
 pub(super) struct AppBindingRequest {
     owner: String,
     installation_id: String,
-    room_id: Option<String>,
+    room: RoomScope,
     response: mpsc::Sender<Result<ActiveGeneration, VerifiedStageError>>,
+}
+
+/// Which Room's installations a binding check sees.
+#[derive(Debug)]
+enum RoomScope {
+    /// The installations visible in this Room (`None`: outside any Room, release installs only).
+    Visible(Option<String>),
+    /// The installation wherever it lives: the owner's own, including a dev install of any Room.
+    Owned,
 }
 
 impl DurableKernelStateStore {
@@ -34,6 +43,29 @@ impl DurableKernelStateStore {
         trusted_owner: &str,
         installation_id: &str,
         room: Option<&str>,
+    ) -> Result<ActiveGeneration, AppBindingError> {
+        self.check_app_binding_scoped(
+            trusted_owner,
+            installation_id,
+            RoomScope::Visible(room.map(str::to_owned)),
+        )
+    }
+
+    /// The same check for an App the owner opens as a client view: a dev install belongs to one
+    /// Room, and the window is that Room's, so the Room is the installation's own.
+    pub(crate) fn check_owned_app_binding(
+        &self,
+        trusted_owner: &str,
+        installation_id: &str,
+    ) -> Result<ActiveGeneration, AppBindingError> {
+        self.check_app_binding_scoped(trusted_owner, installation_id, RoomScope::Owned)
+    }
+
+    fn check_app_binding_scoped(
+        &self,
+        trusted_owner: &str,
+        installation_id: &str,
+        room: RoomScope,
     ) -> Result<ActiveGeneration, AppBindingError> {
         for value in [trusted_owner, installation_id] {
             if value.is_empty()
@@ -52,7 +84,7 @@ impl DurableKernelStateStore {
                 AppBindingRequest {
                     owner: trusted_owner.into(),
                     installation_id: installation_id.into(),
-                    room_id: room.map(str::to_owned),
+                    room,
                     response,
                 },
             )))?;
@@ -70,7 +102,7 @@ pub(super) fn execute(connection: &mut Connection, request: AppBindingRequest) {
         connection,
         &request.owner,
         &request.installation_id,
-        request.room_id.as_deref(),
+        &request.room,
     );
     let _ = request.response.send(result);
 }
@@ -79,7 +111,7 @@ fn apply(
     connection: &mut Connection,
     owner: &str,
     installation_id: &str,
-    room: Option<&str>,
+    room: &RoomScope,
 ) -> Result<ActiveGeneration, VerifiedStageError> {
     let binding = InstallationRegistry::new(connection).active_trust(owner, installation_id)?;
     let trust = PublisherTrustRegistry::new(connection).trusted_publisher(
@@ -87,10 +119,12 @@ fn apply(
         binding.publisher_id(),
         binding.key_id(),
     )?;
-    if !InstallationRegistry::new(connection)
-        .get(installation_id)?
-        .visible_in_room(room)
-    {
+    let installation = InstallationRegistry::new(connection).get(installation_id)?;
+    let visible = match room {
+        RoomScope::Visible(room) => installation.visible_in_room(room.as_deref()),
+        RoomScope::Owned => true,
+    };
+    if !visible {
         return Err(InstallationError::NotFound.into());
     }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;

@@ -1,6 +1,7 @@
 //! MP-08/MP-09/MP-10/MP-11: real component and WASI data directory.
 //! The file broker is a fixture; this is supplementary to hosted acceptance.
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     pin::Pin,
@@ -38,6 +39,53 @@ struct Host {
     offers: Vec<(String, Vec<u8>)>,
     export_barrier: Option<Arc<tokio::sync::Barrier>>,
     fault: Option<(FileStage, bool, Arc<tokio::sync::Notify>)>,
+    /// The App's state, with the kernel's versions: every key a transaction writes takes its revision.
+    records: BTreeMap<String, state::StateRecord>,
+    revision: u64,
+    /// A scene that another window commits right after the next transaction, before any later read.
+    rival: Option<String>,
+}
+impl Host {
+    fn commit(&mut self, tx: state::Transaction) -> Result<state::Committed, AppError> {
+        for check in &tx.checks {
+            if self.records.get(&check.key).map(|r| r.version) != check.version {
+                return Err(AppError {
+                    code: "CONFLICT".into(),
+                    message: check.key.clone(),
+                    retryable: None,
+                });
+            }
+        }
+        self.revision += 1;
+        for write in tx.writes {
+            match write {
+                state::Write::Put((key, value)) => {
+                    let version = self.revision;
+                    self.records
+                        .insert(key, state::StateRecord { value, version });
+                }
+                state::Write::Delete(key) => {
+                    self.records.remove(&key);
+                }
+            }
+        }
+        let committed = state::Committed {
+            revision: self.revision,
+            receipts: vec![],
+        };
+        if let Some(scene) = self.rival.take() {
+            self.revision += 1;
+            let version = self.revision;
+            self.records.insert(
+                "scene".into(),
+                state::StateRecord {
+                    value: scene,
+                    version,
+                },
+            );
+        }
+        Ok(committed)
+    }
 }
 impl WasiView for Host {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -59,14 +107,17 @@ impl registry::Host for Host {
 }
 impl state::Host for Host {}
 impl<T: Send> state::HostWithStore<T> for HasSelf<Host> {
-    async fn get(_: &Accessor<T, Self>, _: String) -> Result<Option<state::StateRecord>, AppError> {
-        panic!("unexpected state read")
+    async fn get(
+        accessor: &Accessor<T, Self>,
+        key: String,
+    ) -> Result<Option<state::StateRecord>, AppError> {
+        Ok(accessor.with(|mut access| access.get().records.get(&key).cloned()))
     }
     async fn transact(
-        _: &Accessor<T, Self>,
-        _: state::Transaction,
+        accessor: &Accessor<T, Self>,
+        tx: state::Transaction,
     ) -> Result<state::Committed, AppError> {
-        panic!("unexpected state write")
+        accessor.with(|mut access| access.get().commit(tx))
     }
 }
 impl host::Host for Host {}
@@ -85,6 +136,16 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
         panic!("unexpected clipboard")
     }
     async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
+        panic!("unexpected picker")
+    }
+    async fn request_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<host::Picked, AppError> {
+        panic!("unexpected picker")
+    }
+    async fn await_file(
+        _: &Accessor<T, Self>,
+        _: String,
+        _: u32,
+    ) -> Result<host::Picked, AppError> {
         panic!("unexpected picker")
     }
 }
@@ -288,6 +349,9 @@ async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill
             offers: vec![],
             export_barrier: None,
             fault: None,
+            records: BTreeMap::new(),
+            revision: 0,
+            rival: None,
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
@@ -492,4 +556,34 @@ async fn cancelled_replacement_releases_export_staging() -> wasmtime::Result<()>
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_offer_releases_export_staging() -> wasmtime::Result<()> {
     interrupted_export(FileStage::Export, true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_save_returns_its_own_revision_when_another_window_commits_right_after(
+) -> wasmtime::Result<()> {
+    let root = scratch("own-revision")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let mine =
+        serde_json::json!({"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}});
+    let theirs = r#"{"type":"excalidraw","version":2,"elements":[{"id":"theirs"}],"appState":{},"files":{}}"#;
+    store.data_mut().rival = Some(theirs.into());
+    let saved = invoke(
+        &mut store,
+        &app,
+        "save_scene",
+        serde_json::json!({"scene": mine, "version": null}),
+    )
+    .await?;
+    // The version this window holds is the one its own transaction committed, not the rival's.
+    assert_eq!(saved["version"], "1");
+    let loaded = invoke(&mut store, &app, "load_scene", serde_json::json!({})).await?;
+    assert_eq!(
+        loaded["version"], "2",
+        "the rival's commit is a later version"
+    );
+    assert_ne!(
+        saved["version"], loaded["version"],
+        "the window's next save checks against the version it holds, so the rival's commit is not overwritten"
+    );
+    Ok(())
 }

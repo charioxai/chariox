@@ -247,6 +247,8 @@ mod tests {
     mod credential_enrollment;
     mod interactive_command_admission;
     mod kernel_browser;
+    #[cfg(unix)]
+    mod large_user_app_views;
     mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;

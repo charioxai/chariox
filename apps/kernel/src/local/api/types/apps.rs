@@ -779,6 +779,8 @@ pub struct AppFrontendAsset {
 #[serde(deny_unknown_fields)]
 pub struct AppFrontendBundle {
     pub entry: String,
+    /// Empty in every reply to a client: it fetches the signed files with `ClientAppViewRequest`,
+    /// since a view can be larger than one relay reply.
     pub assets: Vec<AppFrontendAsset>,
     pub content_security_policy: String,
     pub iframe_sandbox: String,

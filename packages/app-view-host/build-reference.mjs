@@ -36,10 +36,10 @@ export async function referenceSource(name, buildDirectory) {
   return { schema: 'chariox.app-view-source.v1', rootId: name === 'excalidraw' ? 'root' : 'app', script, style };
 }
 
-export async function signReference(name, buildDirectory, output, prelude = '') {
+export async function signReference(name, buildDirectory, output, adapt = script => script) {
   const manifest = JSON.parse(await readFile(join(repositoryRoot, 'examples/apps', name, 'app.json'), 'utf8'));
   const source = await referenceSource(name, buildDirectory);
-  source.script = prelude + source.script;
+  source.script = adapt(source.script);
   const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
   const signed = await packView(manifest, source, key);
   await mkdir(output, { recursive: true });

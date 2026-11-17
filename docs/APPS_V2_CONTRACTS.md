@@ -38,6 +38,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   names on `AppInstallationSummary` for the active release (or the retained one
   of an uninstalled installation that keeps its data). Both fields are absent
   from the JSON when the App declares none.
+  The Desktop shows each installed App with an active release as a tile with this
+  icon and name, or a letter tile in a colour taken from the app id when it
+  declares no icon; the text terminal shows names only.
 - Optional `idempotentTools` names sorted, unique declared backend tools that
   the worker may replay once after instance loss. Omission permits no automatic
   replay; effects and action descriptions never imply idempotence.

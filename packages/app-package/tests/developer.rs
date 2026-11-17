@@ -628,6 +628,12 @@ fn cli_packs_and_validates_the_excalidraw_v2_app() {
         )
         .unwrap();
     }
+    // The App's own logo, which its manifest names.
+    fs::copy(
+        source.join("ui/icon.svg"),
+        fixture.path("bundle/ui/icon.svg"),
+    )
+    .unwrap();
     let args = [
         "pack",
         "--bundle",

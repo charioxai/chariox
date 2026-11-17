@@ -2,6 +2,7 @@ import { TextEncoder, TextDecoder } from './encoding.js';
 import { AbortController, AbortSignal } from './abort.js';
 import { createHandlers, ResourceScope } from './core.js';
 import { createFetch, Headers, AppResponse } from './http.js';
+import { createFeed } from './feed.js';
 import { createTimers } from './timers.js';
 import registry from 'chariox:app/registry@1.0.0';
 import state from 'chariox:app/state@1.0.0';
@@ -39,7 +40,7 @@ globalThis.console = Object.fromEntries(['debug', 'info', 'log', 'warn', 'error'
 export const fetch = createFetch(http);
 globalThis.fetch = fetch;
 
-export { registry, state, schedule, events, connections, files, http, log, host, validation, ResourceScope, Headers, AppResponse };
+export { createFeed, registry, state, schedule, events, connections, files, http, log, host, validation, ResourceScope, Headers, AppResponse };
 
 export function defineApp(app) {
   return createHandlers(app, { registry, finishInvocation: timers.finishInvocation, context: resources => ({

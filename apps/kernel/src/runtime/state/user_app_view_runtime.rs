@@ -3,6 +3,8 @@ use super::{
     app_view_runtime::{origin_label, view_assets},
     KernelRuntimeState,
 };
+use tokio::time::Instant;
+
 use crate::{
     error::DaemonError,
     local::*,
@@ -114,11 +116,13 @@ impl KernelRuntimeState {
                 let Some((binding, view)) = instances.get(owner, &request.view_id) else {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
-                let (current, frontend) =
-                    match self.user_app_frontend(owner, &binding.installation).await {
-                        Ok(view) => view,
-                        Err(code) => return Ok(failed(code)),
-                    };
+                let (current, frontend) = match self
+                    .user_app_frontend(owner, &binding.installation, false)
+                    .await
+                {
+                    Ok(view) => view,
+                    Err(code) => return Ok(failed(code)),
+                };
                 if current.generation != binding.generation
                     || instances.get(owner, &request.view_id).is_none()
                 {
@@ -133,6 +137,7 @@ impl KernelRuntimeState {
                 let Some((binding, _)) = instances.get(owner, &request.view_id) else {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
+                instances.renew(owner, &request.view_id, Instant::now());
                 let mut tracked =
                     self.app_control()
                         .views()
@@ -292,7 +297,12 @@ impl KernelRuntimeState {
         {
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
-        let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
+        // Only the kernel browser is handed the files, inside the kernel: a reply never carries them.
+        let with_files = host == Some(UserAppViewHost::KernelBrowser);
+        let (binding, frontend) = match self
+            .user_app_frontend(owner, installation, with_files)
+            .await
+        {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
         };
@@ -300,7 +310,7 @@ impl KernelRuntimeState {
             if let Some(view) =
                 Box::pin(self.focus_user_app_browser(owner, &binding, &frontend)).await
             {
-                return Ok(Ok((view, frontend)));
+                return Ok(Ok((view, without_files(frontend))));
             }
         }
         let mut view =
@@ -311,6 +321,12 @@ impl KernelRuntimeState {
         self.app_control()
             .views()
             .register(&view.view_id, &view.view_id, binding.clone());
+        if host != Some(UserAppViewHost::KernelBrowser) {
+            instances.lease(owner, &view.view_id, Instant::now());
+            let state = self.clone();
+            let (owner, id) = (owner.to_owned(), view.view_id.clone());
+            tokio::spawn(async move { state.close_user_app_view_at_lapse(&owner, &id).await });
+        }
         if host == Some(UserAppViewHost::KernelBrowser) {
             match self
                 .open_user_app_browser(owner, &view, &frontend, restoring)
@@ -333,7 +349,22 @@ impl KernelRuntimeState {
                 .await;
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
-        Ok(Ok((view, frontend)))
+        Ok(Ok((view, without_files(frontend))))
+    }
+
+    /// A client-rendered view ends when its client stops renewing the lease.
+    pub(super) async fn close_user_app_view_at_lapse(&self, owner: &str, id: &str) {
+        let instances = self.app_control().user_views();
+        while let Some(deadline) = instances.lease_deadline(id) {
+            tokio::time::sleep_until(deadline).await;
+            if instances
+                .lease_deadline(id)
+                .is_some_and(|renewed| renewed <= Instant::now())
+            {
+                self.close_user_app_view(owner, id).await;
+                break;
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -391,6 +422,11 @@ impl KernelRuntimeState {
                 })?;
             tracked.retain_browser_grant(grant);
         }
+        if method == "chariox.lease" {
+            return Ok(
+                serde_json::json!({"lease_ms": crate::runtime::user_app_views::CLIENT_LEASE.as_millis()}),
+            );
+        }
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));
         }
@@ -415,10 +451,15 @@ impl KernelRuntimeState {
         .unwrap_or(false)
     }
 
+    /// `with_files` is true only for the kernel browser, which is handed the files inside the
+    /// kernel. A client fetches and verifies its own view (`ClientAppViewRequest`): every reply
+    /// names the entry and holds no files, so it stays within one relay reply whatever the size
+    /// of the view.
     pub(super) async fn user_app_frontend(
         &self,
         owner: &str,
         installation: &str,
+        with_files: bool,
     ) -> Result<(AppViewBinding, AppFrontendBundle), AppRequestErrorCode> {
         if installation.is_empty() || installation.len() > 128 {
             return Err(AppRequestErrorCode::InvalidRequest);
@@ -427,7 +468,11 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
         let assets = tokio::task::spawn_blocking(move || {
-            store.app_view_assets(&view_owner, &view_installation)
+            if with_files {
+                store.app_view_assets(&view_owner, &view_installation)
+            } else {
+                store.app_view_release_without_files(&view_owner, &view_installation)
+            }
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
@@ -455,3 +500,15 @@ impl KernelRuntimeState {
         }))
     }
 }
+
+/// What a reply carries of the frontend: the entry and the policy, never the files.
+fn without_files(frontend: AppFrontendBundle) -> AppFrontendBundle {
+    AppFrontendBundle {
+        assets: Vec::new(),
+        ..frontend
+    }
+}
+
+#[cfg(test)]
+#[path = "user_app_view_lease_tests.rs"]
+mod lease_tests;
