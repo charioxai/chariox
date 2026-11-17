@@ -1,53 +1,9 @@
 //! MP-08 / MP-10 / MP-11: access decisions on the shared kernel interaction
-//! board, independent of sessions. Answers, passkey checks, limits, expiry and
+//! board, independent of sessions. Answers, passkey checks, expiry and
 //! revocation use the ordinary interaction machinery.
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn ensure_kernel_decision_capacity(
-        &self,
-        owner: &str,
-        interaction: &crate::session::RuntimeInteraction,
-    ) -> Result<(), DaemonError> {
-        let owner_elevation = interaction.id().starts_with("sudo:")
-            && interaction.requester().is_none()
-            && interaction
-                .sudo_request()
-                .is_none_or(|request| request.grant_id.is_none())
-            && interaction
-                .choices()
-                .iter()
-                .any(crate::session::RuntimeInteractionChoice::requires_passkey);
-        let pending = self.pending_interactions.write();
-        let decisions = pending
-            .values()
-            .filter(|p| p.belongs_to(&self.session_store))
-            .filter(|p| p.kernel_operation_owner.is_some())
-            .collect::<Vec<_>>();
-        // Keep the hard kernel bound, reserving its last slot for owner elevation.
-        // Agent decisions cannot spend the owner's separate elevation allowance.
-        let owner_count = decisions
-            .iter()
-            .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
-            .filter(|p| {
-                !owner_elevation
-                    || p.passkey_prompt.as_ref().is_some_and(|prompt| {
-                        prompt.kind == crate::local::PasskeyPromptKind::Sudo
-                            && prompt.requester.is_none()
-                            && prompt
-                                .sudo_request
-                                .as_ref()
-                                .is_none_or(|request| request.grant_id.is_none())
-                    })
-            })
-            .count();
-        if decisions.len() >= 32 || (!owner_elevation && decisions.len() >= 31) || owner_count >= 8
-        {
-            return Err(interaction_error(super::KERNEL_DECISION_LIMIT));
-        }
-        Ok(())
-    }
-
     /// An outside agent's Vault value request: a kernel-wide decision every owner terminal
     /// shows as a popup. It has the secret choice and no passkey; the answer is the value.
     pub(super) fn register_kernel_wide_secret_interaction(
@@ -81,7 +37,6 @@ impl KernelRuntimeOwnedState {
             &interaction,
             crate::session::unix_epoch_ms(),
         );
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id()) {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
@@ -152,7 +107,6 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?
         .ok_or_else(|| interaction_error("Access requires a passkey popup"))?;
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {

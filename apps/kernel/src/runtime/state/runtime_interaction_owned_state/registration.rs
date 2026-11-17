@@ -229,7 +229,6 @@ impl KernelRuntimeOwnedState {
         // decisions out too, but a registration must not depend on it having
         // run first, and a decision restored after a restart has no pending
         // entry, so no sweep ever sees it and no one can ever resolve it.
-        // Superseding comes before the limits, which count what remains.
         if let Some(owner) = kernel_operation_owner {
             let mut pending = self.pending_interactions.write();
             let superseded = session
@@ -256,18 +255,10 @@ impl KernelRuntimeOwnedState {
                 pending.remove(id);
             }
             if !superseded.is_empty() {
-                // This cleanup is definitive even when the new admission is refused.
+                // This cleanup is definitive even when the new admission is refused below.
                 sessions.restore_session(session.clone());
             }
             drop(pending);
-            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
-                drop(sessions);
-                activity_mutation.record();
-                self.session_snapshot(session_id)?;
-                self.terminal_stream
-                    .notify_terminal_projection_change(session_id);
-                return Err(error);
-            }
         }
         // Where the user sees a card is the kernel's: a restored question is the same question
         // whichever panel lists it.
