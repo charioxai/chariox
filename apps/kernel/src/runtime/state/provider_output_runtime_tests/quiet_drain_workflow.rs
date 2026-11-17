@@ -1466,7 +1466,7 @@ async fn assert_yield_waits_then_helper_completes(
         .await
         .unwrap();
     let event = store.agent_inbox(session, agent, 0).unwrap().remove(0);
-    assert_eq!(event.state, "accepted");
+    assert_eq!(event.state, "handled");
     store
         .agent_lifecycle(Operation::Ack {
             room: session.into(),

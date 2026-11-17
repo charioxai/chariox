@@ -530,7 +530,7 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .active_prompt_for_agent(&session, &follower)
         .expect("the wake starts one turn");
     assert!(
-        prompt.prompt().contains("3 peer event") && prompt.prompt().chars().count() <= 240,
+        prompt.prompt().contains("3 new events"),
         "{}",
         prompt.prompt()
     );
@@ -538,18 +538,13 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .agent_events_for_prompt(&team.room, &follower, prompt.id())
         .unwrap();
     assert_eq!(batch.len(), 3, "three events, one prompt id");
-    let read = team
-        .runtime
-        .read_agent_inbox(&team.room, &follower, &serde_json::json!({}))
-        .unwrap();
-    let sources: Vec<&str> = read["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|event| event["source"]["id"].as_str().unwrap())
-        .collect();
+    // The one wake carries every peer's event, so nothing is left to read.
     for peer in &peers {
-        assert!(sources.contains(&peer.as_str()), "{sources:?}");
+        assert!(
+            prompt.prompt().contains(peer.as_str()),
+            "{}",
+            prompt.prompt()
+        );
     }
 }
 

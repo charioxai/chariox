@@ -106,6 +106,12 @@ async fn leased_run(fixture: &LiveWorker, room: &str, agent: &str) -> String {
     .expect("leased turn projects a running worker run")
 }
 
+/// A wake that carried the event's text settles it on receipt, so "delivered" is any state past
+/// the submission.
+fn is_delivered(state: &str) -> bool {
+    matches!(state, "accepted" | "acknowledged" | "handled")
+}
+
 async fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     timeout(Duration::from_secs(15), async {
         loop {
@@ -535,7 +541,7 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
         store
             .agent_event_for_prompt(&room, &leased, &prompt)
             .unwrap()
-            .filter(|event| event.state == "accepted")
+            .filter(|event| is_delivered(&event.state))
     })
     .await;
     // Redelivery attempts are idempotent while the turn runs.
@@ -577,7 +583,7 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
             &receipt.worker_provider_run_id
         )
     );
-    assert_eq!(after.map(|event| event.state), Some("accepted".to_string()));
+    assert!(after.is_some_and(|event| is_delivered(&event.state)));
 }
 
 #[test]
@@ -621,7 +627,7 @@ async fn urgent_message_steers_a_busy_leased_turn() {
     fixture.stop().await;
     delivered.expect("urgent delivery to a busy leased agent");
     let after = after.expect("the urgent message event");
-    assert_eq!(after.state, "accepted", "{after:?}");
+    assert!(is_delivered(&after.state), "{after:?}");
     assert_eq!(
         after.target_prompt_id.as_deref(),
         Some(running.as_str()),
@@ -694,7 +700,7 @@ async fn inline_parent_brief_steered_into_a_busy_leased_turn_counts_as_read() {
     fixture.stop().await;
     delivered.expect("urgent brief to a busy leased sub-agent");
     let after = after.expect("the brief event");
-    assert_eq!(after.state, "accepted", "{after:?}");
+    assert!(is_delivered(&after.state), "{after:?}");
     assert_eq!(
         after.target_prompt_id.as_deref(),
         Some(running.as_str()),
@@ -792,7 +798,7 @@ async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
         store
             .agent_event_for_prompt(&room, &leased, &steer)
             .unwrap()
-            .filter(|event| event.state == "accepted")
+            .filter(|event| is_delivered(&event.state))
     })
     .await;
     let second = urgent_message(&store, &room, &leased, "a10-urgent-next");
@@ -854,7 +860,7 @@ async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
     );
     next.expect("the next urgent event is delivered");
     let next_event = next_event.expect("the next urgent event");
-    assert_eq!(next_event.state, "accepted", "{next_event:?}");
+    assert!(is_delivered(&next_event.state), "{next_event:?}");
     assert_eq!(
         next_event.target_prompt_id.as_deref(),
         Some(running.as_str())
@@ -1160,7 +1166,7 @@ async fn wake_reaches_a_leased_agent_after_its_worker_restarts() {
         let current = store.agent_inbox(&room, &leased, 0).unwrap();
         if let Some(event) = current
             .iter()
-            .find(|event| event.state == "accepted" && event.prompt_id.as_deref() == Some(&prompt))
+            .find(|event| is_delivered(&event.state) && event.prompt_id.as_deref() == Some(&prompt))
         {
             break event.clone();
         }
@@ -1776,7 +1782,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         let inbox = store.agent_inbox(&room, &agent, 0).unwrap();
         if let Some(e) = inbox
             .iter()
-            .find(|e| e.sequence == event.sequence && e.state == "accepted")
+            .find(|e| e.sequence == event.sequence && is_delivered(&e.state))
         {
             break e.clone();
         }

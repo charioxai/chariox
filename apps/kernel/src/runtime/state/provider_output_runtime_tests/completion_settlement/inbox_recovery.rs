@@ -116,8 +116,9 @@ async fn a02_r8_blocked_subscriber_does_not_suppress_waiting_subscriber() {
         .agent_inbox(session.id(), agent.id(), 0)
         .unwrap()
         .remove(0);
+    // The wake carries the event's text, so delivery settles it.
     assert_eq!(
-        event.state, "accepted",
+        event.state, "handled",
         "MP-11: an independent waiting task must wake"
     );
     let tasks = store
@@ -315,8 +316,10 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].state, "pending");
     let event = wakes.remove(0);
+    // The wake carries the event's text, so delivery settles it.
     assert_eq!(
-        event.state, "accepted",
+        event.state,
+        if deadline { "acknowledged" } else { "handled" },
         "MP-11: an independent waiting task must wake"
     );
     let tasks = store
