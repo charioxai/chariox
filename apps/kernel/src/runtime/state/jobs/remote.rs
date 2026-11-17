@@ -324,7 +324,6 @@ impl Remote {
         );
         let mut pending = vec![String::new()];
         let mut remote = BTreeMap::new();
-        let mut modes = BTreeMap::new();
         let mut total = 0u64;
         while let Some(directory) = pending.pop() {
             let path = if directory.is_empty() {
@@ -375,7 +374,7 @@ impl Remote {
                                 .request
                                 .outputs
                                 .iter()
-                                .any(|pattern| pattern.starts_with(&format!("{relative}/")))
+                                .any(|pattern| crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(pattern, &relative))
                         {
                             pending.push(relative);
                         }
@@ -402,8 +401,7 @@ impl Remote {
                             }
                         };
                         if let Some(sha256) = stat.sha256 {
-                            let mode = stat.mode.unwrap_or(entry.mode) & 0o777;
-                            modes.insert(relative.clone(), mode);
+                            let mode = stat.mode.unwrap_or(entry.mode);
                             remote.insert(
                                 relative,
                                 crate::jobs::FileState {
@@ -480,22 +478,6 @@ impl Remote {
                 base.get(&path),
                 returned.as_ref(),
             )?;
-            #[cfg(unix)]
-            if returned.is_some() {
-                use std::os::unix::fs::PermissionsExt;
-                let target = if applied {
-                    record.workspace.join(&path)
-                } else {
-                    record
-                        .workspace
-                        .join(format!(".chariox/jobs/{}/conflicts/{path}", record.job_id))
-                };
-                std::fs::set_permissions(
-                    target,
-                    std::fs::Permissions::from_mode(modes.get(&path).copied().unwrap_or(0o644)),
-                )
-                .map_err(|e| ledger::error(format!("Cannot return job file permissions: {e}")))?;
-            }
             if applied {
                 files.push(path);
             } else {

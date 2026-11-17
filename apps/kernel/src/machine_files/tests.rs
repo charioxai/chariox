@@ -596,6 +596,8 @@ fn plant_tree(root: &Path) -> Vec<(String, String)> {
     )
     .unwrap();
     symlink("top.txt", root.join("link-to-top")).unwrap();
+    // A listing says what a link points to; a transfer still skips the link, folder or file.
+    symlink("src", root.join("link-to-src")).unwrap();
     planted
 }
 
@@ -623,7 +625,11 @@ async fn a_folder_arrives_as_the_same_tree_published_all_at_once() {
         !here.join("project/link-to-top").exists(),
         "a link is not followed or copied"
     );
-    assert_eq!(job.skipped, 1);
+    assert!(
+        !here.join("project/link-to-src").exists(),
+        "a link to a folder is not followed or copied"
+    );
+    assert_eq!(job.skipped, 2);
     assert_eq!(job.files_total, planted.len() as u64);
     assert_eq!(job.files_done, job.files_total);
     assert_eq!(job.bytes_done, job.bytes_total);

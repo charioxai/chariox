@@ -5432,8 +5432,9 @@ authority for its own sessions, agents, terminals and files.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
   size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
-  `KernelDirectoryListed { path, entries: [{name, kind, size, modified_ms, revision, mode}], truncated }` (2000
-  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  `KernelDirectoryListed { path, entries: [{name, kind, target_kind?, size, modified_ms, revision, mode}], truncated }` (2000
+  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005;
+  a link has `kind: "symlink"`, which transfers skip, and local 1009 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -7523,6 +7524,15 @@ Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent
 `file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
+
+### Files: what a link points to — local 1009 / relay peer 448
+
+A listing entry for a link keeps `kind: "symlink"` (the transfer skips links by that kind) and adds `target_kind`
+(`file`, `directory` or `other`), what the name resolves to; a link to nothing has none, and any other entry omits
+it. A Files window opens a link as its `target_kind`. The same field travels in a remote folder listing between
+kernels of one owner (relay peer 448). The shape is pinned by `link_entry` in
+`protocol_shapes/machine_files.rs`; the behaviour by `a_link_lists_as_a_link_that_says_what_it_points_to` and
+`a_folder_arrives_as_the_same_tree_published_all_at_once` (a link to a folder is still not copied).
 
 ### Source availability of a notification trigger — local 1003
 
