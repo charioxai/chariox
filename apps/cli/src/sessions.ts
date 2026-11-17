@@ -3,12 +3,12 @@ import path from "node:path"
 import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
 import { formatWorkspaceLiveSyncModeCompactLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
-  waitingRoomSessionActivityNextAction,
-  waitingRoomSessionRecencyMs,
-  waitingRoomSessionRemoteActivityLabel,
-  waitingRoomSessionStatusLabel,
-  waitingRoomTimestampLabel,
-} from "@chariox/kernel-client/waiting-room-activity"
+  roomListSessionActivityNextAction,
+  roomListSessionRecencyMs,
+  roomListSessionRemoteActivityLabel,
+  roomListSessionStatusLabel,
+  roomListTimestampLabel,
+} from "@chariox/kernel-client/room-list-activity"
 import {
   decideBootstrapAction,
   selectAttachableSession,
@@ -125,12 +125,12 @@ function formatSessionHomeKernel(session: SessionListEntry): string {
 }
 
 function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">): string {
-  const label = waitingRoomSessionRemoteActivityLabel(session.activity)
+  const label = roomListSessionRemoteActivityLabel(session.activity)
   return label ? ` - ${label}` : ""
 }
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
-  const action = waitingRoomSessionActivityNextAction(session)
+  const action = roomListSessionActivityNextAction(session)
   return action ? ` - next: ${action}` : ""
 }
 
@@ -143,11 +143,11 @@ export function sessionBrowserTitle(session: { id: string; alias?: string | null
 }
 
 export function sessionBrowserStatus(session: Pick<SessionListEntry, "status" | "activity">) {
-  return waitingRoomSessionStatusLabel(session)
+  return roomListSessionStatusLabel(session)
 }
 
 export function sessionBrowserTimestamp(value: number | null) {
-  return waitingRoomTimestampLabel(value)
+  return roomListTimestampLabel(value)
 }
 
 export function sessionBrowserSortTime(session: {
@@ -156,5 +156,5 @@ export function sessionBrowserSortTime(session: {
   last_used_at_ms?: number | null
   created_at_ms?: number | null
 }) {
-  return waitingRoomSessionRecencyMs(session)
+  return roomListSessionRecencyMs(session)
 }

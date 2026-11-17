@@ -57,7 +57,7 @@ export type CliSessionLifecycleCompositionDeps = {
   sessionState: AnyFn
   providerRunState: AnyFn
   createdSessionState: AnyFn
-  waitingRoomState: AnyFn
+  startState: AnyFn
   preferencesState: AnyFn
   connectedClientCount: AnyFn
   persistablePromptDraft: AnyFn
@@ -148,7 +148,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     supportsKernelEventStream: () => deps.supportsKernelEventStream,
     getAttachment: deps.attachmentState,
     getSessionId: () => deps.sessionState().id,
-    subscribeToWaitingRoomInventory: () => deps.client.subscribeToWaitingRoomInventory(),
+    subscribeToRoomList: () => deps.client.subscribeToRoomList(),
     subscribeToKernelEvents: (sessionId, attachmentId) => deps.client.subscribeToKernelEvents(sessionId, attachmentId),
     onEvaluate: (state) => {
       deps.appLogger?.debug("evaluating kernel event subscription", {
@@ -260,7 +260,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
   } = createSessionLifecycleController({
     cliOptions: deps.options,
     connectedStatus: DEFAULT_CONNECTED_STATUS,
-    waitingRoomState: deps.waitingRoomState,
+    startState: deps.startState,
     attachmentState: deps.attachmentState,
     sessionState: deps.sessionState,
     deriveDetachedCliTransitionState,
@@ -315,7 +315,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.options.model = model
       deps.options.effort = effort
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         providerId: normalizeBackendProviderId(provider),
         modelId: model,
         effort,

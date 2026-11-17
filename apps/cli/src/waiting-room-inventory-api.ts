@@ -7,13 +7,13 @@ import type {
   ExternalProviderSessionRecord,
   WaitingRoomRemoteKernelView,
   WaitingRoomRemoteMachineView,
-  WaitingRoomPublicSessionSummary,
-  WaitingRoomPublicSnapshot,
+  RoomListSessionSummary,
+  RoomListSnapshot,
   ProviderAccountProfile,
-  WaitingRoomGitCredentialSummary,
+  RoomListGitCredentialSummary,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { getWaitingRoomPublicSnapshotRequest } from "./ipc-requests.js"
+import { getRoomListSnapshotRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { listSlices } from "./slice-api.js"
@@ -36,7 +36,7 @@ export type WaitingRoomInventory = {
     workspaceId: string
     worktreeId: string
   } | null
-  sessions: WaitingRoomPublicSessionSummary[]
+  sessions: RoomListSessionSummary[]
   recentSessionIds?: string[]
   sessionsTotal?: number
   sessionsNextCursor?: string | null
@@ -52,15 +52,15 @@ export type WaitingRoomInventory = {
   providerAccountCopyOffers?: ProviderAccountCopyOffer[]
   providerAccountCopyUnavailable?: boolean
   providerAccounts?: ProviderAccountProfile[]
-  gitCredentials?: WaitingRoomGitCredentialSummary[]
+  gitCredentials?: RoomListGitCredentialSummary[]
   machineAllocationCapability?: MachineAllocationCapability | null
 }
 
 export async function getWaitingRoomInventory(client: LocalIpcClient, getMachineCapability?: () => Promise<MachineAllocationCapability | null | undefined>): Promise<WaitingRoomInventory> {
-  const response = await client.send<Record<string, unknown>>(getWaitingRoomPublicSnapshotRequest())
+  const response = await client.send<Record<string, unknown>>(getRoomListSnapshotRequest())
   const payload = expectVariant<{
-    snapshot: WaitingRoomPublicSnapshot
-  }>(response, "WaitingRoomPublicSnapshot").snapshot
+    snapshot: RoomListSnapshot
+  }>(response, "RoomListSnapshot").snapshot
   const [slices, machineAllocationCapability, accountCopy] = await Promise.all([
     listSlices(client).catch(() => []),
     getMachineCapability?.(),

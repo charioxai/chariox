@@ -38,7 +38,7 @@ Vault passphrase answers use the actual new-UI secret interaction. Those setup
 initiators are absent from the current new-UI windows and are reported as gaps.
 
 The client is exclusively `apps/web`'s new terminal-os shell, built from the real
-hosted application entry (`/waiting-room?ui=os`). The drill enrolls its kernel
+hosted application entry (`/terminal`). The drill enrolls its kernel
 through the product device flow and real hosted WSS relay, submits two owner-authorized `/sudo` prompts, answers the actual new UI
 passphrase/passkey controls, and uses official Codex (`gpt-6-luna`, low). The
 service claim completes in a real browser page. Both flows must produce HTTP 200

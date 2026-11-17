@@ -13,7 +13,7 @@ test("waiting room start rows render configuration labels and join action", () =
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const model = modelOptions[0] ?? null
   const rows = waitingRoomStartRows(
-    waitingRoomState({ focus: "join-sessions", sliceSelectionId: "slice-1" }),
+    startState({ focus: "join-sessions", sliceSelectionId: "slice-1" }),
     { providerId: "opencode", model, effort: "high" },
     {
       modelOptions,
@@ -62,7 +62,7 @@ test("a model without variants shows None, never a default entry", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState({}),
+    startState({}),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "" },
     {
       modelOptions,
@@ -81,7 +81,7 @@ test("waiting room start rows place project selection below Kernel", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState({ projectSelectionId: "existing:project-1" }),
+    startState({ projectSelectionId: "existing:project-1" }),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
     {
       modelOptions,
@@ -115,7 +115,7 @@ test("waiting room start rows place project selection below Kernel", () => {
 
 test("MP-08/MP-11 configured model remains visible while live model metadata loads", () => {
   const rows = waitingRoomStartRows(
-    waitingRoomState({ providerId: "codex", modelId: "codex/gpt-6.1-sol", effort: "high" }),
+    startState({ providerId: "codex", modelId: "codex/gpt-6.1-sol", effort: "high" }),
     { providerId: "codex", model: null, effort: "high", providerCatalogFallback: true },
     { modelOptions: [], inventoryLoading: false, loadingText: "loading", visibleSessionCount: 1, titleWidth: 24 },
   )
@@ -127,7 +127,7 @@ test("waiting room start rows render loading placeholders before inventory arriv
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState(),
+    startState(),
     { providerId: "opencode", model: null, effort: "" },
     {
       modelOptions,
@@ -154,7 +154,7 @@ test("waiting room start rows hint cloud collaborator setup when cloud-linked", 
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState({ focus: "collaborators" }),
+    startState({ focus: "collaborators" }),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
     {
       modelOptions,
@@ -175,7 +175,7 @@ test("MP-08 OWNER-20 start rows hide discontinued sync modes", () => {
   const modelOptions = catalogModelOptions(catalog, "opencode")
 
   const offRows = waitingRoomStartRows(
-    waitingRoomState({ workspaceLiveSyncMode: "off" }),
+    startState({ workspaceLiveSyncMode: "off" }),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
     {
       modelOptions,
@@ -186,7 +186,7 @@ test("MP-08 OWNER-20 start rows hide discontinued sync modes", () => {
     },
   )
   const managedRows = waitingRoomStartRows(
-    waitingRoomState({ workspaceLiveSyncMode: "managed" }),
+    startState({ workspaceLiveSyncMode: "managed" }),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
     {
       modelOptions,
@@ -197,7 +197,7 @@ test("MP-08 OWNER-20 start rows hide discontinued sync modes", () => {
     },
   )
   const trackedRows = waitingRoomStartRows(
-    waitingRoomState({ workspaceLiveSyncMode: "tracked" }),
+    startState({ workspaceLiveSyncMode: "tracked" }),
     { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
     {
       modelOptions,
@@ -217,7 +217,7 @@ test("waiting room start rows mark provider choices from local fallback catalog"
   const catalog = fallbackProviderCatalog({ source: "local_fallback" })
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState(),
+    startState(),
     {
       providerId: "opencode",
       model: modelOptions[0] ?? null,
@@ -242,7 +242,7 @@ test("waiting room start rows include selected slice provider account", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState({ providerId: "opencode", sliceSelectionId: "slice-1" }),
+    startState({ providerId: "opencode", sliceSelectionId: "slice-1" }),
     {
       providerId: "opencode",
       model: modelOptions[0] ?? null,
@@ -270,7 +270,7 @@ test("waiting room account row shows the public alias and sign-in state", () => 
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "codex")
   const rows = waitingRoomStartRows(
-    waitingRoomState({ providerId: "codex" }),
+    startState({ providerId: "codex" }),
     {
       providerId: "codex",
       model: modelOptions[0] ?? null,
@@ -318,7 +318,7 @@ test("waiting room start rows do not conflate worker auth with the selected acco
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
-    waitingRoomState({
+    startState({
       providerId: "opencode",
       selectedMachineRef: "machine-worker",
       selectedKernelRef: "kernel-worker",
@@ -377,7 +377,7 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
   } as unknown as WaitingRoomRemoteState
   const startRows = (selection: Partial<WaitingRoomState>) => {
     const state = normalizeWaitingRoomState(
-      waitingRoomState(selection),
+      startState(selection),
       [],
       catalog,
       DEFAULT_THEME_REGISTRY,
@@ -411,7 +411,7 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
   })
 })
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
@@ -454,8 +454,8 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
 
 test("the new machine details show the service offer as read-only rows", () => {
   const remote = { machineAllocationCapability: { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Service type", vcpu: 6, ram_gb: 12, disk_gb: 80, location: "Site A", terms: { amount: "2.50", currency: "EUR", period: "hour" as const } } } }
-  const rows = waitingRoomMachineOfferRows(waitingRoomState({}), remote)
+  const rows = waitingRoomMachineOfferRows(startState({}), remote)
   assert.deepEqual(rows.map(row => [row.title, row.value]), [["Machine type", "Service type"], ["CPU", "6"], ["Memory", "12 GB"], ["Disk", "80 GB"], ["Location", "Site A"], ["Terms", "2.50 EUR/hour"]])
   assert.ok(rows.every(row => !row.selectable && !row.focused))
-  assert.deepEqual(waitingRoomMachineOfferRows(waitingRoomState({}), {}), [])
+  assert.deepEqual(waitingRoomMachineOfferRows(startState({}), {}), [])
 })

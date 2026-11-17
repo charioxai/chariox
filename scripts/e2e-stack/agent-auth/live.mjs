@@ -214,7 +214,7 @@ try {
   }
   const agentId = session.agents[0].id
   stage('new UI room navigation')
-  await page.goto(`${origin}/waiting-room?ui=os`)
+  await page.goto(`${origin}/terminal`)
   await page.locator('.terminal-os').waitFor()
   await page.locator(`[data-room-id="${sessionId}"] [data-action="open-room"]`).click({ timeout: 60000 })
   await page.locator('[data-prompt-input]').waitFor()

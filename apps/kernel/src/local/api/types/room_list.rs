@@ -1,11 +1,8 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GetWaitingRoomInventoryRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ListWaitingRoomSessionsRequest {
+pub struct ListRoomListSessionsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory_version: Option<String>,
     pub cursor: Option<String>,
@@ -13,17 +10,17 @@ pub struct ListWaitingRoomSessionsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WaitingRoomSessionPage {
-    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+pub struct RoomListSessionPage {
+    pub sessions: Vec<RoomListSessionSummary>,
     pub total: usize,
     pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GetWaitingRoomPublicSnapshotRequest;
+pub struct GetRoomListSnapshotRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomLaunchTarget {
+pub struct RoomListLaunchTarget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository_state: Option<String>,
     /// Whether a `git` executable runs on this kernel's machine.
@@ -41,58 +38,26 @@ pub struct WaitingRoomLaunchTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WaitingRoomGitCredentialSummary {
+pub struct RoomListGitCredentialSummary {
     pub credential_id: String,
     pub hostname: String,
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WaitingRoomInventorySnapshot {
-    pub inventory_version: String,
-    pub structural_version: String,
-    pub activity_revision: String,
-    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
-    #[serde(default)]
-    pub sessions_total: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sessions_next_cursor: Option<String>,
-    #[serde(default)]
-    pub projects: Vec<WaitingRoomPublicProjectSummary>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
-    #[serde(default)]
-    pub external_provider_sessions_has_more: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external_provider_sessions_next_cursor: Option<String>,
-    pub relay_status: RelayStatus,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub remote_machines: Vec<RemoteMachineRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub remote_kernels: Vec<RelayKernelPresence>,
-    #[serde(default)]
-    pub terminals: Vec<TerminalRecord>,
-    pub launch_target: Option<WaitingRoomLaunchTarget>,
-    #[serde(default)]
-    pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
-    #[serde(default)]
-    pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicSnapshot {
+pub struct RoomListSnapshot {
     pub schema_version: u32,
     pub inventory_version: String,
     pub structural_version: String,
     pub activity_revision: String,
     pub generated_at_ms: u64,
-    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    pub sessions: Vec<RoomListSessionSummary>,
     #[serde(default)]
     pub sessions_total: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions_next_cursor: Option<String>,
     #[serde(default)]
-    pub projects: Vec<WaitingRoomPublicProjectSummary>,
+    pub projects: Vec<RoomListProjectSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     #[serde(default)]
@@ -106,15 +71,15 @@ pub struct WaitingRoomPublicSnapshot {
     pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
-    pub launch_target: Option<WaitingRoomLaunchTarget>,
+    pub launch_target: Option<RoomListLaunchTarget>,
     #[serde(default)]
     pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
     #[serde(default)]
-    pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
+    pub git_credentials: Vec<RoomListGitCredentialSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicSessionSummary {
+pub struct RoomListSessionSummary {
     #[serde(default)]
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,15 +113,15 @@ pub struct WaitingRoomPublicSessionSummary {
     #[serde(default)]
     pub pending_collaboration_invite_count: usize,
     #[serde(default)]
-    pub activity: WaitingRoomSessionActivitySummary,
+    pub activity: RoomListSessionActivitySummary,
     #[serde(default)]
-    pub agents: Vec<WaitingRoomPublicAgentSummary>,
+    pub agents: Vec<RoomListAgentSummary>,
     #[serde(default)]
-    pub workflows: Vec<WaitingRoomPublicWorkflowSummary>,
+    pub workflows: Vec<RoomListWorkflowSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicProjectSummary {
+pub struct RoomListProjectSummary {
     pub id: String,
     pub owner_user_id: String,
     pub workspace_id: String,
@@ -183,7 +148,7 @@ pub struct WaitingRoomPublicProjectSummary {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomSessionActivitySummary {
+pub struct RoomListSessionActivitySummary {
     #[serde(default, skip_serializing_if = "crate::session::is_zero")]
     pub pending_interaction_count: usize,
     pub agent_count: usize,
@@ -209,7 +174,7 @@ pub struct WaitingRoomSessionActivitySummary {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicItemActivitySummary {
+pub struct RoomListItemActivitySummary {
     pub working: bool,
     pub active_prompt_count: usize,
     pub queued_prompt_count: usize,
@@ -222,7 +187,7 @@ pub struct WaitingRoomPublicItemActivitySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicAgentSummary {
+pub struct RoomListAgentSummary {
     pub id: String,
     pub agent_ref: String,
     /// The owner hid the agent from the Room's panes; its work goes on.
@@ -252,17 +217,17 @@ pub struct WaitingRoomPublicAgentSummary {
     pub directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_label: Option<String>,
-    pub runtime_placement: WaitingRoomAgentRuntimePlacement,
+    pub runtime_placement: RoomListAgentRuntimePlacement,
     #[serde(default)]
     pub extension_grants: Vec<crate::extension::ExtensionGrant>,
     #[serde(default)]
-    pub activity: WaitingRoomPublicItemActivitySummary,
+    pub activity: RoomListItemActivitySummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metaagent_event_counts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomAgentRuntimePlacement {
+pub struct RoomListAgentRuntimePlacement {
     pub kernel_id: String,
     pub machine_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,7 +239,7 @@ pub struct WaitingRoomAgentRuntimePlacement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicWorkflowSummary {
+pub struct RoomListWorkflowSummary {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -285,17 +250,17 @@ pub struct WaitingRoomPublicWorkflowSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas_layout: Option<WorkflowCanvasLayout>,
     #[serde(default)]
-    pub activity: WaitingRoomPublicItemActivitySummary,
+    pub activity: RoomListItemActivitySummary,
     #[serde(default)]
-    pub nodes: Vec<WaitingRoomPublicWorkflowNodeSummary>,
+    pub nodes: Vec<RoomListWorkflowNodeSummary>,
     #[serde(default)]
-    pub edges: Vec<WaitingRoomPublicWorkflowEdgeSummary>,
+    pub edges: Vec<RoomListWorkflowEdgeSummary>,
     #[serde(default)]
-    pub endpoints: Vec<WaitingRoomPublicWorkflowEndpointSummary>,
+    pub endpoints: Vec<RoomListWorkflowEndpointSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicWorkflowNodeSummary {
+pub struct RoomListWorkflowNodeSummary {
     pub id: String,
     pub agent_id: String,
     pub label: String,
@@ -304,40 +269,16 @@ pub struct WaitingRoomPublicWorkflowNodeSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicWorkflowEdgeSummary {
+pub struct RoomListWorkflowEdgeSummary {
     pub id: String,
     pub from_node_id: String,
     pub to_node_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingRoomPublicWorkflowEndpointSummary {
+pub struct RoomListWorkflowEndpointSummary {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub entry_node_id: String,
-}
-
-impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
-    fn from(snapshot: WaitingRoomPublicSnapshot) -> Self {
-        Self {
-            inventory_version: snapshot.inventory_version,
-            structural_version: snapshot.structural_version,
-            activity_revision: snapshot.activity_revision,
-            sessions: snapshot.sessions,
-            sessions_total: snapshot.sessions_total,
-            sessions_next_cursor: snapshot.sessions_next_cursor,
-            projects: snapshot.projects,
-            external_provider_sessions: snapshot.external_provider_sessions,
-            external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,
-            external_provider_sessions_next_cursor: snapshot.external_provider_sessions_next_cursor,
-            relay_status: snapshot.relay_status,
-            remote_machines: snapshot.remote_machines,
-            remote_kernels: snapshot.remote_kernels,
-            terminals: snapshot.terminals,
-            launch_target: snapshot.launch_target,
-            provider_accounts: snapshot.provider_accounts,
-            git_credentials: snapshot.git_credentials,
-        }
-    }
 }

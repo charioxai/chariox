@@ -129,7 +129,7 @@ async function closeFixture(server: WebSocketServer, client: LocalIpcClient) {
   await new Promise<void>(resolve => server.close(() => resolve()))
 }
 
-test("MP-08/MP-11 waiting-room reconnect requests a fresh baseline without a later mutation", async t => {
+test("MP-08/MP-11 room-list reconnect requests a fresh baseline without a later mutation", async t => {
   const daemon = createIdentity()
   const cursors: (number | null | undefined)[] = []
   const fixture = await createRelayFixture((socket, frame) => {
@@ -145,7 +145,7 @@ test("MP-08/MP-11 waiting-room reconnect requests a fresh baseline without a lat
   const client = createClient(fixture.url)
   t.after(() => closeFixture(fixture.server, client))
   const nextEvent = createEventQueue(client)
-  await client.subscribeToWaitingRoomInventory()
+  await client.subscribeToRoomList()
   assert.equal((await withTimeout(nextEvent(), "initial baseline")).notices[0]?.message, "before disconnect")
   for (const socket of fixture.server.clients) socket.terminate()
   assert.equal((await withTimeout(nextEvent(), "baseline after automatic reconnect")).notices[0]?.message, "changed while disconnected")
@@ -171,8 +171,8 @@ test("MP-08/MP-11 a rejected subscribe acknowledgement retires the installed bin
   const client = createClient(fixture.url)
   t.after(() => closeFixture(fixture.server, client))
   client.onKernelEvent(() => undefined)
-  await assert.rejects(client.subscribeToWaitingRoomInventory(), /relay sender identity mismatch/)
-  await client.subscribeToWaitingRoomInventory()
+  await assert.rejects(client.subscribeToRoomList(), /relay sender identity mismatch/)
+  await client.subscribeToRoomList()
   assert.equal(fixture.connectionCount(), 2, "failed binding socket must be retired")
   assert.equal(bindings.size, 1)
   assert.equal(peakBindings, 1)
@@ -335,7 +335,7 @@ for (const persistent of [false, true]) {
   })
 }
 
-test("MP-08 concurrent relay waiting-room subscribes keep one key per subscription without an identity", async t => {
+test("MP-08 concurrent relay room-list subscribes keep one key per subscription without an identity", async t => {
   const daemon = createIdentity()
   const subscribeKeys: string[] = []
   const fixture = await createRelayFixture((socket, frame) => {
@@ -349,7 +349,7 @@ test("MP-08 concurrent relay waiting-room subscribes keep one key per subscripti
     // streams the inventory snapshot to that key.
     socket.send(clientResponseFrame(frame.request_id, daemon.encrypt(frame.client_public_key, JSON.stringify({ Subscribed: {} }))))
     socket.send(clientEventFrame(frame.subscription_id, frame.client_public_key, daemon, subscribeKeys.length, {
-      event: "runtime_notices", session_id: "__waiting_room_inventory__", notices: [],
+      event: "runtime_notices", session_id: "__room_list__", notices: [],
     }))
   })
   const client = createClient(fixture.url)
@@ -357,8 +357,8 @@ test("MP-08 concurrent relay waiting-room subscribes keep one key per subscripti
   const nextEvent = createEventQueue(client)
 
   const results = await Promise.allSettled([
-    client.subscribeToWaitingRoomInventory(),
-    client.subscribeToWaitingRoomInventory(),
+    client.subscribeToRoomList(),
+    client.subscribeToRoomList(),
   ])
   assert.deepEqual(results.map(result => result.status === "rejected" ? String(result.reason) : "ok"), ["ok", "ok"])
   await withTimeout(nextEvent(), "inventory snapshot")

@@ -57,7 +57,7 @@ test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in accou
 })
 
 test("MP-08 / MP-10 / MP-11 Start does not stage a refresh for an unknown account", () => {
-  const state = waitingRoomState({ focus: "new", providerId: "codex", accountProfileId: "linked" })
+  const state = startState({ focus: "new", providerId: "codex", accountProfileId: "linked" })
   const options = { state, workspacePath: "/workspace", worktreePath: "/workspace" }
   for (const auth_state of ["unknown", "expired", "error", "not_configured"] as const) {
     const providerAccounts = [{ provider: "codex", profile_id: "linked", label: "Linked", is_default: true, auth_state }] as ProviderAccountProfile[]
@@ -67,7 +67,7 @@ test("MP-08 / MP-10 / MP-11 Start does not stage a refresh for an unknown accoun
 })
 
 test("MP-08 / MP-10 / MP-11 the Account row stages a refresh with a message for every unauthenticated state", () => {
-  const state = waitingRoomState({ focus: "account", providerId: "codex", accountProfileId: "linked" })
+  const state = startState({ focus: "account", providerId: "codex", accountProfileId: "linked" })
   for (const auth_state of ["unknown", "expired", "error", "not_configured"] as const) {
     const providerAccounts = [{ provider: "codex", profile_id: "linked", label: "Linked", is_default: true, auth_state }] as ProviderAccountProfile[]
     const decision = deriveWaitingRoomControlActivationDecision({ state, workspacePath: "/workspace", worktreePath: "/workspace", remote: { providerAccounts } })
@@ -86,7 +86,7 @@ test("MP-08 / MP-11 existing slice launch defers authentication to its worker", 
   })
   try {
     const catalog = fallbackProviderCatalog()
-    const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", sliceSelectionId: "slice-existing" }
+    const state = { ...startState(), providerId: "codex" as const, accountProfileId: "home-default", sliceSelectionId: "slice-existing" }
     const remote = {
       providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
       slices: [slice("slice-existing", "Existing")],
@@ -171,7 +171,7 @@ test("waiting room activation stages existing worktree selections for session cr
 test("waiting room activation opens focused unattached agents", () => {
   const catalog = fallbackProviderCatalog()
   const decision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ focus: "external-session", externalSessionIndex: 0 }),
+    state: startState({ focus: "external-session", externalSessionIndex: 0 }),
     sessions: [],
     catalog,
     currentProvider: "opencode",
@@ -273,7 +273,7 @@ test("waiting room session creation preserves Default, Existing, and New project
   try {
     for (const [projectSelectionId, expected] of policies) {
       const decision = deriveWaitingRoomCreateSessionDecision({
-        state: waitingRoomState({ projectSelectionId }),
+        state: startState({ projectSelectionId }),
         catalog: catalog(),
         currentProvider: "opencode",
         currentModel: "opencode/gpt-5.4",
@@ -306,7 +306,7 @@ test("waiting room remote kernel selection creates a remote owner launch without
   const catalog = fallbackProviderCatalog()
   try {
     const decision = deriveWaitingRoomActivationDecision({
-      state: waitingRoomState({
+      state: startState({
         selectedMachineRef: "machine-1",
         selectedKernelRef: "kernel-1",
       }),
@@ -504,8 +504,8 @@ test("waiting room activation creates regular sessions for slice and non-slice l
 
 test("deriveWaitingRoomStateUpdate normalizes state and reports preference persistence", () => {
   const update = deriveWaitingRoomStateUpdate({
-    currentState: waitingRoomState(),
-    nextState: waitingRoomState({ sessionIndex: 7, effort: "invalid" }),
+    currentState: startState(),
+    nextState: startState({ sessionIndex: 7, effort: "invalid" }),
     sessions: [session("session-1"), session("session-2")],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -520,14 +520,14 @@ test("deriveWaitingRoomStateUpdate normalizes state and reports preference persi
 test("deriveWaitingRoomActivationDecision returns join and error decisions for session focus", () => {
   const sessions = [session("session-1")]
   const joinDecision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ focus: "session" }),
+    state: startState({ focus: "session" }),
     sessions,
     catalog: catalog(),
     currentProvider: "opencode",
     currentModel: "opencode/gpt-5.4",
   })
   const errorDecision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ focus: "session" }),
+    state: startState({ focus: "session" }),
     sessions: [],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -559,7 +559,7 @@ test("managed draft errors do not block joins or unattached-agent actions", () =
   } satisfies Partial<WaitingRoomState>
   const sessions = [session("session-1")]
   const join = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ ...invalidManagedDraft, focus: "session" }),
+    state: startState({ ...invalidManagedDraft, focus: "session" }),
     sessions,
     catalog: catalog(),
     currentProvider: "opencode",
@@ -568,7 +568,7 @@ test("managed draft errors do not block joins or unattached-agent actions", () =
   assert.equal(join.action, "join")
 
   assert.deepEqual(deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ ...invalidManagedDraft, focus: "external-session" }),
+    state: startState({ ...invalidManagedDraft, focus: "external-session" }),
     sessions: [],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -580,7 +580,7 @@ test("managed draft errors do not block joins or unattached-agent actions", () =
   })
 
   assert.deepEqual(deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ ...invalidManagedDraft, focus: "join-sessions" }),
+    state: startState({ ...invalidManagedDraft, focus: "join-sessions" }),
     sessions,
     catalog: catalog(),
     currentProvider: "opencode",
@@ -590,7 +590,7 @@ test("managed draft errors do not block joins or unattached-agent actions", () =
 
 test("deriveWaitingRoomControlActivationDecision stages workspace and worktree commands", () => {
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "workspace" }),
+    state: startState({ focus: "workspace" }),
     workspacePath: "/repo",
     worktreePath: "/repo",
   }), {
@@ -599,7 +599,7 @@ test("deriveWaitingRoomControlActivationDecision stages workspace and worktree c
     message: "edit the workspace path and press Enter",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "worktree" }),
+    state: startState({ focus: "worktree" }),
     workspacePath: "/repo",
     worktreePath: "/repo-feature",
   }), {
@@ -611,7 +611,7 @@ test("deriveWaitingRoomControlActivationDecision stages workspace and worktree c
 
 test("deriveWaitingRoomControlActivationDecision resolves Claude adapter account families", () => {
   const decision = deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({
+    state: startState({
       focus: "account",
       providerId: "claude-headless",
       accountProfileId: "claude-work",
@@ -645,7 +645,7 @@ test("deriveWaitingRoomControlActivationDecision resolves Claude adapter account
 
 test("deriveWaitingRoomControlActivationDecision handles machine activation", () => {
   const approved = deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "machine" }),
+    state: startState({ focus: "machine" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -661,7 +661,7 @@ test("deriveWaitingRoomControlActivationDecision handles machine activation", ()
     },
   })
   const inactive = deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "machine" }),
+    state: startState({ focus: "machine" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -690,7 +690,7 @@ test("deriveWaitingRoomControlActivationDecision handles machine activation", ()
 
 test("deriveWaitingRoomControlActivationDecision browses remote kernel inventories", () => {
   const attachable = deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "remote-kernel" }),
+    state: startState({ focus: "remote-kernel" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -706,7 +706,7 @@ test("deriveWaitingRoomControlActivationDecision browses remote kernel inventori
     },
   })
   const busy = deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "remote-kernel" }),
+    state: startState({ focus: "remote-kernel" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -737,12 +737,12 @@ test("deriveWaitingRoomControlActivationDecision browses remote kernel inventori
 
 test("deriveWaitingRoomControlActivationDecision handles terminal and dialog actions", () => {
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "relay" }),
+    state: startState({ focus: "relay" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), { action: "cloud" })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "terminal" }),
+    state: startState({ focus: "terminal" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -758,7 +758,7 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     message: "term-1 is a Web terminal",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    state: startState({ focus: "slice-entry", sliceIndex: 0 }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
     remote: {
@@ -786,7 +786,7 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     message: "press Enter to show slice linux-dev",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "live-sync" }),
+    state: startState({ focus: "live-sync" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), {
@@ -794,17 +794,17 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     message: "Use left/right to choose off, managed, or tracked before starting the session. Live sync applies only to the selected workspace/worktree; other repositories stay unrestricted.",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "add-terminal" }),
+    state: startState({ focus: "add-terminal" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), { action: "open-terminal-pairing" })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "join-sessions" }),
+    state: startState({ focus: "join-sessions" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), { action: "open-session-browser" })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
-    state: waitingRoomState({ focus: "external-session-more" }),
+    state: startState({ focus: "external-session-more" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), { action: "load-older-external-sessions" })
@@ -814,25 +814,25 @@ test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for arc
   const sessions = [session("session-1"), session("session-2")]
   const archiveDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "archive",
-    state: waitingRoomState({ focus: "session" }),
+    state: startState({ focus: "session" }),
     sessions,
     catalog: catalog(),
   })
   const deleteDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "delete",
-    state: waitingRoomState({ focus: "session", sessionIndex: 1 }),
+    state: startState({ focus: "session", sessionIndex: 1 }),
     sessions,
     catalog: catalog(),
   })
   const archiveAllDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "archive",
-    state: waitingRoomState({ focus: "join-sessions" }),
+    state: startState({ focus: "join-sessions" }),
     sessions,
     catalog: catalog(),
   })
   const errorDecision = deriveWaitingRoomSessionLifecycleDecision({
     action: "delete",
-    state: waitingRoomState({ focus: "new" }),
+    state: startState({ focus: "new" }),
     sessions,
     catalog: catalog(),
   })
@@ -858,7 +858,7 @@ test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for arc
 test("deriveWaitingRoomDeleteDecision deletes all sessions from join header", () => {
   const sessions = [session("session-1"), session("session-2")]
   const decision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "join-sessions" }),
+    state: startState({ focus: "join-sessions" }),
     sessions,
     catalog: catalog(),
   })
@@ -872,7 +872,7 @@ test("deriveWaitingRoomDeleteDecision deletes all sessions from join header", ()
 test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", () => {
   const sessions = [session("session-1")]
   const machineDecision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "machine" }),
+    state: startState({ focus: "machine" }),
     sessions,
     catalog: catalog(),
     remote: {
@@ -888,7 +888,7 @@ test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", ()
     },
   })
   const kernelDecision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "remote-kernel" }),
+    state: startState({ focus: "remote-kernel" }),
     sessions,
     catalog: catalog(),
     remote: {
@@ -903,7 +903,7 @@ test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", ()
     },
   })
   const activeKernelDecision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "remote-kernel" }),
+    state: startState({ focus: "remote-kernel" }),
     sessions,
     catalog: catalog(),
     remote: {
@@ -936,7 +936,7 @@ test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", ()
 
 test("deriveWaitingRoomDeleteDecision selects idle slices and blocks active slices", () => {
   const idleDecision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    state: startState({ focus: "slice-entry", sliceIndex: 0 }),
     sessions: [],
     catalog: catalog(),
     remote: {
@@ -944,7 +944,7 @@ test("deriveWaitingRoomDeleteDecision selects idle slices and blocks active slic
     },
   })
   const activeDecision = deriveWaitingRoomDeleteDecision({
-    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    state: startState({ focus: "slice-entry", sliceIndex: 0 }),
     sessions: [],
     catalog: catalog(),
     remote: {
@@ -966,7 +966,7 @@ test("deriveWaitingRoomDeleteDecision selects idle slices and blocks active slic
 test("deriveWaitingRoomModelSelectionDecision validates models and normalizes variants", () => {
   const success = deriveWaitingRoomModelSelectionDecision({
     modelId: "opencode/gpt-5.4",
-    state: waitingRoomState(),
+    state: startState(),
     sessions: [session("session-1")],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -974,7 +974,7 @@ test("deriveWaitingRoomModelSelectionDecision validates models and normalizes va
   })
   const failure = deriveWaitingRoomModelSelectionDecision({
     modelId: "missing/model",
-    state: waitingRoomState(),
+    state: startState(),
     sessions: [],
     catalog: catalog(),
     currentProvider: "opencode",
@@ -997,7 +997,7 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
     variant: "low",
     currentModelId: "opencode/gpt-5.4",
     currentProviderId: "opencode",
-    state: waitingRoomState(),
+    state: startState(),
     sessions: [],
     catalog: catalog(),
   })
@@ -1005,7 +1005,7 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
     variant: "high",
     currentModelId: "anthropic/claude-sonnet-4",
     currentProviderId: "opencode",
-    state: waitingRoomState({ modelId: "anthropic/claude-sonnet-4", effort: "medium" }),
+    state: startState({ modelId: "anthropic/claude-sonnet-4", effort: "medium" }),
     sessions: [],
     catalog: catalog(),
   })
@@ -1025,7 +1025,7 @@ test("deriveWaitingRoomKeyNavigationDecision moves focus and tracks release stat
   const sessions = [session("session-1")]
   const focused = deriveWaitingRoomKeyNavigationDecision({
     event: { name: "down", eventType: "press" },
-    state: waitingRoomState(),
+    state: startState(),
     sessions,
     catalog: catalog(),
   })
@@ -1037,7 +1037,7 @@ test("deriveWaitingRoomKeyNavigationDecision moves focus and tracks release stat
 
   const released = deriveWaitingRoomKeyNavigationDecision({
     event: { name: "down", eventType: "release" },
-    state: waitingRoomState({ keyState: { up: false, down: true, left: false, right: false } }),
+    state: startState({ keyState: { up: false, down: true, left: false, right: false } }),
     sessions,
     catalog: catalog(),
   })
@@ -1050,7 +1050,7 @@ test("deriveWaitingRoomKeyNavigationDecision moves focus and tracks release stat
 test("deriveWaitingRoomKeyNavigationDecision cycles focused values", () => {
   const decision = deriveWaitingRoomKeyNavigationDecision({
     event: { name: "right", eventType: "press" },
-    state: waitingRoomState({ focus: "provider" }),
+    state: startState({ focus: "provider" }),
     sessions: [],
     catalog: catalog(),
   })
@@ -1065,7 +1065,7 @@ test("deriveWaitingRoomKeyNavigationDecision cycles focused values", () => {
 test("deriveWaitingRoomKeyNavigationDecision cycles waiting-room live sync mode", () => {
   const decision = deriveWaitingRoomKeyNavigationDecision({
     event: { name: "right", eventType: "press" },
-    state: waitingRoomState({ focus: "live-sync" }),
+    state: startState({ focus: "live-sync" }),
     sessions: [],
     catalog: catalog(),
   })
@@ -1095,7 +1095,7 @@ test("waitingRoomSessionLifecycleActionForEvent maps archive and delete keys", (
   }), null)
 })
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
@@ -1221,7 +1221,7 @@ function catalog(): ProviderCatalog {
 
 test("the new machine selection acquires the service offer before account or workspace admission", () => {
   const capability = { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
-  const options = { state: waitingRoomState({ selectedMachineRef: NEW_MACHINE_ALLOCATION_REF }), catalog: fallbackProviderCatalog(), currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { machineAllocationCapability: capability, machineAllocationOffered: true } }
+  const options = { state: startState({ selectedMachineRef: NEW_MACHINE_ALLOCATION_REF }), catalog: fallbackProviderCatalog(), currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { machineAllocationCapability: capability, machineAllocationOffered: true } }
   assert.deepEqual(deriveWaitingRoomCreateSessionDecision(options), { action: "acquire-machine", capability })
   assert.deepEqual(deriveWaitingRoomActivationDecision({ ...options, sessions: [] }), { action: "acquire-machine", capability })
   assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, remote: {} }).action, "error")

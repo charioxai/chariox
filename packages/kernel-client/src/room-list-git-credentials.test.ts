@@ -1,10 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { WaitingRoomInventorySnapshot } from "./kernel-types-cloud.js"
+import type { RoomListSnapshot } from "./kernel-types-cloud.js"
 
-test("Waiting Room inventory preserves the versioned Git credential summary", () => {
+test("Room list inventory preserves the versioned Git credential summary", () => {
   const snapshot = {
+    schema_version: 1,
+    generated_at_ms: 0,
     inventory_version: "inventory-1",
     structural_version: "structural-1",
     activity_revision: "activity-1",
@@ -22,7 +24,7 @@ test("Waiting Room inventory preserves the versioned Git credential summary", ()
       hostname: "github.com",
       label: "GitHub",
     }],
-  } satisfies WaitingRoomInventorySnapshot
+  } satisfies RoomListSnapshot
 
   assert.deepEqual(snapshot.git_credentials, [{
     credentialId: "github",

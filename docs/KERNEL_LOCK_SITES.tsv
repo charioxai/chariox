@@ -1113,11 +1113,11 @@ runtime/request_metrics.rs	152	lock	snapshot	temp	152		let state = self.0.lock()
 runtime/request_metrics.rs	161	lock	snapshot	temp	165		.lock()
 runtime/provider_auth_control.rs	287	decl	start_terminal_provider_auth				serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
 runtime/provider_auth_control.rs	952	decl	execute_start_provider_login_with_overwrite				serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-runtime/waiting_room_control.rs	27	decl	execute_waiting_room_inventory_request				relay_state: Arc<RwLock<RelayClientState>>,
-runtime/waiting_room_control.rs	55	decl	execute_waiting_room_request				relay_state: Arc<RwLock<RelayClientState>>,
-runtime/waiting_room_control.rs	124	decl	execute_waiting_room_public_snapshot_request				relay_state: Arc<RwLock<RelayClientState>>,
-runtime/waiting_room_control.rs	147	decl	projected_waiting_room_public_snapshot				relay_state: Arc<RwLock<RelayClientState>>,
-runtime/waiting_room_control.rs	169	decl	projected_waiting_room_full_snapshot				relay_state: Arc<RwLock<RelayClientState>>,
+runtime/room_list_control.rs	27	decl	execute_room_list_request				relay_state: Arc<RwLock<RelayClientState>>,
+runtime/room_list_control.rs	55	decl	execute_room_list_request				relay_state: Arc<RwLock<RelayClientState>>,
+runtime/room_list_control.rs	124	decl	execute_room_list_snapshot_request				relay_state: Arc<RwLock<RelayClientState>>,
+runtime/room_list_control.rs	147	decl	projected_room_list_snapshot				relay_state: Arc<RwLock<RelayClientState>>,
+runtime/room_list_control.rs	169	decl	projected_room_list_full_snapshot				relay_state: Arc<RwLock<RelayClientState>>,
 runtime/agent_actor.rs	43	decl	?				lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 runtime/agent_actor.rs	85	decl	with_store				lanes: Arc::new(Mutex::new(HashMap::new())),
 runtime/metaagent_event.rs	114	decl	default				state: Arc<Mutex<MetaagentEventState>>,
@@ -1516,15 +1516,15 @@ runtime/app_snapshot_broker.rs	103	lock	dispatch	temp	107		.lock()
 runtime/session_projection_refresh.rs	56	decl	apply_focus_projection_refresh				app: &Arc<Mutex<DaemonApp>>,
 runtime/session_projection_refresh.rs	83	lock	apply_focus_projection_refresh	temp	89		} else if let Ok(app) = app.try_lock() {
 runtime/session_projection_refresh.rs	168	decl	session_projection_refresh				pub(crate) app: &'a Arc<Mutex<DaemonApp>>,
-runtime/waiting_room_public_projection.rs	129	lock	project	let	231		.lock()
-runtime/waiting_room_public_projection.rs	274	lock	project_snapshot	let	325	.status()	.lock()
-runtime/waiting_room_public_projection.rs	626	lock	cached_launch_target	temp	627	launch_	let Ok(mut guard) = cache.lock() else {
-runtime/waiting_room_public_projection.rs	1173	lock	cached_worktree_label	temp	1176		if let Ok(guard) = cache.lock() {
-runtime/waiting_room_public_projection.rs	1182	lock	cached_worktree_label	temp	1189		if let Ok(mut guard) = cache.lock() {
-runtime/waiting_room_public_projection.rs	1196	lock	cached_git_branch	temp	1199		if let Ok(guard) = cache.lock() {
-runtime/waiting_room_public_projection.rs	1204	lock	cached_git_branch	temp	1211		if let Ok(mut guard) = cache.lock() {
-runtime/waiting_room_public_projection.rs	1219	lock	cached_workspace_label	temp	1222		if let Ok(guard) = cache.lock() {
-runtime/waiting_room_public_projection.rs	1227	lock	cached_workspace_label	temp	1234		if let Ok(mut guard) = cache.lock() {
+runtime/room_list_projection.rs	129	lock	project	let	231		.lock()
+runtime/room_list_projection.rs	274	lock	project_snapshot	let	325	.status()	.lock()
+runtime/room_list_projection.rs	626	lock	cached_launch_target	temp	627	launch_	let Ok(mut guard) = cache.lock() else {
+runtime/room_list_projection.rs	1173	lock	cached_worktree_label	temp	1176		if let Ok(guard) = cache.lock() {
+runtime/room_list_projection.rs	1182	lock	cached_worktree_label	temp	1189		if let Ok(mut guard) = cache.lock() {
+runtime/room_list_projection.rs	1196	lock	cached_git_branch	temp	1199		if let Ok(guard) = cache.lock() {
+runtime/room_list_projection.rs	1204	lock	cached_git_branch	temp	1211		if let Ok(mut guard) = cache.lock() {
+runtime/room_list_projection.rs	1219	lock	cached_workspace_label	temp	1222		if let Ok(guard) = cache.lock() {
+runtime/room_list_projection.rs	1227	lock	cached_workspace_label	temp	1234		if let Ok(mut guard) = cache.lock() {
 runtime/app_publisher_control/requests.rs	43	lock	submit	let	94	.spawn(;.await;.send(	.lock()
 runtime/app_publisher_control/pump.rs	65	lock	pump	let	211		.lock()
 runtime/app_publisher_control/pump.rs	226	lock	pump	let	233		.lock()

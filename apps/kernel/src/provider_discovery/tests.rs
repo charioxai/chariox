@@ -224,7 +224,7 @@ fn a_native_account_signed_in_as_someone_else_outside_chariox_replaces_the_one_s
         assert_eq!(
             shown.identity_summary.as_deref(),
             (expected == ProviderAccountAuthState::Authenticated).then_some("bob@example.com"),
-            "{reply}: the waiting room still shows the account that signed out"
+            "{reply}: the Room list still shows the account that signed out"
         );
     }
 }

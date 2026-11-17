@@ -113,7 +113,7 @@ any Tab (DOM mirror under the same observation protection, display stream,
 screenshots). Web and TUI open Apps with `host: "kernel_browser"`; the web
 client shows that Tab in its browser modal and needs no isolated App origin.
 With the App-view feature enabled, `/app open` uses this host both from the
-waiting room and while a Room is attached. The TUI projects the same Tab as
+Room list and while a Room is attached. The TUI projects the same Tab as
 text and sends its input through the kernel browser.
 A focused or granted agent may input in (including a Vault fill), navigate
 within the App origin and close an App Tab after the kernel claimed

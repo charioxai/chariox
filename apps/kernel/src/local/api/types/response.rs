@@ -300,9 +300,8 @@ pub enum LocalDaemonResponse {
         query_completed_at_ms: u64,
         kernels: Vec<RelayKernelPresence>,
     },
-    WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
-    WaitingRoomSessionsListed { page: WaitingRoomSessionPage, },
-    WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
+    RoomListSessionsListed { page: RoomListSessionPage, },
+    RoomListSnapshot { snapshot: RoomListSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {

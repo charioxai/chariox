@@ -50,17 +50,19 @@ fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
         "target identity must be required"
     );
 }
-use crate::local::{RelayStatus, WaitingRoomGitCredentialSummary, WaitingRoomInventorySnapshot};
+use crate::local::{RelayStatus, RoomListGitCredentialSummary, RoomListSnapshot};
 
 #[test]
-fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
+fn local_daemon_protocol_room_list_git_credentials_shape_is_versioned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
 
-    let response = LocalDaemonResponse::WaitingRoomInventory {
-        snapshot: WaitingRoomInventorySnapshot {
+    let response = LocalDaemonResponse::RoomListSnapshot {
+        snapshot: RoomListSnapshot {
+            schema_version: 1,
+            generated_at_ms: 0,
             inventory_version: "inventory-1".to_string(),
             structural_version: "structural-1".to_string(),
             activity_revision: "activity-1".to_string(),
@@ -88,16 +90,16 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
             terminals: Vec::new(),
             launch_target: None,
             provider_accounts: Vec::new(),
-            git_credentials: vec![WaitingRoomGitCredentialSummary {
+            git_credentials: vec![RoomListGitCredentialSummary {
                 credential_id: "github".to_string(),
                 hostname: "github.com".to_string(),
                 label: "GitHub".to_string(),
             }],
         },
     };
-    let snapshot = serde_json::to_value(response).expect("Waiting Room inventory should encode");
+    let snapshot = serde_json::to_value(response).expect("Room list snapshot should encode");
     assert_eq!(
-        snapshot.pointer("/WaitingRoomInventory/snapshot/git_credentials/0"),
+        snapshot.pointer("/RoomListSnapshot/snapshot/git_credentials/0"),
         Some(&serde_json::json!({
             "credentialId": "github",
             "hostname": "github.com",
@@ -653,13 +655,13 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 }
 
 #[test]
-fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
+fn local_daemon_protocol_room_list_activity_shape_is_versioned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
 
-    let summary = crate::local::WaitingRoomSessionActivitySummary {
+    let summary = crate::local::RoomListSessionActivitySummary {
         pending_interaction_count: 2,
         agent_count: 4,
         working_agent_count: 1,
@@ -676,7 +678,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
     };
 
     assert_eq!(
-        serde_json::to_value(summary).expect("waiting-room activity summary should encode"),
+        serde_json::to_value(summary).expect("room-list activity summary should encode"),
         serde_json::json!({
             "pending_interaction_count": 2,
             "agent_count": 4,
@@ -1288,19 +1290,19 @@ fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
 
 // MP-08 / MP-10 / MP-11: paged inventories share provisional local 569 / peer 177.
 #[test]
-fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
-    use crate::local::{ListWaitingRoomSessionsRequest, WaitingRoomSessionPage};
+fn room_list_session_pages_have_versioned_shapes_and_hash() {
+    use crate::local::{ListRoomListSessionsRequest, RoomListSessionPage};
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let request = LocalDaemonRequest::ListWaitingRoomSessions(ListWaitingRoomSessionsRequest {
+    let request = LocalDaemonRequest::ListRoomListSessions(ListRoomListSessionsRequest {
         inventory_version: None,
         cursor: Some("after-session".into()),
         limit: Some(500),
     });
-    let response = LocalDaemonResponse::WaitingRoomSessionsListed {
-        page: WaitingRoomSessionPage {
+    let response = LocalDaemonResponse::RoomListSessionsListed {
+        page: RoomListSessionPage {
             sessions: vec![],
             total: 20_000,
             next_cursor: Some("next-page".into()),
@@ -1313,10 +1315,10 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
     });
     assert_eq!(
         snapshot["request"],
-        serde_json::json!({"ListWaitingRoomSessions":{"cursor":"after-session","limit":500}})
+        serde_json::json!({"ListRoomListSessions":{"cursor":"after-session","limit":500}})
     );
     assert_eq!(
-        snapshot["response"]["WaitingRoomSessionsListed"]["page"]["total"],
+        snapshot["response"]["RoomListSessionsListed"]["page"]["total"],
         20_000
     );
     assert_eq!(
@@ -1324,7 +1326,7 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "6e6c7820650983eb841ef1d97325bd16484a0a9e1d0692e6b56db81ef69ee842"
+        "edfe6c65557870b5866e5d16dcaba818e0ea3127bc88fb097aa24990df537508"
     );
 }
 

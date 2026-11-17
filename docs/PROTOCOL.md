@@ -356,7 +356,7 @@ Provider kinds/availability are projected from `provider_catalog`; a session's
 live agent roster is never part of this cache. Account selection and admission
 remain kernel-owned and caller-scoped.
 
-Both local and relay session/waiting-room subscriptions emit
+Both local and relay session/Room list subscriptions emit
 `client_catalog_changed { revision }` on catalog invalidation or changed model
 metadata. `revision` is a process-local change sequence, not a cross-restart
 content hash. It contains no account data. Clients fetch conditional snapshots
@@ -925,7 +925,7 @@ with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
 hosted slice receipts require peer 181 or newer. The aggregate also includes main's
-local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
+local 491 / relay peer 101 (#974) kernel ownership, Room list and Room
 workflow contracts. Client feature floors are listed separately below; the
 merged 585/181 allocation identifies the integrated runtime contract; the landing's
 567/175 `fonts` op `absent` list is part of it.
@@ -1319,7 +1319,7 @@ Current implementation notes:
 ### Same-machine browser carrier (local protocol 520, MP-08/MP-11)
 
 MP-08 / MP-11: at protocol 520, relay-addressed detached/native TUI launches
-and waiting-room kernel switches automatically use the shared authenticated
+and Room list kernel switches automatically use the shared authenticated
 terminal direct lease described below when fresh same-machine discovery exists.
 Older and alias-only targets retain their authenticated relay transport. Terminal clients
 keep their bound relay identity fresh only through the hosted terminal renewal
@@ -1490,17 +1490,17 @@ See [the terminal transport drill](drills/MP08_TRANSPORT_TERMINAL_BYTES.md).
     The same monotonic deadline applies when resolving after a queued session lock.
     Decisions are single-use and bounded to eight per owner and 32 per kernel.
     Terminal presentation remains outside App content and App-controlled input.
-- `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
-- `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
+- `room_list_changed` carries only `inventory_version` and requires clients to refetch the full Room list snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
+- `room_list_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full Room list snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
 - `slices_changed` carries `generated_at_ms` and the current slice list
 - `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
-- `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
+- `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, Room list, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
 
 Managed remote-kernel control uses local daemon protocol version 280. The kernel
 client surface includes:
 
-- Waiting Room inventory fields for provider accounts and safe Git credential
+- Room list inventory fields for provider accounts and safe Git credential
   summaries
 - managed-environment create, list, detail, lifecycle, keep-running, and transfer
   preparation requests
@@ -1669,7 +1669,7 @@ Current session-management semantics:
 - `session.create` accepts an optional alias
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
 - `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
-- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; waiting rooms should label these as saved provider conversations, not unattached live agents
+- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; Room lists should label these as saved provider conversations, not unattached live agents
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Current agent-management semantics:
@@ -1725,7 +1725,7 @@ Current slice-management surface:
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
 - Local daemon protocol v770 / relay peer v320 exposes `GetProviderUsageSnapshot {}` with opaque `account_id`, provider/profile id/label, `auth_state`, safe configured `services`, and provider-observed usage meters. Account identities group provider-reported email identities across kernels; profiles without such an identity group only when the machine and native credential scope match. Identity hashes never use credentials. Unobserved/unconfigured native defaults without usage are omitted; explicit profiles retain their status. Clients group by account identity, keep fixed order and select each meter's latest observation. No credential/profile locations leave the kernel. `GetAgentUsageSnapshot {session_id, agent_id}` still requires Room membership and returns observed context and execution route without remote admission credentials. Usage references require protocol 770; missing balances/windows are never estimated.
 
-- Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
+- Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Room list projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
 - Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
 - Relay peer protocol v18 carries the selected encrypted provider-account materialization before the first leased-agent spawn that needs it. The relay routes the opaque packet only. The worker validates lease ownership and installs a distinct profile root only when that profile is absent. Once installed, the worker kernel owns the profile and its provider-native state: later agent launches resolve the existing profile without exporting, retransmitting, refreshing, or replacing its files from the home kernel. A profile already installed manually on the worker is reused under the same rule. Credential replacement is an explicit target-kernel operation, not a side effect of agent launch.
@@ -2754,8 +2754,8 @@ Event    KernelResourceChanged {           // wire name kernel_resource_changed
 
 Rules:
 
-- The scope and sentinel session id follow `waiting_room_inventory`
-  (`WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
+- The scope and sentinel session id follow `room_list`
+  (`ROOM_LIST_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
   subscription's own.
 - Every newly watched key gets one answer right after `KernelResourcesWatched`, then
   one event per change, in order per key. `changes` is sent only when the kernel
@@ -2781,8 +2781,8 @@ Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
 `project_environment`. `provider_catalog` and `provider_commands` take the
 scope params `{ provider?, account_profiles?, execution_location? }` of
 `GetProviderCatalog`; the params are part of the watch key and of the revision; later `room_list`, which replaces the
-`waiting_room_inventory` scope and its `waiting_room_inventory_changed` /
-`waiting_room_rows_changed` events. The feed also replaces `client_catalog_changed`
+`room_list` scope and its `room_list_changed` /
+`room_list_rows_changed` events. The feed also replaces `client_catalog_changed`
 with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed`,
 `slices_changed` and the `SubscribeUserAppViews` long poll; each replaced event or
 request is removed in the change that moves its resource.
@@ -3021,7 +3021,7 @@ Workflow trigger and deployment direction:
   accept overrides. Clients that send a custom root require kernel protocol
   342; older callers that omit it retain the previous create request shape.
   Cloud validates and persists the selected root before the kernel projects it
-  back to the Waiting Room. The v342 protocol snapshot covers omitted and
+  back to the Room list. The v342 protocol snapshot covers omitted and
   custom create values plus default and custom summary projections; the focused
   managed API drill covers request serialization and authoritative projection.
 - protocol 343 and relay peer protocol 56 add the worker's originating home
@@ -4384,7 +4384,7 @@ MP-08: Local daemon protocol v371 adds the kernel-owned, value-free Project envi
 
 MP-08 / MP-10 / MP-11: The Project environment feature stays at local protocol 371 and moves relay peer 64 to 65 for authenticated leased Project environment installation. Interactive slice/M28 start requests opt into the shared kernel-owned Ready-to-move RuntimeInteraction; API requests default to unattended decisions. Review projections contain names, use sites, sources and decisions only. Missing values use the existing secret reply path to Vault or remain named as skipped inputs. Exported Project values are sealed to the authenticated target/context; the target resolves launch bindings locally. Provider-neutral user rules travel in the kernel context, while provider home transfer carries credentials only.
 
-MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in waiting-room activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
+MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in Room list activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
 
 MP-08 / MP-10 / MP-11: Ordinary local prompt admission and leased-worker reuse resolve the exporting kernel's current Project bindings before reusing an idle provider process. Changed bindings retire the idle process before native conversation resume, releasing Codex's thread writer; active turns are never replaced for environment changes. Native TUI refresh reports that the TUI must restart when its selected inputs change. Account activation merges native credentials without dropping Project bindings. Secret-file length changes do not trigger metadata discovery; incremental discovery preserves kernel-owned unchanged selections, while unsupported names/locators remain rejected. Automatic queued-turn promotion and native-TUI refresh require further validation before acceptance.
 
@@ -4537,7 +4537,7 @@ These owner-bound messages use the shared current relay peer protocol version:
 `DeliverWorkflowNotification` over the existing E2EE channel. The original
 452/82 contract is included in the integrated 513/121 union; those introduction
 versions are not the current admission floor. Picker discovery reuses
-waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+Room list kernel inventory; Cloud stores no workflow directory or event data.
 ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
 TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
 with a diagnostic. Deletion/transfer leaves pending records to expire. See
@@ -5417,7 +5417,7 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   distributing that stream locally to its Room consumers. Each view still retires its own attachment;
   the page releases the byte attachment when its last consumer leaves. The relay forwards the scope
   opaquely; its peer protocol does not change.
-- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
+- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`room_list`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
   Over the relay the field travels in `client_subscribe` and `daemon_subscribe`, next to
@@ -5777,7 +5777,7 @@ prompt-scoped live rows.
 
 MP-11: `SetRoomPinned { session_id, pinned }` returns `RoomPinned { session }`.
 It persists the Room's `pinned` flag on its session and publishes the normal
-session and waiting-room projections so all of the person's clients see it.
+session and Room list projections so all of the person's clients see it.
 Like Project stars, the Room owner controls the pin. Room stars do not change
 last-used ordering. Legacy session records default to unpinned.
 
@@ -6021,12 +6021,12 @@ as `input`. Rules every client follows:
   does not wait for the idle tick.
 
 
-### MP-08 / MP-10 / MP-11: bounded waiting-room sessions (provisional 569/177)
+### MP-08 / MP-10 / MP-11: bounded Room list sessions (provisional 569/177)
 
-The waiting-room inventory and public snapshot return the 100 most recently used
+The Room list inventory and public snapshot return the 100 most recently used
 sessions (fewer when the byte budget is reached), `sessions_total`, and an optional
 `sessions_next_cursor`. A client opens the full session list by sending
-`ListWaitingRoomSessions { cursor, limit }`; `WaitingRoomSessionsListed { page }`
+`ListRoomListSessions { cursor, limit }`; `RoomListSessionsListed { page }`
 returns `sessions`, `total`, and `next_cursor`. Limits default to 500 and clamp to
 1–500. Row updates also carry the current count and cursor, including metadata-only
 changes while the visible recent rows stay the same. Cursors order by last-used
@@ -6337,7 +6337,7 @@ requests and responses, using its existing bounded framing and flow control.
   lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
   the gateway's own typed error and the launch stays queued. The kernel first makes
   a Room on the target in `directory` (default: the target kernel's own default Room
-  directory, read with `GetWaitingRoomPublicSnapshot` under command id
+  directory, read with `GetRoomListSnapshot` under command id
   `place:<exec_id>:target`; a target without one refuses with
   `exec_target_no_directory`; command id `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
   forwards stdin offsets, output cursors and cancellation to it. A request whose
@@ -6451,7 +6451,7 @@ MP-08 / MP-09 / MP-10 / MP-11: public snapshot schema 14 and persisted sessions 
 
 The focused local 780 / peer 330 drill is `node scripts/session-activity-drill.mjs <external-workspace> <linked-codex-profile-id>`, with `CHARIOX_HOME` and `CHARIOX_KERNEL_PORT` set for an isolated running kernel. It exercises schema 14, pin insertion timestamps, focus without activity, a real Codex turn, and activity invalidation of paged reads. It deletes its session and closes its attachment when finished.
 
-`ListWaitingRoomSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `waiting_room_inventory_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
+`ListRoomListSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `room_list_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
 
 Projects and sessions persist `pinned_at_ms` when their pin changes from off to on. Clients preserve pin insertion order with this field; pinning never changes semantic session activity.
 MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
@@ -7769,7 +7769,7 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 
 `SuggestSessionAlias { workspace_id }` answers `SessionAliasSuggested { workspace_id, alias }`: the name `CreateSession` would give a new Room in that workspace now. It changes nothing and any connected client may ask.
 
-`WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
+`RoomListLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
 
@@ -7779,7 +7779,7 @@ like `CancelAgentTask`) stops what the wait is on (its timers, watched processes
 `AgentTaskUpdated`. The agent is not woken: nothing is delivered to its inbox, and on its next turn it simply is no longer
 registered for the wait. The wait's `provider_tool` row (which now also carries `task_id`) is rewritten in place as
 `"status":"completed"` with `woken_by {kind:"cancelled"}`. A goal's wait is refused (stop the goal), and so is a task that has
-other open work. `WaitingRoomPublicItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
+other open work. `RoomListItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
 an agent has armed waits or events (a task in a wait, or a scheduled, starting or running timer or source); the Room summary
 carries the count as `waiting_agent_count`. A `SessionHistoryOutlineTurn` the kernel started itself (an inbox wake of a
 waiting agent, or a schedule, HTTP or notification trigger) carries `system_prompt: true`; the outline now keeps the text of a
@@ -7912,3 +7912,14 @@ own sources and deadline, or by the owner.
 A block the agent raises itself with `chariox.events.blocked` sets the task's
 `owner_action` to `question` (see the blocked-task decision above).
 `fixtures/needsui-waits-1016.json` pins these shapes.
+
+### The Room list names — local 1059 (provisional) / relay peer 497 (provisional)
+
+The Room list is the kernel's list of Projects and Rooms that every client shows first. Its wire names no longer
+say "waiting room": `GetRoomListSnapshot` answers `RoomListSnapshot`, `ListRoomListSessions` answers
+`RoomListSessionsListed`, the subscription scope is `room_list` (sentinel id `__room_list__`), and the events are
+`room_list_changed` and `room_list_rows_changed`. The older full-inventory request `GetWaitingRoomInventory` and its
+`WaitingRoomInventory` response are removed: no client used them. The old names are gone, not aliased; a client
+speaking them is refused as an unknown request, and an unknown scope falls back to `session`. The numbers follow the
+highest provisional stamps of the other Landing 11 lanes (local 1058, relay peer 496). `room-list-1059.json` and its
+SHA-256 test pin the shape.

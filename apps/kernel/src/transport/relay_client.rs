@@ -22,12 +22,12 @@ use crate::runtime::event_log::{EventLog, EventRetentionPolicy, ReplayOutcome};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::command_cache::CommandResultCache;
 use crate::runtime_transport::{
-    WatchResult, RECENT_EVENT_LIMIT, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
-    WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
+    WatchResult, RECENT_EVENT_LIMIT, ROOM_LIST_ROW_COALESCE_MS,
+    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
     event_is_relevant_to_attachment, subscription_event_stream_id, terminal_output_event_batches,
-    KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    KernelEvent, ROOM_LIST_SENTINEL_ID, ROOM_LIST_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -176,7 +176,7 @@ const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 /// carries no registration goes out only on every sixth tick.
 const RELAY_BARE_HEARTBEAT_TICKS: u64 = 6;
 const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;
-const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
+const RELAY_ROOM_LIST_INTERVAL_TICKS: u64 = 100;
 const RELAY_OUTGOING_QUEUE_LIMIT: usize = 1024;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);

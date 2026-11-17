@@ -2,20 +2,20 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  cycleWaitingRoomLaunchKernel,
-  cycleWaitingRoomLaunchMachine,
-  formatWaitingRoomLaunchKernelValue,
-  formatWaitingRoomLaunchMachineValue,
-  normalizeWaitingRoomLaunchPlacement,
-  waitingRoomLaunchKernelOptions,
-  waitingRoomLaunchMachineOptions,
-  waitingRoomLaunchPlacement,
-  waitingRoomSelectedLaunchKernelRef,
-  waitingRoomSelectedLaunchMachineRef,
-} from "./waiting-room-runtime-placement.js"
+  cycleRoomListLaunchKernel,
+  cycleRoomListLaunchMachine,
+  formatRoomListLaunchKernelValue,
+  formatRoomListLaunchMachineValue,
+  normalizeRoomListLaunchPlacement,
+  roomListLaunchKernelOptions,
+  roomListLaunchMachineOptions,
+  roomListLaunchPlacement,
+  roomListSelectedLaunchKernelRef,
+  roomListSelectedLaunchMachineRef,
+} from "./room-list-runtime-placement.js"
 
-test("waiting room launch machine options include local and remote labels", () => {
-  assert.deepEqual(waitingRoomLaunchMachineOptions(remote()).map((option) => ({
+test("Room list launch machine options include local and remote labels", () => {
+  assert.deepEqual(roomListLaunchMachineOptions(remote()).map((option) => ({
     id: option.id,
     label: option.label,
   })), [
@@ -26,9 +26,9 @@ test("waiting room launch machine options include local and remote labels", () =
   ])
 })
 
-test("waiting room launch kernel options scope kernels by selected machine", () => {
-  assert.deepEqual(waitingRoomLaunchKernelOptions(remote(), "local").map((option) => option.id), ["local"])
-  assert.deepEqual(waitingRoomLaunchKernelOptions(remote(), "machine-1").map((option) => ({
+test("Room list launch kernel options scope kernels by selected machine", () => {
+  assert.deepEqual(roomListLaunchKernelOptions(remote(), "local").map((option) => option.id), ["local"])
+  assert.deepEqual(roomListLaunchKernelOptions(remote(), "machine-1").map((option) => ({
     id: option.id,
     label: option.label,
     machineId: option.machineId,
@@ -38,8 +38,8 @@ test("waiting room launch kernel options scope kernels by selected machine", () 
   ])
 })
 
-test("waiting room launch placement resolves launch refs", () => {
-  assert.deepEqual(waitingRoomLaunchPlacement({
+test("Room list launch placement resolves launch refs", () => {
+  assert.deepEqual(roomListLaunchPlacement({
     selectedMachineRef: "machine-1",
     selectedKernelRef: "kernel-1b",
   }, remote()), {
@@ -50,23 +50,23 @@ test("waiting room launch placement resolves launch refs", () => {
   })
 })
 
-test("waiting room launch value labels reflect normalized selections", () => {
-  assert.equal(formatWaitingRoomLaunchMachineValue({ selectedMachineRef: "machine-1" }, remote()), "machine one")
-  assert.equal(formatWaitingRoomLaunchKernelValue({
+test("Room list launch value labels reflect normalized selections", () => {
+  assert.equal(formatRoomListLaunchMachineValue({ selectedMachineRef: "machine-1" }, remote()), "machine one")
+  assert.equal(formatRoomListLaunchKernelValue({
     selectedMachineRef: "machine-1",
     selectedKernelRef: "kernel-1b",
   }, remote()), "kernel-one-b")
-  assert.equal(formatWaitingRoomLaunchKernelValue({ selectedMachineRef: "machine-without-kernel" }, remote()), "none available")
+  assert.equal(formatRoomListLaunchKernelValue({ selectedMachineRef: "machine-without-kernel" }, remote()), "none available")
 })
 
-test("waiting room launch cycling updates machine and kernel selections", () => {
+test("Room list launch cycling updates machine and kernel selections", () => {
   const state = { selectedMachineRef: "local", selectedKernelRef: "local", kept: true }
-  assert.deepEqual(cycleWaitingRoomLaunchMachine(state, remote(), 1), {
+  assert.deepEqual(cycleRoomListLaunchMachine(state, remote(), 1), {
     selectedMachineRef: "machine-1",
     selectedKernelRef: "kernel-1a",
     kept: true,
   })
-  assert.deepEqual(cycleWaitingRoomLaunchKernel({
+  assert.deepEqual(cycleRoomListLaunchKernel({
     selectedMachineRef: "machine-1",
     selectedKernelRef: "kernel-1a",
     kept: true,
@@ -75,7 +75,7 @@ test("waiting room launch cycling updates machine and kernel selections", () => 
     selectedKernelRef: "kernel-1b",
     kept: true,
   })
-  assert.deepEqual(cycleWaitingRoomLaunchKernel({
+  assert.deepEqual(cycleRoomListLaunchKernel({
     selectedMachineRef: "machine-without-kernel",
     selectedKernelRef: "",
     kept: true,

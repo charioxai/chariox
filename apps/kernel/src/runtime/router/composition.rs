@@ -392,7 +392,7 @@ pub(super) fn compose_command_router(
         provider_runtime_lanes,
         focus_projection,
         session_projection,
-        waiting_room_session_summaries: Default::default(),
+        room_list_session_summaries: Default::default(),
         agent_runtime_projection,
         history_store,
         operational_history_store,

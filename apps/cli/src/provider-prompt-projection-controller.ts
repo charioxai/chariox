@@ -40,7 +40,7 @@ export function createProviderPromptProjectionController(
     const options = {
       providerRun: deps.getProviderRun(),
       focusedAgent: deps.getFocusedAgent(),
-      waitingRoomState: deps.getWaitingRoomState(),
+      startState: deps.getWaitingRoomState(),
       defaultModel: defaults.model,
       defaultEffort: defaults.effort,
     }

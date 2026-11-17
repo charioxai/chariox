@@ -34,7 +34,7 @@ fn claim(config: &DaemonConfig, token: &str, expires_at_ms: u64) -> RelayTokenCl
 }
 
 #[test]
-fn token_rollover_preserves_waiting_room_during_large_peer_request() {
+fn token_rollover_preserves_room_list_during_large_peer_request() {
     run_async_with_large_test_stack("token-rollover", || async {
         let _guard = relay_client_test_guard().await;
         let _home = RelayTestHome::new();
@@ -135,19 +135,19 @@ fn token_rollover_preserves_waiting_room_during_large_peer_request() {
             &mut client,
             &RelayEnvelope::ClientSubscribe {
                 request_id: "subscribe".into(),
-                subscription_id: "waiting-room".into(),
+                subscription_id: "room-list".into(),
                 target: target.clone(),
-                session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.into(),
-                attachment_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.into(),
+                session_id: ROOM_LIST_SENTINEL_ID.into(),
+                attachment_id: ROOM_LIST_SENTINEL_ID.into(),
                 client_public_key: public_key,
-                subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.into()),
+                subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.into()),
                 resume_from_event_id: None,
                 heartbeat_interval_ms: None,
             },
         )
         .await;
         expect_json_client_response(&mut client, "subscribe", &key).await;
-        expect_named_client_event(&mut client, &key, "waiting_room_rows_changed").await;
+        expect_named_client_event(&mut client, &key, "room_list_rows_changed").await;
 
         // Renew through the production config path, then deliver an encrypted
         // multi-MB peer request. Its response exercises the offending continuity
@@ -196,7 +196,7 @@ fn token_rollover_preserves_waiting_room_during_large_peer_request() {
             target_router.dispatch(command, request).await.unwrap();
             event_survived = timeout(
                 Duration::from_secs(2),
-                expect_named_client_event(&mut client, &key, "waiting_room_rows_changed"),
+                expect_named_client_event(&mut client, &key, "room_list_rows_changed"),
             )
             .await
             .is_ok();
@@ -215,7 +215,7 @@ fn token_rollover_preserves_waiting_room_during_large_peer_request() {
         );
         assert!(
             !lost_route,
-            "token renewal dropped the live waiting-room subscription"
+            "token renewal dropped the live room-list subscription"
         );
         assert!(
             renewed,

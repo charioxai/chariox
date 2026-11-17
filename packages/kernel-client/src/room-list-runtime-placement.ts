@@ -1,10 +1,10 @@
-export type WaitingRoomLaunchMachineInput = {
+export type RoomListLaunchMachineInput = {
   machine_id: string
   machine_alias?: string | null
   display_name?: string | null
 }
 
-export type WaitingRoomLaunchKernelInput = {
+export type RoomListLaunchKernelInput = {
   kernel_id: string
   machine_id: string
   kernel_alias?: string | null
@@ -12,45 +12,45 @@ export type WaitingRoomLaunchKernelInput = {
 }
 
 /** The kernel this client is connected to, as its relay status reports it. */
-export type WaitingRoomLaunchConnectedKernelInput = {
+export type RoomListLaunchConnectedKernelInput = {
   daemon_id?: string | null
   daemon_alias?: string | null
   machine_id?: string | null
 }
 
-export type WaitingRoomLaunchRemoteState = {
+export type RoomListLaunchRemoteState = {
   machineAllocationOffered?: boolean
-  machines?: readonly WaitingRoomLaunchMachineInput[]
-  kernels?: readonly WaitingRoomLaunchKernelInput[]
-  relay?: WaitingRoomLaunchConnectedKernelInput | null
+  machines?: readonly RoomListLaunchMachineInput[]
+  kernels?: readonly RoomListLaunchKernelInput[]
+  relay?: RoomListLaunchConnectedKernelInput | null
 }
 
 export const NEW_MACHINE_ALLOCATION_REF = "allocation:new"
 
-export type WaitingRoomLaunchPlacementState = {
+export type RoomListLaunchPlacementState = {
   selectedMachineRef?: string | null
   selectedKernelRef?: string | null
 }
 
-export type WaitingRoomLaunchMachineOption<TMachine extends WaitingRoomLaunchMachineInput = WaitingRoomLaunchMachineInput> = {
+export type RoomListLaunchMachineOption<TMachine extends RoomListLaunchMachineInput = RoomListLaunchMachineInput> = {
   id: string
   label: string
   machine: TMachine | null
 }
 
-export type WaitingRoomLaunchKernelOption<TKernel extends WaitingRoomLaunchKernelInput = WaitingRoomLaunchKernelInput> = {
+export type RoomListLaunchKernelOption<TKernel extends RoomListLaunchKernelInput = RoomListLaunchKernelInput> = {
   id: string
   label: string
   machineId: string
   kernel: TKernel | null
 }
 
-export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaunchMachineInput>(
+export function roomListLaunchMachineOptions<TMachine extends RoomListLaunchMachineInput>(
   remote: {
     machines?: readonly TMachine[]
     machineAllocationOffered?: boolean
   } = {},
-): WaitingRoomLaunchMachineOption<TMachine>[] {
+): RoomListLaunchMachineOption<TMachine>[] {
   return [
     { id: "local", label: "local", machine: null },
     ...(remote.machines ?? []).map(machine => ({ id: machine.machine_id, label: machine.machine_alias ?? machine.display_name ?? machine.machine_id, machine })),
@@ -58,29 +58,29 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
   ]
 }
 
-export function waitingRoomSelectedLaunchMachineRef(
-  state: Pick<WaitingRoomLaunchPlacementState, "selectedMachineRef">,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function roomListSelectedLaunchMachineRef(
+  state: Pick<RoomListLaunchPlacementState, "selectedMachineRef">,
+  remote: RoomListLaunchRemoteState = {},
 ): string {
-  const options = waitingRoomLaunchMachineOptions(remote)
+  const options = roomListLaunchMachineOptions(remote)
   const selected = state.selectedMachineRef?.trim() || "local"
   if (selected === NEW_MACHINE_ALLOCATION_REF) return selected
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? "local"
 }
 
-export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunchKernelInput>(
+export function roomListLaunchKernelOptions<TKernel extends RoomListLaunchKernelInput>(
   remote: {
     kernels?: readonly TKernel[]
     machineAllocationOffered?: boolean
-    relay?: WaitingRoomLaunchConnectedKernelInput | null
+    relay?: RoomListLaunchConnectedKernelInput | null
   } = {},
   machineRef = "local",
-): WaitingRoomLaunchKernelOption<TKernel>[] {
+): RoomListLaunchKernelOption<TKernel>[] {
   if (machineRef === "local") {
     return [{ id: "local", label: "local", machineId: "local", kernel: null }]
   }
   if (machineRef === NEW_MACHINE_ALLOCATION_REF) return []
-  const options: WaitingRoomLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
+  const options: RoomListLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
     .filter((kernel) => kernel.machine_id === machineRef)
     .map((kernel) => ({
       id: kernel.kernel_id,
@@ -103,27 +103,27 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
   return options
 }
 
-export function waitingRoomSelectedLaunchKernelRef(
-  state: Pick<WaitingRoomLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function roomListSelectedLaunchKernelRef(
+  state: Pick<RoomListLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
+  remote: RoomListLaunchRemoteState = {},
 ): string {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const options = waitingRoomLaunchKernelOptions(remote, machineRef)
+  const machineRef = roomListSelectedLaunchMachineRef(state, remote)
+  const options = roomListLaunchKernelOptions(remote, machineRef)
   const selected = state.selectedKernelRef?.trim() || (machineRef === "local" ? "local" : "")
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? ""
 }
 
-export function waitingRoomLaunchPlacement(
-  state: Pick<WaitingRoomLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function roomListLaunchPlacement(
+  state: Pick<RoomListLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
+  remote: RoomListLaunchRemoteState = {},
 ): {
   machineRef: string
   kernelRef: string
   workerKernelRef: string | null
   newMachineAllocation: boolean
 } {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const kernelRef = waitingRoomSelectedLaunchKernelRef(state, remote)
+  const machineRef = roomListSelectedLaunchMachineRef(state, remote)
+  const kernelRef = roomListSelectedLaunchKernelRef(state, remote)
   return {
     machineRef,
     kernelRef,
@@ -132,46 +132,46 @@ export function waitingRoomLaunchPlacement(
   }
 }
 
-export function formatWaitingRoomLaunchMachineValue(
-  state: Pick<WaitingRoomLaunchPlacementState, "selectedMachineRef">,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function formatRoomListLaunchMachineValue(
+  state: Pick<RoomListLaunchPlacementState, "selectedMachineRef">,
+  remote: RoomListLaunchRemoteState = {},
 ): string {
-  const selected = waitingRoomSelectedLaunchMachineRef(state, remote)
-  return waitingRoomLaunchMachineOptions(remote).find((option) => option.id === selected)?.label ?? selected
+  const selected = roomListSelectedLaunchMachineRef(state, remote)
+  return roomListLaunchMachineOptions(remote).find((option) => option.id === selected)?.label ?? selected
 }
 
-export function formatWaitingRoomLaunchKernelValue(
-  state: Pick<WaitingRoomLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function formatRoomListLaunchKernelValue(
+  state: Pick<RoomListLaunchPlacementState, "selectedMachineRef" | "selectedKernelRef">,
+  remote: RoomListLaunchRemoteState = {},
 ): string {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const selected = waitingRoomSelectedLaunchKernelRef(state, remote)
+  const machineRef = roomListSelectedLaunchMachineRef(state, remote)
+  const selected = roomListSelectedLaunchKernelRef(state, remote)
   if (!selected) {
     if (machineRef === NEW_MACHINE_ALLOCATION_REF) return "created on acquisition"
     return "none available"
   }
-  return waitingRoomLaunchKernelOptions(remote, machineRef).find((option) => option.id === selected)?.label ?? selected
+  return roomListLaunchKernelOptions(remote, machineRef).find((option) => option.id === selected)?.label ?? selected
 }
 
-export function normalizeWaitingRoomLaunchPlacement(
-  state: WaitingRoomLaunchPlacementState,
-  remote: WaitingRoomLaunchRemoteState = {},
+export function normalizeRoomListLaunchPlacement(
+  state: RoomListLaunchPlacementState,
+  remote: RoomListLaunchRemoteState = {},
 ): { selectedMachineRef: string; selectedKernelRef: string } {
-  const selectedMachineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const selectedKernelRef = waitingRoomSelectedLaunchKernelRef({ ...state, selectedMachineRef }, remote)
+  const selectedMachineRef = roomListSelectedLaunchMachineRef(state, remote)
+  const selectedKernelRef = roomListSelectedLaunchKernelRef({ ...state, selectedMachineRef }, remote)
   return { selectedMachineRef, selectedKernelRef }
 }
 
-export function cycleWaitingRoomLaunchMachine<TState extends WaitingRoomLaunchPlacementState>(
+export function cycleRoomListLaunchMachine<TState extends RoomListLaunchPlacementState>(
   state: TState,
-  remote: WaitingRoomLaunchRemoteState = {},
+  remote: RoomListLaunchRemoteState = {},
   delta: number,
 ): TState {
-  const options = waitingRoomLaunchMachineOptions(remote)
-  const current = waitingRoomSelectedLaunchMachineRef(state, remote)
+  const options = roomListLaunchMachineOptions(remote)
+  const current = roomListSelectedLaunchMachineRef(state, remote)
   const index = Math.max(0, options.findIndex((option) => option.id === current))
   const nextMachineRef = options[modulo(index + delta, options.length)]?.id ?? "local"
-  const nextKernelRef = waitingRoomLaunchKernelOptions(remote, nextMachineRef)[0]?.id ?? ""
+  const nextKernelRef = roomListLaunchKernelOptions(remote, nextMachineRef)[0]?.id ?? ""
   return {
     ...state,
     selectedMachineRef: nextMachineRef,
@@ -179,17 +179,17 @@ export function cycleWaitingRoomLaunchMachine<TState extends WaitingRoomLaunchPl
   }
 }
 
-export function cycleWaitingRoomLaunchKernel<TState extends WaitingRoomLaunchPlacementState>(
+export function cycleRoomListLaunchKernel<TState extends RoomListLaunchPlacementState>(
   state: TState,
-  remote: WaitingRoomLaunchRemoteState = {},
+  remote: RoomListLaunchRemoteState = {},
   delta: number,
 ): TState {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const options = waitingRoomLaunchKernelOptions(remote, machineRef)
+  const machineRef = roomListSelectedLaunchMachineRef(state, remote)
+  const options = roomListLaunchKernelOptions(remote, machineRef)
   if (options.length === 0) {
     return { ...state, selectedKernelRef: "" }
   }
-  const current = waitingRoomSelectedLaunchKernelRef(state, remote)
+  const current = roomListSelectedLaunchKernelRef(state, remote)
   const index = Math.max(0, options.findIndex((option) => option.id === current))
   const next = options[modulo(index + delta, options.length)] ?? options[0]
   return {

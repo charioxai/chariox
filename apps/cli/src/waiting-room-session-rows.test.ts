@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
+import { roomListTimestampLabel } from "@chariox/kernel-client/room-list-activity"
 
 import type { SessionListEntry } from "./sessions.js"
 import {
@@ -50,7 +50,7 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.columns?.[1]?.trim(), "home-kernel@home-machine")
   assert.equal(rows[1]?.columns?.[2]?.trim(), "1 working")
   assert.equal(rows[1]?.columns?.[3]?.trim(), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
-  assert.equal(rows[1]?.columns?.[4]?.trim(), waitingRoomTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
+  assert.equal(rows[1]?.columns?.[4]?.trim(), roomListTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
   assert.equal(rows[1]?.focused, true)
 })
 

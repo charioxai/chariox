@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn waiting_room_paging_rejects_activity_changes() {
-    run_with_large_test_stack("waiting-room-activity-paging", || {
-        let worktree = crate::test_support::TestWorktree::new("waiting-room-activity-paging");
+fn room_list_paging_rejects_activity_changes() {
+    run_with_large_test_stack("room-list-activity-paging", || {
+        let worktree = crate::test_support::TestWorktree::new("room-list-activity-paging");
         let harness = LocalRouterTestHarness::new();
         let LocalDaemonResponse::SessionCreated { session, .. } = harness
             .dispatch(LocalDaemonRequest::CreateSession(
@@ -13,9 +13,9 @@ fn waiting_room_paging_rejects_activity_changes() {
         else {
             panic!("expected session")
         };
-        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                GetWaitingRoomPublicSnapshotRequest,
+        let LocalDaemonResponse::RoomListSnapshot { snapshot } = harness
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
             .unwrap()
         else {
@@ -25,9 +25,9 @@ fn waiting_room_paging_rejects_activity_changes() {
             app.session_state_projection_store()
                 .note_session_activity(session.id(), session.last_activity_at_ms() + 100);
         });
-        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot: changed } = harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                GetWaitingRoomPublicSnapshotRequest,
+        let LocalDaemonResponse::RoomListSnapshot { snapshot: changed } = harness
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
             .unwrap()
         else {
@@ -37,23 +37,23 @@ fn waiting_room_paging_rejects_activity_changes() {
             snapshot.structural_version, changed.structural_version,
             "only ordering activity changed"
         );
-        let result = harness.dispatch(LocalDaemonRequest::ListWaitingRoomSessions(
-            crate::local::ListWaitingRoomSessionsRequest {
+        let result = harness.dispatch(LocalDaemonRequest::ListRoomListSessions(
+            crate::local::ListRoomListSessionsRequest {
                 cursor: None,
                 limit: Some(1),
                 inventory_version: Some(snapshot.inventory_version),
             },
         ));
         assert!(
-            matches!(result, Err(crate::error::DaemonError::MachineRequest { code, .. }) if code == "waiting_room_inventory_changed")
+            matches!(result, Err(crate::error::DaemonError::MachineRequest { code, .. }) if code == "room_list_changed")
         );
     });
 }
 
 #[test]
-fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
-    run_with_large_test_stack("waiting-room-recent-sessions", || {
-        let worktree = crate::test_support::TestWorktree::new("waiting-room-recent-sessions");
+fn room_list_sends_recent_sessions_before_the_full_catalog() {
+    run_with_large_test_stack("room-list-recent-sessions", || {
+        let worktree = crate::test_support::TestWorktree::new("room-list-recent-sessions");
         let harness = LocalRouterTestHarness::new();
         for index in 0..140 {
             harness
@@ -65,11 +65,11 @@ fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
                 .unwrap();
         }
         let response = harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-                GetWaitingRoomInventoryRequest,
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
             .unwrap();
-        let LocalDaemonResponse::WaitingRoomInventory { snapshot } = response else {
+        let LocalDaemonResponse::RoomListSnapshot { snapshot } = response else {
             panic!("expected inventory");
         };
         assert!(
@@ -86,15 +86,15 @@ fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
         let mut cursor = snapshot.sessions_next_cursor.clone();
         while cursor.is_some() {
             let response = harness
-                .dispatch(LocalDaemonRequest::ListWaitingRoomSessions(
-                    crate::local::ListWaitingRoomSessionsRequest {
+                .dispatch(LocalDaemonRequest::ListRoomListSessions(
+                    crate::local::ListRoomListSessionsRequest {
                         inventory_version: None,
                         cursor,
                         limit: Some(7),
                     },
                 ))
                 .unwrap();
-            let LocalDaemonResponse::WaitingRoomSessionsListed { page } = response else {
+            let LocalDaemonResponse::RoomListSessionsListed { page } = response else {
                 panic!("expected session page");
             };
             assert_eq!(page.total, 140);
@@ -111,12 +111,11 @@ fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
 }
 
 #[test]
-fn waiting_room_inventory_includes_session_workspace_display_labels() {
+fn room_list_includes_session_workspace_display_labels() {
     run_with_large_test_stack(
-        "waiting-room-inventory-session-workspace-display-labels",
+        "room-list-inventory-session-workspace-display-labels",
         || {
-            let worktree =
-                crate::test_support::TestWorktree::new("waiting-room-session-label-test");
+            let worktree = crate::test_support::TestWorktree::new("room-list-session-label-test");
             let workspace_root = worktree.path();
             std::process::Command::new("git")
                 .args(["init", "-b", "main"])
@@ -146,12 +145,12 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
             };
 
             let snapshot = match harness
-                .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-                    GetWaitingRoomInventoryRequest,
+                .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                    GetRoomListSnapshotRequest,
                 ))
-                .expect("waiting room inventory should succeed")
+                .expect("Room list inventory should succeed")
             {
-                LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+                LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
                 other => panic!("unexpected response: {other:?}"),
             };
 
@@ -159,7 +158,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                 .sessions
                 .iter()
                 .find(|candidate| candidate.id == created.id())
-                .expect("created session should be in waiting-room inventory");
+                .expect("created session should be in room-list inventory");
             assert_eq!(
                 session.workspace_label.as_deref(),
                 Some("mgutierrez09/chariox")
@@ -171,9 +170,9 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
 }
 
 #[test]
-fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
-    run_with_large_test_stack("waiting-room-public-snapshot-private-payload", || {
-        let worktree = crate::test_support::TestWorktree::new("waiting-room-public-snapshot");
+fn room_list_snapshot_omits_private_runtime_session_payload() {
+    run_with_large_test_stack("room-list-snapshot-private-payload", || {
+        let worktree = crate::test_support::TestWorktree::new("room-list-snapshot");
         let harness = LocalRouterTestHarness::new();
         let (created, agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
@@ -188,12 +187,12 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         };
 
         let snapshot = match harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                GetWaitingRoomPublicSnapshotRequest,
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
-            .expect("waiting room public snapshot should succeed")
+            .expect("Room list public snapshot should succeed")
         {
-            LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
             other => panic!("unexpected response: {other:?}"),
         };
 
@@ -255,18 +254,18 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
 }
 
 #[test]
-fn waiting_room_agent_workspace_update_drill_updates_public_projection() {
+fn room_list_agent_workspace_update_drill_updates_public_projection() {
     run_with_large_test_stack(
-        "waiting-room-agent-workspace-update-public-projection",
-        waiting_room_agent_workspace_update_drill_updates_public_projection_inner,
+        "room-list-agent-workspace-update-public-projection",
+        room_list_agent_workspace_update_drill_updates_public_projection_inner,
     );
 }
 
-fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
-    let worktree_a = crate::test_support::TestWorktree::new("waiting-room-workspace-a");
-    let worktree_b = crate::test_support::TestWorktree::new("waiting-room-workspace-b");
+fn room_list_agent_workspace_update_drill_updates_public_projection_inner() {
+    let worktree_a = crate::test_support::TestWorktree::new("room-list-workspace-a");
+    let worktree_b = crate::test_support::TestWorktree::new("room-list-workspace-b");
     let worktree_b_feature =
-        crate::test_support::TestWorktree::new("waiting-room-workspace-b-feature");
+        crate::test_support::TestWorktree::new("room-list-workspace-b-feature");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -301,12 +300,12 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
         .expect("agent workspace update should succeed");
 
     let snapshot = match harness
-        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-            GetWaitingRoomPublicSnapshotRequest,
+        .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+            GetRoomListSnapshotRequest,
         ))
-        .expect("waiting room public snapshot should succeed")
+        .expect("Room list public snapshot should succeed")
     {
-        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
         other => panic!("unexpected response: {other:?}"),
     };
     let public_agent = snapshot
@@ -345,9 +344,9 @@ where
 }
 
 #[test]
-fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
-    run_with_large_test_stack("waiting-room-public-snapshot-workflow-summaries", || {
-        let worktree = crate::test_support::TestWorktree::new("waiting-room-public-workflow");
+fn room_list_snapshot_includes_public_workflow_summaries() {
+    run_with_large_test_stack("room-list-snapshot-workflow-summaries", || {
+        let worktree = crate::test_support::TestWorktree::new("room-list-workflow");
         let harness = LocalRouterTestHarness::new();
         let (session, first_agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
@@ -447,12 +446,12 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             .expect("workflow endpoint should create");
 
         let snapshot = match harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                GetWaitingRoomPublicSnapshotRequest,
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
-            .expect("waiting room public snapshot should succeed")
+            .expect("Room list public snapshot should succeed")
         {
-            LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
             other => panic!("unexpected response: {other:?}"),
         };
         let summary = snapshot
@@ -499,176 +498,167 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
 }
 
 #[test]
-fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
-    run_with_large_test_stack(
-        "waiting-room-public-snapshot-session-activity-counts",
-        || {
-            let worktree = crate::test_support::TestWorktree::new("waiting-room-public-activity");
-            let harness = LocalRouterTestHarness::new();
-            let (session, agent) = match harness
-                .dispatch(LocalDaemonRequest::CreateSession(
-                    worktree.session_request(),
-                ))
-                .expect("session create should succeed")
-            {
-                LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
-                other => panic!("unexpected response: {other:?}"),
-            };
-            let idle_agent = match harness
-                .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                    max_context_tokens: None,
-                    no_subscribe: false,
-                    account_profile: None,
+fn room_list_snapshot_includes_public_session_activity_counts() {
+    run_with_large_test_stack("room-list-snapshot-session-activity-counts", || {
+        let worktree = crate::test_support::TestWorktree::new("room-list-activity");
+        let harness = LocalRouterTestHarness::new();
+        let (session, agent) = match harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                worktree.session_request(),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let idle_agent = match harness
+            .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                max_context_tokens: None,
+                no_subscribe: false,
+                account_profile: None,
+                session_id: session.id().to_string(),
+                alias: Some("idle".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("model".to_string()),
+                effort: Some("default".to_string()),
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: None,
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            }))
+            .expect("second agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let attachment = match harness
+            .dispatch(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
                     session_id: session.id().to_string(),
-                    alias: Some("idle".to_string()),
-                    provider: Some("dev-stub".to_string()),
-                    model: Some("model".to_string()),
-                    effort: Some("default".to_string()),
-                    execution_mode: None,
-                    permission_level: None,
-                    worktree_id: None,
-                    kernel_ref: None,
-                    slice_ref: None,
-                    worktree_placement: None,
-                    metaagent: false,
-                }))
-                .expect("second agent should spawn")
-            {
-                LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
-                other => panic!("unexpected response: {other:?}"),
-            };
-            let attachment = match harness
-                .dispatch(LocalDaemonRequest::AttachToSession(
-                    AttachToSessionRequest {
-                        session_id: session.id().to_string(),
-                        client_id: "client-activity".to_string(),
-                        capability_level: ClientCapabilityLevel::FullTerminal,
-                    },
-                ))
-                .expect("attach should succeed")
-            {
-                LocalDaemonResponse::SessionAttached { attachment } => attachment,
-                other => panic!("unexpected response: {other:?}"),
-            };
-            harness.with_app_mut(|app| {
-                app.launch_provider(
-                    LaunchProviderRequest::new(
-                        session.id(),
-                        "dev-stub",
-                        "default",
-                        "default",
-                        "model",
-                    )
+                    client_id: "client-activity".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        harness.with_app_mut(|app| {
+            app.launch_provider(
+                LaunchProviderRequest::new(session.id(), "dev-stub", "default", "default", "model")
                     .with_agent_id(agent.id()),
-                )
-                .expect("provider launch should succeed");
-            });
-            let submitted = harness
-                .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                    session_id: session.id().to_string(),
-                    attachment_id: attachment.id().to_string(),
-                    target_agent_id: Some(agent.id().to_string()),
-                    prompt: "keep working\n".to_string(),
-                    attachments: Vec::new(),
-                }))
-                .expect("prompt should submit");
-            let response_prompt_sent_at_ms = match submitted {
-                LocalDaemonResponse::PromptSubmitted {
-                    outcome: PromptSubmissionOutcome::Started { .. },
-                    session,
-                    ..
-                } => session
-                    .last_prompt_sent_at_ms()
-                    .expect("prompt submission should stamp session prompt time"),
-                other => panic!("prompt should start immediately: {other:?}"),
-            };
+            )
+            .expect("provider launch should succeed");
+        });
+        let submitted = harness
+            .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                target_agent_id: Some(agent.id().to_string()),
+                prompt: "keep working\n".to_string(),
+                attachments: Vec::new(),
+            }))
+            .expect("prompt should submit");
+        let response_prompt_sent_at_ms = match submitted {
+            LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Started { .. },
+                session,
+                ..
+            } => session
+                .last_prompt_sent_at_ms()
+                .expect("prompt submission should stamp session prompt time"),
+            other => panic!("prompt should start immediately: {other:?}"),
+        };
 
-            let snapshot = match harness
-                .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                    GetWaitingRoomPublicSnapshotRequest,
-                ))
-                .expect("waiting room public snapshot should succeed")
-            {
-                LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
-                other => panic!("unexpected response: {other:?}"),
-            };
-            let summary = snapshot
-                .sessions
+        let snapshot = match harness
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
+            ))
+            .expect("Room list public snapshot should succeed")
+        {
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let summary = snapshot
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == session.id())
+            .expect("created session should be in public snapshot");
+        assert_eq!(summary.activity.agent_count, 2);
+        assert_eq!(summary.activity.working_agent_count, 1);
+        assert_eq!(summary.activity.active_prompt_count, 1);
+        assert_eq!(summary.activity.queued_prompt_count, 0);
+        assert_eq!(summary.activity.error_agent_count, 0);
+        assert_eq!(summary.activity.remote_agent_count, 0);
+        assert_eq!(summary.activity.missing_worker_provider_run_count, 0);
+        assert_eq!(
+            summary.last_prompt_sent_at_ms,
+            Some(response_prompt_sent_at_ms)
+        );
+        assert_eq!(
+            summary
+                .agents
                 .iter()
-                .find(|candidate| candidate.id == session.id())
-                .expect("created session should be in public snapshot");
-            assert_eq!(summary.activity.agent_count, 2);
-            assert_eq!(summary.activity.working_agent_count, 1);
-            assert_eq!(summary.activity.active_prompt_count, 1);
-            assert_eq!(summary.activity.queued_prompt_count, 0);
-            assert_eq!(summary.activity.error_agent_count, 0);
-            assert_eq!(summary.activity.remote_agent_count, 0);
-            assert_eq!(summary.activity.missing_worker_provider_run_count, 0);
-            assert_eq!(
-                summary.last_prompt_sent_at_ms,
-                Some(response_prompt_sent_at_ms)
-            );
-            assert_eq!(
-                summary
-                    .agents
-                    .iter()
-                    .find(|candidate| candidate.id == agent.id())
-                    .and_then(|agent| agent.last_prompt_sent_at_ms),
-                Some(response_prompt_sent_at_ms)
-            );
-            assert_eq!(
-                summary
-                    .agents
-                    .iter()
-                    .find(|candidate| candidate.id == idle_agent.id())
-                    .and_then(|agent| agent.last_prompt_sent_at_ms),
-                None
-            );
-
-            let serialized =
-                serde_json::to_value(summary).expect("public session summary should serialize");
-            assert!(
-                serialized
-                    .pointer("/activity/working_agent_count")
-                    .is_some(),
-                "public summary should expose aggregate activity"
-            );
-            assert!(
-                serialized.get("active_prompt").is_none(),
-                "public summary must not expose active prompt internals"
-            );
-
-            harness
-                .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-                    session_id: session.id().to_string(),
-                }))
-                .expect("prompt completion should succeed");
-            let completed_snapshot = match harness
-                .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                    GetWaitingRoomPublicSnapshotRequest,
-                ))
-                .expect("waiting room public snapshot should succeed")
-            {
-                LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
-                other => panic!("unexpected response: {other:?}"),
-            };
-            let completed_summary = completed_snapshot
-                .sessions
+                .find(|candidate| candidate.id == agent.id())
+                .and_then(|agent| agent.last_prompt_sent_at_ms),
+            Some(response_prompt_sent_at_ms)
+        );
+        assert_eq!(
+            summary
+                .agents
                 .iter()
-                .find(|candidate| candidate.id == session.id())
-                .expect("created session should remain in public snapshot");
-            assert_eq!(completed_summary.activity.active_prompt_count, 0);
-            assert_eq!(
-                completed_summary.last_prompt_sent_at_ms,
-                Some(response_prompt_sent_at_ms)
-            );
-        },
-    );
+                .find(|candidate| candidate.id == idle_agent.id())
+                .and_then(|agent| agent.last_prompt_sent_at_ms),
+            None
+        );
+
+        let serialized =
+            serde_json::to_value(summary).expect("public session summary should serialize");
+        assert!(
+            serialized
+                .pointer("/activity/working_agent_count")
+                .is_some(),
+            "public summary should expose aggregate activity"
+        );
+        assert!(
+            serialized.get("active_prompt").is_none(),
+            "public summary must not expose active prompt internals"
+        );
+
+        harness
+            .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("prompt completion should succeed");
+        let completed_snapshot = match harness
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
+            ))
+            .expect("Room list public snapshot should succeed")
+        {
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let completed_summary = completed_snapshot
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == session.id())
+            .expect("created session should remain in public snapshot");
+        assert_eq!(completed_summary.activity.active_prompt_count, 0);
+        assert_eq!(
+            completed_summary.last_prompt_sent_at_ms,
+            Some(response_prompt_sent_at_ms)
+        );
+    });
 }
 
 #[test]
-fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
-    run_with_large_test_stack("terminal-pairing-link-waiting-room-inventory", || {
+fn terminal_pairing_link_adds_terminal_to_room_list() {
+    run_with_large_test_stack("terminal-pairing-link-room-list-inventory", || {
         let mut config = DaemonConfig::for_tests();
         config.relay_url = Some("ws://relay.local".to_string());
         config.relay_token = Some("relay-token".to_string());
@@ -696,12 +686,12 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
         assert_eq!(pairing.pairing_code.len(), "ABCD-EFGH".len());
 
         let snapshot = match harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-                GetWaitingRoomInventoryRequest,
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
-            .expect("waiting room inventory should succeed")
+            .expect("Room list inventory should succeed")
         {
-            LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
             other => panic!("unexpected response: {other:?}"),
         };
         let terminal = snapshot
@@ -732,13 +722,11 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
 }
 
 #[test]
-fn waiting_room_inventory_offers_vault_logins_to_context_transfer() {
+fn room_list_offers_vault_logins_to_context_transfer() {
     crate::test_support::isolated_env_test!();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
-    let vault = std::env::temp_dir().join(format!(
-        "chariox-waiting-room-vault-{}",
-        rand::random::<u64>()
-    ));
+    let vault =
+        std::env::temp_dir().join(format!("chariox-room-list-vault-{}", rand::random::<u64>()));
     let states = |backend: crate::config::CredentialVaultBackend| {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.credential_vault.backend = backend;
@@ -767,16 +755,16 @@ fn waiting_room_inventory_offers_vault_logins_to_context_transfer() {
             owner,
             "claude",
             &token_profile.profile_id,
-            "sk-ant-oat01-TESTONLY-waiting-room-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sk-ant-oat01-TESTONLY-room-list-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             false,
         )
         .unwrap();
         let response = harness
-            .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-                GetWaitingRoomInventoryRequest,
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
             .unwrap();
-        let LocalDaemonResponse::WaitingRoomInventory { snapshot } = response else {
+        let LocalDaemonResponse::RoomListSnapshot { snapshot } = response else {
             panic!("expected inventory");
         };
         let state = |profile_id: &str| {

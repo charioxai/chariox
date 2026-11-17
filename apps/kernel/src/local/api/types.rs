@@ -52,6 +52,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_list;
 mod room_terminal;
 mod runtime_identity;
 mod screenshot;
@@ -62,7 +63,6 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
-mod waiting_room;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -109,6 +109,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_list::*;
 pub use room_terminal::*;
 pub use runtime_identity::*;
 pub use screenshot::*;
@@ -119,7 +120,6 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
-pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -241,7 +241,7 @@ pub use workspace::*;
 /// Version 371 adds native process identity to authenticated product status and
 /// the value-free Project environment layer and inputs (MP-08).
 /// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
-/// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
+/// Version 373 adds worker Environment queries and room-list pending review visibility (MP-08).
 /// Version 374 binds Computer credential approval to a native display target (MP-08).
 /// Version 375 normalizes primitive MCP script results to object structured content (MP-08/MP-10).
 /// Version 376 adds receiving-kernel provider login interaction projection and
@@ -550,5 +550,6 @@ pub use workspace::*;
 /// the owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the credentialed network destinations a signed manifest declares; the App-managed event routes (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`, `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`, `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the backend-supplied `AppConfirmationFrame.preview` rows;
 /// the owner's machine capability lists the service's `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`;
 /// a waiting agent lists every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a reply-box decision);
-/// a running agent's profile and config change takes effect mid-turn (`applies` on `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit` on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage limit").
+/// a running agent's profile and config change takes effect mid-turn (`applies` on `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit` on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage limit");
+/// the Room list wire names replace the waiting room ones (`GetRoomListSnapshot` → `RoomListSnapshot`, `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` / `room_list_rows_changed`) and `GetWaitingRoomInventory` is removed.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

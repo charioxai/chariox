@@ -1,4 +1,4 @@
-import { NEW_MACHINE_ALLOCATION_REF } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { NEW_MACHINE_ALLOCATION_REF } from "@chariox/kernel-client/room-list-runtime-placement"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { getWorkspaceGitOverviewRequest, listWorkspaceWorktreesRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"

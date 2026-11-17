@@ -1376,11 +1376,11 @@ fn envp01_project_environment_follows_the_project_owner_and_is_removed_with_the_
     let snapshot = |owner: &str| match harness
         .dispatch_as_user(
             owner,
-            LocalDaemonRequest::GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
+            LocalDaemonRequest::GetRoomListSnapshot(GetRoomListSnapshotRequest),
         )
         .unwrap()
     {
-        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
         other => panic!("unexpected response: {other:?}"),
     };
     assert!(snapshot("local")

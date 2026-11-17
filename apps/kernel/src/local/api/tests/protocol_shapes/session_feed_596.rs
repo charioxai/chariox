@@ -67,9 +67,9 @@ fn fixture_events() -> serde_json::Value {
     };
     let subscribe = KernelIncomingFrame::Subscribe {
         request_id: "request-1".into(),
-        session_id: "__waiting_room_inventory__".into(),
-        attachment_id: "__waiting_room_inventory__".into(),
-        subscription_scope: Some("waiting_room_inventory".into()),
+        session_id: "__room_list__".into(),
+        attachment_id: "__room_list__".into(),
+        subscription_scope: Some("room_list".into()),
         resume_from_event_id: None,
         heartbeat_interval_ms: Some(1_000),
         kernel: None,

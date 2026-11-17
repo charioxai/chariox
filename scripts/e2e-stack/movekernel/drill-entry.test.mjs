@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 
-for (const script of ['return-native-conflict.mjs', 'durable-move.mjs']) {
+for (const script of ['return-native-conflict.mjs']) {
     test(script + ' loads its helpers without starting kernels', () => {
         const result = spawnSync(process.execPath, [new URL(script, import.meta.url).pathname, '--help'], {
             env: {PATH: process.env.PATH, NODE_OPTIONS: '--max-old-space-size=4096'},

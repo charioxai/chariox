@@ -119,7 +119,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 114 integrates the 102 agent-model/leased-watcher union, main's
 /// identity-preserving renewal and the native display binary-event transport
 /// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
-/// waiting-room and Room workflow contracts (#974). Generated consumers follow
+/// room-list and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
 /// MP-08/MP-10/MP-11: allocated 133 carries the local 525 resumption union.
 /// MP-08/MP-10/MP-11: allocated 136 carries the local 528 Browser state fields.
@@ -220,7 +220,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
 /// with its interaction between kernels of one owner; 448 carries `target_kind` in a remote folder listing,
 /// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
-/// pause, and standing permission requests and the confirmation preview.
+/// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
+/// and events `room_list` / `room_list_changed` / `room_list_rows_changed`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

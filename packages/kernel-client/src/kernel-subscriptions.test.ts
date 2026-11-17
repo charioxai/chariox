@@ -4,7 +4,7 @@ import test from "node:test"
 import {
   buildKernelSubscriptionTransportRequest,
   createKernelSessionSubscriptionStart,
-  createWaitingRoomInventorySubscriptionStart,
+  createRoomListSubscriptionStart,
   kernelSubscriptionScopeValue,
   type KernelSubscriptionState,
 } from "./kernel-subscriptions.js"
@@ -41,17 +41,17 @@ test("kernel session subscription resumes only matching session attachments", ()
   assert.equal(restarted.resetLastReceivedEventId, true)
 })
 
-test("waiting room inventory subscription owns sentinel identity and scope", () => {
+test("Room list inventory subscription owns sentinel identity and scope", () => {
   const previous: KernelSubscriptionState = {
-    sessionId: "__waiting_room_inventory__",
-    attachmentId: "__waiting_room_inventory__",
-    scope: "waiting_room_inventory",
+    sessionId: "__room_list__",
+    attachmentId: "__room_list__",
+    scope: "room_list",
     relaySubscriptionId: null,
     relayPublicKey: null,
     relayDecryptEvent: null,
   }
 
-  const start = createWaitingRoomInventorySubscriptionStart({
+  const start = createRoomListSubscriptionStart({
     previous,
     lastReceivedEventId: 7,
     relaySubscriptionId: "relay-subscription-waiting",
@@ -59,16 +59,16 @@ test("waiting room inventory subscription owns sentinel identity and scope", () 
 
   assert.equal(start.resumeFromEventId, 7)
   assert.equal(start.resetLastReceivedEventId, false)
-  assert.equal(start.subscription.sessionId, "__waiting_room_inventory__")
-  assert.equal(start.subscription.attachmentId, "__waiting_room_inventory__")
-  assert.equal(kernelSubscriptionScopeValue(start.subscription), "waiting_room_inventory")
+  assert.equal(start.subscription.sessionId, "__room_list__")
+  assert.equal(start.subscription.attachmentId, "__room_list__")
+  assert.equal(kernelSubscriptionScopeValue(start.subscription), "room_list")
 })
 
 test("kernel subscription transport request preserves scope and resume cursor", () => {
   const request = buildKernelSubscriptionTransportRequest({
-    sessionId: "__waiting_room_inventory__",
-    attachmentId: "__waiting_room_inventory__",
-    scope: "waiting_room_inventory",
+    sessionId: "__room_list__",
+    attachmentId: "__room_list__",
+    scope: "room_list",
     relaySubscriptionId: null,
     relayPublicKey: null,
     relayDecryptEvent: null,
@@ -77,9 +77,9 @@ test("kernel subscription transport request preserves scope and resume cursor", 
   assert.deepEqual(request, {
     __kernel_transport: {
       type: "subscribe",
-      session_id: "__waiting_room_inventory__",
-      attachment_id: "__waiting_room_inventory__",
-      subscription_scope: "waiting_room_inventory",
+      session_id: "__room_list__",
+      attachment_id: "__room_list__",
+      subscription_scope: "room_list",
       resume_from_event_id: 9,
     },
   })
@@ -96,14 +96,14 @@ test("a subscription that asks for a heartbeat interval sends it on every subscr
   })
   const control = buildKernelSubscriptionTransportRequest(session.subscription, null).__kernel_transport
   assert.equal("heartbeat_interval_ms" in control ? control.heartbeat_interval_ms : undefined, 1000)
-  const waitingRoom = createWaitingRoomInventorySubscriptionStart({
+  const roomList = createRoomListSubscriptionStart({
     previous: null,
     lastReceivedEventId: null,
     relaySubscriptionId: null,
     heartbeatIntervalMs: 1000,
   })
-  assert.equal(waitingRoom.subscription.heartbeatIntervalMs, 1000)
-  const quiet = createWaitingRoomInventorySubscriptionStart({
+  assert.equal(roomList.subscription.heartbeatIntervalMs, 1000)
+  const quiet = createRoomListSubscriptionStart({
     previous: null,
     lastReceivedEventId: null,
     relaySubscriptionId: null,

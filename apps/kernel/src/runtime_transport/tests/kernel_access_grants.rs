@@ -664,7 +664,7 @@ impl Kernel {
         popups
             .send(Message::Text(
                 serde_json::json!({"type":"subscribe", "request_id":"popups",
-            "session_id":"", "attachment_id":"", "subscription_scope":"waiting_room_inventory"})
+            "session_id":"", "attachment_id":"", "subscription_scope":"room_list"})
                 .to_string()
                 .into(),
             ))

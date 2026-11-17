@@ -47,7 +47,7 @@ function createHarness(options: {
   introStep?: number
 } = {}) {
   const calls: string[] = []
-  let state = waitingRoomState(options.introStep ?? 0)
+  let state = startState(options.introStep ?? 0)
   const controller = createWaitingRoomIntroAnimationController<string>({
     intervalMs: 90,
     scheduleInterval: (_callback, intervalMs) => {
@@ -75,7 +75,7 @@ function createHarness(options: {
   }
 }
 
-function waitingRoomState(introStep: number): WaitingRoomState {
+function startState(introStep: number): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

@@ -141,7 +141,7 @@ for (const drag of [false, true]) for (const paste of [false, true]) {
         formatError: String, debugLogsEnabled: false, appLogger: null,
         currentFocusedRenderable: () => harness.renderer.currentFocusedRenderable, describeRenderableDebug: String,
         availableSessions: empty, waitingRoomProjects: empty, sessionBrowserIndex: () => 0,
-        waitingRoomState: () => ({ focus: "launch-action" }), providerCatalogState: () => ({}),
+        startState: () => ({ focus: "launch-action" }), providerCatalogState: () => ({}),
         waitingRoomRemoteState: () => ({}), themeRegistryState: () => ({}),
         hotkeysOpen: off, terminalPairingOpen: off, sessionBrowserOpen: off, managedMachineDialogOpen: off,
         terminalPairingState: () => null, terminalPairingQrLines: empty, loadSessions: async () => {},
