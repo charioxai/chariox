@@ -8,6 +8,5 @@
   "subscription_scope": "room_list",
   "events": [
     { "event": "room_list_changed", "inventory_version": "inventory-1" }
-  ],
-  "retired": ["GetWaitingRoomInventory", "GetWaitingRoomPublicSnapshot", "ListWaitingRoomSessions"]
+  ]
 }

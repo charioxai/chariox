@@ -7918,7 +7918,7 @@ A block the agent raises itself with `chariox.events.blocked` sets the task's
 The Room list is the kernel's list of Projects and Rooms that every client shows first. Its wire names no longer
 say "waiting room": `GetRoomListSnapshot` answers `RoomListSnapshot`, `ListRoomListSessions` answers
 `RoomListSessionsListed`, the subscription scope is `room_list` (sentinel id `__room_list__`), and the events are
-`room_list_changed` and `room_list_rows_changed`. The older full-inventory request `GetWaitingRoomInventory` and its
+`room_list_changed` and `room_list_rows_changed`; the terminal command catalog names the Room list surface `room_list`. The older full-inventory request `GetWaitingRoomInventory` and its
 `WaitingRoomInventory` response are removed: no client used them. The old names are gone, not aliased; a client
 speaking them is refused as an unknown request, and an unknown scope falls back to `session`. The numbers follow the
 highest provisional stamps of the other Landing 11 lanes (local 1058, relay peer 496). `room-list-1059.json` and its

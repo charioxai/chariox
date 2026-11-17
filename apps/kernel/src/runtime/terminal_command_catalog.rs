@@ -582,7 +582,7 @@ mod tests {
                 node.surfaces,
                 vec![
                     TerminalCommandCatalogSurface::Session,
-                    TerminalCommandCatalogSurface::WaitingRoom,
+                    TerminalCommandCatalogSurface::RoomList,
                 ]
             );
         }
@@ -618,7 +618,7 @@ mod tests {
             .into_iter()
             .filter(|node| {
                 node.surfaces
-                    .contains(&TerminalCommandCatalogSurface::WaitingRoom)
+                    .contains(&TerminalCommandCatalogSurface::RoomList)
             })
             .map(|node| node.id.as_str())
             .collect::<Vec<_>>();
@@ -934,7 +934,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} should be present"))
         };
         use TerminalCommandCatalogExecutionTarget::{Kernel, TerminalLocal};
-        use TerminalCommandCatalogSurface::{Session, WaitingRoom};
+        use TerminalCommandCatalogSurface::{RoomList, Session};
         for (id, value, target, surfaces) in [
             (
                 "app-dev-stop",
@@ -972,91 +972,91 @@ mod tests {
                 "app-connection",
                 "/app connection ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-connection-list",
                 "/app connection list ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-connection-grant",
                 "/app connection grant ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-connection-revoke",
                 "/app connection revoke ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-account",
                 "/app account ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-account-list",
                 "/app account list ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-account-grant",
                 "/app account grant ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-account-revoke",
                 "/app account revoke ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-standing",
                 "/app standing ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-standing-list",
                 "/app standing list ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-standing-grant",
                 "/app standing grant ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-standing-revoke",
                 "/app standing revoke ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-automation-pause",
                 "/app automation pause ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-inbox-pause",
                 "/app inbox pause ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
             (
                 "app-inbox-resume",
                 "/app inbox resume ",
                 Kernel,
-                vec![Session, WaitingRoom],
+                vec![Session, RoomList],
             ),
         ] {
             let found = node(id);

@@ -513,7 +513,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const commandCenterController = createCommandCenterController<BoxRenderable>({
     getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState(), {
-      surface: isAttached() ? "session" : "waiting_room",
+      surface: isAttached() ? "session" : "room_list",
       executionTargets: isAttached()
         ? ["kernel", "terminal_local", "prompt_prefix"]
         : ["kernel", "terminal_local"],

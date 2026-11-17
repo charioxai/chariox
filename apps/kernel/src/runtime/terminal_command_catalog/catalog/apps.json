@@ -6,7 +6,7 @@
     "value": "/app",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -16,7 +16,7 @@
         "value": "/app list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -46,7 +46,7 @@
         "value": "/app set",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -56,7 +56,7 @@
         "value": "/app status ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -66,7 +66,7 @@
         "value": "/app journal ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -76,7 +76,7 @@
         "value": "/app logs ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -86,7 +86,7 @@
         "value": "/app worker ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -96,7 +96,7 @@
         "value": "/app start ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -106,7 +106,7 @@
         "value": "/app stop ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -116,7 +116,7 @@
         "value": "/app restart ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -135,7 +135,7 @@
         "value": "/app uninstall ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -258,7 +258,7 @@
         "value": "/app automation ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -268,7 +268,7 @@
             "value": "/app automation list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -278,7 +278,7 @@
             "value": "/app automation add ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -288,7 +288,7 @@
             "value": "/app automation disable ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -298,7 +298,7 @@
             "value": "/app automation pause ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -310,7 +310,7 @@
         "value": "/app inbox ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -320,7 +320,7 @@
             "value": "/app inbox list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -330,7 +330,7 @@
             "value": "/app inbox add ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -340,7 +340,7 @@
             "value": "/app inbox remove ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -350,7 +350,7 @@
             "value": "/app inbox pause ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -360,7 +360,7 @@
             "value": "/app inbox resume ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -370,7 +370,7 @@
             "value": "/app inbox test ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -382,7 +382,7 @@
         "value": "/app connection ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -392,7 +392,7 @@
             "value": "/app connection list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -402,7 +402,7 @@
             "value": "/app connection grant ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -412,7 +412,7 @@
             "value": "/app connection revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -424,7 +424,7 @@
         "value": "/app account ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -434,7 +434,7 @@
             "value": "/app account list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -444,7 +444,7 @@
             "value": "/app account grant ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -454,7 +454,7 @@
             "value": "/app account revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -466,7 +466,7 @@
         "value": "/app standing ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -476,7 +476,7 @@
             "value": "/app standing list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -486,7 +486,7 @@
             "value": "/app standing grant ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -496,7 +496,7 @@
             "value": "/app standing revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -535,7 +535,7 @@
             "value": "/app file revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
