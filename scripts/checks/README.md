@@ -34,6 +34,7 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 
 ## Limits
 
-- `protocol-shape-needs-version` reads field, variant and `#[serde(` lines of `apps/kernel/src/local/api/types*` and `transport/relay_peer*`. A moved field nets to nothing. It requires the snapshot update for the local protocol only.
+- `protocol-shape-needs-version` reads public fields, enum variants, the fields inside variants and `#[serde(` lines of `apps/kernel/src/local/api/types*` and `transport/relay_peer*`. A moved field nets to nothing. The constant must be higher at the head than at the merge base, not just touched. It requires the snapshot update for the local protocol only.
+- `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.

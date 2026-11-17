@@ -19,6 +19,8 @@ export default {
   scan(ctx) {
     const findings = []
     for (const file of ctx.files) {
+      // The planted-violation tests of the checks hold SDK imports inside strings.
+      if (file.startsWith('scripts/checks/')) continue
       const name = posix.basename(file)
       const text = ctx.read(file)
       if (text === null) continue

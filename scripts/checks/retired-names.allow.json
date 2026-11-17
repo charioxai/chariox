@@ -370,7 +370,7 @@
  {"path":"docs/MANAGED_PATH1_PARITY_INVENTORY.md","count":22,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/MULTIDOMAIN_APP_VIEWS.md","count":1,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/MULTIDOMAIN_TUI_APP_VIEWS.md","count":5,"why":"written before the name was retired; rename when touching the file"},
- {"path":"docs/MULTI_KERNEL_DIRECTORY_HETZNER_VALIDATION.md","count":3,"why":"written before the name was retired; rename when touching the file"},
+ {"path":"docs/MULTI_KERNEL_DIRECTORY_VALIDATION.md","count":3,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/PROTOCOL.md","count":25,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/PROVIDER_ACCOUNTS.md","count":3,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/PROVIDER_ACCOUNT_TARGET_SCOPE_VALIDATION_PLAN.md","count":1,"why":"written before the name was retired; rename when touching the file"},
