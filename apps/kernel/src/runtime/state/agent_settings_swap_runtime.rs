@@ -46,7 +46,10 @@ impl KernelRuntimeState {
             .unwrap_or(run.provider())
             == crate::provider::canonical_provider_family(agent.provider())
                 .unwrap_or(agent.provider());
-        if agent.remote_execution().is_some() || !same_family {
+        if agent.remote_execution().is_some()
+            || !same_family
+            || !owned.can_relaunch_with_held_credential(&run, &agent)
+        {
             return Ok(false);
         }
         let session = owned.session_store.get_session(session_id)?;

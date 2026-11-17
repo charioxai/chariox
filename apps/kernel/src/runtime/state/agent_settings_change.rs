@@ -205,6 +205,30 @@ impl KernelRuntimeOwnedState {
             line,
         );
     }
+
+    /// Whether the process can be relaunched on the agent's profile now. The worker relaunches a
+    /// leased Claude process with the credential the home launched it with; another account's
+    /// has none there until the next prompt brings it, so a change to it waits for the turn end.
+    pub(super) fn can_relaunch_with_held_credential(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        agent: &crate::agent::AgentInstance,
+    ) -> bool {
+        !self
+            .provider_run_projection
+            .is_leased_provider_run(run.id())
+            || crate::provider::canonical_provider_family(agent.provider())
+                .unwrap_or(agent.provider())
+                != "claude"
+            || self
+                .leased_launch_credentials
+                .for_profile(
+                    agent.id(),
+                    agent.provider(),
+                    agent.provider_account_profile(),
+                )
+                .is_some()
+    }
 }
 
 /// Who asked for a change and why.
@@ -326,20 +350,7 @@ impl KernelRuntimeState {
                 .unwrap_or(provider)
                 .to_string()
         };
-        // The worker relaunches a leased Claude process with the credential the home launched it
-        // with; the new profile's account has none there until the next prompt brings it.
-        let relaunchable = !owned
-            .provider_run_projection
-            .is_leased_provider_run(run.id())
-            || canonical(agent.provider()) != "claude"
-            || owned
-                .leased_launch_credentials
-                .for_profile(
-                    agent.id(),
-                    agent.provider(),
-                    agent.provider_account_profile(),
-                )
-                .is_some();
+        let relaunchable = owned.can_relaunch_with_held_credential(&run, agent);
         if relaunchable
             && owned
                 .provider_store

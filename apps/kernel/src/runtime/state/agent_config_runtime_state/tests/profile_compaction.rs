@@ -656,6 +656,103 @@ async fn leased_worker_validates_before_compaction_and_takes_a_busy_profile_chan
 }
 
 #[tokio::test]
+async fn a_leased_turn_finishes_on_its_account_when_the_worker_holds_no_credential_for_the_new_one()
+{
+    let (_root, app, runtime, session, agent, run, lease) = compact_fixture_with_lease(true).await;
+    let lease = lease.unwrap();
+    let default_account = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent)
+        .unwrap()
+        .provider_account_profile()
+        .to_string();
+    let next_account = runtime
+        .owned
+        .provider_account_profiles
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "next")
+        .unwrap()
+        .profile_id;
+    // The worker holds only the credential the home launched the running process with.
+    runtime
+        .owned
+        .provider_run_projection
+        .mark_leased_provider_run(run.id());
+    runtime.owned.leased_launch_credentials.keep(
+        &agent,
+        run.id(),
+        crate::transport::relay_peer::RemoteProviderLaunchCredential {
+            provider: "claude".into(),
+            account_profile: default_account,
+            secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                "synthetic-launch-credential".into(),
+            ),
+        },
+    );
+    sync_active_prompt(&app, &session, &agent).await;
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &session,
+            &agent,
+            "active-prompt",
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            None,
+        )
+        .unwrap();
+    runtime
+        .owned
+        .prompt_activity
+        .write()
+        .entry(run.id().to_string())
+        .or_insert(crate::app::ActivePromptState {
+            last_output_at: None,
+            saw_response_content: false,
+            completion_recorded: false,
+            settlement_requested: false,
+            active_tools: Default::default(),
+        });
+
+    runtime
+        .update_relay_leased_agent_profile(
+            &lease.id,
+            "claude".into(),
+            next_account.clone(),
+            Some("claude-sonnet-5-5[1m]".into()),
+            None,
+        )
+        .await
+        .expect("the change is accepted while the turn runs");
+
+    let swapped = runtime
+        .swap_turn_process_at_step_boundary(&session, run.id())
+        .await
+        .expect("the step boundary does not fail the turn");
+    assert!(
+        !swapped,
+        "the turn is not cut for an account it cannot launch"
+    );
+    let live = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&session, &agent)
+        .expect("the process is still the agent's");
+    assert_eq!(live.id(), run.id());
+    assert_eq!(live.state(), ProviderRunState::Running);
+    assert!(live.settings_stale(), "the next turn starts a new process");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent)
+            .unwrap()
+            .provider_account_profile(),
+        next_account
+    );
+}
+
+#[tokio::test]
 async fn empty_profile_queue_does_not_prepare_project_or_request_a_vault_unlock() {
     let root = crate::test_support::TestWorktree::new("profile-empty-vault");
     let mut config = crate::config::DaemonConfig::for_tests();
