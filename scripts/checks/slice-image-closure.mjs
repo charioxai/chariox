@@ -34,14 +34,17 @@ function runtimeContents(dockerfile, files) {
     for (const raw of paths) {
       const src = posix.normalize(raw).replace(/\/$/, '')
       // A directory copies its contents into the destination; a file lands under it when the destination is a directory.
-      const lands = source === undefined ? isDirectory(src) : false
-      const into = toDirectory && !lands ? posix.join(target, posix.basename(src)) : target
-      if (source === undefined) current.entries.push({ dest: into, src })
-      else for (const e of stages.get(source)?.entries ?? []) {
-        const path = posix.resolve(stages.get(source).workdir, src)
+      if (source === undefined) {
+        current.entries.push({ dest: toDirectory && !isDirectory(src) ? posix.join(target, posix.basename(src)) : target, src })
+        continue
+      }
+      for (const e of stages.get(source)?.entries ?? []) {
+        const path = posix.resolve(stages.get(source).workdir, raw)
         // A path inside a copied directory maps to the same place inside its source; a copied parent holds the whole entry.
-        if (path === e.dest || path.startsWith(`${e.dest}/`)) current.entries.push({ dest: into, src: posix.join(e.src, posix.relative(e.dest, path)) })
-        else if (e.dest.startsWith(`${path}/`)) current.entries.push({ dest: posix.join(into, posix.relative(path, e.dest)), src: e.src })
+        if (path === e.dest || path.startsWith(`${e.dest}/`)) {
+          const from = posix.join(e.src, posix.relative(e.dest, path))
+          current.entries.push({ dest: isDirectory(from) || !toDirectory ? target : posix.join(target, posix.basename(path)), src: from })
+        } else if (e.dest.startsWith(`${path}/`)) current.entries.push({ dest: posix.join(target, posix.relative(path, e.dest)), src: e.src })
       }
     }
   }
@@ -56,22 +59,30 @@ export default {
   scan(ctx) {
     const dockerfile = ctx.read(DOCKERFILE)
     if (dockerfile === null) return []
-    const sources = runtimeContents(dockerfile, ctx.files).map(e => e.src)
-    const shipped = file => sources.some(s => file === s || file.startsWith(`${s}/`))
     const tracked = new Set(ctx.files)
+    // Every file the runtime stage installs: image path -> repository files, expanded from copied directories.
+    const installed = new Map()
+    for (const { dest, src } of runtimeContents(dockerfile, ctx.files)) {
+      const inside = ctx.files.filter(f => f.startsWith(`${src}/`))
+      for (const [path, file] of inside.length ? inside.map(f => [posix.join(dest, posix.relative(src, f)), f]) : [[dest, src]]) {
+        installed.set(path, new Set([...(installed.get(path) ?? []), file]))
+      }
+    }
     const findings = []
     const seen = new Set()
-    const pending = ctx.files.filter(f => ENTRY.test(f) && !NOT_SHIPPED.test(f) && shipped(f))
+    // A relative import resolves from where its importer is installed, so each installed copy is walked with its own location.
+    const pending = [...installed].flatMap(([path, files]) => [...files].filter(f => ENTRY.test(f) && !NOT_SHIPPED.test(f)).map(file => ({ file, path })))
     while (pending.length) {
-      const file = pending.pop()
-      if (seen.has(file)) continue
-      seen.add(file)
+      const { file, path } = pending.pop()
+      if (seen.has(path)) continue
+      seen.add(path)
       const text = ctx.read(file) ?? ''
       for (const m of text.matchAll(IMPORT)) {
         const target = posix.normalize(posix.join(posix.dirname(file), m[1]))
         if (!tracked.has(target)) continue
-        if (!shipped(target)) findings.push({ file, line: text.slice(0, m.index).split('\n').length, what: `imports ${target}, which the slice image does not copy` })
-        else pending.push(target)
+        const resolved = posix.join(posix.dirname(path), m[1])
+        if (installed.get(resolved)?.has(target)) pending.push({ file: target, path: resolved })
+        else findings.push({ file, line: text.slice(0, m.index).split('\n').length, what: `imports ${target}, which the slice image does not copy at ${resolved} (next to its importer, installed at ${path})` })
       }
     }
     return findings

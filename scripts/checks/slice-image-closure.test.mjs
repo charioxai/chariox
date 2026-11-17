@@ -23,7 +23,7 @@ test('a module imported by a shipped entrypoint but not copied is red', () => {
   r.write(`${DOCKER}/Dockerfile`, dockerfile(['host.mjs', 'a.mjs']))
   const result = r.run(check.name)
   assert.equal(result.status, 1)
-  assert.match(result.text, new RegExp(`${DOCKER}/a\\.mjs:1: imports ${DOCKER}/b\\.mjs, which the slice image does not copy\\. Root fix: add a COPY line`))
+  assert.match(result.text, new RegExp(`${DOCKER}/a\\.mjs:1: imports ${DOCKER}/b\\.mjs, which the slice image does not copy at /opt/chariox-slice/b\\.mjs`))
   r.dispose()
 })
 
@@ -71,7 +71,17 @@ test('a module reaches the runtime stage through COPY --from only when the build
   assert.equal(r.run(check.name).status, 0)
   r.write(`${DOCKER}/Dockerfile`, viaBuilder('/opt/chariox-source/apps/relay/b.mjs'))
   assert.equal(r.run(check.name).status, 1)
-  r.write(`${DOCKER}/Dockerfile`, multiStage([copyLine('host.mjs'), copyLine('a.mjs'), `COPY --from=rust-builder /opt/chariox-source/apps/kernel/ /opt/kernel/`]))
-  assert.equal(r.run(check.name).status, 0, 'a copied parent directory holds the module')
+  r.dispose()
+})
+
+test('a copied parent directory holds the modules only at the paths the importer resolves to', () => {
+  const kernelDirectory = (...runtime) => multiStage([...runtime, 'COPY --from=rust-builder /opt/chariox-source/apps/kernel/ /opt/kernel/'])
+  const r = makeRepo({ ...files([]), [`${DOCKER}/Dockerfile`]: kernelDirectory() })
+  assert.equal(r.run(check.name).status, 0, 'host, a and b all sit side by side under /opt/kernel')
+  // b.mjs exists in the image, but under /opt/kernel, not next to a.mjs at /opt/chariox-slice: `./b.mjs` does not find it.
+  r.write(`${DOCKER}/Dockerfile`, kernelDirectory(copyLine('host.mjs'), copyLine('a.mjs')))
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, new RegExp(`a\\.mjs:1: imports ${DOCKER}/b\\.mjs, which the slice image does not copy at /opt/chariox-slice/b\\.mjs`))
   r.dispose()
 })
