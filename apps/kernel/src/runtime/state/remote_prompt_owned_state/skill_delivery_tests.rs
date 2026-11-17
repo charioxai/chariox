@@ -585,7 +585,9 @@ async fn worker_leased_turn(
 
 // The drill's first failing seam: on the worker, OpenCode's completed `skill` call must
 // reach the home through the lease even though the worker's run is a leased run.
-#[tokio::test]
+// Multi-threaded like the kernel: the forward blocks this thread while relay discovery
+// needs a running IO driver to fail.
+#[tokio::test(flavor = "multi_thread")]
 async fn worker_forwards_opencode_native_tool_receipt_for_its_leased_run() {
     let (runtime, _session_id, _agent_id, _prompt_id, run) =
         worker_leased_turn(crate::DaemonConfig::for_tests(), "opencode").await;
@@ -1013,7 +1015,9 @@ async fn second_named_kernel_leased_turn_skips_inventory(text: &str, user_skill_
 
 // A second named worker sharing the home directory owns no catalog, yet it delivers the
 // authenticated home's instructions: its delivery receipt still has to reach the home.
-#[tokio::test]
+// Multi-threaded like the kernel: the forward blocks this thread while relay discovery
+// needs a running IO driver to fail.
+#[tokio::test(flavor = "multi_thread")]
 async fn second_named_worker_forwards_prompt_delivery_receipts_to_the_home() {
     let root = std::env::temp_dir().join(format!("skillsk-worker-{:032x}", rand::random::<u128>()));
     std::fs::create_dir(&root).unwrap();

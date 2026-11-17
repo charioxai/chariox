@@ -296,6 +296,11 @@ impl KernelRuntimeState {
         context: &RemoteSkillSyncContext,
         set: &super::skills_dispatch::RemoteSkillSet,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
+        // Revision 0 is the catalog nobody has changed: it holds no skill and a new lease's
+        // view starts there, so the turn costs no relay round trip.
+        if set.manifest.catalog_revision == 0 && set.manifest.skills.is_empty() {
+            return Ok(Vec::new());
+        }
         let request = RelayPeerRequest::EnsureRemoteSkillPackages {
             execution_lease_id: remote.execution_lease_id.clone(),
             manifest: set.manifest.clone(),
