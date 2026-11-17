@@ -1,6 +1,7 @@
 # Apps: any program
 
-Plan, 2026-11-17. Not accepted yet. Plan only: no product code comes with it.
+Plan, 2026-11-17. Accepted by Miguel on 2026-11-17, with the answers in section 13.
+Plan only: no product code comes with it.
 Brief: Miguel, 2026-11-17 ("any program as a Chariox App"). This area starts
 right after Apps distribution.
 
@@ -74,13 +75,11 @@ network without a virtual network or host privilege.
 **Wasmtime is not forked.** We carry a musl port, an SDK, a process layer in
 the worker and, later, small toolkit patch sets (section 11).
 
-**This plan replaces** the decision of 2026-10-22 in
-`spikes/wasm/APPS_V2_SHAPE.md` section 7 ("Wrapped existing binaries —
-reversed"), which excluded programs that need threads, raw sockets or a native
-GUI. When this plan is accepted, that section is deleted in the same change.
+**This plan replaces** the decision of 2026-10-22 against wrapped binaries
+(programs that need threads, raw sockets or a native GUI). That section of
+`spikes/wasm/APPS_V2_SHAPE.md` is deleted.
 
-Ten questions only Miguel can decide are in section 13, each with a
-recommended default.
+Miguel's answers to the ten questions are in section 13.
 
 ## 1. Principles used
 
@@ -159,7 +158,7 @@ world program {
   no client attached, so the same window is there on the next device (P1) and
   agents can work alone (P2). There is no snapshot of a running program:
   Wasmtime has none, and we do not build one. A kernel restart is a cold start;
-  programs restore from their own files, as on a desktop (question Q3).
+  programs restore from their own files, as on a desktop (answer Q3).
 - **Stopping.** Stop is a request first (`SIGTERM` or a close event), then an
   epoch interrupt after a grace period. The worker process is the hard limit.
 - **Files** (P3: a small Linux layout):
@@ -282,7 +281,7 @@ and scrolling must be a layer transform, not re-sent content.
 - **Size.** The window is sized for the client that owns input. When another
   client takes over, the kernel reconfigures the window to that client's size
   and scale; programs handle resize natively. Passive clients see the window
-  scaled to fit (question Q2).
+  scaled to fit (answer Q2).
 - **Input.** One input owner at a time, with explicit takeover and a ledger,
   as in the kernel browser. An agent acting through the tree does not take the
   pointer.
@@ -336,7 +335,7 @@ Summary. "Upstream" is Wasmtime, WASI and the WASM proposals.
 |---|---|---|---|---|
 | Long-running `main` | `wasi:cli/run`, async since WASI 0.3 (default since Wasmtime 46) | Stable | Use it; lift the call cap | No |
 | Parallel threads | Core `threads` on; `SharedMemory` off by default, tier 2. wasi-threads removed in 47. Components: cooperative threads only | Shared-everything threads: Phase 1, no date. Cooperative threads default in wasi-sdk planned end of 2026 | Own thread spawn in the process layer: one instance per thread over one shared memory (4.1) | No |
-| Processes | Nothing, and no proposal | Nothing planned | Processes are instances in the same worker; `posix_spawn`, `vfork`+`exec`, `fork` as a build flavour (4.2) | No |
+| Processes | Nothing, and no proposal | Nothing planned | Processes are instances in the same worker; `posix_spawn` and `vfork`+`exec` unchanged, every `fork` as a build flavour (4.2) | No |
 | Signals | Nothing | Nothing planned | Guest polling of a pending word; host handles `KILL`/`STOP` (4.3) | No |
 | Sockets | `wasi:sockets` TCP, UDP, DNS; denied by default since 48. No raw, no AF_UNIX | `wasi-tls` Phase 1 | Kernel network policy in front of host sockets; loopback and AF_UNIX virtual; virtual network stack for raw sockets (4.4) | No |
 | GPU | `wasi:webgpu` Phase 2; out-of-tree `wasi-gfx-runtime` 0.5.2 for Wasmtime 46-50 | Unclear | `chariox:gpu` in the same shape, on wgpu; GLES shape beside it (4.5) | No (a dependency we may have to vendor) |
@@ -383,16 +382,24 @@ cores is built as a Linux-ABI program.
 **D6. A process is a set of instances in the same worker with its own memory,
 file table and pid (P3).**
 
-- `posix_spawn`, `vfork`+`exec` and `fork`+`exec` are supported without
-  instrumentation. `exec` loads another WASM module from `/app` or a runtime
-  pack. `vfork` is built on the WASM exception-based `setjmp` in our musl
-  (spike S13 fixes the exact mechanism).
-- `fork` without `exec` (shell subshells, Python `multiprocessing` with the
-  fork start method, pre-forking servers) needs a copy of the stack. That is a
-  build flavour: the SDK post-link tool instruments the binary (Binaryen
+- `posix_spawn` and `vfork`+`exec` are supported without instrumentation. A
+  `vfork` child runs on the parent's stack and memory with the parent
+  suspended until the child calls `exec` or exits, so no stack copy is needed.
+  `exec` loads another WASM module from `/app` or a runtime pack. `vfork` is
+  built on the WASM exception-based `setjmp` in our musl. This mechanism is not
+  proven yet: spike S13 builds it and validation cell AP3-10 proves it. Its
+  kill criterion: if `setjmp` cannot return a second time into the parent's
+  frames without a stack copy, `vfork` joins the fork flavour and only
+  `posix_spawn` stays uninstrumented.
+- **Every `fork`, with or without `exec`,** needs the fork flavour. The child
+  continues from the call with its own copy of the stack, and it runs code
+  before any `exec` (a shell's `dup2`, `chdir`, `setsid`; Python
+  `multiprocessing` with the fork start method; pre-forking servers). That is
+  a build flavour: the SDK post-link tool instruments the binary (Binaryen
   Asyncify, about 50% larger and usually up to 20% slower, or a lighter
   fork-only instrumentation as Kandelo did). The memory copy is real, not
-  copy-on-write.
+  copy-on-write. A binary built without the flavour that calls `fork` fails
+  with `ENOSYS` and a message that names the flavour.
 - `exec` of a native binary is refused, always. A program that shells out to
   `git`, `sh`, `python` or `ffmpeg` needs those tools as WASM. Chariox ships
   them as **runtime packs** a manifest depends on (P3: Flatpak runtimes).
@@ -422,7 +429,7 @@ fatal signal; handlers that resume after a fault are a named limit.
 - TCP, UDP and DNS: implemented on host sockets behind a policy check per
   connect, bind and send, in the worker. The manifest declares what the
   program needs (hosts, ports, "any host", inbound listen); the person grants
-  it at install (question Q4). Spike S2: stock Wasmtime refuses sockets
+  it at install (answer Q4). Spike S2: stock Wasmtime refuses sockets
   without a grant and passes TCP listen/accept/echo, name lookup, an outbound
   HTTP request and UDP with one.
 - **Loopback and AF_UNIX are virtual and private per program.** Two programs
@@ -457,7 +464,7 @@ kernel first, replayed on the client later (P3).**
   client's GPU (the Dawn Wire pattern), with a shadow of resources in the
   kernel so another device can take over. Readbacks cost a round trip. This is
   the only way to get interactive 3D from a kernel host without a GPU
-  (question Q8).
+  (answer Q8).
 
 ### 4.6 Memory, files, clocks
 
@@ -643,7 +650,7 @@ Games, ImGui tools and some SDL programs have no tree. An agent then has
 actions (6.3) and, as a fallback, the screenshot plus pointer and keys inside
 that program's window. That is computer use scoped to one program view; it is
 allowed, marked in the receipt, and never the default when a tree exists
-(question Q9).
+(answer Q9).
 
 ## 7. Electron: the first milestone
 
@@ -690,7 +697,7 @@ portals answer.
 
 **D14. A `BrowserWindow` is a tab of the kernel browser in a browser context
 private to that installation; clients see it through the DOM mirror (P1, P2).
-Question Q1.**
+Answer Q1.**
 
 Why the kernel and not each client's own web engine:
 
@@ -924,7 +931,7 @@ misses RTT + 100 ms, it ships as playback-only without the sync promise.
 Scope, each its own sub-milestone with its own acceptance: Flutter (12-20),
 .NET and Avalonia (8-12), Go on the Linux ABI (8-12), Java with Swing and
 JavaFX (10-16), Compose (6-10), Tk and Xlib programs through Xwayland (6-10).
-Order by demand (question Q10).
+Order by demand (answer Q10).
 
 Spikes: S21-S24. Kill criteria per sub-milestone: if its spike does not
 produce a running window in 2 lane-weeks, that toolkit is parked with the
@@ -978,7 +985,7 @@ browser, the Linux ABI itself, and every toolkit build.
 | S10 | M2 | Record scenes from egui, GSK and QPainter programs; replay them in CanvasKit, Canvas 2D and a WebGPU vector renderer on Chrome, Safari (iOS) and Firefox: frames per second, pixel difference from the program's own raster, download size, start time? |
 | S11 | M2 | A hidden input at the caret with composition (Japanese, Chinese, emoji, dead keys) on Chrome, Safari iOS and Firefox against an egui text field: is every commit and pre-edit correct? Does the phone keyboard open and stay? |
 | S12 | M3 | Our musl port on the system-call imports, on the thread host: do dash, coreutils and CPython build without source changes and pass their own tests? How many distinct system calls do they need? Linux Test Project pass rate for those? |
-| S13 | M3 | `vfork`+`exec` on exception-based `setjmp`; `fork` by Asyncify against fork-only instrumentation, on bash and CPython `multiprocessing`: size, speed, fork time at 100 MB of memory? |
+| S13 | M3 | Does `vfork`+`exec` work uninstrumented on exception-based `setjmp` (kill criterion in 4.2); `fork` by Asyncify against fork-only instrumentation, on bash and CPython `multiprocessing`: size, speed, fork time at 100 MB of memory? |
 | S14 | M3 | `dlopen` of a side module in the instance-per-thread model: can table and memory growth be replayed into running threads? Load CPython's `_ssl` and a Qt plugin |
 | S15 | M3 | Audit: can every host access to shared guest memory in the process layer be an atomic-safe copy, with a check that fails the build otherwise? Any Wasmtime API that forces a plain borrow? |
 | S16 | M4 | SDL 3 `testsprite` and `gtk4-demo` built with the SDK against a minimal Wayland endpoint with shm buffers: do they draw and take input? Bytes per second as lossless tiles while typing and scrolling? |
@@ -993,7 +1000,7 @@ browser, the Linux ABI itself, and every toolkit build.
 
 ## 10. Validation cells
 
-Rows Miguel accepts before implementation of each milestone starts. Programs
+Miguel accepted these rows on 2026-11-17 as the scenarios of each milestone. Programs
 are real open-source programs, built from unchanged upstream source (Electron
 apps: unchanged release files); versions are pinned when the milestone starts.
 
@@ -1058,6 +1065,7 @@ demo with ImPlot.
 | AP3-07 | Electron tail: Joplin (SQLite, sync), Insomnia (compiled `node-libcurl`), Beekeeper Studio (connect to a real PostgreSQL), Tabby (local shell on a Chariox pty, SSH) | Named flows work from unchanged release files plus recompiled addons |
 | AP3-08 | Agent, no client: run `git log`, a Python script and a build as actions | Output, exit code and duration returned; no terminal scraping |
 | AP3-09 (mac) | AP3-01 and AP3-03 on a macOS kernel host | Identical results from the same package |
+| AP3-10 | `vfork` proof: Python `subprocess` (its `vfork` path), `posix_spawn` from a C program, and `git` starting `ssh` and a hook, all built without the fork flavour; then the same C program calling `fork` | The spawns run to `exec` with correct exit codes and no stack copy (binary size and spawn time equal to a build without fork support); the plain `fork` call fails with `ENOSYS` and the message that names the flavour. Kill criterion: if any spawn needs the fork flavour, 4.2 and AP3-03 change to say so before M3 work continues |
 
 ### M4 Linux desktop endpoints
 
@@ -1132,7 +1140,7 @@ M7 forks are a third. Through M6 it is about 18-24.
 Licences: nothing GPL goes into the runtime or the SDK (so no Kandelo code).
 Programs keep their own licences. A statically linked LGPL library (Qt, GTK)
 obliges the packager to ship relinkable objects; the pack tool does that by
-keeping the object archive in the package (question Q10).
+keeping the object archive in the package (answer Q10).
 
 ## 12. What stays impossible, and why
 
@@ -1166,27 +1174,27 @@ remain, each for a stated reason:
 "Mostly as is" means: built from unchanged source with the Chariox SDK and
 build flags. Electron apps are not rebuilt at all.
 
-## 13. Open questions for Miguel
+## 13. Answers (accepted 2026-11-17)
 
-Each has a recommended default; the plan above assumes the defaults.
+Miguel accepted all ten recommended answers. The plan above is built on them.
 
-| # | Question | Recommended default | Why |
-|---|---|---|---|
-| Q1 | Where do Electron windows render: in the kernel browser (mirrored), or in each client's own web engine like App views? This reverses, for programs only, the "no kernel App tab" direction of App views | **Kernel browser first; client-rendered later as an optional fast path (M1d)** | Unchanged renderers need Chromium control (census), agents need a renderer with no client, and the person gets one window state on every device (P1, P2) |
-| Q2 | One window, many devices: resize to the device that has input, or keep one fixed size? | **Resize on takeover; passive clients see it scaled** | The window fits the phone you pick up (P1) |
-| Q3 | How long does a program live with no client? | **Until it exits or its last window is closed; a kernel restart is a cold start; no snapshots** | Same window on the next device, agents can work alone (P1, P2); matches the 2026-10-04 App view decision on restart |
-| Q4 | Network for unchanged programs: they expect open internet | **The packager declares it; "any host" is allowed and shown as one clear consent line at install; loopback is always private** | Programs work without edits; the person sees the grant once (P1) |
-| Q5 | May programs be told they run on Linux (a Chariox-implemented Linux ABI), instead of a strict WASI-only target? | **Yes** | It is what makes existing programs and toolkits build unchanged (P3). Strict WASI needs a port per program |
-| Q6 | This plan replaces the 2026-10-22 decision against wrapped binaries (threads, raw sockets, native GUI excluded). Confirm | **Replace it; delete that section on acceptance** | The brief asks for exactly what that decision excluded |
-| Q7 | Electron main-process JavaScript will be 6-15x slower than in Electron until a faster engine is in. Start anyway? | **Start with QuickJS; switch by the M1 kill criteria** | Most main processes are glue; the switch path exists (7.6) |
-| Q8 | GPU programs on kernel hosts without a GPU: software rendering in the kernel first, or client-side replay first? Will managed placements offer GPUs? | **Kernel-side first (works everywhere, slow without a GPU); client replay second** | One path that works for every client and for agents before the fast one (P1, P2) |
-| Q9 | May an agent use screenshot plus pointer inside one program's window when the program has no tree? | **Yes, as a marked fallback, never when a tree exists** | Otherwise agents cannot use games and ImGui tools at all (P2) |
-| Q10 | After Electron: is the order M2/M3 → GTK, Qt, SDL → GPU, audio → Flutter, .NET, Java, Go right? And who packages programs: Chariox for a reference set, authors for the rest? | **Yes to the order; Chariox packages the validation set as references, the SDK and pack tool are for everyone; LGPL objects ship in the package** | The order follows dependencies and cost; a reference set proves the SDK (P3) |
+- **Q1.** Electron windows render in the kernel browser, mirrored to every client; a client-rendered fast path is optional and later (M1d).
+- **Q2.** The window resizes to the device that takes over input; passive clients see it scaled.
+- **Q3.** A program lives until it exits or its last window is closed; a kernel restart is a cold start; no snapshots.
+- **Q4.** The packager declares the network; "any host" is allowed and shown as one consent line at install; loopback is always private.
+- **Q5.** Programs are told they run on Linux, through a Chariox-implemented Linux ABI.
+- **Q6.** This plan replaces the 2026-10-22 decision against wrapped binaries; that section is deleted.
+- **Q7.** Start with QuickJS for the Electron main process; switch by the M1 kill criteria.
+- **Q8.** GPU programs render in software on the kernel first; client-side replay comes second.
+- **Q9.** An agent may use screenshot plus pointer in one program's window only as a marked fallback when the program has no tree, never when a tree exists.
+- **Q10.** The milestone order stays as proposed; Chariox packages the validation set as references, the SDK and pack tool are for everyone, and LGPL objects ship in the package.
+
+The validation cells in section 10 are the accepted scenarios.
 
 ## 14. References
 
-- This repository: `spikes/wasm/APPS_V2_PLAN.md`, `spikes/wasm/APPS_V2_SHAPE.md`
-  (section 7 is replaced by this plan), `packages/app-wit/wit/app.wit`,
+- This repository: `spikes/wasm/APPS_V2_PLAN.md`, `spikes/wasm/APPS_V2_SHAPE.md`,
+  `packages/app-wit/wit/app.wit`,
   `packages/app-wit/wit/admission.wit`, `packages/app-wasm-worker`,
   `docs/APP_VIEW_HOST_AV1.md`, `docs/APP_VIEW_DELIVERY_AV2.md`,
   `docs/MULTIDOMAIN_DOM_MIRRORING.md`, `docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md`,
