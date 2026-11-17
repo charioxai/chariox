@@ -212,13 +212,7 @@ impl KernelRuntimeState {
         let workflow_attachment = workflow
             .as_ref()
             .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
-        // A10: the worker fences a rejected home prompt id, so each leased
-        // attempt after a proven rejection uses a fresh id; transport retries
-        // and receipt reconciliation within one attempt keep the same id.
-        let prompt_id = match event.attempted_at_ms.filter(|_| leased) {
-            Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
-            None => format!("agent-event-{}-{}", agent, event.sequence),
-        };
+        let prompt_id = event.transport_prompt_id(leased);
         let after = self
             .owned
             .durable_state_store

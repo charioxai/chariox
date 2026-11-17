@@ -827,6 +827,7 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
+            resumed_at_ms: None,
         })) else {
             panic!("expected historical event")
         };
@@ -2382,6 +2383,7 @@ mod driver_sources {
                 provider_run_id: None,
                 attempted_at_ms: None,
                 submit_epoch: None,
+                resumed_at_ms: None,
             })) else {
                 panic!("expected historical event")
             };

@@ -156,8 +156,23 @@ pub(crate) struct InboxEvent {
     pub provider_run_id: Option<String>,
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
+    /// When the owner last sent this delivery again; it keeps a leased resend's prompt id fresh.
+    pub resumed_at_ms: Option<u64>,
 }
 impl InboxEvent {
+    /// The transport prompt id of this event's next attempt. The worker fences a rejected leased
+    /// prompt id, so each leased attempt after a proven rejection uses a fresh id; transport
+    /// retries and receipt reconciliation within one attempt keep the same id.
+    pub(crate) fn transport_prompt_id(&self, leased: bool) -> String {
+        match self
+            .attempted_at_ms
+            .or(self.resumed_at_ms)
+            .filter(|_| leased)
+        {
+            Some(previous) => format!("agent-event-{}-{}-{previous}", self.agent_id, self.sequence),
+            None => format!("agent-event-{}-{}", self.agent_id, self.sequence),
+        }
+    }
     /// The outcome of a source the recipient waited on: the receipt of a source or a child's `child_finished`.
     pub(crate) fn is_source_outcome(&self) -> bool {
         matches!(

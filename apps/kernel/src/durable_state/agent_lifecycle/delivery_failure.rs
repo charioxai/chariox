@@ -22,11 +22,13 @@ pub(super) fn fail_undelivered(
 }
 
 fn tell_sender(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
-    // A sender without a task here is not an agent of this room to tell.
+    // A message to another room lives in the recipient's room and names the sender's room.
+    let sender_room = e.payload["sender_room_id"].as_str().unwrap_or(&e.room_id);
+    // A sender without a task there is not an agent of this kernel to tell.
     let known: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2)",
-            params![e.room_id, e.source_id],
+            params![sender_room, e.source_id],
             |r| r.get(0),
         )
         .map_err(sql)?;
@@ -38,7 +40,7 @@ fn tell_sender(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> 
     event(
         tx,
         occurrence(
-            &e.room_id,
+            sender_room,
             &e.source_id,
             &source,
             &id,
@@ -56,13 +58,18 @@ fn tell_sender(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> 
 }
 
 /// The owner's Resume of an unconfirmed delivery: it goes out again as a fresh attempt.
-pub(super) fn send_again(tx: &Transaction<'_>, e: &mut InboxEvent) -> Result<(), DaemonError> {
+pub(super) fn send_again(
+    tx: &Transaction<'_>,
+    e: &mut InboxEvent,
+    now: u64,
+) -> Result<(), DaemonError> {
     e.state = "pending".into();
     e.prompt_id = None;
     e.target_prompt_id = None;
     e.provider_run_id = None;
     e.submit_epoch = None;
     e.attempted_at_ms = None;
+    e.resumed_at_ms = Some(now);
     tx.execute(
         "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
         [sql_integer(e.sequence)?],

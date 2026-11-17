@@ -92,6 +92,7 @@ async fn a02_native_settlement_never_reacquires_held_provider_lane() {
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
+            resumed_at_ms: None,
         }))
         .unwrap();
     let held = runtime.provider_runtime_lanes.acquire(run.id()).await;

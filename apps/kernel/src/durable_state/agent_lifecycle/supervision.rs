@@ -601,7 +601,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if let Some(own) = own {
                     let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
                     if matches!(event.state.as_str(), "blocked" | "uncertain" | "failed") {
-                        super::delivery_failure::send_again(tx, &mut event)?;
+                        super::delivery_failure::send_again(tx, &mut event, now)?;
                         t.state = ExecutionState::Done;
                         t.reason = "Delivery sent again".into();
                         t.owner_action = None;

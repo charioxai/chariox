@@ -22,6 +22,7 @@ fn send(f: &Fixture, key: &str) -> InboxEvent {
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
+            resumed_at_ms: None,
         },
     }) else {
         panic!("event")

@@ -62,6 +62,7 @@ impl Team {
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
+            resumed_at_ms: None,
         }
     }
 }

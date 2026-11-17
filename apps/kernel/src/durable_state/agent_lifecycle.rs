@@ -12,6 +12,8 @@ mod deadlines;
 mod delegation;
 mod delivery;
 mod delivery_failure;
+#[cfg(test)]
+mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
@@ -1502,6 +1504,7 @@ pub(crate) fn occurrence(
         provider_run_id: None,
         attempted_at_ms: None,
         submit_epoch: None,
+        resumed_at_ms: None,
     }
 }
 
