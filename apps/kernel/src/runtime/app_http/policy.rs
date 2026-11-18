@@ -241,6 +241,11 @@ impl Rules {
             .path_segments()
             .map(Iterator::collect)
             .unwrap_or_default();
+        // A backend may decode a percent-encoded parameter into a path of its own, like
+        // `protected` refuses.
+        if segments.iter().any(|segment| segment.contains('%')) {
+            return Err(HttpError::RouteNotDeclared);
+        }
         let route = destination
             .routes
             .iter()

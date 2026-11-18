@@ -104,6 +104,13 @@ fn spawn_with_environment(
     for name in crate::room_terminal::KERNEL_SECRET_ENVIRONMENT {
         command.env_remove(name);
     }
+    // Everything the command starts inherits this claim, so cleanup owns a job that detached
+    // before anything looked at the command's tree.
+    let claim = format!("room-exec-{:032x}", rand::random::<u128>());
+    command.env(
+        crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+        &claim,
+    );
     #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
@@ -119,7 +126,7 @@ fn spawn_with_environment(
             format!("cannot start command: {failure}; check the program and Room directory"),
         )
     })?;
-    let mut signals = match OwnedProcessSignals::for_tokio_session_child(&child) {
+    let mut signals = match OwnedProcessSignals::for_claimed_tokio_session_child(&child, &claim) {
         Ok(signals) => signals,
         Err(failure) => {
             let _ = child.start_kill();
