@@ -73,8 +73,8 @@ pub(crate) use account_credential::{
     verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
-pub(crate) use claude::prepare_claude_onboarding_state;
 pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
+pub(crate) use claude::{prepare_claude_launch_state, trusted_workspace_notice};
 
 /// Names the launching kernel's pid in every process it starts for a provider run, and so in the
 /// tool processes that run starts. A restored kernel ends those of a kernel that is gone.

@@ -1531,40 +1531,6 @@ copy_provider_auth_file() {
   log "imported $label auth into $target_path"
 }
 
-trust_claude_slice_workspace() {
-  if ! run_with_timeout 30 docker exec -e "CHARIOX_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
-const fs = require('fs')
-const file = '/home/slice/.claude.json'
-let data = {}
-try {
-  data = JSON.parse(fs.readFileSync(file, 'utf8'))
-} catch {
-  data = {}
-}
-const projects = data.projects && typeof data.projects === 'object' ? data.projects : {}
-const template = Object.values(projects).find((value) =>
-  value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
-) || {}
-for (const workspace of new Set(['/workspace', process.env.CHARIOX_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
-  projects[workspace] = {
-    ...template,
-    allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
-    hasTrustDialogAccepted: true,
-    projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
-  }
-}
-data.projects = projects
-data.hasCompletedOnboarding = true
-fs.writeFileSync(file, JSON.stringify(data, null, 2))
-fs.chmodSync(file, 0o600)
-NODE"
-  then
-    log "Claude workspace trust update unavailable; continuing"
-    return 0
-  fi
-  log "marked /workspace and $SLICE_WORKSPACE as trusted for Claude Code"
-}
-
 import_provider_auth() {
   ensure_auth_target_container
   require_slice_free_space "provider-auth" /home/slice /tmp
