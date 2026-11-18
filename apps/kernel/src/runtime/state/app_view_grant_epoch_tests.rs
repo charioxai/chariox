@@ -110,7 +110,6 @@ fn grant(state: &KernelRuntimeState, agent: &crate::agent::AgentInstance, view: 
         UserDomainResource::AppView {
             view_id: view.into(),
         },
-        false,
     )
     .unwrap();
 }
@@ -665,7 +664,6 @@ async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app
         UserDomainResource::AppView {
             view_id: view.clone(),
         },
-        false,
     )
     .unwrap();
     assert!(state.user_app_view_agent("alice", &view, &actor).is_ok());

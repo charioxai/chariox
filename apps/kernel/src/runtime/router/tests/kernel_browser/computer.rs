@@ -21,7 +21,9 @@ fn mp11_kernel_computer_mcp_loader_revoke_and_human_channel_guards() {
 }
 async fn check() {
     let workspace = crate::test_support::TestWorktree::new("culinux-computer-mcp");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, first) = crate::app::KernelSessionService::new(&mut app)
         .create_session(workspace.session_request())
         .unwrap();
@@ -43,12 +45,8 @@ async fn check() {
             .map(|t| t.name)
             .collect::<Vec<_>>()
     };
+    // Every agent has the Computer: an unfocused agent loads it with no card.
     focus(&router, session.id(), second.id()).await;
-    assert!(router
-        .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_computer", json!({}))
-        .await
-        .is_err());
-    focus(&router, session.id(), first.id()).await;
     assert!(names().contains(&"chariox.load_kernel_computer".into()));
     assert!(!names().contains(&"chariox.kernel_computer".into()));
     router

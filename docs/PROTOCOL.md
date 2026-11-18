@@ -7963,3 +7963,12 @@ agent's kernel reads or changes a workflow of a Room on another kernel) and
 `ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
 workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
 subscribes through the existing notification path).
+
+### Every agent has the kernel browser — local 1012 / relay peer 449
+
+The kernel browser, the Computer and the owner's trusted Apps need no card: an
+agent's `chariox.load_kernel_browser` grants and loads at once, in any turn and
+at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
+`allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
+`UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
+`user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
