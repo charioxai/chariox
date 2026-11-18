@@ -482,6 +482,18 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &["Native TUI permissions:", "Native TUI Agents"],
                         ),
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/pane_feed.rs",
+                            &["pane_feed_1031_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION"],
+                        ),
+                        evidence(
+                            "docs/PROTOCOL.md",
+                            &["3.3.2.1 Agent Pane Feed (local 1031)", "text_terminal", "ReportPaneSettings"],
+                        ),
+                        evidence(
+                            "apps/cli/src/native-tui/pane-title.test.ts",
+                            &["the title stays on the waiting card until it is settled"],
+                        ),
+                        evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
                             &["RequestNativeProviderTurnInteraction"],
                         ),
