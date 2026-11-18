@@ -27,8 +27,13 @@ impl RemoteProviderAccountProvisioning {
         let context = &self.context;
         // MP-10: a login the transfer or an account copy already installed here, from this very account of this home kernel, is the worker's copy: no second one is made.
         // It comes first because the home account may still hold its native login next to the copied setup-token login.
-        if let Some(transferred) = self.registry.transferred_profile(
+        // Copies and transfers sit under the account authority, not under the lease owner.
+        let account_authority = crate::account_profile::provider_account_authority_owner_user_id(
+            &self.config,
             &lease.owner_user_id,
+        );
+        if let Some(transferred) = self.registry.transferred_profile(
+            &account_authority,
             &materialization.profile.provider,
             &context.home_kernel_id,
             &materialization.profile.profile_id,

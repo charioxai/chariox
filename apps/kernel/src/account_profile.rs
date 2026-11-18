@@ -36,8 +36,8 @@ mod authority;
 pub(crate) use authority::{
     bind_provider_account_authority, copy_provider_account_selection,
     provider_account_authority_for_launch, provider_account_authority_for_run,
-    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
-    ResolvedProviderAccount,
+    provider_account_authority_owner_for_lease, provider_account_authority_owner_for_profile,
+    provider_account_selection_for_run, ResolvedProviderAccount,
 };
 
 const REGISTRY_VERSION: u32 = 1;
@@ -3101,6 +3101,21 @@ impl ProviderAccountProfileRegistry {
                     })
             })
             .map(|stored| stored.public.clone()))
+    }
+
+    /// Whether `profile_id` of `owner_user_id` is a login a managed-context transfer or an account copy installed here.
+    pub(crate) fn is_transferred_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            find_stored_profile(&document, owner_user_id, provider, profile_id)
+                .is_some_and(|stored| stored.transferred_from.is_some()),
+        )
     }
 
     fn materialize_replica_internal(

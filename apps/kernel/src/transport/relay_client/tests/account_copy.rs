@@ -742,36 +742,54 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     );
                     // The advised recovery's last step: the remote launch that was
                     // refused retries with the home account's native refresh-token
-                    // login still on disk, and runs on the copied login.
-                    let materialization = source_profiles
-                        .export_materialization("local", "claude", &profile.profile_id)
-                        .unwrap();
-                    assert!(materialization
-                        .files
-                        .iter()
-                        .any(|file| file.relative_path == ".credentials.json"));
-                    let lease = RemoteLeaseRuntime::new(&mut *worker_app.lock().await)
-                        .create_execution_lease(
-                            &source.daemon_id,
-                            "home-session",
-                            "home-agent",
-                            false,
-                            "local",
-                        )
-                        .unwrap();
-                    let worker_profile = target_router
-                        .relay_ensure_remote_provider_account(
-                            crate::transport::relay_peer::RemoteProviderAccountSyncContext {
-                                home_kernel_id: source.daemon_id.clone(),
-                                home_session_id: "home-session".into(),
-                                home_agent_id: "home-agent".into(),
-                                execution_lease_id: lease.id,
-                            },
-                            materialization,
-                        )
-                        .await
-                        .expect("the remote launch must run on the copied login");
-                    assert_eq!(worker_profile.profile_id, installed);
+                    // login still on disk, and runs on the copied login. The copy
+                    // sits under the worker's account owner `local`; the lease is
+                    // owned by `local` or by the configured Cloud user, and a
+                    // foreign Cloud user's lease never reaches it.
+                    for (lease_owner, runs_on_copy) in [
+                        ("local", true),
+                        ("copy-owner", true),
+                        ("another-owner", false),
+                    ] {
+                        let mut materialization = source_profiles
+                            .export_materialization("local", "claude", &profile.profile_id)
+                            .unwrap();
+                        assert!(materialization
+                            .files
+                            .iter()
+                            .any(|file| file.relative_path == ".credentials.json"));
+                        materialization.profile.owner_user_id = lease_owner.into();
+                        let lease = RemoteLeaseRuntime::new(&mut *worker_app.lock().await)
+                            .create_execution_lease(
+                                &source.daemon_id,
+                                "home-session",
+                                "home-agent",
+                                false,
+                                lease_owner,
+                            )
+                            .unwrap();
+                        let launch = target_router
+                            .relay_ensure_remote_provider_account(
+                                crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                                    home_kernel_id: source.daemon_id.clone(),
+                                    home_session_id: "home-session".into(),
+                                    home_agent_id: "home-agent".into(),
+                                    execution_lease_id: lease.id,
+                                },
+                                materialization,
+                            )
+                            .await;
+                        if runs_on_copy {
+                            let worker_profile = launch.unwrap_or_else(|error| {
+                                panic!("a lease owned by `{lease_owner}` must run on the copied login: {error}")
+                            });
+                            assert_eq!(worker_profile.profile_id, installed);
+                        } else {
+                            let error =
+                                launch.expect_err("a foreign Cloud user must not reach the copy");
+                            assert!(error.to_string().contains("native Claude login"), "{error}");
+                        }
+                    }
                     let remaining = source_request(
                         &target_router,
                         serde_json::json!({"ListProviderAccountCopyOffers":{}}),
