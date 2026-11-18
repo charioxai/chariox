@@ -958,6 +958,10 @@ pub(super) fn execute(
                     .map(|kind| (kind, request.operation.clone()))
             })
             .flatten();
+        let dropped_ack = faults
+            .wants_ack_dropped(&request.operation)
+            .then(|| faults::delivery_kind(&request.operation))
+            .flatten();
         let value = apply(&tx, request.operation)?;
         let applied = std::time::Instant::now();
         if faults.writer_fails() {
@@ -987,6 +991,10 @@ pub(super) fn execute(
         let delivered = !matches!(&value, Outcome::Wakes(fired) if fired.is_empty());
         if let Some((kind, operation)) = duplicate.filter(|_| delivered) {
             redeliver(db, faults, kind, operation);
+        }
+        if let Some(kind) = dropped_ack {
+            faults.ack_dropped(kind);
+            return Err(error("agent lifecycle acknowledgement dropped (CHARIOX_AGENT_FAULT_DIR/drop-ack); the write committed"));
         }
         Ok(value)
     })();
