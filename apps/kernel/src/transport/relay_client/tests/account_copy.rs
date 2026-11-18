@@ -230,6 +230,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         std::env::set_var("CHARIOX_CLAUDE_BIN", &fake);
         let mut source = config(&root, "source");
         let mut target = config(&root, "target");
+        target.accept_remote_leases = true;
         let cloud = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let cloud_url = format!("http://{}", cloud.local_addr().unwrap());
         source.cloud_relay.as_mut().unwrap().api_url = cloud_url.clone();
@@ -296,6 +297,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         }
         let source_app = Arc::new(Mutex::new(DaemonApp::bootstrap(source.clone()).unwrap()));
         let target_app = Arc::new(Mutex::new(DaemonApp::bootstrap(target.clone()).unwrap()));
+        let worker_app = target_app.clone();
         let source_state = source_app.lock().await.relay_client_state();
         let target_state = target_app.lock().await.relay_client_state();
         let source_profiles = source_app
@@ -362,7 +364,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .join(".credentials.json");
             std::fs::write(
                 &native_login,
-                r#"{"claudeAiOauth":{"accessToken":"native-login"}}"#,
+                r#"{"claudeAiOauth":{"accessToken":"native-login","refreshToken":"native-refresh"}}"#,
             )
             .unwrap();
             source_profiles
@@ -450,8 +452,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             })
             .await
             .expect("the setup-token login must be offered as copyable");
-            // The drill's later checks assert that a copy leaves no native token file.
-            std::fs::remove_file(native_login).unwrap();
+            // The native refresh-token login stays: the home kernel keeps sending it with a remote launch.
         } else {
             crate::provider::store_provider_account_credential(
                 &source,
@@ -739,6 +740,38 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                             .auth_state,
                         crate::account_profile::ProviderAccountAuthState::Authenticated
                     );
+                    // The advised recovery's last step: the remote launch that was
+                    // refused retries with the home account's native refresh-token
+                    // login still on disk, and runs on the copied login.
+                    let materialization = source_profiles
+                        .export_materialization("local", "claude", &profile.profile_id)
+                        .unwrap();
+                    assert!(materialization
+                        .files
+                        .iter()
+                        .any(|file| file.relative_path == ".credentials.json"));
+                    let lease = RemoteLeaseRuntime::new(&mut *worker_app.lock().await)
+                        .create_execution_lease(
+                            &source.daemon_id,
+                            "home-session",
+                            "home-agent",
+                            false,
+                            "local",
+                        )
+                        .unwrap();
+                    let worker_profile = target_router
+                        .relay_ensure_remote_provider_account(
+                            crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                                home_kernel_id: source.daemon_id.clone(),
+                                home_session_id: "home-session".into(),
+                                home_agent_id: "home-agent".into(),
+                                execution_lease_id: lease.id,
+                            },
+                            materialization,
+                        )
+                        .await
+                        .expect("the remote launch must run on the copied login");
+                    assert_eq!(worker_profile.profile_id, installed);
                     let remaining = source_request(
                         &target_router,
                         serde_json::json!({"ListProviderAccountCopyOffers":{}}),

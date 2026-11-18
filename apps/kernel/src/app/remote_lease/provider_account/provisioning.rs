@@ -25,6 +25,19 @@ impl RemoteProviderAccountProvisioning {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let lease = &self.lease;
         let context = &self.context;
+        // MP-10: a login the transfer or an account copy already installed here, from this very account of this home kernel, is the worker's copy: no second one is made.
+        // It comes first because the home account may still hold its native login next to the copied setup-token login.
+        if let Some(transferred) = self.registry.transferred_profile(
+            &lease.owner_user_id,
+            &materialization.profile.provider,
+            &context.home_kernel_id,
+            &materialization.profile.profile_id,
+        )? {
+            if let Ok(profile) = self.validate_remote_provider_account(transferred) {
+                return Ok(profile);
+            }
+        }
+
         if crate::provider::canonical_provider_family(&materialization.profile.provider)
             == Some("claude")
             && materialization
@@ -36,18 +49,6 @@ impl RemoteProviderAccountProvisioning {
                 operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message: "Claude provider credentials cannot be materialized on a remote worker; a native Claude login has no copyable credential. On your own computer create a setup-token login for it (Provider Accounts: Create setup token, or /provider setup-token claude <account-profile> --run), then on that machine run /provider accounts copy and pick the login, and start the agent again".to_string(),
             });
-        }
-
-        // MP-10: a login the transfer already installed here, from this very account of this home kernel, is the worker's copy: no second one is made.
-        if let Some(transferred) = self.registry.transferred_profile(
-            &lease.owner_user_id,
-            &materialization.profile.provider,
-            &context.home_kernel_id,
-            &materialization.profile.profile_id,
-        )? {
-            if let Ok(profile) = self.validate_remote_provider_account(transferred) {
-                return Ok(profile);
-            }
         }
 
         self.registry.reconcile_materialized_replica_rollback(

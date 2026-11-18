@@ -987,7 +987,7 @@ struct StoredProviderAccountProfile {
     replica_root_identity: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
-    /// Which account of which kernel a managed-context transfer installed here, so a lease from that kernel can use it instead of making a second copy.
+    /// Which account of which kernel a managed-context transfer or an account copy installed here, so a lease from that kernel can use it instead of making a second copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transferred_from: Option<TransferredAccountOrigin>,
 }
@@ -3079,7 +3079,7 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
-    /// The profile a managed-context transfer installed from `source_profile_id` of `source_kernel_id`, if it is still here.
+    /// The profile a managed-context transfer or an account copy installed from `source_profile_id` of `source_kernel_id`, if it is still here.
     pub(crate) fn transferred_profile(
         &self,
         owner_user_id: &str,
