@@ -205,6 +205,16 @@ impl CommandRouter {
                     .await;
             }
             if crate::transport::runtime_tools::canonical_agent_run_tool_name(tool_name).is_some() {
+                // A leased agent's delegation belongs to its home room.
+                if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                    if let Some(result) = self
+                        .runtime_state
+                        .try_forward_leased_agents_run(&run, arguments.clone())
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
                 return self.dispatch_agents_run(auth_token, arguments).await;
             }
             self.runtime_state
@@ -413,6 +423,9 @@ impl CommandRouter {
             return router
                 .dispatch_forwarded_meta_run_command(context, arguments)
                 .await;
+        }
+        if crate::transport::runtime_tools::canonical_agent_run_tool_name(&tool_name).is_some() {
+            return self.dispatch_forwarded_agents_run(context, arguments).await;
         }
         self.runtime_state
             .dispatch_forwarded_meta_runtime_tool_call(context, tool_name, arguments)

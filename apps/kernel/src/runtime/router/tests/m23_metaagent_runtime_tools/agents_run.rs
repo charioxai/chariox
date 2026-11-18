@@ -263,3 +263,127 @@ async fn refused_worker_fails_alone() {
     assert_eq!(workers[1]["status"], "done", "{:?}", result.payload);
     assert_eq!(workers[1]["answer"], "w1 answer");
 }
+
+#[test]
+fn a_call_dropped_before_its_answer_gives_the_finished_workers_back_to_the_event_path() {
+    run_large_stack_async_test("agents-run-cancelled", cancelled_call_restores_ends);
+}
+
+async fn cancelled_call_restores_ends() {
+    let world = world("agents-run-cancelled").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let call = world.router.dispatch_agents_run(
+        &world.tokens["a"],
+        serde_json::json!({
+            "workers": [
+                {"name": "fast", "brief": "answer now"},
+                {"name": "slow", "brief": "take your time"},
+            ],
+            "origin_prompt_id": prompt,
+        }),
+    );
+    let mut call = Box::pin(call);
+    let drive = async {
+        let workers = started_workers(&world, &["fast", "slow"]).await;
+        world
+            .router
+            .runtime_state
+            .end_agent_turn_for_test(&world.room, &workers[0].1, "fast answer")
+            .await
+            .unwrap();
+        // The call has taken the fast end and still waits for the slow worker.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        workers
+    };
+    let workers = tokio::select! {
+        outcome = &mut call => panic!("the call returned while a worker ran: {outcome:?}"),
+        workers = drive => workers,
+    };
+    // The caller's turn is cancelled: the call is dropped before it returns its answer.
+    drop(call);
+
+    let store = world.app.lock().await.durable_state_store();
+    let mut finished = 0;
+    let mut inbox = Vec::new();
+    for _ in 0..100 {
+        inbox = store.agent_inbox(&world.room, &caller, 0).unwrap();
+        finished = inbox
+            .iter()
+            .filter(|event| {
+                event.kind == "child_finished" && format!("{event:?}").contains("fast answer")
+            })
+            .count();
+        if finished > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        finished, 1,
+        "the finished worker is announced once: {inbox:?}"
+    );
+
+    // The slow worker's end reaches the caller the same way: the dropped call no longer waits.
+    world
+        .router
+        .runtime_state
+        .end_agent_turn_for_test(&world.room, &workers[1].1, "slow answer")
+        .await
+        .unwrap();
+    let inbox = store.agent_inbox(&world.room, &caller, 0).unwrap();
+    assert_eq!(
+        inbox
+            .iter()
+            .filter(|event| event.kind == "child_finished")
+            .count(),
+        2,
+        "{inbox:?}"
+    );
+}
+
+#[tokio::test]
+async fn meta_controllers_and_regular_agents_both_discover_agents_run() {
+    let env = TestMetaRuntimeEnv::new("agents-run-discovery");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, regular) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let controller = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("controller should spawn");
+    let controller = activate_test_agent_meta_mode(&mut app, controller);
+    let mut token_of = |agent: &str| {
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            agent,
+            "dev-stub",
+            "dev-stub",
+            "model",
+        )
+        .runtime_mcp_auth_token()
+        .expect("run exposes a runtime MCP token")
+        .to_string()
+    };
+    let regular_token = token_of(regular.id());
+    let controller_token = token_of(controller.id());
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    for (who, token) in [
+        ("regular agent", regular_token),
+        ("controller", controller_token),
+    ] {
+        let specs = router.runtime_tool_specs_for_auth_token(&token);
+        assert!(
+            specs.iter().any(|spec| spec.name == AGENTS_RUN),
+            "the {who} must discover {AGENTS_RUN}"
+        );
+    }
+}

@@ -39,6 +39,7 @@ impl KernelRuntimeState {
                 task: task.clone(),
                 outcome: outcome.clone(),
                 deadline_reached,
+                public_answer: public_answer.cloned(),
             },
         ) {
             return Ok(());

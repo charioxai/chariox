@@ -74,6 +74,18 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// The message tool's own path for a state that already acts as the sender's turn
+    /// (`with_worker_caller_origin`), whether that turn runs here or on a leased worker.
+    pub(crate) async fn send_agent_message_as_caller(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.handle_send_agent_message_runtime_tool(session, sender, arguments)
+            .await
+    }
+
     pub(super) async fn handle_send_agent_message_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,

@@ -247,6 +247,9 @@ impl KernelRuntimeState {
                                 && !spec.name.starts_with("chariox.notification_"))
                     }),
             );
+            if room_tools {
+                specs.extend(crate::transport::runtime_tools::agent_run_tool_specs());
+            }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
             specs.extend(

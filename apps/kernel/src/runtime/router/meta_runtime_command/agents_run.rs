@@ -2,21 +2,28 @@
 //! what `agent spawn` makes, briefed with the message tool, and the call itself is the
 //! one that follows it, so the end of a worker it answers is never also an inbox event.
 use super::*;
-use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::state::{KernelRuntimeState, WorkerCaller, WorkerEnd};
 use crate::transport::runtime_tools::{AgentsRunArgs, AgentsRunWorker, AGENTS_RUN_MAX_WORKERS};
 
 /// A started worker the call still waits for. Dropping it (the call ends, or the caller's turn
-/// is cancelled) stops the wait, so a later end of the worker takes the event path.
+/// is cancelled) stops the wait. An end the call took but never returned to its caller is
+/// announced as `child_finished`, so the caller hears of it as of any other child.
 struct WaitedWorker {
     name: String,
     agent: String,
-    end: tokio::sync::oneshot::Receiver<crate::runtime::state::WorkerEnd>,
+    end: tokio::sync::oneshot::Receiver<WorkerEnd>,
+    /// The end this call has taken and not yet answered or settled for the caller.
+    taken: Option<WorkerEnd>,
     state: KernelRuntimeState,
 }
 
 impl Drop for WaitedWorker {
     fn drop(&mut self) {
         self.state.stop_waiting_for_worker(&self.agent);
+        // The wait is released first, so an end is in the channel or goes to the event path.
+        if let Some(end) = self.taken.take().or_else(|| self.end.try_recv().ok()) {
+            self.state.announce_undelivered_worker(end);
+        }
     }
 }
 
@@ -37,25 +44,57 @@ impl CommandRouter {
         arguments: serde_json::Value,
         max_wait: std::time::Duration,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let mut router = self.clone();
-        if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
-            router.runtime_state = self
-                .runtime_state
-                .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
-        }
-        router.run_agents(auth_token, arguments, max_wait).await
-    }
-
-    async fn run_agents(
-        &self,
-        auth_token: &str,
-        arguments: serde_json::Value,
-        max_wait: std::time::Duration,
-    ) -> Result<RuntimeToolResult, DaemonError> {
         self.runtime_state.authorize_current_external_command()?;
         let (run, session, caller) = self
             .runtime_state
             .metaagent_context_for_auth_token(auth_token)?;
+        let caller_turn = WorkerCaller::Local(&run);
+        let mut router = self.clone();
+        router.runtime_state = self.runtime_state.with_worker_caller_origin(caller_turn);
+        router
+            .run_agents(caller_turn, &session, &caller, arguments, max_wait)
+            .await
+    }
+
+    /// A leased agent's call, forwarded by its worker kernel under the lease-verified home
+    /// context: the workers join the home room and the agent's parent tree.
+    pub(in crate::runtime::router) async fn dispatch_forwarded_agents_run(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .authorize_forwarded_workspace_context(&context)?;
+        if context.home_prompt_id.is_none() {
+            return Err(agents_run_error(
+                "a leased agent's delegation needs its running home turn",
+            ));
+        }
+        let (session, caller) = self
+            .runtime_state
+            .session_agent_snapshot(&context.home_session_id, &context.home_agent_id)?;
+        let caller_turn = WorkerCaller::Leased(&context);
+        let mut router = self.clone();
+        router.runtime_state = self.runtime_state.with_worker_caller_origin(caller_turn);
+        router
+            .run_agents(
+                caller_turn,
+                &session,
+                &caller,
+                arguments,
+                crate::room_terminal::MAX_WAIT,
+            )
+            .await
+    }
+
+    async fn run_agents(
+        &self,
+        caller_turn: WorkerCaller<'_>,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+        max_wait: std::time::Duration,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<AgentsRunArgs>(arguments)
             .map_err(|error| agents_run_error(format!("invalid tool arguments: {error}")))?;
         validate_workers(&args.workers)?;
@@ -71,7 +110,7 @@ impl CommandRouter {
         let mut waited = Vec::new();
         for worker in &args.workers {
             match self
-                .start_worker(&run, &session, &caller, worker, &args.origin_prompt_id)
+                .start_worker(caller_turn, session, caller, worker, &args.origin_prompt_id)
                 .await
             {
                 Ok(started) => {
@@ -81,21 +120,36 @@ impl CommandRouter {
                 Err(failure) => items.push(Some(failure)),
             }
         }
+        // Each end stays with its worker, unanswered, until every worker is settled: a call that
+        // ends before it returns the aggregate gives the ends back to the event path.
         let deadline = tokio::time::Instant::now() + max_wait;
+        let mut ended = Vec::new();
         for (index, mut worker) in waited {
-            let item = match tokio::time::timeout_at(deadline, &mut worker.end).await {
-                Ok(Ok(end)) => self.delivered(&session, &caller, &worker.name, &end)?,
-                Ok(Err(_)) => failed_item(
-                    &worker.name,
-                    Some(&worker.agent),
-                    "the kernel stopped waiting for this worker; read its state with chariox.get_session_agent",
-                ),
-                Err(_) => {
-                    self.hand_over_running_worker(&run, &session, &caller, &args.origin_prompt_id, worker)
-                        .await?
+            match tokio::time::timeout_at(deadline, &mut worker.end).await {
+                Ok(Ok(end)) => {
+                    worker.taken = Some(end);
+                    ended.push((index, worker));
                 }
-            };
-            items[index] = Some(item);
+                Ok(Err(_)) => {
+                    items[index] = Some(failed_item(
+                        &worker.name,
+                        Some(&worker.agent),
+                        "the kernel stopped waiting for this worker; read its state with chariox.get_session_agent",
+                    ));
+                }
+                Err(_) => {
+                    match self
+                        .hand_over_running_worker(caller_turn, &args.origin_prompt_id, &mut worker)
+                        .await?
+                    {
+                        HandOver::Running(item) => items[index] = Some(item),
+                        HandOver::Ended => ended.push((index, worker)),
+                    }
+                }
+            }
+        }
+        for (index, worker) in &mut ended {
+            items[*index] = Some(self.deliver(session, caller, worker)?);
         }
         let workers = items.into_iter().flatten().collect::<Vec<_>>();
         let running = workers
@@ -118,7 +172,7 @@ impl CommandRouter {
     /// started is that item's failure; the others still run.
     async fn start_worker(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        caller_turn: WorkerCaller<'_>,
         session: &crate::session::RuntimeSession,
         caller: &crate::agent::AgentInstance,
         worker: &AgentsRunWorker,
@@ -132,7 +186,7 @@ impl CommandRouter {
             }
         }
         let spawned = Box::pin(self.dispatch_meta_agent_spawn_command(
-            Some(run),
+            caller_turn.spawn_run(),
             session,
             caller,
             &command,
@@ -156,6 +210,7 @@ impl CommandRouter {
             name: worker.name.clone(),
             end: self.runtime_state.wait_for_worker(&agent),
             agent,
+            taken: None,
             state: self.runtime_state.clone(),
         };
         let brief = crate::transport::runtime_tools::SendAgentMessageArgs {
@@ -171,8 +226,7 @@ impl CommandRouter {
         };
         let sent = self
             .runtime_state
-            .send_agent_message_for_provider_run(
-                run,
+            .send_agent_message_as_caller(
                 session,
                 caller,
                 serde_json::to_value(brief)
@@ -194,17 +248,23 @@ impl CommandRouter {
     }
 
     /// A worker's end the call returns to its caller: the end is settled for the caller here, so
-    /// no inbox event or open obligation is left for it.
-    fn delivered(
+    /// no inbox event or open obligation is left for it. Only the aggregate's return makes the
+    /// answer the caller's, so this runs once every worker is settled.
+    fn deliver(
         &self,
         session: &crate::session::RuntimeSession,
         caller: &crate::agent::AgentInstance,
-        name: &str,
-        end: &crate::runtime::state::WorkerEnd,
+        worker: &mut WaitedWorker,
     ) -> Result<serde_json::Value, DaemonError> {
+        let end = worker
+            .taken
+            .as_ref()
+            .expect("a worker is delivered after its end was taken");
+        let result = self.runtime_state.worker_result(&worker.name, end)?;
         self.runtime_state
             .settle_delivered_worker(session.id(), caller.id(), end)?;
-        self.runtime_state.worker_result(name, end)
+        worker.taken = None;
+        Ok(result)
     }
 
     /// The call stops waiting for a worker that is still running: the caller follows it as after
@@ -212,41 +272,48 @@ impl CommandRouter {
     /// the two is either handed to this call or announced to the follow, never lost.
     async fn hand_over_running_worker(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
-        session: &crate::session::RuntimeSession,
-        caller: &crate::agent::AgentInstance,
+        caller_turn: WorkerCaller<'_>,
         origin_prompt_id: &str,
-        mut worker: WaitedWorker,
-    ) -> Result<serde_json::Value, DaemonError> {
+        worker: &mut WaitedWorker,
+    ) -> Result<HandOver, DaemonError> {
         let registration = match self
             .runtime_state
-            .follow_running_worker(run, origin_prompt_id, &worker.agent)
+            .follow_running_worker(caller_turn, origin_prompt_id, &worker.agent)
             .await
         {
             Ok(registration) => registration,
             Err(error) => {
-                return Ok(serde_json::json!({
+                return Ok(HandOver::Running(serde_json::json!({
                     "name": worker.name,
                     "agent": worker.agent,
                     "status": "running",
                     "follow_refused": error.to_string(),
-                }))
+                })))
             }
         };
         self.runtime_state.stop_waiting_for_worker(&worker.agent);
         if let Ok(end) = worker.end.try_recv() {
+            worker.taken = Some(end);
             self.runtime_state
-                .unfollow_worker(run, origin_prompt_id, &registration)
+                .unfollow_worker(caller_turn, origin_prompt_id, &registration)
                 .await?;
-            return self.delivered(session, caller, &worker.name, &end);
+            return Ok(HandOver::Ended);
         }
-        Ok(serde_json::json!({
+        Ok(HandOver::Running(serde_json::json!({
             "name": worker.name,
             "agent": worker.agent,
             "status": "running",
             "registration_id": registration,
-        }))
+        })))
     }
+}
+
+/// What the call found of a worker it stopped waiting for.
+enum HandOver {
+    /// Still running: the caller follows it.
+    Running(serde_json::Value),
+    /// It ended while the call handed it over; the call answers it.
+    Ended,
 }
 
 fn validate_workers(workers: &[AgentsRunWorker]) -> Result<(), DaemonError> {

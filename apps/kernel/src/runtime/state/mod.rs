@@ -1696,6 +1696,7 @@ mod agent_run;
 mod agent_run_test_support;
 mod agent_run_waiters;
 mod agent_subtree_cascade;
+pub(crate) use agent_run::WorkerCaller;
 pub(crate) use agent_run_waiters::WorkerEnd;
 mod agent_task_completion;
 mod agent_tree_runtime;

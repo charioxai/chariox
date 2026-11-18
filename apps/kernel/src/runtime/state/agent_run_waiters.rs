@@ -16,6 +16,7 @@ pub(crate) struct WorkerEnd {
     pub task: AgentTaskExecution,
     pub outcome: TurnOutcome,
     pub deadline_reached: bool,
+    pub public_answer: Option<serde_json::Value>,
 }
 
 #[derive(Default, Clone)]

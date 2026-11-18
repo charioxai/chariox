@@ -1624,6 +1624,70 @@ async fn leased_room_tools_act_at_home_with_the_lease_origin() {
 }
 
 #[test]
+fn a_leased_agents_run_call_delegates_in_the_home_room_under_the_lease() {
+    run_test(leased_agents_run_delegates_at_home);
+}
+
+/// A leased caller's `chariox.agents.run` belongs to the home room and parent tree: its worker
+/// joins the home room as the leased agent's child. Base: the call ran against the worker's
+/// own context and refused the turn.
+async fn leased_agents_run_delegates_at_home() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let leased = spawn_on_agent_worker(&mut fixture, &room).await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &leased,
+        "MP-10 leased agents.run",
+    )
+    .await;
+    let task = store(&fixture)
+        .await
+        .agent_tasks(Some(&room), Some(&leased))
+        .unwrap()
+        .pop()
+        .expect("the home admitted the leased turn's task");
+    let run = worker.run_for(&fixture, &leased, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let call = worker.router.dispatch_authenticated_runtime_tool_call(
+        &token,
+        "chariox.agents.run",
+        json!({
+            "workers": [{"name": "leasedw", "brief": "MP-10 leased worker"}],
+            "origin_prompt_id": task.prompt_id,
+        }),
+    );
+    let at_home = async {
+        eventually_async(
+            "the worker joins the home room under the leased agent",
+            || async {
+                let agents = fixture.home.runtime_state.session_agents(&room);
+                agents
+                    .iter()
+                    .find(|agent| agent.alias() == Some("leasedw"))
+                    .map(|agent| agent.parent_agent_id().map(str::to_owned))
+            },
+        )
+        .await
+    };
+    let outcome = tokio::select! {
+        result = call => Err(result),
+        parent = at_home => Ok(parent),
+    };
+    worker.stop().await;
+    fixture.stop().await;
+    match outcome {
+        Ok(parent) => assert_eq!(parent.as_deref(), Some(leased.as_str())),
+        Err(result) => panic!("the call ended before the home room had its worker: {result:?}"),
+    }
+}
+
+#[test]
 fn mp10_a10_elevated_leased_work_continues_after_a_wake() {
     run_test(elevated_leased_work_continues_after_a_wake);
 }
