@@ -290,6 +290,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
+    // A fixed closed host with no box of its own (Vimeo's consent manager) sits where the document ends, and the viewer's
+    // document ends elsewhere. Its content is fixed too, so its region is anchored at the viewport origin on both sides.
+    const viewportHost = node => { if (!closedRoots.has(node) || getComputedStyle(node).position !== 'fixed') return false; const r = node.getBoundingClientRect(); return !(r.width > 0 && r.height > 0); };
+    const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
@@ -407,6 +411,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
       }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
+      if (viewportHost(node)) attrs.style = `${attrs.style ? `${attrs.style};` : ''}position:fixed!important;inset:0 auto auto 0!important`;
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
       return attrs;
     };
@@ -1015,7 +1020,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     const topBox = node => {
-      let [x, y, width, height] = box(node);
+      let [x, y, width, height] = hostBox(node);
       for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
       return [x, y, width, height];
     };
@@ -1024,7 +1029,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const closedInk = (node, [x, y, width, height]) => {
       const root = closedRoots.get(node); if (!root) return null;
       // The host's own frame offset (topBox) applies to its content as well.
-      const [dx, dy] = [x - box(node)[0], y - box(node)[1]];
+      const [dx, dy] = [x - hostBox(node)[0], y - hostBox(node)[1]];
       let left = x, top = y, right = x + width, bottom = y + height, empty = !(width > 0 && height > 0), grown = false, seen = 0;
       for (const element of root.querySelectorAll('*')) {
         if (++seen > 4096) break;
@@ -1201,7 +1206,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const point = request => {
       let node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
-      let [bx, by, width, height] = box(node), moved = false;
+      let [bx, by, width, height] = hostBox(node), moved = false;
       // A closed root's content can paint outside its host's box: the viewer's offset stays relative to the host.
       const ink = closedInk(node, [bx, by, width, height]), [ix, iy] = ink ? [ink[0] - bx, ink[1] - by] : [0, 0];
       if (ink) [bx, by, width, height] = ink;
