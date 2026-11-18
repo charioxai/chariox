@@ -41,7 +41,7 @@ impl RoutingHostSlot {
     }
 
     /// Any live router's host: they all act on the same kernel.
-    fn get(&self) -> Option<Arc<RoutingHost>> {
+    pub(super) fn get(&self) -> Option<Arc<RoutingHost>> {
         let hosts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         hosts.iter().find_map(Weak::upgrade)
     }

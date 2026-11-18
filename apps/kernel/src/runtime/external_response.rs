@@ -377,7 +377,6 @@ response_policies! {
         WorkspaceWorktreesListed,
         WorkspaceWorktreeCreated,
         WorkspaceWorktreeDeleted,
-        WorkspacePullRequestCreated,
         WorkspaceGitOverview,
         WorkspaceFilesListed,
         WorkspaceFileContent,

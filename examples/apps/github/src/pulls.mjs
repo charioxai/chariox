@@ -33,7 +33,7 @@ export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'a
   return parts.join(' ');
 }
 
-export function createPulls({ accounts, github }) {
+export function createPulls({ accounts, github, links }) {
   const call = async (input, run) => {
     const account = await accounts.resolve(input);
     return run(account);
@@ -107,7 +107,7 @@ export function createPulls({ accounts, github }) {
     },
 
     async get_pull_request(input) {
-      return call(input, async account => ({ account, pull: n.pullDetail((await fetchPull(account, input)).data) }));
+      return call(input, async account => ({ account, pull: n.pullDetail((await fetchPull(account, input)).data), madeBy: await links.get(input.repo, input.number) }));
     },
 
     /** A list row's extras: size from the pull request, check state from its head commit, the review decision. */

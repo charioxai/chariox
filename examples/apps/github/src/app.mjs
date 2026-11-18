@@ -5,16 +5,19 @@ import { createGitHub } from './github.mjs';
 import { createPulls } from './pulls.mjs';
 import { createStatus } from './status.mjs';
 import { createView } from './view.mjs';
+import { createLinks } from './links.mjs';
+import { createShip } from './ship.mjs';
 import { createWrites } from './writes.mjs';
 import { tools as catalog, uiActionsDocument } from './catalog.mjs';
 
-export function createApp({ state, events, routing, host, schedule, now = () => Date.now() }) {
+export function createApp({ state, events, routing, workspace, host, schedule, now = () => Date.now() }) {
   const view = createView({
     state, actions: uiActionsDocument().uiActions,
     snapshot: async () => ({ accounts: await accounts.settings() }),
     account: input => accounts.resolve(input),
   });
   const accounts = createAccounts({ state, view });
+  const links = createLinks({ state, view, now });
   const subscriptions = createSubscriptions({
     state, commit: view.transactWithChange, routing, events, host, schedule, accounts, now,
     githubFor: ctx => createGitHub({ state, fetch: ctx.fetch, now }),
@@ -26,8 +29,9 @@ export function createApp({ state, events, routing, host, schedule, now = () => 
   const notify = delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta);
   const services = ctx => {
     const github = createGitHub({ state, fetch: ctx.fetch, now });
-    const pulls = createPulls({ accounts, github });
-    return { github, ...createStatus({ accounts, github }), ...pulls, ...createWrites({ accounts, github, pulls, notify }) };
+    const pulls = createPulls({ accounts, github, links });
+    const writes = createWrites({ accounts, github, pulls, notify });
+    return { github, ...createStatus({ accounts, github }), ...pulls, ...writes, ...createShip({ accounts, workspace, writes, links }) };
   };
 
   // An account is added only once GitHub accepts it: the owner has bound the label and its token works.

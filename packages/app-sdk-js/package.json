@@ -11,6 +11,10 @@
     "./event-routing": {
       "types": "./src/event-routing.d.ts",
       "default": "./src/event-routing.js"
+    },
+    "./workspace": {
+      "types": "./src/workspace.d.ts",
+      "default": "./src/workspace.js"
     }
   },
   "scripts": {

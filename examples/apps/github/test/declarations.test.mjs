@@ -70,8 +70,8 @@ test('every tool has a handler, and the gating of each action is declared: a car
   const byName = Object.fromEntries(actions.map(action => [action.name, action]));
   const tier = effect => actions.filter(action => action.effect === effect).map(action => action.name).sort();
   assert.deepEqual(tier('person_confirmed'), ['close_pull_request', 'delete_branch', 'merge_pull_request']);
-  assert.deepEqual(tier('approval'), ['approve_pull_request', 'convert_to_draft', 'create_subscription_for_others', 'disable_auto_merge', 'enable_auto_merge', 'mark_ready_for_review', 'open_pull_request', 'reopen_pull_request', 'request_changes', 'update_branch', 'update_subscription_for_others']);
-  assert.deepEqual(tier('write').filter(name => !/account/.test(name)), ['add_labels', 'comment', 'connect_github_events', 'create_subscription', 'delete_subscription', 'pause_subscription', 'remove_labels', 'remove_reviewers', 'reply_to_review_comment', 'request_reviewers', 'rerun_failed_checks', 'resume_subscription', 'submit_review', 'update_subscription', 'watch_pull_request']);
+  assert.deepEqual(tier('approval'), ['approve_pull_request', 'convert_to_draft', 'create_subscription_for_others', 'disable_auto_merge', 'enable_auto_merge', 'mark_ready_for_review', 'open_pull_request', 'reopen_pull_request', 'request_changes', 'ship_changes', 'update_branch', 'update_subscription_for_others']);
+  assert.deepEqual(tier('write').filter(name => !/account/.test(name)), ['add_labels', 'comment', 'connect_github_events', 'create_subscription', 'delete_subscription', 'link_pull_request', 'pause_subscription', 'remove_labels', 'remove_reviewers', 'reply_to_review_comment', 'request_reviewers', 'rerun_failed_checks', 'resume_subscription', 'submit_review', 'update_subscription', 'watch_pull_request']);
   for (const action of actions.filter(a => a.effect === 'person_confirmed')) {
     const preview = byName[action.confirmationView];
     assert.equal(preview?.effect, 'read', `${action.name} shows ${action.confirmationView}, a read`);
@@ -94,7 +94,7 @@ test('every tool has a handler, and the gating of each action is declared: a car
 
 test('the manifest needs the features the App uses', () => {
   const manifest = read('app.json');
-  assert.deepEqual(manifest.requiredFeatures, ['wasm-component', 'ui-actions', 'directed-events', 'credentialed-http', 'event-routing'], 'the features the App uses, in the kernel\'s order');
+  assert.deepEqual(manifest.requiredFeatures, ['wasm-component', 'ui-actions', 'directed-events', 'credentialed-http', 'event-routing', 'workspace'], 'the features the App uses, in the kernel\'s order');
   assert.equal(manifest.appId, 'com.chariox.github');
   assert.equal(manifest.displayName, 'GitHub');
 });

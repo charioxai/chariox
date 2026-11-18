@@ -11,7 +11,7 @@ use wasmparser::{
 use wit_parser::{Resolve, WorldId};
 
 pub const APP_WORLD: &str = "chariox:app/app@1.0.0";
-/// The additive minor: 1.0.0 plus `event-routing`.
+/// The additive minor: 1.0.0 plus `event-routing` and `workspace`.
 pub const APP_WORLD_1_1: &str = "chariox:app/app@1.1.0";
 pub const MIGRATION_WORLD: &str = "chariox:app/migration@1.0.0";
 pub const SUPPORTED_WORLDS: &[&str] = &[APP_WORLD, APP_WORLD_1_1, MIGRATION_WORLD];
@@ -81,7 +81,7 @@ pub fn check_component(bytes: &[u8], world: &str) -> Result<()> {
 }
 
 /// The App world a built component targets: 1.1.0 when it imports
-/// `event-routing`, otherwise 1.0.0. Build tools use it to pick the admission
+/// `event-routing` or `workspace`, otherwise 1.0.0. Build tools use it to pick the admission
 /// world; the manifest must still name the same one.
 pub fn app_world_of(bytes: &[u8]) -> &'static str {
     let mut routed = false;
@@ -90,7 +90,7 @@ pub fn app_world_of(bytes: &[u8]) -> &'static str {
             routed |= section
                 .into_iter()
                 .flatten()
-                .any(|import| import.name.name == EVENT_ROUTING_IMPORT);
+                .any(|import| MINOR_1_1_IMPORTS.contains(&import.name.name));
         }
     }
     if routed {
@@ -100,7 +100,10 @@ pub fn app_world_of(bytes: &[u8]) -> &'static str {
     }
 }
 
-const EVENT_ROUTING_IMPORT: &str = "chariox:app/event-routing@1.1.0";
+const MINOR_1_1_IMPORTS: [&str; 2] = [
+    "chariox:app/event-routing@1.1.0",
+    "chariox:app/workspace@1.1.0",
+];
 
 fn invalid(reason: impl fmt::Display) -> ComponentError {
     ComponentError::InvalidComponent {

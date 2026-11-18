@@ -49,6 +49,10 @@ permissions (Checks and Contents: read) on GitHub; the pull request, review requ
 and workflow run types are unaffected.
 Signed payload fixtures for every type are in `docs/fixtures/event-generators/github/`.
 
+A route made by hand takes the same filter:
+`/app inbox add <installation-id> <route-id> <event> <source-event-type> --connection <generator>/<connection-id>/<scope> --filter-json '<object>'`
+keeps only the events whose fields equal the object's values.
+
 Every event's `metadata.chariox` holds facts GitHub only gives in nested lists, so a
 `--filter-json` such as `{"chariox.labels": "needs-review"}` works without calling GitHub:
 `labels` (names), `merged`, `pr_numbers` (the pull requests of a check, workflow run,
@@ -160,8 +164,8 @@ chariox events unsubscribe --source "pull_request_updated@<owner>/<repository>" 
 ```
 
 The notification arrives when the kernel accepts the event, before the App's handler runs, and its
-text is the event text (`Handle GitHub pull_request.synchronize for <owner>/<repository> #<number>
-at head <sha>`), before any subscription filter is applied. Following needs the same grant as every other source and adds no authority. An
+text is the event generator's prompt for the event (what happened, the repository and the number),
+before any subscription filter is applied. Following needs the same grant as every other source and adds no authority. An
 event that arrives while nobody follows its source is kept for the App only; a later follower
 receives events from the moment it subscribes. A restart keeps the follow for a grant that lasts
 until its holder exits, and an unread notification is kept for 7 days. At most 64 sources per grant.
@@ -188,12 +192,13 @@ event arrived.
 A route ID is unique within one installation and the App derives it from the event type and the
 repository (`pull_request.opened@<owner>/<repository>`).
 
-Event delivery identifies a route by `binding_id`, which is
-`sha256(owner, installation ID, route ID)`. A second kernel that makes the same
-owner, installation ID and route ID as the first receives nothing, and the only trace
-is a log line, `event route conflicts with another route`. Give the second kernel's App a
-different installation ID. After the kernel-to-kernel connection transfer arrives, each
-kernel still keeps its own subscriptions and routes, so the same rule applies.
+Event delivery identifies a kernel's claim of a route by `binding_id`:
+`app-route-` and 40 hex digits of `sha256(owner, installation ID, route ID)` hashed again with the
+event owner of the route's connection, the kernel ID and the environment ID
+(`CHARIOX_EVENT_ENVIRONMENT_ID`). Two kernels that hold the same owner, installation ID and route ID
+therefore each get their own delivery of an event, as long as their kernel IDs or environment IDs
+differ; set a different `CHARIOX_EVENT_ENVIRONMENT_ID` per kernel (see "Kernel configuration"). Each
+kernel keeps its own subscriptions and routes.
 
 Duplicate delivery to two kernels is expected: each runs its own targets once.
 

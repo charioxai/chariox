@@ -4,23 +4,36 @@ use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 use crate::local::WorkspaceGitFileChange;
+use crate::runtime::workspace_git_common::{git_query, workspace_repository_state};
+
+/// What `git status` says about one changed path.
+pub(crate) struct StatusEntry {
+    pub(crate) status: String,
+    /// The path a staged rename came from: a commit of the new path holds both.
+    pub(crate) renamed_from: Option<String>,
+}
 
 pub(crate) fn workspace_git_file_changes(
     worktree_path: &str,
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
     let status_by_path = workspace_git_status_by_path(worktree_path)?;
-    let mut files = workspace_git_numstat(worktree_path, compare_ref).unwrap_or_default();
+    // Nothing to compare against before the first commit: every path is new.
+    let mut files = if workspace_repository_state(worktree_path) == "unborn" {
+        Vec::new()
+    } else {
+        workspace_git_numstat(worktree_path, compare_ref)?
+    };
     for file in &mut files {
-        if let Some(status) = status_by_path.get(&file.path) {
-            file.status = status.clone();
+        if let Some(entry) = status_by_path.get(&file.path) {
+            file.status = entry.status.clone();
         }
     }
     let mut known = files
         .iter()
         .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
-    for (path, status) in status_by_path {
+    for (path, StatusEntry { status, .. }) in status_by_path {
         if !known.insert(path.clone()) {
             continue;
         }
@@ -76,69 +89,95 @@ pub(crate) fn workspace_git_diff_text(
 
 pub(crate) fn workspace_git_status_by_path(
     worktree_path: &str,
-) -> Result<HashMap<String, String>, DaemonError> {
-    let output = crate::process_spawn::command("git")
-        .args(["status", "--porcelain=v1", "--untracked-files=all"])
-        .current_dir(worktree_path)
-        .bounded_output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace git status",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Ok(HashMap::new());
-    }
+) -> Result<HashMap<String, StatusEntry>, DaemonError> {
+    let stdout = git_query(
+        worktree_path,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        "workspace git status",
+    )?;
+    Ok(parse_status_records(&stdout))
+}
+
+/// `-z` records are `XY path`, and a rename adds the source path as the next
+/// record. Paths are the real names, never git's quoted display form.
+fn parse_status_records(stdout: &[u8]) -> HashMap<String, StatusEntry> {
     let mut statuses = HashMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.len() < 4 {
+    let mut records = stdout
+        .split(|byte| *byte == 0)
+        .map(|record| String::from_utf8_lossy(record).into_owned());
+    while let Some(record) = records.next() {
+        let (Some(code), Some(path)) = (record.get(..2), record.get(3..)) else {
             continue;
-        }
-        let code = &line[..2];
-        let path = line[3..].trim();
+        };
+        let renamed = code.contains('R');
+        let copied = code.contains('C');
+        let source = (renamed || copied).then(|| records.next()).flatten();
         if path.is_empty() {
             continue;
         }
-        let normalized_path = normalize_git_status_path(path);
-        statuses.insert(normalized_path, git_status_label(code).to_string());
+        statuses.insert(
+            path.to_string(),
+            StatusEntry {
+                status: git_status_label(code).to_string(),
+                renamed_from: source.filter(|_| renamed),
+            },
+        );
     }
-    Ok(statuses)
+    statuses
 }
 
 fn workspace_git_numstat(
     worktree_path: &str,
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
-    let output = crate::process_spawn::command("git")
-        .args(["diff", "--numstat", "--find-renames", compare_ref, "--"])
-        .current_dir(worktree_path)
-        .bounded_output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace git diff",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_git_numstat_line)
-        .collect())
+    let stdout = git_query(
+        worktree_path,
+        &[
+            "diff",
+            "--numstat",
+            "-z",
+            "--find-renames",
+            compare_ref,
+            "--",
+        ],
+        "workspace git diff",
+    )?;
+    Ok(parse_numstat_records(&stdout))
 }
 
-fn parse_git_numstat_line(line: &str) -> Option<WorkspaceGitFileChange> {
-    let mut parts = line.split('\t');
-    let additions = parse_git_numstat_count(parts.next()?)?;
-    let deletions = parse_git_numstat_count(parts.next()?)?;
-    let path = parts.next()?.trim();
-    if path.is_empty() {
-        return None;
+/// `-z` records are `added<TAB>deleted<TAB>path`; a rename leaves the path
+/// empty and follows with its source and destination as two records.
+fn parse_numstat_records(stdout: &[u8]) -> Vec<WorkspaceGitFileChange> {
+    let mut changes = Vec::new();
+    let mut records = stdout
+        .split(|byte| *byte == 0)
+        .map(|record| String::from_utf8_lossy(record).into_owned());
+    while let Some(record) = records.next() {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(additions), Some(deletions), Some(path)) = (
+            parts.next().and_then(parse_git_numstat_count),
+            parts.next().and_then(parse_git_numstat_count),
+            parts.next(),
+        ) else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            records.next();
+            records.next().unwrap_or_default()
+        } else {
+            path.to_string()
+        };
+        if path.is_empty() {
+            continue;
+        }
+        changes.push(WorkspaceGitFileChange {
+            path,
+            status: "modified".to_string(),
+            additions,
+            deletions,
+        });
     }
-    Some(WorkspaceGitFileChange {
-        path: normalize_git_change_path(path),
-        status: "modified".to_string(),
-        additions,
-        deletions,
-    })
+    changes
 }
 
 fn parse_git_numstat_count(value: &str) -> Option<u32> {
@@ -146,20 +185,6 @@ fn parse_git_numstat_count(value: &str) -> Option<u32> {
         return Some(0);
     }
     value.parse().ok()
-}
-
-fn normalize_git_change_path(path: &str) -> String {
-    if let Some((_, right)) = path.rsplit_once(" => ") {
-        return right.trim_matches(|ch| ch == '{' || ch == '}').to_string();
-    }
-    path.to_string()
-}
-
-fn normalize_git_status_path(path: &str) -> String {
-    if let Some((_, right)) = path.rsplit_once(" -> ") {
-        return right.to_string();
-    }
-    path.to_string()
 }
 
 fn git_status_label(code: &str) -> &'static str {
@@ -189,28 +214,47 @@ fn count_file_lines(path: PathBuf) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        git_status_label, normalize_git_change_path, normalize_git_status_path,
-        parse_git_numstat_line,
-    };
+    use super::{git_status_label, parse_numstat_records, parse_status_records};
 
     #[test]
-    fn parse_git_numstat_line_projects_file_changes() {
-        let change = parse_git_numstat_line("12\t3\tsrc/lib.rs").expect("numstat line parses");
-        assert_eq!(change.path, "src/lib.rs");
-        assert_eq!(change.status, "modified");
-        assert_eq!(change.additions, 12);
-        assert_eq!(change.deletions, 3);
-
-        let binary = parse_git_numstat_line("-\t-\tasset.bin").expect("binary numstat parses");
-        assert_eq!(binary.additions, 0);
-        assert_eq!(binary.deletions, 0);
+    fn numstat_records_project_file_changes_with_real_paths() {
+        let changes = parse_numstat_records(
+            b"12\t3\tsrc/lib.rs\0-\t-\tasset.bin\x001\t0\thello world.txt\0".as_slice(),
+        );
+        let seen: Vec<_> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.additions, change.deletions))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("src/lib.rs", 12, 3),
+                ("asset.bin", 0, 0),
+                ("hello world.txt", 1, 0)
+            ]
+        );
     }
 
     #[test]
-    fn normalize_git_change_path_uses_rename_destination() {
-        assert_eq!(normalize_git_change_path("old.rs => new.rs"), "new.rs");
-        assert_eq!(normalize_git_change_path("src/lib.rs"), "src/lib.rs");
+    fn a_numstat_rename_reports_its_destination() {
+        let changes =
+            parse_numstat_records(b"0\t0\t\0old name.rs\0new name.rs\x002\t1\tother.rs\0");
+        let paths: Vec<_> = changes.iter().map(|change| change.path.as_str()).collect();
+        assert_eq!(paths, ["new name.rs", "other.rs"]);
+    }
+
+    #[test]
+    fn status_records_keep_real_paths_and_a_rename_source() {
+        let statuses = parse_status_records(
+            "R  new é.txt\0old é.txt\0 M hello world.txt\0?? plain.txt\0".as_bytes(),
+        );
+        let renamed = &statuses["new é.txt"];
+        assert_eq!(renamed.status, "renamed");
+        assert_eq!(renamed.renamed_from.as_deref(), Some("old é.txt"));
+        assert_eq!(statuses["hello world.txt"].status, "modified");
+        assert_eq!(statuses["plain.txt"].status, "untracked");
+        assert!(statuses["plain.txt"].renamed_from.is_none());
+        assert_eq!(statuses.len(), 3);
     }
 
     #[test]
@@ -221,11 +265,5 @@ mod tests {
         assert_eq!(git_status_label("R "), "renamed");
         assert_eq!(git_status_label("UU"), "conflicted");
         assert_eq!(git_status_label(" M"), "modified");
-    }
-
-    #[test]
-    fn normalize_git_status_path_uses_rename_destination() {
-        assert_eq!(normalize_git_status_path("old.rs -> new.rs"), "new.rs");
-        assert_eq!(normalize_git_status_path("src/lib.rs"), "src/lib.rs");
     }
 }

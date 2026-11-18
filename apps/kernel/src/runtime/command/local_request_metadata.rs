@@ -966,7 +966,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         LocalDaemonRequest::DeleteWorkspaceWorktree(_) => "workspace.worktree.delete",
-        LocalDaemonRequest::CreateWorkspacePullRequest(_) => "workspace.pull_request.create",
         LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
         LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
         LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
@@ -975,8 +974,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
         LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",

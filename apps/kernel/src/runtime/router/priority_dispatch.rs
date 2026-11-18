@@ -581,22 +581,17 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceWorktrees(_)
             | LocalDaemonRequest::CreateWorkspaceWorktree(_)
             | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
             | LocalDaemonRequest::GetWorkspaceGitOverview(_)
             | LocalDaemonRequest::ListWorkspaceFiles(_)
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                boxed_handler(|| async move {
-                    execute_workspace_command_request(
-                        &self.runtime_state,
-                        &self.session_projection,
-                        request,
-                    )
-                    .await
-                })
-            }
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)) => boxed_handler(|| async move {
+                execute_workspace_command_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    request,
+                )
+                .await
+            }),
             request @ (LocalDaemonRequest::RunAgentUtility(_)
             | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
                 boxed_handler(|| async move {

@@ -38,6 +38,24 @@ REST calls send `If-None-Match` with the ETag of the last answer, so an unchange
 limit, and the App stops short of the limit (100 core, 2 search requests left) with `RATE_LIMITED` and the time it resets.
 `get_status` reads the limits GitHub counts now.
 
+## Shipping a Room's changes
+
+`ship_changes` takes the changed files of a Room's worktree to a pull request in one call: it commits exactly the files it
+is given with the message it is given, pushes the branch to the repository's `origin`, and opens the pull request, as the
+steps `commit`, `push` and `pr` (default: all three; `steps: ["pr"]` retries the last one after a failure). The result
+lists each step as `done`, `failed` or `not_run` with its reason, and a failed step stops the ones after it.
+
+The kernel does the git work, through the manifest's `workspace` capability (`{"credential": "github"}`, which needs the
+`https://api.github.com` destination with the same credential label): `workspace.changes`, `workspace.commit` and
+`workspace.push` of `@chariox/app-sdk-wasm/workspace`. A commit holds exactly the files named; it names the account too, so the kernel can ask a private `origin` for its default branch. Work on the default branch
+or a detached HEAD moves to a new `chariox/<slug>` branch first; a named `branch` is created or reused. The push goes to
+an `https://github.com/<owner>/<repo>` `origin` on a branch that is not the default one, never forces, and gets the bound
+account's token through git's environment, never its arguments or any message. The default branch is never pushed and a
+force push is not offered. Only a person at the window or a call the person approved on a card may use the capability; an
+agent's `ship_changes` raises the approval card that shows the files, the message and the branch. A pull request the App
+opens is linked to the Room (`link_pull_request` links one by hand), and `get_pull_request` then returns `madeBy` with
+that Room and agent.
+
 ## Tools
 
 Reads: `list_accounts`, `get_status`, `list_repositories`, `list_pull_requests` (scope `mine`, `review_requested`,
@@ -53,8 +71,8 @@ Each changing tool has a tier, declared in the signed UI actions (`effect`), so 
 
 | Tier | Tools | What happens |
 |---|---|---|
-| `write` | `comment`, `reply_to_review_comment`, `submit_review` (comments and a summary, no verdict), `add_labels`, `remove_labels`, `request_reviewers`, `remove_reviewers`, `rerun_failed_checks` | runs |
-| `approval` | `approve_pull_request`, `request_changes`, `open_pull_request`, `mark_ready_for_review`, `convert_to_draft`, `update_branch`, `reopen_pull_request`, `enable_auto_merge`, `disable_auto_merge` | an agent asks through the kernel: allow once, for the session, or deny |
+| `write` | `comment`, `reply_to_review_comment`, `submit_review` (comments and a summary, no verdict), `add_labels`, `remove_labels`, `request_reviewers`, `remove_reviewers`, `rerun_failed_checks`, `link_pull_request` | runs |
+| `approval` | `approve_pull_request`, `request_changes`, `open_pull_request`, `ship_changes`, `mark_ready_for_review`, `convert_to_draft`, `update_branch`, `reopen_pull_request`, `enable_auto_merge`, `disable_auto_merge` | an agent asks through the kernel: allow once, for the session, or deny |
 | `person_confirmed` | `merge_pull_request`, `close_pull_request`, `delete_branch` | an agent's call raises a card that shows the rows of `preview_merge_pull_request`, `preview_close_pull_request` or `preview_delete_branch` (the signed `confirmationView`) |
 
 The person at the window acts for themselves, as on GitHub: merging has its own confirmation step, the other buttons run
