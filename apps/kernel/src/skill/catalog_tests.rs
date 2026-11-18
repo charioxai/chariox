@@ -320,8 +320,10 @@ fn skills_v2_model_load_cannot_admit_manual_or_off() {
     let rows = projections(&set, None, &[]);
     assert!(resolve_name(&rows, "review").is_err());
     assert!(admit_load(&rows, "s1", &["s1".into()]).is_err());
-    // A name is not an id: the error must tell the agent to use list_skills ids.
-    let error = admit_load(&rows, "review", &[]).unwrap_err().to_string();
+    // A listed name finds the same skill as its id, so its state still decides.
+    let error = admit_load(&rows, "Review", &[]).unwrap_err().to_string();
+    assert!(error.contains("Off"), "{error}");
+    let error = admit_load(&rows, "unknown", &[]).unwrap_err().to_string();
     assert!(error.contains("list_skills"), "{error}");
 }
 fn native(digest: &str) -> NativeSkillEntry {
@@ -409,7 +411,9 @@ fn skills_v2_leased_worker_metadata_names_worker_roots_not_chariox_tools() {
     assert!(metadata_context(&rows, None, 1.0)
         .unwrap()
         .text
-        .starts_with("Skills: load a matching skill with chariox.load_skill before you act.\n"));
+        .starts_with(
+            "Skills: load a matching skill by name with chariox.load_skill before you act.\n"
+        ));
 }
 #[test]
 fn skills_v2_sixty_skill_budget_and_revision_bound_paging() {
@@ -459,7 +463,7 @@ fn skills_v2_metadata_lists_every_name_before_descriptions_and_points_to_paging(
     assert_eq!(roomy.omitted_count, 0);
     let names = |text: &str, rows: &[SkillProjection]| {
         rows.iter()
-            .filter(|row| text.contains(&format!("{} [{}]:", row.skill.name, row.skill.id)))
+            .filter(|row| text.contains(&format!("\n{}:", row.skill.name)))
             .count()
     };
     assert_eq!(names(&roomy.text, &rows[..10]), 10);
@@ -482,6 +486,35 @@ fn skills_v2_metadata_lists_every_name_before_descriptions_and_points_to_paging(
         "{} more Auto skills are not listed here.\n",
         worker.omitted_count
     )));
+}
+#[test]
+fn skills_v2_default_budget_lists_forty_names_with_whole_short_descriptions() {
+    let mut set = SkillCatalogSet::default();
+    for n in 0..40 {
+        let mut record = skill(
+            &format!("skill-{n:032x}"),
+            &format!("topic-area-{n:02}"),
+            SkillScope::Chariox,
+        );
+        record.description = if n == 17 {
+            "Use when the user asks how to abort a browser fetch request.".into()
+        } else {
+            format!("Use when the user works on area {n}: failure modes and checks. ").repeat(4)
+        };
+        let (mut m, p) = install(record);
+        m.expected_revision = set.revision;
+        set = set.plan(&m, &p).unwrap();
+    }
+    let rows = projections(&set, None, &[]);
+    // The default 1% of the unknown-window floor, as on a provider's first turn.
+    let context = metadata_context(&rows, None, 1.0).unwrap();
+    assert_eq!(context.omitted_count, 0, "{}", context.text);
+    assert!(context.tokens_upper_bound <= context.budget_tokens);
+    assert!(context.text.contains(
+        "\ntopic-area-17: Use when the user asks how to abort a browser fetch request.\n"
+    ));
+    let row = admit_load(&rows, "Topic-Area-17", &[]).unwrap();
+    assert_eq!(row.skill.id, format!("skill-{:032x}", 17));
 }
 #[test]
 fn skills_v2_safe_locators_remove_url_secrets() {

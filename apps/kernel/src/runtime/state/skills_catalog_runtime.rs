@@ -554,6 +554,7 @@ impl KernelRuntimeState {
                     crate::skill::resolver::projections(&current, Some(session.project_id()), &[]);
                 admit_load(&current_rows, &skill_id, &explicit)?;
                 let row = admit_load(&rows, &skill_id, &explicit)?;
+                let skill_id = row.skill.id.clone();
                 if let SkillDelivery::ProvidedBy { provider, .. } = &row.delivery {
                     return Err(skill_error(&format!("this instruction is provided by {provider}; use the supported native invocation instead of loading a duplicate Chariox body")));
                 }

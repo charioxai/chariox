@@ -67,7 +67,7 @@ pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: LOAD_SKILL_TOOL.into(),
-            description: "Load pinned instructions and bundled-file locations for an Auto skill, or a Manual skill the user explicitly selected in the current kernel turn. Use the current prompt_id as origin_prompt_id. An explicit=true argument cannot confer authority. This never installs or grants referenced tools, credentials or hooks; ordinary sandbox/permission policy applies.".into(),
+            description: "Load pinned instructions and bundled-file locations for an Auto skill, or a Manual skill the user explicitly selected in the current kernel turn. Pass its listed name or its list_skills id as skill_id. Use the current prompt_id as origin_prompt_id. An explicit=true argument cannot confer authority. This never installs or grants referenced tools, credentials or hooks; ordinary sandbox/permission policy applies.".into(),
             input_schema: serde_json::json!({"type":"object","required":["skill_id","origin_prompt_id"],"properties":{
                 "skill_id":{"type":"string","minLength":1},
                 "origin_prompt_id":{"type":"string","minLength":1}},"additionalProperties":false}),

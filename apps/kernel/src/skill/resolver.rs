@@ -184,22 +184,28 @@ pub fn resolve_name<'a>(
     Ok(row)
 }
 
+/// Discovery lists skills by name, which the catalog keeps unique regardless of
+/// case; list_skills also returns ids. Either finds the same skill.
 pub fn admit_load<'a>(
     rows: &'a [SkillProjection],
-    id: &str,
+    name_or_id: &str,
     explicit_skill_ids: &[String],
 ) -> Result<&'a SkillProjection, DaemonError> {
     let row = rows
         .iter()
-        .find(|row| row.skill.id == id)
+        .find(|row| row.skill.id == name_or_id)
+        .or_else(|| {
+            rows.iter()
+                .find(|row| row.skill.name.eq_ignore_ascii_case(name_or_id))
+        })
         .ok_or_else(|| {
-            failure("unknown skill id; pass an id returned by list_skills (or the skill was removed; refresh Skills)")
+            failure("unknown skill; pass a listed skill name or an id returned by list_skills (or the skill was removed; refresh Skills)")
         })?;
     match row.effective_state {
         SkillState::Off => Err(failure("skill is Off; enable it in Skills before loading")),
-        SkillState::Manual if !explicit_skill_ids.iter().any(|selected| selected == id) => Err(
-            failure("Manual skills require an explicit user $name selection"),
-        ),
+        SkillState::Manual if !explicit_skill_ids.contains(&row.skill.id) => Err(failure(
+            "Manual skills require an explicit user $name selection",
+        )),
         _ => Ok(row),
     }
 }
@@ -298,7 +304,7 @@ pub fn metadata_context_at(
     }
     let mut text = match worker_roots {
         Some(_) => "Skills: read a skill's SKILL.md before using it.\n",
-        None => "Skills: load a matching skill with chariox.load_skill before you act.\n",
+        None => "Skills: load a matching skill by name with chariox.load_skill before you act.\n",
     }
     .to_string();
     if text.len() as u64 > budget {
@@ -312,7 +318,7 @@ pub fn metadata_context_at(
                 .short_description
                 .as_ref()
                 .unwrap_or(&row.skill.description);
-            let prefix = format!("{} [{}]:", row.skill.name, row.skill.id);
+            let prefix = format!("{}:", row.skill.name);
             let location = worker_roots
                 .and_then(|roots| roots.get(&row.skill.id))
                 .map(|root| format!(" (SKILL.md at {root}/SKILL.md)"))
@@ -342,8 +348,24 @@ pub fn metadata_context_at(
     let note = note(omitted);
     // A budget too small for the note still lists what fits, as before.
     let mut spare = budget_bytes.saturating_sub(used + note.len());
-    for (index, (prefix, location, description)) in entries[..listed].iter().enumerate() {
-        let share = spare / (listed - index);
+    // Whole descriptions go first, shortest first, while they fit: a concise
+    // description beats a few words cut from each long one. The rest share
+    // what remains.
+    let full = |description: &str| {
+        description
+            .split_whitespace()
+            .map(|word| word.len() + 1)
+            .sum::<usize>()
+    };
+    let mut order: Vec<usize> = (0..listed).collect();
+    order.sort_by_key(|&index| full(entries[index].2));
+    let mut lines = vec![String::new(); listed];
+    for (filled, &index) in order.iter().enumerate() {
+        let (prefix, location, description) = &entries[index];
+        let share = match full(description) {
+            whole if whole <= spare => whole,
+            _ => spare / (listed - filled),
+        };
         let mut line = prefix.clone();
         for word in description.split_whitespace() {
             if line.len() - prefix.len() + word.len() + 1 > share {
@@ -353,8 +375,11 @@ pub fn metadata_context_at(
             line.push_str(word);
         }
         spare -= line.len() - prefix.len();
+        line.push_str(location);
+        lines[index] = line;
+    }
+    for line in lines {
         text.push_str(&line);
-        text.push_str(location);
         text.push('\n');
     }
     if used + note.len() <= budget_bytes {
