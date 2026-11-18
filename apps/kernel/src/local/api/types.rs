@@ -572,12 +572,6 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-/// Provisional 1021 names each Browser Tab's icon by `favicon_hash`: a `state` read carries no icon PNG, and a
-/// `state_wait` carries one only when its `known_favicons` lacks the hash.
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
-/// 1019 adds `SendProviderLoginVaultEntry` → `ProviderLoginVaultEntrySent`: a running API-key provider login
-/// takes a Vault entry by handle and the kernel types its value into the login.
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
 /// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
 /// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
@@ -585,14 +579,22 @@ pub use workspace::*;
 /// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
 /// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
-/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
-/// Provisional 1023: an external agent's access grant answers the person's cards for them except
-/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions`
-/// lists the person's open cards with why the person keeps one (`person_only`).
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
-/// an App confirmation card carries the exact input the kernel will run (`AppConfirmationFrame.input`).
-/// 1033: a queued agent message in a session carries a `preview` (its first 200 characters) and `truncated`
-/// instead of the whole `prompt`, and a session lists at most the next ten per agent.
-/// 1013 lets a provider catalog's model list `aliases`, the other names the provider's own tool accepts
-/// for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room resolve to the model id.
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`; a
+/// watcher is a notification source (docs/PROTOCOL.md, "A watcher as a notification source"); every agent has
+/// the kernel browser with no card (task `owner_action` is only `"question"`, grants carry no `prompt_id`); each
+/// Browser Tab names its icon by `favicon_hash`: a `state` read carries no icon PNG, and a `state_wait` carries
+/// one only when its `known_favicons` lacks the hash; `SendProviderLoginVaultEntry` →
+/// `ProviderLoginVaultEntrySent`: a running API-key provider login takes a Vault entry by handle and the kernel
+/// types its value into the login; an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions` lists the
+/// person's open cards with why the person keeps one (`person_only`); `OwnerVault` `update` changes an
+/// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
+/// managed context copy carries several source Projects (`source_projects`); an App confirmation card carries
+/// the exact input the kernel will run (`AppConfirmationFrame.input`); a queued agent message in a session
+/// carries a `preview` (its first 200 characters) and `truncated` instead of the whole `prompt`, and a session
+/// lists at most the next ten per agent; a provider catalog's model lists `aliases`, the other names the
+/// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
+/// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
+/// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
+/// agent's inbox while its prompt carries one line.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

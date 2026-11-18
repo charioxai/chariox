@@ -16,7 +16,7 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
-### Relay registration proof (relay peer 450)
+### Relay registration proof (relay peer 449)
 
 A relay token and a kernel's public key do not make a kernel. The relay answers
 every WebSocket upgrade with a fresh 32-byte challenge in the
@@ -3412,7 +3412,7 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
-- relay peer 450: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
+- relay peer 449: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
 - relay peer 449: `ResolveHomeCredentialSecret.injection` accepts `{kind: "workspace", target}` (a Vault use target) so an agent that runs on a slice fills `chariox.vault.use_env` and `chariox.vault.write_file` from the home Vault; the local protocol is unchanged.
 - protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
   {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
@@ -3431,12 +3431,12 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
-- protocol 1012 / relay peer 448: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+- protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
   kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
   credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
-- protocol 1012 / relay peer 449 (provisional, APP-CONFIRM-03): `AppConfirmationFrame.input`, the exact input
+- protocol 1012 / relay peer 449: `AppConfirmationFrame.input`, the exact input
   the kernel runs when the person confirms (sorted pretty JSON, cut with a "N more bytes" note
   past 4096 bytes), written by the kernel and required in every `app_confirmation`.
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
@@ -3448,7 +3448,7 @@ Workflow trigger and deployment direction:
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
-- protocol 1019: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+- protocol 1012: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
   answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
   (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
   types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
@@ -3457,7 +3457,7 @@ Workflow trigger and deployment direction:
   for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
   refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
   client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
-  Person and owner-agent callers only. Web requires 1019 for "Use a Vault entry".
+  Person and owner-agent callers only. Web requires 1012 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -4151,7 +4151,7 @@ Workflow trigger and deployment direction:
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
 
-  Protocol 1023: a grant holder answers the person's cards for them. `RespondToInteraction`
+  Protocol 1012: a grant holder answers the person's cards for them. `RespondToInteraction`
   from a local grant holder, from the same agent forwarded through the person's gateway, or
   from an agent driving a Room through reach settles any open card of the person, in any of
   their Rooms and from any agent depth, except the cards the person keeps for every choice:
@@ -5407,12 +5407,12 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
-Local 1021 (provisional): every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+Local 1012: every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
 PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
 `known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
 is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
 of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
-12.5 KB on every read. `browser-favicon-cache-1021.json` pins the shape (`mp08_mp10_browser_favicon_cache_1021_shape_and_hash`).
+12.5 KB on every read. `browser-favicon-cache-1012.json` pins the shape (`mp08_mp10_browser_favicon_cache_1012_shape_and_hash`).
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
@@ -8115,7 +8115,7 @@ refused; across kernels a delivery caused by the subscription itself is answered
 Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
 `person-inbox-1012.json` and its SHA-256 test pin the shape.
 
-### Model names — local 1013
+### Model names — local 1012
 
 A model of a provider catalog (`GetProviderCatalog`, the `provider_catalog_changed` event) may list
 `aliases`: the other names the provider's own tool accepts for it, as its catalog gives them (the Claude
@@ -8123,5 +8123,5 @@ picker's `sonnet`, a Codex picker id). The field is absent when a model has none
 or batch), a model change and a new Room's defaults take any of: the catalog id, the id behind a provider
 qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headless/…`, `codex/…`), an alias, or
 an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
-resolves to none is refused with the models to use. `provider-catalog-aliases-1013.json` and its SHA-256
+resolves to none is refused with the models to use. `provider-catalog-aliases-1012.json` and its SHA-256
 test pin the shape.
