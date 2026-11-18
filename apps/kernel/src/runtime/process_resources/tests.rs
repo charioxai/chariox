@@ -874,6 +874,54 @@ fn a_linux_watch_lists_its_work_without_ps() {
     assert!(sample.resident_set_bytes > 0, "{sample:?}");
 }
 
+/// The sampler reads the process table five times a second while watches
+/// read it. Reading every stat file at every tick cost a kernel seconds of CPU
+/// a minute on a host of thousands of processes, so a process it already read
+/// is not read again.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sampler_reads_a_process_it_knows_no_more() {
+    fn sampler_reads() -> u64 {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .flatten()
+            .filter(|task| {
+                std::fs::read_to_string(task.path().join("comm"))
+                    .is_ok_and(|name| name.trim() == "chariox-sampler")
+            })
+            .filter_map(|task| {
+                let io = std::fs::read_to_string(task.path().join("io")).ok()?;
+                io.lines()
+                    .find_map(|line| line.strip_prefix("syscr: "))?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum()
+    }
+    sampling::warm_up().unwrap();
+    let processes = std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.parse::<u32>().is_ok())
+        })
+        .count() as u64;
+    let before = sampler_reads();
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < until {
+        let _ = sampling::process_rows(std::process::id());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reads = sampler_reads() - before;
+    assert!(
+        reads < processes,
+        "the sampler made {reads} reads in 2 s (about 10 ticks) on a host of {processes} processes"
+    );
+}
+
 /// A tree whose `ps` fails does not make the trees of other tests (or other
 /// workloads) lose their samples or refuse to start.
 #[cfg(unix)]

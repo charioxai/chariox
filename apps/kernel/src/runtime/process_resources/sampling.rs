@@ -249,8 +249,9 @@ impl ProcessTree {
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
-        let rows = process_rows(self.root)?;
-        self.observe(&rows)?;
+        let table = process_rows(self.root)?;
+        self.observe(&table)?;
+        let rows = self.own_rows(&table)?;
         self.parents = rows
             .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
@@ -328,6 +329,33 @@ impl ProcessTree {
                 }
             })
             .collect())
+    }
+
+    /// The rows of the root and the processes this tree owns, read now: the
+    /// shared table keeps what it first read of a process.
+    #[cfg(target_os = "linux")]
+    fn own_rows(&self, _table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        proc_table::current(self.ours())
+    }
+
+    /// The rows of the root and the processes this tree owns.
+    #[cfg(not(target_os = "linux"))]
+    fn own_rows(&self, table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        let ours = self.ours().collect::<std::collections::BTreeSet<_>>();
+        Ok(table
+            .iter()
+            .filter(|row| ours.contains(&row.pid))
+            .cloned()
+            .collect())
+    }
+
+    fn ours(&self) -> impl Iterator<Item = u32> + '_ {
+        std::iter::once(self.root).chain(
+            self.owned
+                .keys()
+                .copied()
+                .filter(move |pid| *pid != self.root),
+        )
     }
 
     fn observe(&mut self, rows: &[Row]) -> Result<(), SamplingError> {
@@ -838,6 +866,8 @@ mod ownership_tests {
         ));
     }
 }
+/// One process as the table read it. On Linux the sampler's table reads a
+/// process once, so its resources there are those of its first read.
 #[derive(Clone)]
 pub(super) struct Row {
     pid: u32,
@@ -1045,6 +1075,12 @@ impl Drop for Sampler {
 
 fn sampler() -> &'static Sampler {
     static SAMPLER: std::sync::OnceLock<Sampler> = std::sync::OnceLock::new();
+    #[cfg(target_os = "linux")]
+    return SAMPLER.get_or_init(|| {
+        let mut table = proc_table::Table::default();
+        Sampler::new(move || table.read())
+    });
+    #[cfg(not(target_os = "linux"))]
     SAMPLER.get_or_init(|| Sampler::new(read_process_rows))
 }
 
