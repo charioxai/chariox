@@ -164,7 +164,7 @@ fn changes(input: Changes) -> Result<Value, RemoteError> {
             "deletions": file.deletions,
         })).collect::<Vec<_>>(),
         "branch": detect_git_branch(worktree).map_err(failed)?,
-        "defaultBranch": default_branch(worktree),
+        "defaultBranch": default_branch(worktree, &[]).map_err(failed)?,
         "remote": remote,
     }))
 }
