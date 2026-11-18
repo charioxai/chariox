@@ -45,6 +45,26 @@ export function syncedSceneJSON(api, now = Date.now()) {
   return JSON.stringify(scene);
 }
 
+/**
+ * The elements of a diagram that is opened over the shown one. Excalidraw's `updateScene` replaces
+ * the array, and a window that still shows the old diagram keeps every element that the saved scene
+ * does not mention, so it would show both and could save the old one back. Each shown element the new
+ * diagram lacks therefore stays as a deleted one, and one both have gets a version above both, so the
+ * other window removes and replaces by the same rule as for any other edit.
+ */
+export function replacement(shown, opened, now = Date.now()) {
+  const nonce = () => Math.floor(Math.random() * 2 ** 31);
+  const before = new Map(shown.map(element => [element.id, element]));
+  const incoming = new Set(opened.map(element => element.id));
+  const elements = opened.map(element => {
+    const old = before.get(element.id);
+    return old ? { ...element, version: Math.max(old.version, element.version ?? 0) + 1, versionNonce: nonce(), updated: now } : element;
+  });
+  const removed = shown.filter(element => !incoming.has(element.id))
+    .map(element => element.isDeleted ? element : { ...element, isDeleted: true, version: element.version + 1, versionNonce: nonce(), updated: now });
+  return [...elements, ...removed];
+}
+
 export function checkedScene(text) {
   if (new TextEncoder().encode(text).length > MAX_BYTES) fail('Diagram exceeds 192 KiB; split it into smaller files.');
   const scene = JSON.parse(text);

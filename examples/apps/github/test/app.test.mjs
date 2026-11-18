@@ -113,6 +113,14 @@ test('check state: none, pending, success, failure from runs and statuses', asyn
   assert.equal(checksSummary([run('completed', 'success')], [{ state: 'pending' }]).state, 'pending');
 });
 
+test('check state: a cancelled check is not a success, alone or beside passing ones', async () => {
+  const { checksSummary } = await import('../src/normalize.mjs');
+  const run = (status, conclusion) => ({ status, conclusion });
+  assert.deepEqual(checksSummary([run('completed', 'cancelled')], []), { state: 'failure', total: 1, failed: 1, pending: 0 });
+  assert.equal(checksSummary([run('completed', 'success'), run('completed', 'cancelled')], []).state, 'failure');
+  assert.equal(checksSummary([run('in_progress', null), run('completed', 'cancelled')], []).state, 'failure');
+});
+
 test('reviews: the decision is each reviewer\'s latest verdict; comments, pending and dismissed ones do not decide', async () => {
   const { reviewDecision } = await import('../src/normalize.mjs');
   const r = (login, state) => ({ user: { login }, state });
@@ -139,6 +147,27 @@ test('reviews: every page is read, so a later request for changes outweighs an e
   assert.deepEqual([reviews.decision, reviews.reviews.length, seen], ['changes_requested', 2, [1, 2]]);
   const summary = await paged.call('get_pull_request_summary', pull);
   assert.equal(summary.review, 'changes_requested');
+});
+
+test('checks: every page of runs and statuses counts, so a failing or pending one on page 2 is not reported as success', async () => {
+  const run = (id, conclusion) => ({ id, name: `run ${id}`, status: conclusion ? 'completed' : 'in_progress', conclusion, html_url: '', app: { slug: 'ci' }, output: {} });
+  const status = (id, state) => ({ id, context: `ctx ${id}`, state, description: '', target_url: null });
+  const paged = (key, pages) => (url, template) => {
+    if (!template.test(url.pathname)) return undefined;
+    const page = Number(url.searchParams.get('page') ?? 1);
+    const link = page < pages.length ? { link: `<https://api.github.com${url.pathname}?per_page=100&page=${page + 1}>; rel="next"` } : {};
+    return { status: 200, headers: link, body: JSON.stringify({ total_count: 2, [key]: pages[page - 1] }) };
+  };
+  const failingOnPageTwo = app({ override: url => paged('check_runs', [[run(1, 'success')], [run(2, 'failure')]])(url, /\/check-runs$/)
+    ?? paged('statuses', [[status(1, 'success')], []])(url, /\/status$/) });
+  assert.deepEqual((await failingOnPageTwo.call('get_checks', pull)).state, 'failure');
+  assert.deepEqual((await failingOnPageTwo.call('get_pull_request_summary', pull)).checks, { state: 'failure', total: 3, failed: 1, pending: 0 });
+  const pendingOnPageTwo = app({ override: url => paged('check_runs', [[run(1, 'success')]])(url, /\/check-runs$/)
+    ?? paged('statuses', [[status(1, 'success')], [status(2, 'pending')]])(url, /\/status$/) });
+  assert.equal((await pendingOnPageTwo.call('get_checks', pull)).state, 'pending');
+  const endless = app({ override: url => /\/check-runs$/.test(url.pathname)
+    ? { status: 200, headers: { link: `<https://api.github.com${url.pathname}?page=99>; rel="next"` }, body: JSON.stringify({ check_runs: [run(1, 'success')] }) } : undefined });
+  await assert.rejects(endless.call('get_checks', pull), { code: 'TOO_MANY_CHECKS' });
 });
 
 test('comments: the conversation and the comments on lines of the diff', async () => {
