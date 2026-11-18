@@ -443,6 +443,47 @@ fn skills_v2_sixty_skill_budget_and_revision_bound_paging() {
     assert!(metadata_context(&rows, None, 2.0).unwrap().budget_tokens > context.budget_tokens);
 }
 #[test]
+fn skills_v2_metadata_lists_every_name_before_descriptions_and_points_to_paging() {
+    let mut set = SkillCatalogSet::default();
+    for n in 0..60 {
+        let mut record = skill(&format!("s{n}"), &format!("skill-{n}"), SkillScope::Chariox);
+        record.description =
+            format!("Detailed guidance for area {n} with checks and fixes. ").repeat(8);
+        let (mut m, p) = install(record);
+        m.expected_revision = set.revision;
+        set = set.plan(&m, &p).unwrap();
+    }
+    let rows = projections(&set, None, &[]);
+    // A long first description must not crowd the later names out of discovery.
+    let roomy = metadata_context(&rows[..10], Some(128_000), 1.0).unwrap();
+    assert_eq!(roomy.omitted_count, 0);
+    let names = |text: &str, rows: &[SkillProjection]| {
+        rows.iter()
+            .filter(|row| text.contains(&format!("{} [{}]:", row.skill.name, row.skill.id)))
+            .count()
+    };
+    assert_eq!(names(&roomy.text, &rows[..10]), 10);
+    assert!(!roomy.text.contains("not listed"));
+    // 60 names alone overflow 1% of a 64K window.
+    let crowded = metadata_context(&rows, Some(64_000), 1.0).unwrap();
+    assert!(crowded.omitted_count > 0);
+    assert!(crowded.tokens_upper_bound <= crowded.budget_tokens);
+    assert!(crowded.text.ends_with(&format!(
+        "{} more Auto skills are not listed here; page through them with chariox.list_skills.\n",
+        crowded.omitted_count
+    )));
+    assert_eq!(names(&crowded.text, &rows) + crowded.omitted_count, 60);
+    let roots: BTreeMap<_, _> = rows
+        .iter()
+        .map(|row| (row.skill.id.clone(), format!("/worker/{}", row.skill.id)))
+        .collect();
+    let worker = metadata_context_at(&rows, Some(64_000), 1.0, Some(&roots)).unwrap();
+    assert!(worker.text.ends_with(&format!(
+        "{} more Auto skills are not listed here.\n",
+        worker.omitted_count
+    )));
+}
+#[test]
 fn skills_v2_safe_locators_remove_url_secrets() {
     assert_eq!(
         safe_locator("https://user:pass@example.com/skills?token=secret#fragment").unwrap(),

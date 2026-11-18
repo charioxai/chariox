@@ -304,33 +304,61 @@ pub fn metadata_context_at(
     if text.len() as u64 > budget {
         return Err(failure("skill metadata budget is too small for discovery; increase skills.metadata_budget_percent"));
     }
-    let mut omitted = 0;
-    for row in auto {
-        let description = row
-            .skill
-            .short_description
-            .as_ref()
-            .unwrap_or(&row.skill.description);
-        let prefix = format!("{} [{}]:", row.skill.name, row.skill.id);
-        let location = worker_roots
-            .and_then(|roots| roots.get(&row.skill.id))
-            .map(|root| format!(" (SKILL.md at {root}/SKILL.md)"))
-            .unwrap_or_default();
+    let entries: Vec<_> = auto
+        .iter()
+        .map(|row| {
+            let description = row
+                .skill
+                .short_description
+                .as_ref()
+                .unwrap_or(&row.skill.description);
+            let prefix = format!("{} [{}]:", row.skill.name, row.skill.id);
+            let location = worker_roots
+                .and_then(|roots| roots.get(&row.skill.id))
+                .map(|root| format!(" (SKILL.md at {root}/SKILL.md)"))
+                .unwrap_or_default();
+            (prefix, location, description.as_str())
+        })
+        .collect();
+    // Every listed skill gets its name before any description words, so one long
+    // description cannot crowd later skills out of discovery.
+    let budget_bytes = budget as usize;
+    let named = |(prefix, location, _): &(String, String, &str)| prefix.len() + location.len() + 1;
+    let note = |omitted: usize| match (omitted, worker_roots) {
+        (0, _) => String::new(),
+        (_, Some(_)) => format!("{omitted} more Auto skills are not listed here.\n"),
+        (_, None) => format!(
+            "{omitted} more Auto skills are not listed here; \
+             page through them with chariox.list_skills.\n"
+        ),
+    };
+    let mut listed = entries.len();
+    let mut used = text.len() + entries.iter().map(named).sum::<usize>();
+    while listed > 0 && used + note(entries.len() - listed).len() > budget_bytes {
+        listed -= 1;
+        used -= named(&entries[listed]);
+    }
+    let omitted = entries.len() - listed;
+    let note = note(omitted);
+    // A budget too small for the note still lists what fits, as before.
+    let mut spare = budget_bytes.saturating_sub(used + note.len());
+    for (index, (prefix, location, description)) in entries[..listed].iter().enumerate() {
+        let share = spare / (listed - index);
         let mut line = prefix.clone();
         for word in description.split_whitespace() {
-            if text.len() + line.len() + location.len() + word.len() + 2 > budget as usize {
+            if line.len() - prefix.len() + word.len() + 1 > share {
                 break;
             }
             line.push(' ');
             line.push_str(word);
         }
-        if line.len() == prefix.len() {
-            omitted += 1;
-            continue;
-        }
+        spare -= line.len() - prefix.len();
         text.push_str(&line);
-        text.push_str(&location);
+        text.push_str(location);
         text.push('\n');
+    }
+    if used + note.len() <= budget_bytes {
+        text.push_str(&note);
     }
     Ok(SkillMetadataContext {
         tokens_upper_bound: text.len() as u64,
