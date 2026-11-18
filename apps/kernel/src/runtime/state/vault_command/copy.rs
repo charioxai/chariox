@@ -165,6 +165,7 @@ impl KernelRuntimeState {
                 vault_key: Some(handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
+                copied_from: Some(args.from.clone()),
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;
@@ -214,7 +215,7 @@ fn validate_copy_binding(
     }
 }
 
-/// A retry returns the committed handle only to the same agent, session and source.
+/// A retry returns the committed handle only to the same agent, session, destination and source.
 fn committed(
     existing: &UserCredentialConfig,
     turn: &VaultAgentContext,
@@ -229,6 +230,11 @@ fn committed(
     {
         return Err(error(
             "request_id already names a different credential; use a new request_id",
+        ));
+    }
+    if metadata.and_then(|m| m.copied_from.as_deref()) != Some(from) {
+        return Err(error(
+            "request_id already made a copy of a different entry; use a new request_id",
         ));
     }
     Ok(RuntimeToolResult {

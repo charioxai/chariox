@@ -21,6 +21,11 @@ pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'stati
         NOTIFY_PERSON | "chariox_notify_person" | "mcp__chariox__chariox_notify_person" => {
             Some(NOTIFY_PERSON)
         }
+        WATCHER_CREATE => Some(WATCHER_CREATE),
+        WATCHER_DRY_RUN => Some(WATCHER_DRY_RUN),
+        WATCHER_ACTIVATE => Some(WATCHER_ACTIVATE),
+        WATCHER_STATUS => Some(WATCHER_STATUS),
+        WATCHER_REMOVE => Some(WATCHER_REMOVE),
         META_HISTORY_SEARCH_TOOL
         | "chariox_meta_history_search"
         | "mcp__chariox__chariox_meta_history_search" => Some(META_HISTORY_SEARCH_TOOL),

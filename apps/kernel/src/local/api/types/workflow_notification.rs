@@ -178,4 +178,6 @@ pub enum NotificationSourceKind {
     WorkflowRun,
     /// An event an installed App's route accepted.
     AppEvent,
+    /// An event a watcher's script reported.
+    Watcher,
 }

@@ -21,6 +21,9 @@ mod source_fence_tests;
 pub(crate) mod subscription_settings;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) mod watcher;
+#[cfg(test)]
+mod watcher_tests;
 
 use super::notification_target::WorkflowNotificationTarget;
 use super::{DurableKernelStateStore, DurableWriterRequest};
@@ -144,6 +147,7 @@ pub(super) fn exit_key(kind: crate::local::NotificationSourceKind, exit_node_id:
     match kind {
         crate::local::NotificationSourceKind::WorkflowRun => format!("{RESERVED}run"),
         crate::local::NotificationSourceKind::AppEvent => format!("{RESERVED}app{exit_node_id}"),
+        crate::local::NotificationSourceKind::Watcher => format!("{RESERVED}watcher"),
         _ if exit_node_id.starts_with(RESERVED) => format!("{RESERVED}exit{exit_node_id}"),
         _ => exit_node_id.to_owned(),
     }
@@ -186,6 +190,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     .map_err(sql)?;
     agent_lineage::initialize(db).map_err(sql)?;
     subscription_settings::initialize(db).map_err(sql)?;
+    watcher::initialize(db).map_err(sql)?;
     prune_occurrences(db).map_err(sql)?;
     Ok(())
 }
@@ -375,9 +380,11 @@ pub(crate) enum NotificationOperation {
         accepted: bool,
         at: u64,
     },
+    Watcher(watcher::WatcherOperation),
 }
 #[derive(Debug)]
 pub(crate) enum NotificationOutcome {
+    Watcher(Box<watcher::WatcherWritten>),
     Source(WorkflowNotificationSource),
     Subscription(WorkflowNotificationSubscription),
     Ack(WorkflowNotificationAck),
@@ -565,6 +572,7 @@ fn apply(
     op: NotificationOperation,
 ) -> Result<NotificationOutcome, DaemonError> {
     match op {
+        NotificationOperation::Watcher(operation) => watcher::apply(tx, operation),
         NotificationOperation::EmitOwnerAction {
             source_id,
             occurrence_id,
@@ -989,6 +997,7 @@ fn require_source_workflow(
         source.kind,
         crate::local::NotificationSourceKind::OwnerAction
             | crate::local::NotificationSourceKind::AppEvent
+            | crate::local::NotificationSourceKind::Watcher
     ) {
         return Ok(());
     }

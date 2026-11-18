@@ -392,6 +392,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    /// The watcher runs of this kernel life.
+    watcher_runs: Arc<watchers::WatcherRuns>,
     managed_activity_transitions:
         managed_activity_persistence::ManagedActivityTransitionState,
     // Serializes local activity-bearing mutations with their durable observation. Callers must
@@ -589,6 +591,9 @@ mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod wake_driver;
+mod watchers;
+#[cfg(test)]
+mod watchers_tests;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -1301,6 +1306,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                watcher_runs: Default::default(),
                 managed_activity_transitions,
                 managed_activity_mutation_lock,
                 managed_kernel_quiescence,

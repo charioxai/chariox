@@ -59,6 +59,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.schedule_watchers();
         // A person's Tab takeover returns to the agent once they stop sending input; an agent waiting for
         // it continues now instead of at the next periodic sweep.
         if self.owned.kernel_browser_host.reclaim_idle_takeovers() {

@@ -65,6 +65,7 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
+mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -124,6 +125,7 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
+pub use watcher::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -578,4 +580,5 @@ pub use workspace::*;
 /// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
 /// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

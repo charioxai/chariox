@@ -1080,6 +1080,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
         LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
         LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
+        LocalDaemonRequest::Watcher(_) => "notification.watcher",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",

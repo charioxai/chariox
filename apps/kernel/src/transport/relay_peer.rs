@@ -224,6 +224,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
 /// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger; 449 carries the
 /// options a notification source declares and the options and `once` a subscription picks.
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

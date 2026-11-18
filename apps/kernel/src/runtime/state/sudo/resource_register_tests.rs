@@ -334,6 +334,7 @@ async fn resource_register_http_revoke_uses_vault_and_never_echoes_response() {
             provider_run_id: None,
             vault_key: Some("service-revoke-key".into()),
             updated_at_ms: Some(42),
+            copied_from: None,
         }),
     };
     f.state
