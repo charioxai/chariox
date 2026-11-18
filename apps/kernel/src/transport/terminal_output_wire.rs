@@ -151,7 +151,9 @@ fn mirror_fields(response: &Value) -> Vec<String> {
 }
 
 /// Moves the base64 of a Browser reply's packet body, resources and picture out of the JSON as raw bytes. A resource slice
-/// that is not canonical base64 on its own stays text; `None` when no field moved.
+/// that is not canonical base64 on its own stays text, and so does an empty field (a retained font): with no bytes to
+/// move, a reply of only those must stay plain JSON with its text, not ranges into a payload it never sends. `None`
+/// when no field moved.
 fn encode_mirror_reply(response: &mut Value) -> Result<Option<Vec<u8>>, serde_json::Error> {
     let engine = base64::engine::general_purpose::STANDARD;
     let mut payload = Vec::new();
@@ -162,7 +164,9 @@ fn encode_mirror_reply(response: &mut Value) -> Result<Option<Vec<u8>>, serde_js
         let Some(data) = field
             .as_str()
             .and_then(|text| engine.decode(text).ok())
-            .filter(|data| engine.encode(data) == field.as_str().unwrap_or_default())
+            .filter(|data| {
+                !data.is_empty() && engine.encode(data) == field.as_str().unwrap_or_default()
+            })
         else {
             continue;
         };
@@ -500,6 +504,17 @@ mod mirror_reply_tests {
             serde_json::json!({"KernelBrowser":{"result":{"wire":2,"sequence":2,"ops":[]}}});
         let wire = encode_reply(&mut response).unwrap();
         assert!(!wire.starts_with(b"CXT1"));
+    }
+
+    // A packet whose only byte field is a retained font (its digest, no bytes) has nothing to move: it stays plain JSON
+    // with the empty text, never a range into a payload that is not sent.
+    #[test]
+    fn a_mirror_reply_whose_only_resource_is_retained_is_unchanged_json() {
+        let mut response = serde_json::json!({"KernelBrowser":{"result":{"wire":2,"sequence":15,"ops":[],
+            "resources":[{"key":"r1","resource_id":"r","mime_type":"font/woff2","data_base64":"","retained":true}]}}});
+        let original = response.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&wire).unwrap(), original);
     }
 
     #[test]
