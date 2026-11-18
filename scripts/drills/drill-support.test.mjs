@@ -25,6 +25,12 @@ test("a kernel wake prompt, which carries counts and no timer label, is found an
   assert.equal(wokeReply([wake("something else")], "ACKDROP-X_WOKE"), false)
 })
 
+test("a kernel-shaped wake whose reply is only in turn.summary counts as answered", () => {
+  const answered = turn("Inbox: at least 1 new event (1 timer). Read it with chariox.events.inbox after 7, then chariox.events.ack each one you handled.", { system_prompt: true, prompt_origin: "chariox", lifecycle: "completed", summary: { entry: { kind: "provider_output", text: "ACKDROP-X_WOKE\n" } } })
+  assert.equal(wokeReply(wakeTurns([ask, answered]), "ACKDROP-X_WOKE"), true)
+  assert.equal(wokeReply([{ ...answered, summary: { entry: { kind: "provider_output", text: "other" } } }], "ACKDROP-X_WOKE"), false)
+})
+
 test("the drill's own request is not a wake", () => {
   assert.equal(wakeTurns([ask]).length, 0)
 })
