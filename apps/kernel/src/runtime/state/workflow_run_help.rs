@@ -11,7 +11,7 @@ use crate::durable_state::agent_lifecycle::{
 /// Longest reason a step carries; the same bound a run outcome's detail has.
 const REASON_CHARS: usize = crate::session::OUTCOME_DETAIL_CHARS;
 
-fn is_run_step(prompt: &crate::session::PromptQueueItem) -> bool {
+pub(super) fn is_run_step(prompt: &crate::session::PromptQueueItem) -> bool {
     prompt.workflow_run_id().is_some() && prompt.workflow_node_run_id().is_some()
 }
 

@@ -757,7 +757,21 @@ fn cancel_task(
         ));
     }
     match t.state {
-        ExecutionState::Cancelled => {}
+        // A failure can have cancelled it already and left its diagnostic as the reason. An
+        // accepted Stop is still a decision to stop: record it, or nothing that goes on with a
+        // failed turn (a usage-limit resume) can tell the cancel from the failure.
+        ExecutionState::Cancelled => {
+            if !t.cancelled_on_purpose() {
+                t.reason = if by_agent {
+                    AGENT_CANCELLED_REASON
+                } else {
+                    OWNER_CANCELLED_REASON
+                }
+                .into();
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+        }
         // The turn is over and stays so: Stop only ends the work it left running. The owner's Stop
         // still keeps the agent stopped, as for any turn it ends.
         ExecutionState::Done => {

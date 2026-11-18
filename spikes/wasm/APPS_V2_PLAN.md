@@ -53,7 +53,6 @@ recommendations below and in the shape; they are not reopened in §7.
 | 10-22 | Reverse-domain App IDs with verified ownership accepted | “Ok then” |
 | 10-22 | Excalidraw, then Univer; LaTeX later | “Univer sounds like a perfect fit ... univer and scalidraw for certain”; “let's leave any latex related app for later” |
 | 10-22 | MPL allowed as a dependency | “Ok to the more permissive dependency” |
-| 10-22 | Drop wrapped binaries, including W1/W2 | “the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.” |
 
 ### 1.1 What exists, and what must change
 
@@ -557,7 +556,7 @@ clear compatibility error and a data-preserving replacement drill.
 Ship Excalidraw first and Univer sheets second (§6), with a small Todo contract
 example for SDK onboarding and benchmark control. LaTeX is a later App, outside
 both stages; [the completed spike](tex/TEX_APP.md) records its licence blocker.
-Typst is not planned, and there is no wrapped-binary App kind.
+Typst is not planned.
 
 B1 implements the accepted four-arm comparison: declared App actions,
 equivalent web app plus handwritten MCP, Computer Use, and App browser-driving
@@ -1026,8 +1025,7 @@ These are a resume plan, not permission to resume implementation or trigger CI.
 | B1 | Frozen four-arm benchmark harness and full budgeted run/report | S harness + M execution/analysis | AV5, X1, X2, Todo; not X1 alone |
 | G1 | Exact-head Stage 1 matrix, platform evidence, security-anchor review and cleanup | M–L | Core rows above; L3 follows immediately |
 
-Miguel dropped W1/W2 and the wrapped-binary kind on 10-22; they have no work,
-dependency or estimate here. Python preview/Go remain separate follow-ons.
+Python preview/Go remain separate follow-ons.
 
 ### 5.1.1 App-view implementation slices and replacement inventory
 
@@ -1268,7 +1266,7 @@ bundle qualifies; compiling or downloading it as WASM does not change its terms.
   integration gaps; it is not a finished App or real-user acceptance.
 - **Typst is not planned now.** Its spike comparison remains research, not
   an extra example or a replacement for LaTeX. Todo is a small SDK/benchmark
-  control, not a third major product App. The wrapped-binary App kind is dropped.
+  control, not a third major product App.
 
 The candidate inventory comes from the accepted shape and LaTeX spike. This
 round does not claim a fresh upstream audit or clearance of a final lockfile;

@@ -696,7 +696,10 @@ impl KernelRuntimeState {
         let failure_notice = failure.as_ref().map(|failure| {
             agent_id
                 .as_deref()
-                .and_then(|agent_id| self.usage_limit_resume_notice(agent_id, failure))
+                .zip(active_prompt.as_ref())
+                .and_then(|(agent_id, prompt)| {
+                    self.usage_limit_resume_notice(agent_id, prompt, failure)
+                })
                 .unwrap_or_else(|| failure.notice())
         });
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
