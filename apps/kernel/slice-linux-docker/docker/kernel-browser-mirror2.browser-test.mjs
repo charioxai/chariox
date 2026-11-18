@@ -2348,8 +2348,10 @@ test("protocol 560/168: a layout released while its override is still in flight 
     for (let i = 0; i < 5; i++) {
       const [narrow, wide] = await Promise.all([subscribe({ layout_width: 400, layout_height: 700 }), subscribe({ layout_width: 1440, layout_height: 900 })]);
       await new Promise(resolve => setTimeout(resolve, 150));
-      const owner = host.layouts.size ? "narrow" : "canonical", width = await evaluate("innerWidth");
-      assert.equal(width, owner === "narrow" ? 400 : 1280, `round ${i}: the page width follows the layout owner (${owner})`);
+      // The wide viewer's layout is the canonical page clamped to 1280, so whichever request lands last owns a layout.
+      const owner = host.pageSize([...host.tabs.keys()][0]).width, width = await evaluate("innerWidth");
+      assert(owner === 400 || owner === 1280, `round ${i}: one of the two viewers owns the layout (${owner})`);
+      assert.equal(width, owner, `round ${i}: the page width follows the layout owner (${owner})`);
       for (const s of [narrow, wide]) await host.request({ op: "mirror_close", subscription_id: s.subscription_id, generation: (await host.request({ op: "state" })).generation });
       assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
     }
