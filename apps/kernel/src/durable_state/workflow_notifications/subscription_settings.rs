@@ -304,6 +304,24 @@ pub(super) fn woke_in(
     Ok(())
 }
 
+/// A workflow endpoint's prompt is queued. It runs no agent's turn, so the line names none.
+pub(crate) fn handed_off_in(
+    tx: &Transaction<'_>,
+    subscription_id: &str,
+    occurrence_id: &str,
+) -> Result<(), DaemonError> {
+    tx.execute(
+        "UPDATE notification_trace SET outcome=?3 WHERE subscription_id=?1 AND occurrence_id=?2",
+        params![
+            subscription_id,
+            occurrence_id,
+            outcome_word(NotificationTraceOutcome::Delivered)?
+        ],
+    )
+    .map_err(sql)?;
+    Ok(())
+}
+
 /// An App event's prompt is queued: it counts as fired and its line names the turn. An App
 /// event has no gate at acceptance, so this is its first line.
 pub(crate) fn app_delivered_in(
