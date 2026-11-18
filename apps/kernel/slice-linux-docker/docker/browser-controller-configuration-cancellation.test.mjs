@@ -40,7 +40,7 @@ for (const method of ["browser.downloads.configure", "browser.permission"]) {
             case "Page.getFrameTree": return { frameTree: { frame: { loaderId: "document" } } };
             case "Target.setDiscoverTargets": case "Target.setAutoAttach": case "Page.enable":
             case "Page.setLifecycleEventsEnabled": case "Runtime.enable": case "Network.enable":
-            case "Inspector.enable": return {};
+            case "Inspector.enable": case "Emulation.setScrollbarsHidden": return {};
             default: throw new Error(`unexpected command ${command}`);
           }
         },

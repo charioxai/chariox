@@ -1454,6 +1454,21 @@ test('MP-08/MP-10/MP-11 native font requirements ignore a failed unused fallback
  }finally{await page.close()}
 });
 
+// A family served in unicode-range subsets whose Latin bytes have not arrived: Chromium shares a font fetch by URL, so a placeholder
+// shared by every pending resource would fail the unused Cyrillic subset with the Latin face the text needs.
+test('MP-10: a pending face the text needs fails alone; an unused subset of its family stays unloaded',async()=>{
+ const page=await viewer();try{
+  const css='@font-face{font-family:Pending;src:url("mr:r1") format("truetype"),url("mr:r2") format("woff2")}@font-face{font-family:Pending;unicode-range:U+400-4FF;src:url("mr:r3") format("woff2")}body{font-family:Pending,monospace}';
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:''},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'Latin text'}];
+  const statuses=()=>page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px Pending','Latin').catch(()=>{});await d.fonts.ready;return Object.fromEntries([...d.fonts].map(f=>[f.unicodeRange,f.status]))});
+  // The viewer applies the first reset as soon as its frame is ready, so the faces load while the frame is fresh.
+  await page.evaluate(async packet=>{window.r.close();window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async()=>{});await window.r.ready();await window.r.apply(packet)},{...snapshot(nodes),ops:[{op:'css',id:'n4',css}]});
+  assert.deepEqual(await statuses(),{'U+0-10FFFF':'error','U+400-4FF':'unloaded'},'only the face the text needs fails while its bytes are pending');
+  await apply(page,delta(2,[{op:'css',id:'n4',css:css+'p{color:red}'}]));
+  assert.deepEqual(await statuses(),{'U+0-10FFFF':'error','U+400-4FF':'unloaded'},'a restyled sheet keeps the unused subset unloaded');
+ }finally{await page.close()}
+});
+
 test('MP-08/MP-10/MP-11 an absent-font shadow never decodes the empty-page sentinel',async()=>{
  const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
   const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n2',kind:'element',tag:'body',attrs:{style:'font-family:MissingMirror,monospace'}},{id:'n5',parent:'n4',kind:'text',text:'\u{10ffff}'}];
@@ -1483,7 +1498,7 @@ test('MP-08/MP-10/MP-11 native font requirements belong to each document and ret
 });
 
 test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and preload an offscreen native face',async()=>{
- const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
+ const page=await viewer();try{
   const bytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
   const signature=createHash('sha256').update(JSON.stringify(['requiredmirror','normal','400','100%','U+0-10FFFF'])).digest('hex');
   await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
@@ -1493,7 +1508,6 @@ test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and
   await apply(page,{...delta(3),document_id:'requirements',resources:[{key:'r1',resource_id:createHash('sha256').update(bytes).digest('hex'),mime_type:'font/ttf',data_base64:bytes.toString('base64')}]});
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'materialized native font preloads even without local text using it');
   assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts][0].status),'loaded');
-  assert.deepEqual(warnings.filter(value=>value.includes('Failed to decode downloaded font')),[],'pending font URLs use an unavailable source instead of decoding the empty image placeholder');
  }finally{await page.close()}
 });
 

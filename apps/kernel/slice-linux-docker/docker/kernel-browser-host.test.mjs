@@ -59,6 +59,7 @@ function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs, shownI
       if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
       if (method === "Page.captureScreenshot") return { data: encodePng(1280*(connection.density??1),800*(connection.density??1),Buffer.alloc(1280*800*4*(connection.density??1)**2,255)) };
       const target = session?.replace("session-", "");
+      if (method === "Page.navigate" && pages.has(target)) { pages.set(target, { ...pages.get(target), url: params.url }); return { frameId: "frame" }; }
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
       if (method === "Runtime.evaluate" && params.expression.includes("'popup")) { const id = `target-${++next}`; pages.set(id, { url: "about:blank" }); fixture.popups.push(id); return { result: { value: true } }; }
@@ -3095,7 +3096,12 @@ test('an agent opens its Tab behind the shown one; the person opens theirs in fr
   await host.request({ op: 'open', url: 'https://example.com/person' });
   await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
   await host.request({ op: 'open', url: 'https://example.com/agent2', _agent_input: true });
-  const created = sent.filter(call => call.method === 'Target.createTarget' && call.params.url.includes('example.com')).map(call => [call.params.url, call.params.background === true]);
+  // A Tab is created blank and then navigated, so each URL goes to the target created just before it.
+  let background;
+  const created = sent.flatMap(call => {
+    if (call.method === 'Target.createTarget') background = call.params.background === true;
+    return call.method === 'Page.navigate' ? [[call.params.url, background]] : [];
+  });
   assert.deepEqual(created, [['https://example.com/person', false], ['https://example.com/agent', true], ['https://example.com/agent2', true]]);
 }));
 
