@@ -1205,9 +1205,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::VaultUnlock {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
-        DaemonError::ExternalRequestFailed { code, retryable } => {
-            kernel_error(code, error, *retryable)
-        }
+        DaemonError::ExternalRequestFailed {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::MachineRequest { code, .. } => kernel_error(
             code.as_str(),
