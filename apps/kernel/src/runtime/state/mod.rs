@@ -269,6 +269,7 @@ pub(crate) struct KernelRuntimeState {
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    slice_auth_inspections: slice_auth_inspection::SliceAuthInspections,
     /// Parents holding a finished child's wake for the siblings still working.
     sibling_windows: child_finish_window::SiblingWindows,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
@@ -1188,6 +1189,7 @@ impl KernelRuntimeState {
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            slice_auth_inspections: Default::default(),
             sibling_windows: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
@@ -1777,6 +1779,7 @@ mod pump_stall_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod slice_auth_inspection;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
