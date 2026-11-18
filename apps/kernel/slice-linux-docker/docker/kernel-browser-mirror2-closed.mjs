@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11 M2: bounded trusted closed-root discovery. Never serialize
 // the entire document into a CDP reply just to inspect a few mirrored hosts.
 import { randomUUID } from 'node:crypto';
+import { worldContext } from './browser-focus-world.mjs';
 
 export async function discoverClosedHosts(mirror, world, source) {
   if (!await mirror.evaluate(world, `${world.ref}.customHosts()`)) return 0;
@@ -8,7 +9,7 @@ export async function discoverClosedHosts(mirror, world, source) {
   const replacements = new Map(), removed = new Set(); let published = 0;
   while (await mirror.evaluate(world, `${world.ref}.customHosts()`)) {
     const objectGroup = `chariox-mirror2-closed:${randomUUID()}`;
-    const array = await world.connection.send('Runtime.evaluate', { expression: `${world.ref}.customCandidates()`, contextId: world.contextId, objectGroup, returnByValue: false }, world.sessionId);
+    const array = await world.connection.send('Runtime.evaluate', { expression: `${world.ref}.customCandidates()`, ...worldContext(world), objectGroup, returnByValue: false }, world.sessionId);
     const objectId = array.result?.objectId;
     if (!objectId || array.exceptionDetails) throw new Error('MP-11: closed-root candidates unavailable');
     try {

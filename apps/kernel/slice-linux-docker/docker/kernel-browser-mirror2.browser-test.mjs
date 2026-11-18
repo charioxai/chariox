@@ -203,6 +203,42 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
 
+// A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
+// mirror world can carry the old one's number. A call the old document's credit made late (its long poll, issued as the
+// page moved) must not reach the new document's observer, or it takes a change (here the main sheet loading) that no
+// packet ever carries and the viewer keeps that sheet empty.
+test("MP-10: a late call for the previous document's world does not consume the next document's changes", () => mirrored(
+  "<p>start</p>", async ({ next, evaluate, host, subscription_id, tab_id, generation }) => {
+    // A third site (127.0.0.2) puts the second document in a fresh renderer too, as the first one is; its sheet loads
+    // only after the snapshot.
+    const third = createServer((request, response) => {
+      if (request.url === "/late.css") { response.setHeader("Content-Type", "text/css"); setTimeout(() => response.end("#t { color: rgb(1, 2, 3); }"), 4000); return; }
+      response.setHeader("Content-Type", "text/html"); response.end('<!doctype html><link rel="stylesheet" href="/late.css"><p id="t">second</p>');
+    });
+    await new Promise(resolve => third.listen(0, "127.0.0.2", resolve));
+    try {
+      const port = new URL(await evaluate("location.href")).port;
+      const reach = async (url, text) => {
+        host.request({ op: "navigate", tab_id, generation, url }).catch(() => {});
+        let packet;
+        for (let i = 0; i < 40 && !JSON.stringify(packet?.nodes ?? []).includes(text); i++) packet = await next(250);
+        assert(packet.reset && JSON.stringify(packet.nodes).includes(text), `the ${text} document is snapshotted`);
+      };
+      await next();
+      await reach(`http://localhost:${port}/first`, "first");
+      const stream = host.mirror.streams.get(subscription_id), previous = stream.world;
+      await reach(`http://127.0.0.2:${third.address().port}/second`, "second");
+      assert.equal(stream.world.contextId, previous.contextId, "fixture: the new renderer reuses the mirror world's context id");
+      assert.notEqual(stream.world.uniqueContextId ?? null, previous.uniqueContextId ?? null, "each document's mirror world has its own unique context id");
+      for (let i = 0; i < 200 && await evaluate("document.styleSheets[0]?.cssRules?.length ?? 0").catch(() => 0) === 0; i++) await settle(25);
+      const late = await host.mirror.v2.evaluate(previous, `${previous.ref}.drain()`, false, 5000, true).then(() => "drained", error => error);
+      let css = "";
+      for (let i = 0; i < 12 && !css.includes("rgb(1, 2, 3)"); i++) css += JSON.stringify((await next(250)).ops.filter(op => op.op === "css"));
+      assert.match(css, /rgb\(1, 2, 3\)/, "the second document's main sheet reaches the viewer once it loads");
+      assert(late instanceof Error, "the previous document's world is gone: its late call fails");
+    } finally { third.closeAllConnections(); await new Promise(resolve => third.close(resolve)); }
+  }, { "/first": { type: "text/html", body: "<!doctype html><p>first</p>" } }));
+
 // Protocol 981: the viewer lays a frame document out in the document mode of its source (an image grid in a
 // quirks-mode frame would otherwise stretch its rows). No-quirks is the default; only the other two are named.
 test("MP-08/MP-10: protocol 981 a quirks or limited-quirks frame document (same- or cross-origin) names its mode, a standards one does not", () => mirrored(
