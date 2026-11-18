@@ -727,21 +727,21 @@ fn a_sampler_short_of_resources_keeps_ownership_beyond_the_unreadable_grace() {
     );
 }
 
-/// Starting `ps` fails with `errno` until dropped.
+/// Reading the process table fails with `errno` until dropped.
 #[cfg(unix)]
-struct PsFailing(u32);
+struct TableReadFailing(u32);
 #[cfg(unix)]
-impl PsFailing {
+impl TableReadFailing {
     /// Only the tree rooted at `root` sees the failure.
     fn with(root: u32, errno: i32) -> Self {
-        sampling::ps_failure::set(root, Some(errno));
+        sampling::table_failure::set(root, Some(errno));
         Self(root)
     }
 }
 #[cfg(unix)]
-impl Drop for PsFailing {
+impl Drop for TableReadFailing {
     fn drop(&mut self) {
-        sampling::ps_failure::set(self.0, None);
+        sampling::table_failure::set(self.0, None);
     }
 }
 
@@ -773,7 +773,7 @@ fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
     }
     let mut outcomes = Vec::new();
     for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
-        let failing = PsFailing::with(pid, errno);
+        let failing = TableReadFailing::with(pid, errno);
         std::thread::sleep(Duration::from_millis(350));
         let held = samples_for_key(&key);
         std::thread::sleep(Duration::from_secs(1));
@@ -821,7 +821,7 @@ fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
 fn a_missing_ps_keeps_the_last_snapshot_without_ending_work() {
     let (mut child, _domain, key) = watched_sleep("ps-missing");
     let before = samples_for_key(&key);
-    let failing = PsFailing::with(child.id(), libc::ENOENT);
+    let failing = TableReadFailing::with(child.id(), libc::ENOENT);
     std::thread::sleep(Duration::from_millis(600));
     let alive = child.try_wait().unwrap().is_none();
     let after = samples_for_key(&key);
@@ -835,14 +835,53 @@ fn a_missing_ps_keeps_the_last_snapshot_without_ending_work() {
     );
 }
 
+/// Linux keeps the process table in /proc, which the sampler reads itself:
+/// starting `ps` five times a second cost more CPU than the watches it served.
+/// A kernel with no `ps` on its PATH watches and lists its work all the same.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_watch_lists_its_work_without_ps() {
+    crate::test_support::isolated_env_test!();
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let empty = crate::test_support::TestWorktree::new("no-ps");
+    std::env::set_var("PATH", empty.path());
+    let started = PreparedDomain::watchdog("no-ps", None, roomy()).start(child.id());
+    let listed = started.as_ref().ok().map(|domain| {
+        let key = format!("no-ps-{:016x}", rand::random::<u64>());
+        domain.bind_key(&key);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let samples = samples_for_key(&key);
+            if samples.iter().any(|sample| sample.pid == child.id())
+                || std::time::Instant::now() >= deadline
+            {
+                break samples;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    let samples = listed.unwrap_or_else(|| panic!("the watch did not start: {:?}", started.err()));
+    let sample = samples
+        .iter()
+        .find(|sample| sample.pid == child.id())
+        .expect("the watched sleep was never listed");
+    assert_eq!(sample.command, "sleep");
+    assert!(sample.resident_set_bytes > 0, "{sample:?}");
+}
+
 /// A tree whose `ps` fails does not make the trees of other tests (or other
 /// workloads) lose their samples or refuse to start.
 #[cfg(unix)]
 #[test]
-fn a_ps_failure_for_one_tree_leaves_every_other_tree_alone() {
+fn a_table_failure_for_one_tree_leaves_every_other_tree_alone() {
     let (mut failing_child, _failing_domain, _) = watched_sleep("fault-scoped");
     let (mut other, _other_domain, key) = watched_sleep("fault-other");
-    let failing = PsFailing::with(failing_child.id(), libc::ENOENT);
+    let failing = TableReadFailing::with(failing_child.id(), libc::ENOENT);
     let mut third = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
