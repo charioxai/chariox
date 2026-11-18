@@ -67,13 +67,7 @@ pub(super) fn choose(
         .value
         .map(str::trim)
         .filter(|value| !value.is_empty() && (*value != "default" || model.source == Source::Kept));
-    let matched = wanted.and_then(|wanted| {
-        offered.iter().find(|entry| entry.id == wanted).or_else(|| {
-            (!wanted.contains('/'))
-                .then(|| offered.iter().find(|entry| entry.model.id == wanted))
-                .flatten()
-        })
-    });
+    let matched = wanted.and_then(|wanted| resolve_name(&offered, provider, wanted));
     let entry = match (matched, wanted) {
         (Some(entry), _) => Some(entry),
         (None, Some(_)) if model.source == Source::Named && offered.is_empty() => {
@@ -119,6 +113,48 @@ pub(super) fn choose(
         model: model_id,
         effort,
     })
+}
+
+/// Maps every name the provider's tool accepts to the one catalog entry it stands for: the id, the
+/// id behind a provider qualifier of the account's family (`claude/…`, `codex/…`), a
+/// name the catalog lists as an alias (`sonnet`), and an OpenCode model id without its provider.
+fn resolve_name<'a, 'b>(
+    offered: &'b [Offered<'a>],
+    provider: &str,
+    wanted: &str,
+) -> Option<&'b Offered<'a>> {
+    let unqualified = unqualified_name(provider, wanted);
+    let names = [Some(wanted), unqualified];
+    let exact = |name: &str| offered.iter().find(|entry| entry.id == name);
+    let alias = |name: &str| {
+        offered
+            .iter()
+            .find(|entry| entry.model.aliases.iter().any(|alias| alias == name))
+    };
+    names
+        .iter()
+        .flatten()
+        .find_map(|name| exact(name))
+        .or_else(|| names.iter().flatten().find_map(|name| alias(name)))
+        .or_else(|| {
+            let bare = unqualified.unwrap_or(wanted);
+            (!bare.contains('/'))
+                .then(|| offered.iter().find(|entry| entry.model.id == bare))
+                .flatten()
+        })
+}
+
+/// The name behind a provider qualifier: any provider of the account's family (`claude`,
+/// `claude-p`, `claude-headless`, `codex`). An OpenCode id keeps its provider, which is part of the
+/// model identity.
+fn unqualified_name<'a>(provider: &str, wanted: &'a str) -> Option<&'a str> {
+    let (qualifier, rest) = wanted.split_once('/')?;
+    let family = crate::provider::canonical_provider_family(provider);
+    (family.is_some()
+        && family != Some("opencode")
+        && crate::provider::canonical_provider_family(qualifier) == family
+        && !rest.is_empty())
+    .then_some(rest)
 }
 
 fn offered_models<'a>(catalog: &'a OpenCodeProviderCatalog, provider: &str) -> Vec<Offered<'a>> {
@@ -223,6 +259,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: variants
                 .iter()
@@ -265,6 +302,19 @@ mod tests {
                 .map(str::to_string)
                 .to_vec(),
         }
+    }
+
+    fn with_aliases(
+        mut catalog: OpenCodeProviderCatalog,
+        model: &str,
+        aliases: &[&str],
+    ) -> OpenCodeProviderCatalog {
+        for provider in &mut catalog.all {
+            if let Some(entry) = provider.models.get_mut(model) {
+                entry.aliases = aliases.iter().map(|alias| alias.to_string()).collect();
+            }
+        }
+        catalog
     }
 
     const NONE: Requested<'static> = Requested {
@@ -359,6 +409,67 @@ mod tests {
     #[test]
     fn a_named_model_the_account_lists_is_chosen() {
         let choice = choose(&catalog(), "claude-p", named("claude-sonnet-5-5"), NONE).unwrap();
+        assert_eq!(choice.model, "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn every_name_form_the_provider_accepts_resolves_to_the_catalog_id() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        for wanted in [
+            "claude-sonnet-5-5",
+            "sonnet",
+            "claude/claude-sonnet-5-5",
+            "claude-p/claude-sonnet-5-5",
+            "claude-headless/claude-sonnet-5-5",
+            "claude/sonnet",
+            " sonnet ",
+        ] {
+            for provider in ["claude", "claude-p"] {
+                let choice = choose(&catalog, provider, named(wanted), NONE)
+                    .unwrap_or_else(|_| panic!("{provider} {wanted}"));
+                assert_eq!(choice.model, "claude-sonnet-5-5", "{provider} {wanted}");
+            }
+        }
+        let catalog = with_aliases(catalog, "gpt-6-luna", &["picker-luna"]);
+        for wanted in [
+            "gpt-6-luna",
+            "codex/gpt-6-luna",
+            "picker-luna",
+            "codex/picker-luna",
+        ] {
+            let choice = choose(&catalog, "codex", named(wanted), NONE).unwrap();
+            assert_eq!(choice.model, "gpt-6-luna", "{wanted}");
+        }
+        let choice = choose(&catalog, "opencode", named("opencode-go/kimi"), NONE).unwrap();
+        assert_eq!(choice.model, "opencode-go/kimi");
+        let choice = choose(&catalog, "opencode", named("kimi"), NONE).unwrap();
+        assert_eq!(choice.model, "opencode-go/kimi");
+    }
+
+    #[test]
+    fn a_qualifier_of_another_provider_or_an_unknown_alias_is_still_refused() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        for (provider, wanted) in [
+            ("claude", "codex/claude-sonnet-5-5"),
+            ("claude", "claude/opus"),
+            ("claude", "gpt-6-luna"),
+            ("codex", "claude/gpt-6-luna"),
+            ("claude", "sonnet/"),
+        ] {
+            let Err(ModelRefusal::NotOffered {
+                wanted: refused, ..
+            }) = choose(&catalog, provider, named(wanted), NONE)
+            else {
+                panic!("{provider} {wanted} should be refused");
+            };
+            assert_eq!(refused, wanted);
+        }
+    }
+
+    #[test]
+    fn a_kept_alias_is_stored_as_the_id_it_stands_for() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        let choice = choose(&catalog, "claude", kept("sonnet"), NONE).unwrap();
         assert_eq!(choice.model, "claude-sonnet-5-5");
     }
 

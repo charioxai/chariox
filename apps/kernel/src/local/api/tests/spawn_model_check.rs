@@ -4,10 +4,12 @@ use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodePro
 use std::collections::BTreeMap;
 
 fn claude_catalog() -> OpenCodeProviderCatalog {
+    // The picker of the Claude harness names each model by the value `--model` takes.
     let model = |id: &str| OpenCodeProviderModel {
         id: id.to_string(),
         name: id.to_string(),
         status: "active".to_string(),
+        aliases: vec![id.split('-').nth(1).unwrap_or_default().to_string()],
         limit: None,
         variants: BTreeMap::from([("low".to_string(), serde_json::json!({}))]),
     };
@@ -148,5 +150,178 @@ fn changing_an_agent_to_an_unknown_model_is_refused() {
     assert!(
         error.to_string().contains("unknown model \"haiku-5-5\""),
         "{error}"
+    );
+}
+
+fn provider_defaults(harness: &LocalRouterTestHarness) -> (Option<String>, Option<String>) {
+    let LocalDaemonResponse::UserConfig { config, .. } = harness
+        .dispatch(LocalDaemonRequest::GetUserConfig(
+            crate::local::GetUserConfigRequest,
+        ))
+        .expect("user config should be readable")
+    else {
+        panic!("unexpected local response");
+    };
+    (config.providers.default, config.providers.model)
+}
+
+#[test]
+fn creating_a_room_with_an_unknown_model_is_refused_and_saves_no_defaults() {
+    let worktree = crate::test_support::TestWorktree::new("room-model-unknown");
+    let harness = LocalRouterTestHarness::new();
+    let (_, profile_id) = room_with_claude_account(&harness, &worktree);
+    let before = provider_defaults(&harness);
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    account_profile: Some(profile_id),
+                    ..crate::session::SessionAgentDefaults::new("claude-p").with_model("haiku-5-5")
+                }),
+        ))
+        .expect_err("an unknown model must be refused");
+
+    assert!(
+        error.to_string().contains("unknown model \"haiku-5-5\""),
+        "{error}"
+    );
+    assert_eq!(provider_defaults(&harness), before);
+    harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .expect("a Room without explicit defaults must still be created");
+}
+
+const NAME_FORMS: [(&str, &str); 6] = [
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
+    ("claude/haiku", "claude-haiku-5-5"),
+    ("claude-p/claude-sonnet-5-5", "claude-sonnet-5-5"),
+    ("claude-headless/claude-haiku-5-5", "claude-haiku-5-5"),
+    ("claude/claude-sonnet-5-5", "claude-sonnet-5-5"),
+];
+
+#[test]
+fn spawning_with_a_supported_alias_or_a_qualified_name_stores_the_catalog_id() {
+    let worktree = crate::test_support::TestWorktree::new("spawn-model-forms");
+    let harness = LocalRouterTestHarness::new();
+    let (session_id, profile_id) = room_with_claude_account(&harness, &worktree);
+    for (index, (wanted, id)) in NAME_FORMS.into_iter().enumerate() {
+        let mut request = spawn_request(&session_id, &profile_id, wanted);
+        if let LocalDaemonRequest::SpawnAgent(spawn) = &mut request {
+            spawn.alias = Some(format!("worker-{index}"));
+        }
+        let LocalDaemonResponse::AgentSpawned { agent, .. } = harness
+            .dispatch(request)
+            .unwrap_or_else(|error| panic!("{wanted} must spawn: {error}"))
+        else {
+            panic!("unexpected local response");
+        };
+        assert_eq!(agent.model(), Some(id), "{wanted}");
+    }
+}
+
+#[test]
+fn a_batch_spawn_takes_the_same_name_forms() {
+    let worktree = crate::test_support::TestWorktree::new("spawn-model-batch");
+    let harness = LocalRouterTestHarness::new();
+    let (session_id, profile_id) = room_with_claude_account(&harness, &worktree);
+    let agents = NAME_FORMS
+        .into_iter()
+        .enumerate()
+        .map(|(index, (wanted, _))| {
+            let LocalDaemonRequest::SpawnAgent(spawn) =
+                spawn_request(&session_id, &profile_id, wanted)
+            else {
+                unreachable!()
+            };
+            SpawnAgentsRequestItem {
+                alias: Some(format!("batch-{index}")),
+                provider: spawn.provider,
+                account_profile: spawn.account_profile,
+                model: spawn.model,
+                effort: None,
+                max_context_tokens: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: None,
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            }
+        })
+        .collect();
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = harness
+        .dispatch(LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+            no_subscribe: false,
+            session_id,
+            agents,
+        }))
+        .expect("every supported name form must spawn")
+    else {
+        panic!("unexpected local response");
+    };
+    let stored: Vec<_> = agents.iter().map(|agent| agent.model()).collect();
+    assert_eq!(stored, NAME_FORMS.map(|(_, id)| Some(id)));
+}
+
+#[test]
+fn changing_an_agent_to_an_alias_or_a_qualified_name_stores_the_catalog_id() {
+    let worktree = crate::test_support::TestWorktree::new("update-model-forms");
+    let harness = LocalRouterTestHarness::new();
+    let (session_id, profile_id) = room_with_claude_account(&harness, &worktree);
+    let LocalDaemonResponse::AgentSpawned { agent, .. } = harness
+        .dispatch(spawn_request(&session_id, &profile_id, "claude-haiku-5-5"))
+        .expect("a listed model must spawn")
+    else {
+        panic!("unexpected local response");
+    };
+    for (wanted, id) in [
+        ("sonnet", "claude-sonnet-5-5"),
+        ("claude-p/claude-haiku-5-5", "claude-haiku-5-5"),
+    ] {
+        let LocalDaemonResponse::AgentProfileUpdated { agent, .. } = harness
+            .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+                UpdateAgentProfileRequest {
+                    session_id: session_id.clone(),
+                    agent_id: agent.id().to_string(),
+                    provider: None,
+                    account_profile: None,
+                    model: Some(wanted.to_string()),
+                    effort: None,
+                    clear_effort: false,
+                    reason: None,
+                },
+            ))
+            .unwrap_or_else(|error| panic!("{wanted} must be accepted: {error}"))
+        else {
+            panic!("unexpected local response");
+        };
+        assert_eq!(agent.model(), Some(id), "{wanted}");
+    }
+}
+
+#[test]
+fn creating_a_room_with_an_alias_saves_the_catalog_id_as_the_default() {
+    let worktree = crate::test_support::TestWorktree::new("room-model-alias");
+    let harness = LocalRouterTestHarness::new();
+    let (_, profile_id) = room_with_claude_account(&harness, &worktree);
+    harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    account_profile: Some(profile_id),
+                    ..crate::session::SessionAgentDefaults::new("claude-p").with_model("sonnet")
+                }),
+        ))
+        .expect("an alias must create the Room");
+    assert_eq!(
+        provider_defaults(&harness).1.as_deref(),
+        Some("claude-sonnet-5-5")
     );
 }

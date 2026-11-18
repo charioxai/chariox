@@ -8,6 +8,7 @@ fn model(id: &str, variants: &[&str]) -> OpenCodeProviderModel {
         id: id.to_string(),
         name: id.to_string(),
         status: "active".to_string(),
+        aliases: Vec::new(),
         limit: None,
         variants: variants
             .iter()
