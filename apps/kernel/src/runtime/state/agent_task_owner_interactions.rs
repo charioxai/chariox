@@ -270,9 +270,10 @@ impl KernelRuntimeState {
     }
 
     /// A later turn of an agent replaces its interrupted attempts (a restart, a refused or
-    /// unacknowledged dispatch), not a goal or owned work. Every such attempt still waiting on the
-    /// owner is cancelled, however many turns ago it was interrupted, so no card stays open for
-    /// work the agent has moved past.
+    /// unacknowledged dispatch, a wake that never resumed them), not a goal or open work. Every such
+    /// attempt still waiting on the owner is cancelled with that reason, however many turns ago it
+    /// was interrupted, so no card stays open for work the agent has moved past. A task with a
+    /// live obligation or registration keeps its card and its real reason.
     pub(super) async fn retire_superseded_restart_task(
         &self,
         room: &str,
@@ -296,9 +297,6 @@ impl KernelRuntimeState {
                 task.prompt_id != prompt.id()
                     && task.state == ExecutionState::Blocked
                     && task.goal.is_none()
-                    && task.obligations.is_empty()
-                    && task.wait.is_none()
-                    && task.pending_prompt_id.is_none()
             })
         {
             let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
@@ -306,6 +304,7 @@ impl KernelRuntimeState {
                     crate::durable_state::agent_lifecycle::Operation::RetireRestartFailure {
                         task: task.task_id,
                         revision: task.blocked_revision,
+                        later_prompt: prompt.id().to_owned(),
                         now: crate::session::unix_epoch_ms(),
                     },
                 )?

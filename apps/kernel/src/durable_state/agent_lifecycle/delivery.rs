@@ -200,26 +200,35 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 return Err(error("task continuation must settle before inbox delivery"));
             }
             replies::bind(tx, &e, target.as_deref(), &prompt)?;
+            let mut slot = WakeSlot::new(live_tasks(tx, &room, &agent)?);
+            slot.take(&e);
             admit(tx, &mut e, &prompt, target.as_deref(), run.as_deref(), now)?;
             // One wake covers every row it may deliver; the rows share this
             // prompt and settle together through its receipt. A reply
-            // request is answered by its own turn, so it is never batched.
+            // request is answered by its own turn, so it is never batched,
+            // and a prompt resumes one task, so a row that wakes a second
+            // task starts the next wake (`agent_delivery_batch` plans the
+            // same batch through the same slot).
             if !e.reply_requested {
                 for mut member in recipient_events_between(tx, &room, &agent, e.sequence, through)?
                 {
                     if member.reply_requested {
                         break;
                     }
-                    if batch_member(&member, target.is_some(), work.as_deref()) {
-                        admit(
-                            tx,
-                            &mut member,
-                            &prompt,
-                            target.as_deref(),
-                            run.as_deref(),
-                            now,
-                        )?;
+                    if !batch_member(&member, target.is_some(), work.as_deref()) {
+                        continue;
                     }
+                    if !slot.take(&member) {
+                        break;
+                    }
+                    admit(
+                        tx,
+                        &mut member,
+                        &prompt,
+                        target.as_deref(),
+                        run.as_deref(),
+                        now,
+                    )?;
                 }
             }
             Ok(Outcome::Event(e))
@@ -651,6 +660,59 @@ fn siblings(
         .collect()
 }
 
+/// The Waiting task whose wait `e` wakes: the one it names by `task_id`, or
+/// the first of its `task_ids`.
+pub(crate) fn woken_task<'a>(
+    tasks: &'a [AgentTaskExecution],
+    e: &InboxEvent,
+) -> Option<&'a AgentTaskExecution> {
+    if e.kind == "message" {
+        return None;
+    }
+    tasks.iter().find(|t| {
+        t.room_id == e.room_id
+            && t.agent_id == e.agent_id
+            && t.state == ExecutionState::Waiting
+            && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
+                == Some(t.task_id.as_str())
+                || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                    ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                }))
+    })
+}
+
+/// The one task a prompt resumes. Rows are taken in order against the tasks as
+/// admission leaves them, so planning a batch and admitting it agree: once a
+/// prompt wakes a task, a row that would wake another one is not part of it.
+pub(crate) struct WakeSlot {
+    waiting: Vec<AgentTaskExecution>,
+    woken: bool,
+}
+
+impl WakeSlot {
+    pub(crate) fn new(tasks: Vec<AgentTaskExecution>) -> Self {
+        Self {
+            waiting: tasks,
+            woken: false,
+        }
+    }
+
+    /// Takes `e` into the prompt; false when it wakes a task besides the one
+    /// the prompt already resumes.
+    pub(crate) fn take(&mut self, e: &InboxEvent) -> bool {
+        let Some(task_id) = woken_task(&self.waiting, e).map(|t| t.task_id.clone()) else {
+            return true;
+        };
+        if self.woken {
+            return false;
+        }
+        self.woken = true;
+        // Admission turns the woken task Working: it no longer waits.
+        self.waiting.retain(|t| t.task_id != task_id);
+        true
+    }
+}
+
 /// Admits one pending row to the attempt: it takes the prompt, and the task
 /// whose wait it wakes keeps that wait until provider I/O.
 fn admit(
@@ -671,28 +733,17 @@ fn admit(
     save_event(tx, e)?;
     super::wakes::record_delivery(tx, e)?;
     // A wake retains the original task and its progress clock.
-    for mut t in live_tasks(tx, &room, &agent)? {
-        if t.room_id == room
-            && t.agent_id == agent
-            && t.state == ExecutionState::Waiting
-            && e.kind != "message"
-            && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
-                == Some(t.task_id.as_str())
-                || e.payload["task_ids"].as_array().is_some_and(|ids| {
-                    ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
-                }))
-        {
-            super::goals::clock(&mut t, now);
-            if let Some(g) = &mut t.goal {
-                g.continuation_sequence += 1;
-                g.next_check_in_ms = None;
-            }
-            t.pending_prompt_id = Some(prompt.into());
-            t.state = ExecutionState::Working;
-            t.revision += 1;
-            save(tx, &t)?;
-            break;
-        }
+    let tasks = live_tasks(tx, &room, &agent)?;
+    let Some(mut t) = woken_task(&tasks, e).cloned() else {
+        return Ok(());
+    };
+    super::goals::clock(&mut t, now);
+    if let Some(g) = &mut t.goal {
+        g.continuation_sequence += 1;
+        g.next_check_in_ms = None;
     }
-    Ok(())
+    t.pending_prompt_id = Some(prompt.into());
+    t.state = ExecutionState::Working;
+    t.revision += 1;
+    save(tx, &t)
 }

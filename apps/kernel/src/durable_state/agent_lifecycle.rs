@@ -1,6 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 #[cfg(test)]
+mod batch_task_tests;
+#[cfg(test)]
 mod batch_tests;
 #[cfg(test)]
 mod catalog_continuation_tests;
@@ -673,7 +675,8 @@ impl DurableKernelStateStore {
         .collect()
     }
     /// Pending rows after `lead` that one wake may carry with it, in order,
-    /// up to the first reply request (answered by a turn of its own).
+    /// up to the first reply request (answered by a turn of its own) or the
+    /// first row that wakes a second task (a prompt resumes one task).
     pub(crate) fn agent_delivery_batch(
         &self,
         lead: &InboxEvent,
@@ -683,14 +686,21 @@ impl DurableKernelStateStore {
         if lead.reply_requested {
             return Ok(Vec::new());
         }
+        let mut slot =
+            delivery::WakeSlot::new(self.agent_tasks(Some(&lead.room_id), Some(&lead.agent_id))?);
+        slot.take(lead);
         let mut batch = Vec::new();
         for event in self.agent_work_inbox(&lead.room_id, &lead.agent_id, lead.sequence, None)? {
             if event.reply_requested {
                 break;
             }
-            if delivery::batch_member(&event, steer, work) {
-                batch.push(event);
+            if !delivery::batch_member(&event, steer, work) {
+                continue;
             }
+            if !slot.take(&event) {
+                break;
+            }
+            batch.push(event);
         }
         Ok(batch)
     }

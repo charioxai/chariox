@@ -592,27 +592,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::RetireRestartFailure {
             task,
             revision,
+            later_prompt,
             now,
         } => {
             let mut t = load(tx, &task)?;
-            // Admission must not abandon a goal, owned work, or an uncertain receipt.
+            // Admission must not abandon a goal, owned work, or an uncertain receipt. The rows of
+            // the later turn itself are its own delivery, not work left behind.
             let unresolved: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled') ELSE 1 END)",
-                params![t.room_id, t.agent_id], |r| r.get(0),
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') IS NOT ?3 AND (json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled')) ELSE 1 END)",
+                params![t.room_id, t.agent_id, later_prompt], |r| r.get(0),
             ).map_err(sql)?;
+            // A Blocked task is not waiting: its pending prompt and wait are what its ended
+            // attempt left behind, and a wait on a live source shows as a live registration.
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
                 || t.goal.is_some()
-                || !t.obligations.is_empty()
-                || t.wait.is_some()
-                || t.pending_prompt_id.is_some()
+                || t.obligations
+                    .iter()
+                    .any(AgentObligation::requires_resolution)
                 || unresolved
                 || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
             {
                 return Ok(Outcome::Task(t));
             }
             t.state = ExecutionState::Cancelled;
-            t.reason = "Interrupted attempt superseded by a later turn".into();
+            t.reason = "Superseded by a later turn of the same agent; it holds no open work".into();
+            t.pending_prompt_id = None;
+            t.wait = None;
             t.last_progress_at_ms = now;
             t.revision += 1;
             save(tx, &t)?;
