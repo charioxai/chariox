@@ -76,8 +76,11 @@ async fn the_wake_quotes_the_payload_as_data_and_settles_it() {
     );
 }
 
+/// Urgent, so the message starts the wake these tests read: a non-urgent one waits for the
+/// agent's next turn.
 fn occur_event(f: &Fixture, mut event: InboxEvent, reply_requested: bool) -> InboxEvent {
     event.reply_requested = reply_requested;
+    event.urgent = true;
     let Outcome::Event(event) = f
         .state
         .owned

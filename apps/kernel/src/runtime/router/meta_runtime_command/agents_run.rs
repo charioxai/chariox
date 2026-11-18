@@ -219,7 +219,9 @@ impl CommandRouter {
             kernel: None,
             message: worker.brief.clone(),
             origin_prompt_id: origin_prompt_id.to_string(),
-            urgent: false,
+            // A non-urgent message waits for the recipient's next turn; a worker has none until
+            // this brief starts it.
+            urgent: true,
             reply_requested: false,
             attachments: Vec::new(),
             idempotency_key: None,
