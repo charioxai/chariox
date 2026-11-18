@@ -9,6 +9,20 @@ fn answer(holder: &mut Client, id: &str, choice: &str) -> Value {
     }}))
 }
 
+/// What `chariox interaction answer` sends for a listed card: the Room's answer, or the answer
+/// to a card outside any Room.
+fn settle(holder: &mut Client, card: &Value, choice: &str) -> Value {
+    let id = &card["interaction_id"];
+    holder.request(match card["session_id"].as_str() {
+        Some(session) => serde_json::json!({"RespondToInteraction":{
+            "session_id":session, "interaction_id":id, "choice_id":choice
+        }}),
+        None => serde_json::json!({"AnswerUserDomainInteraction":{
+            "interaction_id":id, "choice_id":choice
+        }}),
+    })
+}
+
 #[tokio::test]
 async fn a_grant_holder_answers_the_persons_cards_but_not_secrets_passkeys_or_payments() {
     let mut kernel = Kernel::start().await;
@@ -28,13 +42,30 @@ async fn a_grant_holder_answers_the_persons_cards_but_not_secrets_passkeys_or_pa
             .unwrap_or_else(|| panic!("{id} not listed: {listed}"))["person_only"]
             .clone()
     };
-    for id in [
-        "capability-request-card",
-        "machine-acquisition-card",
-        "app-install-card",
-    ] {
-        assert!(person_only(id).is_null(), "{id}: {listed}");
-    }
+    // Every card listed as answerable is one the grant holder settles: in a Room, from a sub-agent
+    // two levels down, an install, and an App's host offer outside any Room.
+    let answerable = [
+        ("capability-request-card", "allow"),
+        ("machine-acquisition-card", "approve"),
+        ("app-install-card", "approve"),
+        ("sub-agent-question", "green"),
+        ("app_host_detached", "decline"),
+    ];
+    let listed_answerable = cards
+        .iter()
+        .filter(|card| card["person_only"].is_null())
+        .map(|card| card["interaction_id"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        listed_answerable,
+        answerable.iter().map(|(id, _)| *id).collect(),
+        "{listed}"
+    );
+    let detached = cards
+        .iter()
+        .find(|card| card["interaction_id"] == "app_host_detached")
+        .unwrap();
+    assert!(detached.get("session_id").is_none(), "{detached}");
     for (id, reason) in [
         ("vault-card-payment", "it approves a payment"),
         ("secret-card", "it asks for a secret"),
@@ -44,13 +75,12 @@ async fn a_grant_holder_answers_the_persons_cards_but_not_secrets_passkeys_or_pa
     }
 
     let attachment = holder.attach();
-    // A sub-agent's resource request, a machine and an install: each answer reaches the asker.
-    for (id, choice) in [
-        ("capability-request-card", "allow"),
-        ("machine-acquisition-card", "approve"),
-        ("app-install-card", "approve"),
-    ] {
-        let result = answer(&mut holder, id, choice);
+    for (id, choice) in answerable {
+        let card = cards
+            .iter()
+            .find(|card| card["interaction_id"] == id)
+            .unwrap();
+        let result = settle(&mut holder, card, choice);
         assert!(result["error"].is_null(), "{id}: {result}");
         assert_eq!(
             serde_json::from_str::<Value>(

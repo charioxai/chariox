@@ -68,32 +68,71 @@ impl KernelRuntimeState {
                 .unwrap();
             answers.push((id, answered));
         }
-        // A sub-agent asks the person for a secret value.
-        let (tx, answered) = tokio::sync::oneshot::channel();
-        self.owned
-            .register_runtime_interaction(
+        let question = |id: &str, agent: &str, title: &str, choices, custom| {
+            RuntimeInteraction::new(
+                id,
+                agent,
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Info,
+                Some(title.into()),
+                "A question for the person.",
+                choices,
+                custom,
+                Some(300),
+                None,
+            )
+        };
+        let asked = [
+            // A sub-agent asks the person for a secret value.
+            (
                 "access-session",
-                RuntimeInteraction::new(
+                question(
                     "secret-card",
                     "access-sub-agent",
-                    RuntimeInteractionKind::Choice,
-                    RuntimeInteractionLevel::Info,
-                    Some("Enter the key".into()),
-                    "The key for the drill.",
+                    "Enter the key",
                     vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
                     Some(RuntimeInteractionCustomChoice::secret(
                         "value", "Key", None, None, None,
                     )),
-                    Some(300),
+                ),
+                None,
+            ),
+            // A sub-agent two levels down asks the person a question.
+            (
+                "access-session",
+                question(
+                    "sub-agent-question",
+                    "access-sub-sub-agent",
+                    "Pick a colour",
+                    vec![
+                        RuntimeInteractionChoice::new("red", "Red", "red", None),
+                        RuntimeInteractionChoice::new("green", "Green", "green", None),
+                    ],
                     None,
                 ),
-                tx,
                 None,
-                None,
-                None,
-            )
-            .unwrap();
-        answers.push(("secret-card".into(), answered));
+            ),
+            // An App's host offer while a user view is open: a card outside any Room.
+            (
+                "",
+                card(
+                    "app_host_detached",
+                    "Open a link from an App",
+                    vec![RuntimeInteractionChoice::new(
+                        "decline", "Decline", "deny", None,
+                    )],
+                ),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            ),
+        ];
+        for (session, interaction, owner) in asked {
+            let id = interaction.id().to_owned();
+            let (tx, answered) = tokio::sync::oneshot::channel();
+            self.owned
+                .register_runtime_interaction(session, interaction, tx, owner, None, None)
+                .unwrap();
+            answers.push((id, answered));
+        }
         for (id, answered) in answers {
             let file = root.join(format!("answered-{id}"));
             tokio::spawn(async move {
