@@ -129,13 +129,13 @@ impl KernelRuntimeState {
             .agent_instance_id()
             .ok_or_else(|| host_error("MP-08: admitted provider agent required".into()))?;
         let agent = self.owned.agent_store.get_agent(id)?;
-        if self.owned.provider_store.get_run(run.id())?.state()
-            == crate::provider::ProviderRunState::Ended
-            || self
-                .owned
-                .provider_store
-                .get_run_for_agent(run.session_id(), id)
-                .is_none_or(|current| current.id() != run.id())
+        // The agent's current run is never an ended one; a run a hot reload handed over counts
+        // until a recovered prompt claims it.
+        if self
+            .owned
+            .provider_store
+            .get_tool_run_for_agent(run.session_id(), id)
+            .is_none_or(|current| current.id() != run.id())
         {
             return Err(host_error(
                 "MP-11: not_granted: provider run was replaced or ended".into(),

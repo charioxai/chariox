@@ -67,7 +67,7 @@ impl KernelRuntimeState {
         let current = self
             .owned
             .provider_store
-            .get_run_for_agent(run.session_id(), agent_id)
+            .get_tool_run_for_agent(run.session_id(), agent_id)
             .ok_or_else(|| refused("asking provider run is unavailable"))?;
         if current.id() != run.id() {
             return Err(refused("stale provider tool authority"));

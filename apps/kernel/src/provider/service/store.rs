@@ -502,6 +502,14 @@ impl ProviderProcessServiceStore {
         self.read().get_run_for_agent(session_id, agent_id)
     }
 
+    pub fn get_tool_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read().get_tool_run_for_agent(session_id, agent_id)
+    }
+
     pub fn get_latest_run_for_agent(
         &self,
         session_id: &str,
