@@ -657,6 +657,9 @@ pub struct OperationalHistoryStore {
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
+    /// Advances after every committed change to stored rows: appends, in-place
+    /// rewrites and deletes.
+    committed_revision: Arc<AtomicU64>,
     range_cache: Arc<range_cache::RangeCache>,
     reclaim_in_progress: Arc<AtomicBool>,
     appended_bytes_since_size_check: Arc<AtomicU64>,
@@ -760,6 +763,8 @@ impl OperationalHistoryStore {
         let worker_health = Arc::clone(&writer_health);
         let public_history_projector = Arc::<public_history::ProjectorSlot>::default();
         let worker_projector = Arc::clone(&public_history_projector);
+        let committed_revision = Arc::<AtomicU64>::default();
+        let worker_revision = Arc::clone(&committed_revision);
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
             // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
@@ -770,6 +775,7 @@ impl OperationalHistoryStore {
                     writer_receiver,
                     worker_health,
                     worker_projector,
+                    worker_revision,
                 )
             })
             .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -787,6 +793,7 @@ impl OperationalHistoryStore {
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
+            committed_revision,
             range_cache: Arc::default(),
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
@@ -813,10 +820,16 @@ impl OperationalHistoryStore {
         }
     }
 
-    /// The sequence the next appended event takes: equal values mean nothing was
-    /// appended in between.
-    pub(crate) fn written_sequence(&self) -> u64 {
-        self.next_sequence.load(Ordering::Acquire)
+    /// Equal values mean no stored row was appended, rewritten or deleted in between.
+    pub(crate) fn committed_revision(&self) -> u64 {
+        self.committed_revision.load(Ordering::Acquire)
+    }
+
+    /// Rows already read changed or went: cached ranges load again and the
+    /// committed revision advances.
+    pub(super) fn rows_rewritten(&self) {
+        self.range_cache.invalidate();
+        self.committed_revision.fetch_add(1, Ordering::AcqRel);
     }
 
     /// How many reads this store served, for tests that count repeated work.
@@ -1045,7 +1058,7 @@ impl OperationalHistoryStore {
         transaction
             .commit()
             .map_err(|error| operational_history_error("replace public history", error))?;
-        self.range_cache.invalidate();
+        self.rows_rewritten();
         Ok(Some(replacement))
     }
 
@@ -1252,10 +1265,17 @@ fn run_operational_history_writer(
     receiver: Receiver<OperationalHistoryWriteRequest>,
     health: Arc<OperationalHistoryWriterHealth>,
     projector: Arc<public_history::ProjectorSlot>,
+    committed_revision: Arc<AtomicU64>,
 ) {
     while let Ok(first) = receiver.recv() {
         let batch = collect_ready_history_batch(first, || receiver.try_recv().ok());
-        commit_operational_history_batch(&mut connection, batch, &health, &projector);
+        commit_operational_history_batch(
+            &mut connection,
+            batch,
+            &health,
+            &projector,
+            &committed_revision,
+        );
     }
 }
 
@@ -1278,6 +1298,7 @@ fn commit_operational_history_batch(
     batch: Vec<OperationalHistoryWriteRequest>,
     health: &OperationalHistoryWriterHealth,
     projector: &public_history::ProjectorSlot,
+    committed_revision: &AtomicU64,
 ) {
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
@@ -1351,6 +1372,10 @@ fn commit_operational_history_batch(
             health
                 .max_batch_records
                 .fetch_max(batch_records, Ordering::AcqRel);
+            // Before the ACKs: a writer that saw its append committed reads the new revision.
+            if batch_records > 0 {
+                committed_revision.fetch_add(1, Ordering::AcqRel);
+            }
             for request in batch {
                 let _ = request.response.send(Ok(()));
             }

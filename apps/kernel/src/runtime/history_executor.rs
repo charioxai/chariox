@@ -118,11 +118,12 @@ pub(crate) async fn execute_history_request(
                 .flush_session_provider_history(&request.session_id)
                 .await?;
             // The request is authorized for its caller already, so what it names and
-            // the history written so far are all its response depends on: a read in
-            // flight under the same key answers it.
+            // the history committed so far (appended, rewritten in place or deleted)
+            // are all its response depends on: a read in flight under the same key
+            // answers it.
             let key = format!(
                 "history outline {} {request:?}",
-                operational_history_store.written_sequence()
+                operational_history_store.committed_revision()
             );
             runtime_state
                 .read_once(key, || async move {

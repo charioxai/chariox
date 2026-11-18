@@ -181,3 +181,91 @@ async fn identical_outline_reads_in_flight_read_the_history_once() {
         "six identical outline reads in flight each read the history"
     );
 }
+
+// Review of #1445: a wait row is rewritten in place when the wait ends, which appends nothing. An
+// outline asked for after that rewrite must not join a read that started before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_outline_asked_for_after_a_row_is_rewritten_does_not_join_an_older_read() {
+    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
+    let mut config = DaemonConfig::for_tests();
+    config.operational_history_read_delay_ms = 300;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 16);
+    let (session_id, agent_id) = (session.id().to_string(), agent.id().to_string());
+    let context = HistoryEventTurnContext {
+        session_id: Some(session_id.clone()),
+        agent_id: Some(agent_id.clone()),
+        turn_id: Some("prompt-1".into()),
+        prompt_id: Some("prompt-1".into()),
+        provider_run_id: Some("run-1".into()),
+        ..HistoryEventTurnContext::default()
+    };
+    let reply = |text: &str| {
+        SessionHistoryEntry::provider_output(
+            &session_id,
+            "run-1",
+            Some(&agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("wait-1".to_string()),
+            text,
+        )
+    };
+    let store = router.operational_history_store.clone();
+    let prompt = SessionHistoryEntry::user_prompt(&session_id, "attachment-1", &agent_id, "wait");
+    store
+        .append_transcript(&prompt, context.clone())
+        .expect("append the prompt");
+    store
+        .append_transcript(&reply("wait-row-running"), context.clone())
+        .expect("append the wait row");
+    let dispatch = |n: usize| {
+        let request = LocalDaemonRequest::GetSessionHistoryOutline(
+            crate::local::GetSessionHistoryOutlineRequest {
+                session_id: session_id.clone(),
+                agent_ids: None,
+                latest_prompt_count: Some(2),
+                cursor: None,
+                include_prefetched_content: true,
+            },
+        );
+        let command =
+            KernelCommand::from_local_request(format!("outline-{n}"), None, None, &request);
+        router.dispatch(command, request)
+    };
+    let served = || store.reads_served();
+    let before = served();
+    dispatch(0).await.expect("one outline");
+    let one = served() - before;
+    assert!(one > 0, "an outline reads the history");
+
+    let before = served();
+    let (older, newer) = tokio::join!(dispatch(1), async {
+        // The older read is in flight once its first history read began; each waits 300 ms.
+        while served() == before {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        store
+            .replace_latest_transcript_by_merge_key(
+                &session_id,
+                Some(&agent_id),
+                "wait-1",
+                &reply("wait-row-completed"),
+                context.clone(),
+            )
+            .expect("rewrite the wait row")
+            .expect("the wait row exists");
+        dispatch(2).await
+    });
+    older.expect("older outline");
+    let newer = serde_json::to_string(&newer.expect("newer outline")).unwrap();
+    assert_eq!(
+        served() - before,
+        2 * one,
+        "the outline asked for after the rewrite joined the read that started before it"
+    );
+    assert!(newer.contains("wait-row-completed"), "{newer}");
+    assert!(!newer.contains("wait-row-running"), "{newer}");
+}
