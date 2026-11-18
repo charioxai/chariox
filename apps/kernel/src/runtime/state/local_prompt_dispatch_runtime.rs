@@ -15,7 +15,11 @@ pub(super) enum PromptDispatchAcceptance {
 }
 
 /// The person sees this sentence on the blocked task; the run and prompt ids stay in the log.
-fn prompt_ack_timeout_error(dispatch: &crate::app::KernelPromptDispatch) -> DaemonError {
+/// `screen_line` is the first line of a Claude screen nothing in Chariox answers.
+fn prompt_ack_timeout_error(
+    dispatch: &crate::app::KernelPromptDispatch,
+    screen_line: Option<&str>,
+) -> DaemonError {
     crate::logging::warn_with_fields(
         "daemon.prompt_dispatch",
         "provider did not acknowledge the prompt after PTY injection",
@@ -25,13 +29,35 @@ fn prompt_ack_timeout_error(dispatch: &crate::app::KernelPromptDispatch) -> Daem
             "prompt_id": dispatch.prompt_id,
         }),
     );
+    let message = match screen_line {
+        Some(line) => format!(
+            "Claude Code stopped at its own screen (\"{line}\") and did not take your message. \
+             Open the agent's terminal to answer it, then send the message again."
+        ),
+        None => "The agent did not respond to your message.".to_string(),
+    };
     DaemonError::LocalTransport {
         operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
-        message: "The agent did not respond to your message.".to_string(),
+        message,
     }
 }
 
-const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A start whose Claude screen has not changed for this long, with no acknowledgement, is stuck.
+/// Claude's first composer can take a while to restore local state, and it draws while it does.
+const CLAUDE_HEADLESS_PROMPT_ACK_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+/// A start that keeps drawing but never acknowledges the prompt ends here.
+#[cfg(test)]
+static TEST_PROMPT_ACK_IDLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn claude_headless_prompt_ack_idle() -> std::time::Duration {
+    #[cfg(test)]
+    if let ms @ 1.. = TEST_PROMPT_ACK_IDLE_MS.load(std::sync::atomic::Ordering::Relaxed) {
+        return std::time::Duration::from_millis(ms);
+    }
+    CLAUDE_HEADLESS_PROMPT_ACK_IDLE
+}
+
+const CLAUDE_HEADLESS_PROMPT_ACK_CAP: std::time::Duration = std::time::Duration::from_secs(120);
 const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
 struct DetachedWorkflowProviderLaunchClaim {
@@ -626,7 +652,7 @@ impl KernelRuntimeState {
             // dispatch pending until UserPromptSubmit proves the provider
             // accepted it; the retry loop releases the app lock between
             // attempts, so this grace period does not block other sessions.
-            let deadline = tokio::time::Instant::now() + CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT;
+            let mut start_watch = crate::app::ClaudeStartWatch::new(std::time::Instant::now());
             loop {
                 let room_guard = owned
                     .room_secret_observations
@@ -708,13 +734,21 @@ impl KernelRuntimeState {
                         }
                         // Claude answers the turn it is on before the prompt it queued, so
                         // its silence is not a failure to respond while that turn runs.
-                        if tokio::time::Instant::now() >= deadline
-                            && !crate::app::claude_headless_prompt_queued_behind_running_turn(
-                                &provider_run,
-                                &dispatch.prompt_id,
-                            )
-                        {
-                            return Err(prompt_ack_timeout_error(dispatch));
+                        let now = std::time::Instant::now();
+                        start_watch
+                            .observe(crate::app::claude_headless_start_screen(&provider_run), now);
+                        if start_watch.is_stuck(
+                            now,
+                            claude_headless_prompt_ack_idle(),
+                            CLAUDE_HEADLESS_PROMPT_ACK_CAP,
+                        ) && !crate::app::claude_headless_prompt_queued_behind_running_turn(
+                            &provider_run,
+                            &dispatch.prompt_id,
+                        ) {
+                            return Err(prompt_ack_timeout_error(
+                                dispatch,
+                                start_watch.unrecognised_screen_line().as_deref(),
+                            ));
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
@@ -887,53 +921,54 @@ impl KernelRuntimeState {
                 else {
                     return Err(error);
                 };
-                let Some(expected_provider_session_id) = active_prompt
+                // A start that never reached Claude has no provider session to forget; it still
+                // fails the prompt below instead of leaving it active.
+                if let Some(expected_provider_session_id) = active_prompt
                     .durable_delivery_provider_session_id()
                     .map(str::to_string)
-                else {
-                    return Err(error);
-                };
-                let dispatching_status = active_prompt.status();
-                if self
-                    .owned
-                    .compare_and_mark_active_prompt_delivery_failure(
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                        &expected_provider_session_id,
-                        (dispatching_status, crate::session::PromptStatus::Cancelling),
-                    )?
-                    .is_none()
                 {
-                    return Err(error);
-                }
-                match self.clear_unresponsive_provider_resume_state(
-                    provider_run,
-                    &expected_provider_session_id,
-                ) {
-                    Ok(
-                        crate::agent::ProviderResumeClearOutcome::Cleared
-                        | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
-                    ) => {}
-                    Ok(crate::agent::ProviderResumeClearOutcome::Superseded {
-                        current_provider_session_id,
-                    }) => {
-                        self.owned.restore_active_prompt_after_resume_superseded(
+                    let dispatching_status = active_prompt.status();
+                    if self
+                        .owned
+                        .compare_and_mark_active_prompt_delivery_failure(
                             &dispatch.session_id,
                             &dispatch.agent_id,
                             &dispatch.prompt_id,
                             &dispatch.provider_run_id,
                             &expected_provider_session_id,
-                            &current_provider_session_id,
-                        )?;
+                            (dispatching_status, crate::session::PromptStatus::Cancelling),
+                        )?
+                        .is_none()
+                    {
                         return Err(error);
                     }
-                    Ok(crate::agent::ProviderResumeClearOutcome::Required) => {
-                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed
-                            .into_daemon_error())
+                    match self.clear_unresponsive_provider_resume_state(
+                        provider_run,
+                        &expected_provider_session_id,
+                    ) {
+                        Ok(
+                            crate::agent::ProviderResumeClearOutcome::Cleared
+                            | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
+                        ) => {}
+                        Ok(crate::agent::ProviderResumeClearOutcome::Superseded {
+                            current_provider_session_id,
+                        }) => {
+                            self.owned.restore_active_prompt_after_resume_superseded(
+                                &dispatch.session_id,
+                                &dispatch.agent_id,
+                                &dispatch.prompt_id,
+                                &dispatch.provider_run_id,
+                                &expected_provider_session_id,
+                                &current_provider_session_id,
+                            )?;
+                            return Err(error);
+                        }
+                        Ok(crate::agent::ProviderResumeClearOutcome::Required) => {
+                            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed
+                                .into_daemon_error())
+                        }
+                        Err(clear_error) => return Err(clear_error),
                     }
-                    Err(clear_error) => return Err(clear_error),
                 }
                 _delivery_settlement_claim = Some(settlement_claim);
             }
@@ -1815,6 +1850,7 @@ pub(in crate::runtime::state) mod tests {
     mod inbox_recovery;
     mod native_cancellation;
     mod native_origin_handoff_review;
+    mod unknown_start_screen;
 
     use super::*;
     use crate::agent::CreateAgentRequest;
@@ -1920,7 +1956,7 @@ pub(in crate::runtime::state) mod tests {
 
     #[test]
     fn claude_headless_dispatch_allows_slow_cold_start_acknowledgement() {
-        assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
+        assert!(CLAUDE_HEADLESS_PROMPT_ACK_IDLE >= std::time::Duration::from_secs(30));
     }
 
     #[test]
@@ -1941,8 +1977,9 @@ pub(in crate::runtime::state) mod tests {
             external_provider_turn_id: None,
             steering: false,
         };
-        let shown =
-            crate::terminal::user_facing_dispatch_failure(&prompt_ack_timeout_error(&dispatch));
+        let shown = crate::terminal::user_facing_dispatch_failure(&prompt_ack_timeout_error(
+            &dispatch, None,
+        ));
         for internal in [
             "provider-run-private",
             "prompt-private",
@@ -3354,6 +3391,27 @@ pub(in crate::runtime::state) mod tests {
         crate::provider::RuntimeProviderRun,
         crate::app::KernelPromptDispatch,
     ) {
+        runtime_with_claude_headless_cli(
+            "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+            Some("claude-session-poisoned"),
+        )
+        .await
+    }
+
+    /// The same fixture with a chosen Claude CLI script and the provider session its first
+    /// delivery was made against (none on a fresh start).
+    async fn runtime_with_claude_headless_cli(
+        cli_script: &str,
+        delivery_provider_session_id: Option<&str>,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        crate::provider::RuntimeProviderRun,
+        crate::app::KernelPromptDispatch,
+    ) {
         assert!(
             crate::test_support::environment_test_isolated(),
             "Claude lifecycle fixtures require a private test environment"
@@ -3363,11 +3421,7 @@ pub(in crate::runtime::state) mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let executable = worktree.path().join("claude-fixture");
-            std::fs::write(
-                &executable,
-                "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
-            )
-            .expect("Claude lifecycle fixture should write");
+            std::fs::write(&executable, cli_script).expect("Claude lifecycle fixture should write");
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
                 .expect("Claude lifecycle fixture should be executable");
             std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
@@ -3518,7 +3572,7 @@ pub(in crate::runtime::state) mod tests {
             prompt.id(),
             crate::session::DurablePromptDeliveryPhase::Dispatching,
             Some(provider_run.id().to_string()),
-            Some("claude-session-poisoned".to_string()),
+            delivery_provider_session_id.map(str::to_string),
         )
         .expect("dispatch-time Claude resume identity should persist");
         let session_id = session.id().to_string();
@@ -4398,7 +4452,7 @@ pub(in crate::runtime::state) mod tests {
             .unwrap();
         let failed_prompt_id = dispatch.prompt_id.clone();
         let source_attachment_id = dispatch.source_attachment_id.clone();
-        let unacknowledged = prompt_ack_timeout_error(&dispatch);
+        let unacknowledged = prompt_ack_timeout_error(&dispatch, None);
         runtime
             .fail_prompt_dispatch(dispatch, unacknowledged)
             .await
