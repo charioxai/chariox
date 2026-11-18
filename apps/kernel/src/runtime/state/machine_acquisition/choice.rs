@@ -3,41 +3,43 @@
 //! An agent's request_id names one acquisition. The kernel sends the service a request id derived
 //! from the kernel, the agent and that request_id, and keeps the option it asked for in the
 //! durable row of (agent, request_id). The service binds an accepted request to its option and
-//! replays it, so every try must send the same option until the service has said that it holds
-//! nothing under the request. Each arrow below is one compare-and-set on that row.
+//! replays it before any stock or catalogue check, so every try of a request sends the option its
+//! first try chose, whatever the service answered before. Each arrow below is one compare-and-set
+//! on that row; no transition writes another option or removes the row.
 //!
-//! An option P or Q is a listed class with its region, or the service's own default when it lists
-//! no options; both are remembered and replayed the same way, whatever the service lists later.
+//! An option P is a listed class with its region, or the service's own default when it lists no
+//! options; both are remembered and replayed the same way, whatever the service lists later.
 //!
 //! | row \ outcome of a try | accepted (new or replay) | failed before the acquire was sent | lost response, timeout, transient or other code | definitive refusal | restart |
-//! |-----------------|---------------------------|-------------|-------------|--------------------|---------|
-//! | none            | chose P → pending P → …   | chose P → pending P | chose P → pending P | chose P → pending P → refused P | none |
-//! | pending P       | accepted P, ref           | pending P   | pending P   | refused P          | pending P |
-//! | accepted P, ref | accepted P, ref           | accepted P, ref | accepted P, ref | accepted P, ref | accepted P, ref |
-//! | refused P       | chose Q → pending Q → …   | chose Q → pending Q | chose Q → pending Q | chose Q → pending Q → refused Q | refused P |
+//! |-----------------|-----------------------------|---------------------|---------------------|---------------------------------|---------|
+//! | none            | chose P → pending P → accepted P, ref | chose P → pending P | chose P → pending P | chose P → pending P → refused P | none |
+//! | pending P       | accepted P, ref             | pending P           | pending P           | refused P                       | pending P |
+//! | refused P       | accepted P, ref             | refused P           | refused P           | refused P                       | refused P |
+//! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref     | accepted P, ref                 | accepted P, ref |
 //!
 //! - Definitive refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
-//!   (`AcquireFailure::Refused`) answering the acquire itself: the service sends them only before
-//!   it commits a new request and replays an accepted one before any check that sends them.
-//!   Everything else is ambiguous: `internal_error`, `dependency_unavailable`, `rate_limited`,
+//!   (`AcquireFailure::Refused`) answering the acquire itself. Tries of one request can overlap:
+//!   the service can refuse one before another commits, and that refusal can arrive after the
+//!   committed try's response was lost. So a refusal only records the answer and never frees the
+//!   option; the retry resends it, and the service replays what it accepted. Everything else is
+//!   ambiguous and changes nothing: `internal_error`, `dependency_unavailable`, `rate_limited`,
 //!   `admission_denied`, any 5xx, a lost or undecodable response, a timeout, and the other codes
-//!   (`authorization_denied`, `identity_conflict`, `subscription_required`, ...). An ambiguous try
-//!   keeps the row, so the retry resends the same option and the service replays what it accepted.
+//!   (`authorization_denied`, `identity_conflict`, `subscription_required`, ...).
 //! - A try that fails before the acquire is sent keeps the row whatever the failure says: the
 //!   capability call before it, the owner's denial and a local refusal. The connected-service
 //!   boundary passes the capability call's failure on without its Cloud code
 //!   (`control_plane_offer_unavailable`), so no code it carries is read as a refusal.
-//! - Refused moves only a pending row that still holds the option the refused try sent; a
-//!   concurrent try that was accepted keeps its row. Accepted moves any row but one accepted under
-//!   another allocation: the service's acceptance is the truth, even after a concurrent refusal.
-//! - Choosing writes only a missing or refused row; a try that loses that race takes the option
-//!   the winner wrote. A pending or accepted row is never chosen again, and an explicit class_id or
-//!   region that differs from it is refused before the service is asked.
+//! - Accepted moves any row with the option the try sent but one accepted under another
+//!   allocation: the service's acceptance is the truth, even after a refusal.
+//! - Choosing writes only a missing row; a try that loses that race takes the option the winner
+//!   wrote. An explicit class_id or region that differs from the row's is refused before the
+//!   service is asked: another option needs a new request_id.
 //! - A restart keeps the row, so a retry after a restart resends what the first try sent.
+//! - Nothing removes a row or writes another option into it, so a request_id never forgets the
+//!   option under which the service may hold an allocation; releasing it is the owner's
+//!   `chariox.machines.release` of the allocation_ref.
 use super::*;
-use crate::durable_state::acquire_choices::{
-    AcquireChoice, AcquireChoiceState, AcquireChoiceWrite, AcquireOption,
-};
+use crate::durable_state::acquire_choices::{AcquireChoice, AcquireChoiceWrite, AcquireOption};
 use crate::runtime::cloud_api_client::{acquire_failure, AcquireFailure};
 use sha2::Digest;
 
@@ -74,7 +76,8 @@ pub(super) fn acquire_choice(
     }
 }
 
-/// A refused acquire names what is in stock and how to choose it, so the agent can pick again.
+/// A refused acquire names what is in stock and how to choose it under a new request_id, so the
+/// agent can pick again.
 /// Only the refused option is left out: the same class in another region may be in stock.
 pub(super) fn out_of_stock_refusal(
     error: DaemonError,
@@ -103,7 +106,7 @@ pub(super) fn out_of_stock_refusal(
         format!("{subject} is out of stock and no other option is in stock; nothing was allocated or charged. Try again later")
     } else {
         format!(
-            "{subject} is out of stock; nothing was allocated or charged. In stock now: {}. Choose one by passing its class_id and region to chariox.machines.acquire, or pass neither to take the first in stock",
+            "{subject} is out of stock; nothing was allocated or charged. In stock now: {}. Choose one by passing a new request_id with its class_id and region to chariox.machines.acquire, or a new request_id alone to take the first in stock",
             in_stock.join(", ")
         )
     };
@@ -120,8 +123,7 @@ pub(super) fn service_request_id(kernel_id: &str, agent_id: &str, request_id: &s
 }
 
 impl KernelRuntimeState {
-    /// The option this try of `request_id` asks for: the one an earlier try took, unless the
-    /// service refused it, else a new one.
+    /// The option this try of `request_id` asks for: the one an earlier try took, else a new one.
     pub(super) fn acquire_option(
         &self,
         agent_id: &str,
@@ -133,7 +135,7 @@ impl KernelRuntimeState {
         let store = &self.owned.durable_state_store;
         loop {
             match store.acquire_choice(agent_id, request_id)? {
-                Some(AcquireChoice { option, state }) if state != AcquireChoiceState::Refused => {
+                Some(AcquireChoice { option, .. }) => {
                     let differs = |named: &Option<String>, kept: Option<&str>| {
                         named.is_some() && named.as_deref() != kept
                     };
@@ -148,7 +150,7 @@ impl KernelRuntimeState {
                     }
                     return Ok(option);
                 }
-                _ => {
+                None => {
                     let option = acquire_choice(capability, class_id.clone(), region.clone())?;
                     if store.write_acquire_choice(
                         agent_id,

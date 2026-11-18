@@ -41,7 +41,8 @@ pub(crate) enum AcquireChoiceState {
     Pending,
     /// The service holds this allocation under the request.
     Accepted { allocation_ref: String },
-    /// The service refused the request and holds nothing under it.
+    /// The last answer was a refusal. An overlapping try may have committed after the refused
+    /// one was judged, so it never frees the option: a retry resends it.
     Refused,
 }
 
@@ -54,9 +55,9 @@ pub(crate) struct AcquireChoice {
 /// One compare-and-set on the row of `agent_id` and `request_id`.
 #[derive(Debug)]
 pub(crate) enum AcquireChoiceWrite {
-    /// No row or a refused one becomes pending with `option`.
+    /// No row becomes pending with `option`; a request's option is never written again.
     Choose { option: AcquireOption },
-    /// Any row but one accepted under another allocation becomes accepted with `option`.
+    /// A row with `option` becomes accepted, unless it is accepted under another allocation.
     Accept {
         option: AcquireOption,
         allocation_ref: String,
@@ -149,18 +150,15 @@ pub(super) fn apply(
         AcquireChoiceWrite::Choose { option } => transaction.execute(
             "INSERT INTO durable_acquire_choices (agent_id, request_id, class_id, region, state)
             VALUES (?1, ?2, ?3, ?4, 'pending')
-            ON CONFLICT (agent_id, request_id) DO UPDATE SET
-                class_id = excluded.class_id, region = excluded.region, state = 'pending'
-            WHERE state = 'refused'",
+            ON CONFLICT (agent_id, request_id) DO NOTHING",
             params![agent_id, request_id, option.class_id(), option.region()],
         )?,
         AcquireChoiceWrite::Accept {
             option,
             allocation_ref,
         } => transaction.execute(
-            "UPDATE durable_acquire_choices
-            SET class_id = ?3, region = ?4, state = 'accepted', allocation_ref = ?5
-            WHERE agent_id = ?1 AND request_id = ?2
+            "UPDATE durable_acquire_choices SET state = 'accepted', allocation_ref = ?5
+            WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4
                 AND (state != 'accepted' OR allocation_ref = ?5)",
             params![
                 agent_id,
@@ -254,45 +252,45 @@ mod tests {
                 .write_acquire_choice("other", "r1", choose("big"))
                 .unwrap());
         }
-        // Restarted after the service committed and before it answered: the retry sends "small".
+        // Restarted after an overlapping try committed and before an older try's refusal arrived.
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
         assert_eq!(state(&store), pending("small"));
         assert!(store
             .write_acquire_choice("agent", "r1", refuse("small"))
             .unwrap());
-        assert_eq!(
-            state(&store),
-            Some(("small".into(), AcquireChoiceState::Refused))
-        );
-        // A refused request chooses again, and the service's acceptance wins over a refusal.
-        assert!(store
+        let refused = || Some(("small".to_owned(), AcquireChoiceState::Refused));
+        assert_eq!(state(&store), refused());
+        // A refusal never frees the option: the retry resends "small", and the service's
+        // acceptance wins over the refusal.
+        assert!(!store
             .write_acquire_choice("agent", "r1", choose("big"))
             .unwrap());
-        assert!(store
-            .write_acquire_choice("agent", "r1", refuse("big"))
-            .unwrap());
-        assert!(store
+        assert!(!store
             .write_acquire_choice("agent", "r1", accept("big", "a1"))
+            .unwrap());
+        assert_eq!(state(&store), refused());
+        assert!(store
+            .write_acquire_choice("agent", "r1", accept("small", "a1"))
             .unwrap());
         // Accepted is final: a replay of the same allocation is fine, nothing else changes it.
         assert!(store
-            .write_acquire_choice("agent", "r1", accept("big", "a1"))
+            .write_acquire_choice("agent", "r1", accept("small", "a1"))
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", accept("big", "a2"))
+            .write_acquire_choice("agent", "r1", accept("small", "a2"))
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", refuse("big"))
+            .write_acquire_choice("agent", "r1", refuse("small"))
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", choose("small"))
+            .write_acquire_choice("agent", "r1", choose("big"))
             .unwrap());
         drop(store);
         let store = DurableKernelStateStore::open(path).unwrap();
         assert_eq!(
             state(&store),
             Some((
-                "big".into(),
+                "small".into(),
                 AcquireChoiceState::Accepted {
                     allocation_ref: "a1".into()
                 }

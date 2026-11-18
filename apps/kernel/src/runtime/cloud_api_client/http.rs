@@ -324,8 +324,9 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
 /// What a failed acquire says about the allocation under its request id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AcquireFailure {
-    /// Cloud refused a request it holds nothing under: it replays an accepted request before any
-    /// check that sends these codes, and sends them only before it commits a new one.
+    /// Cloud judged this try before it held anything under the id: it replays an accepted request
+    /// before any check that sends these codes. An overlapping try may commit afterwards, so a
+    /// refusal is final for this try only.
     Refused { out_of_stock: bool },
     /// The allocation may exist: the response was lost or timed out, Cloud failed after it may
     /// have committed, or the error does not say that nothing is held under the id.

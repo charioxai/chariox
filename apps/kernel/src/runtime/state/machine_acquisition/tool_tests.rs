@@ -6,7 +6,6 @@ use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// How the stand-in service answers the next acquire.
-#[derive(Clone, Copy)]
 enum Answer {
     /// Commits the allocation, then fails with this status and Cloud code (none for a bare 5xx).
     FailAfterCommit(&'static str, Option<&'static str>),
@@ -14,6 +13,8 @@ enum Answer {
     LoseResponse,
     /// Refuses with this status and code and commits nothing.
     Refuse(&'static str, &'static str),
+    /// Refuses like `Refuse` at once, but delivers the refusal only when `gate` is notified.
+    RefuseLater(&'static str, &'static str, Arc<tokio::sync::Notify>),
 }
 
 struct Service {
@@ -116,6 +117,14 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                     };
                     match (answer, accepted.get(&id).cloned()) {
                         (Some(Answer::Refuse(status, code)), _) => (status, error(code)),
+                        (Some(Answer::RefuseLater(status, code, gate)), _) => {
+                            let response = error(code);
+                            tokio::spawn(async move {
+                                gate.notified().await;
+                                respond(socket, status, response).await;
+                            });
+                            continue;
+                        }
                         (_, Some((ref class, ref region, _)))
                             if (class, region) != (&pair.0, &pair.1) =>
                         {
@@ -150,17 +159,7 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                 }
                 other => panic!("unexpected control-plane action {other}"),
             };
-            let response = response.to_string();
-            socket
-                .write_all(
-                    format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                        response.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+            respond(socket, status, response).await;
         }
     });
     Service {
@@ -170,6 +169,20 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
         answers,
         capability_failures,
     }
+}
+
+async fn respond(mut socket: tokio::net::TcpStream, status: &str, response: serde_json::Value) {
+    let response = response.to_string();
+    socket
+        .write_all(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
 }
 
 /// A kernel whose owner allows automatic allocation, one running agent, and its tool token.
@@ -369,27 +382,33 @@ async fn a_retry_keeps_the_option_its_request_took_after_the_stock_changed() {
 }
 
 #[tokio::test]
-async fn a_retry_after_a_refusal_chooses_again() {
+async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again() {
     let service = service(
         vec![option("big", "north", true), option("small", "south", true)],
         &["big"],
     )
     .await;
     let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
-    let acquire = || {
-        state.machine_tool(
-            &token,
-            "chariox.machines.acquire",
-            serde_json::json!({"request_id":"r1"}),
-        )
+    let acquire = |request_id: &str| {
+        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
     };
     // The listing still shows "big" in stock, but the service has sold it.
-    assert!(acquire().await.is_err());
+    assert!(acquire("r1").await.is_err());
     service.offers.lock().unwrap()[0].available = false;
-    acquire().await.unwrap();
+    let error = acquire("r1").await.unwrap_err().to_string();
+    assert!(error.contains("big in north is out of stock"), "{error}");
+    assert!(error.contains("a new request_id"), "{error}");
+    acquire("r2").await.unwrap();
     let acquires = service.acquires.lock().unwrap();
-    assert_eq!(acquires[1]["class_id"], "small");
-    assert_eq!(acquires[1]["region"], "south");
+    let pairs: Vec<_> = acquires
+        .iter()
+        .map(|acquire| (acquire["class_id"].clone(), acquire["region"].clone()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [("big", "north"), ("big", "north"), ("small", "south")]
+            .map(|(class, region)| (class.into(), region.into()))
+    );
 }
 
 fn acquire_args(request_id: &str) -> serde_json::Value {
@@ -470,9 +489,10 @@ async fn an_ambiguous_failure_keeps_the_option_and_the_retry_recovers_the_alloca
 }
 
 #[tokio::test]
-async fn a_definitive_refusal_lets_the_next_try_choose_again() {
+async fn a_refusal_after_a_lost_response_keeps_the_option_and_the_retry_recovers_it() {
     let service = service(two_in_stock(), &[]).await;
     let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let agent = agent_of(&state, &token);
     let refusals = [
         ("429 Too Many Requests", "capacity_exceeded"),
         ("429 Too Many Requests", "budget_exceeded"),
@@ -480,30 +500,113 @@ async fn a_definitive_refusal_lets_the_next_try_choose_again() {
     ];
     for (index, (status, code)) in refusals.into_iter().enumerate() {
         let request_id = format!("r{index}");
-        *service.offers.lock().unwrap() = two_in_stock();
-        service
-            .answers
-            .lock()
-            .unwrap()
-            .push_back(Answer::Refuse(status, code));
-        assert!(state
-            .machine_tool(
-                &token,
-                "chariox.machines.acquire",
-                acquire_args(&request_id)
-            )
-            .await
-            .is_err());
-        service.offers.lock().unwrap()[0].available = false;
-        let retried = state
-            .machine_tool(
+        let acquire = || {
+            state.machine_tool(
                 &token,
                 "chariox.machines.acquire",
                 acquire_args(&request_id),
             )
+        };
+        *service.offers.lock().unwrap() = two_in_stock();
+        // The first try times out after the service committed; a refusal of an overlapping
+        // try that the service judged before that commit arrives next.
+        service
+            .answers
+            .lock()
+            .unwrap()
+            .extend([Answer::LoseResponse, Answer::Refuse(status, code)]);
+        assert!(acquire().await.is_err());
+        assert!(acquire().await.is_err());
+        let row = state
+            .owned
+            .durable_state_store
+            .acquire_choice(&agent, &request_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, AcquireChoiceState::Refused, "{code}");
+        service.offers.lock().unwrap()[0].available = false;
+        let retried = acquire()
             .await
             .unwrap_or_else(|error| panic!("{code}: {error}"));
-        assert_eq!(retried.payload["option"]["class_id"], "big", "{code}");
+        assert_eq!(
+            retried.payload["allocation"]["allocation_ref"],
+            format!("allocation-{}", index + 1),
+            "{code}"
+        );
+        assert_eq!(retried.payload["option"]["class_id"], "small", "{code}");
+    }
+}
+
+/// Two tries of one request overlap: the service refuses the first before the second commits
+/// and takes the last stock, the second's response is lost, and the first's refusal arrives last.
+#[tokio::test]
+async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try_sent() {
+    // A sold-out option, and one that left the listing while another is in stock.
+    let after_commit: [(&str, &str, Vec<MachineOption>); 2] = [
+        (
+            "429 Too Many Requests",
+            "capacity_exceeded",
+            vec![option("big", "north", false)],
+        ),
+        (
+            "400 Bad Request",
+            "invalid_request",
+            vec![option("small", "south", true)],
+        ),
+    ];
+    for (status, code, listing) in after_commit {
+        let service = service(vec![option("big", "north", true)], &[]).await;
+        let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+        let agent = agent_of(&state, &token);
+        let acquire = || state.machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"));
+        let refusal = Arc::new(tokio::sync::Notify::new());
+        service.answers.lock().unwrap().extend([
+            Answer::RefuseLater(status, code, refusal.clone()),
+            Answer::LoseResponse,
+        ]);
+        let overlap = async {
+            tokio::join!(acquire(), async {
+                while service.acquires.lock().unwrap().is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let second = acquire().await;
+                *service.offers.lock().unwrap() = listing;
+                refusal.notify_one();
+                second
+            })
+        };
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(60), overlap)
+            .await
+            .expect("both tries of r1 end");
+        let first = first.unwrap_err().to_string();
+        assert!(second.is_err(), "{code}");
+        let recovered = acquire()
+            .await
+            .unwrap_or_else(|error| panic!("{code} after {first}: {error}"));
+        assert_eq!(
+            recovered.payload["allocation"]["allocation_ref"], "allocation-1",
+            "{code}"
+        );
+        let acquires = service.acquires.lock().unwrap();
+        assert_eq!(acquires.len(), 3, "{code}");
+        assert!(
+            acquires.iter().all(|sent| sent["class_id"] == "big"
+                && sent["region"] == "north"
+                && sent["request_id"] == acquires[0]["request_id"]),
+            "{code}"
+        );
+        assert_eq!(
+            state
+                .owned
+                .durable_state_store
+                .acquire_choice(&agent, "r1")
+                .unwrap()
+                .unwrap()
+                .state,
+            AcquireChoiceState::Accepted {
+                allocation_ref: "allocation-1".into()
+            }
+        );
     }
 }
 
