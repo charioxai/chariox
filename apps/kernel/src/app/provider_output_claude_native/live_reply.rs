@@ -6,7 +6,7 @@
 //! as it comes. Every finished row of the reply is streamed as the terminal
 //! draws it: emphasis, code and headings arrive plain. When the transcript's
 //! block lands it takes the streamed row's place (see `adopt`).
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 /// The size of the terminal a Claude run is launched in (`PtyManager::spawn_for_run`).
@@ -93,14 +93,16 @@ struct LiveReply {
     block: Option<Block>,
     /// Streamed blocks whose finished text has not arrived yet, oldest first.
     streamed: VecDeque<Streamed>,
-    /// First rows of the blocks handed over: the terminal may draw them again.
-    finished: VecDeque<String>,
+    /// Rows taken of the blocks handed over: the terminal may draw them again.
+    finished: VecDeque<Vec<String>>,
     blocks_started: usize,
-    /// Rows the previous read showed: a row counts once two reads in a row show it.
-    previous_rows: HashSet<String>,
-    /// The first row of the answer the screen showed when the prompt changed:
-    /// it is the previous turn's, so it is not streamed under the new prompt.
-    left_over: Option<String>,
+    /// Rows the previous read showed, with how often: a row counts once two
+    /// reads in a row show it that many times.
+    previous_rows: HashMap<String, usize>,
+    /// The rows of the answer the screen showed when the prompt changed: it
+    /// is the previous turn's, so it is not streamed under the new prompt
+    /// until the screen shows something other than it.
+    left_over: Option<Vec<String>>,
 }
 
 struct Block {
@@ -135,7 +137,7 @@ impl LiveReply {
             streamed: VecDeque::new(),
             finished: VecDeque::new(),
             blocks_started: 0,
-            previous_rows: HashSet::new(),
+            previous_rows: HashMap::new(),
             left_over: None,
         }
     }
@@ -144,11 +146,9 @@ impl LiveReply {
         self.touched = std::time::Instant::now();
         if self.prompt_id.as_deref() != prompt_id {
             // Judged before this read's bytes: they may already draw the new reply.
-            self.left_over = reply_rows(&screen_rows(self.screen.screen()), false)
-                .1
-                .into_iter()
-                .next()
-                .map(|row| row.text);
+            let showing = reply_rows(&screen_rows(self.screen.screen()), false).1;
+            self.left_over =
+                (!showing.is_empty()).then(|| showing.into_iter().map(|row| row.text).collect());
             self.block = None;
             self.streamed.clear();
             self.finished.clear();
@@ -165,30 +165,37 @@ impl LiveReply {
     fn extract(&mut self) -> Option<LiveDelta> {
         let (bullet_visible, rows) =
             reply_rows(&screen_rows(self.screen.screen()), self.block.is_some());
-        let confirmed = std::mem::replace(
-            &mut self.previous_rows,
-            rows.iter().map(|row| row.text.clone()).collect(),
-        );
-        let first = rows.first()?;
+        let mut shown: HashMap<String, usize> = HashMap::new();
+        for row in &rows {
+            *shown.entry(row.text.clone()).or_default() += 1;
+        }
+        let confirmed = std::mem::replace(&mut self.previous_rows, shown);
+        if let Some(left_over) = &self.left_over {
+            if repeats(&rows, left_over, 0) {
+                return None;
+            }
+            self.left_over = None;
+        }
+        if rows.is_empty() {
+            return None;
+        }
         // The last row may still be written; every row before it is done.
         let done = &rows[..rows.len() - 1];
         if bullet_visible {
+            // The block ends when the transcript has its text (`adopt`) or when the
+            // screen opens another one. The rows of a block being written are
+            // wrapped again as it grows, so they are not compared with the taken ones.
             let block_head = self.block.as_ref().and_then(|block| block.rows.first());
-            if block_head.is_some_and(|head| *head != first.text) {
+            if block_head.is_some_and(|head| *head != rows[0].text) {
                 self.hand_block_over();
-            }
-            if self
-                .left_over
-                .as_ref()
-                .is_some_and(|head| *head != first.text)
-            {
-                self.left_over = None;
             }
             if self.block.is_none() {
                 if done.is_empty()
-                    || self.left_over.is_some()
-                    || self.finished.contains(&first.text)
-                    || !confirmed.contains(&first.text)
+                    || self
+                        .finished
+                        .iter()
+                        .any(|rows_taken| repeats(&rows, rows_taken, 1))
+                    || !confirmed_row(&confirmed, &rows, 0)
                 {
                     return None;
                 }
@@ -219,12 +226,12 @@ impl LiveReply {
         let cols = self.cols;
         let block = self.block.as_mut()?;
         let mut delta = String::new();
-        for row in done.iter().skip(start) {
+        for (index, row) in done.iter().enumerate().skip(start) {
             if row.text.is_empty() {
                 block.rows.push(String::new());
                 continue;
             }
-            if !confirmed.contains(&row.text) {
+            if !confirmed_row(&confirmed, &rows, index) {
                 break;
             }
             let joint = match block.rows.last() {
@@ -261,8 +268,8 @@ impl LiveReply {
         let Some(block) = self.block.take() else {
             return;
         };
-        if let Some(first_row) = block.rows.first() {
-            self.finished.push_back(first_row.clone());
+        if !block.rows.is_empty() {
+            self.finished.push_back(block.rows.clone());
             if self.finished.len() > KEPT_BLOCKS {
                 self.finished.pop_front();
             }
@@ -296,11 +303,8 @@ impl LiveReply {
             return Adoption::NotStreamed;
         };
         let streamed = self.streamed.remove(index).expect("index found above");
-        // The markup closing the last drawn word (`**`, a backtick) is not shown.
-        let tail = &text[drawn_end..];
-        let attached = tail.find(char::is_whitespace).unwrap_or(tail.len());
         Adoption::Streamed {
-            rest: tail[attached..].to_string(),
+            rest: undrawn_tail(&streamed.text, text, drawn_end),
             merge_key_suffix: streamed.merge_key_suffix,
         }
     }
@@ -337,6 +341,74 @@ fn drawn_prefix_end(drawn: &str, markdown: &str) -> Option<usize> {
         position += found + 1;
     }
     (position <= drawn.len() + drawn.len() / 2 + MARKUP_LETTERS).then(|| source[position - 1].1)
+}
+
+/// Whether the rows on the screen are the `earlier` rows drawn again: the same
+/// rows, with up to `slack` more at the end (the last row of a block is not
+/// taken) and nothing taken from the middle. Rows that differ are another
+/// text, even when it opens with the same line.
+fn repeats(rows: &[Row], earlier: &[String], slack: usize) -> bool {
+    rows.len() <= earlier.len().saturating_add(slack)
+        && rows
+            .iter()
+            .zip(earlier)
+            .all(|(row, earlier)| row.text == *earlier)
+}
+
+/// Whether the previous read showed row `index` too: a row repeated on the
+/// screen counts as often as it was shown, so a new copy of a line is not
+/// taken for the old one.
+fn confirmed_row(confirmed: &HashMap<String, usize>, rows: &[Row], index: usize) -> bool {
+    let text = &rows[index].text;
+    let nth = rows[..=index]
+        .iter()
+        .filter(|row| row.text == *text)
+        .count();
+    confirmed.get(text).is_some_and(|shown| *shown >= nth)
+}
+
+/// What of `markdown` the terminal had not drawn when `drawn` was streamed,
+/// which ended at `drawn_end` (after its last letter): first the symbols that
+/// close the drawn text (`}`, a full stop) past the markup between them, then
+/// the markup closing the last word (`**`, a backtick). A fence line is not
+/// drawn at all.
+fn undrawn_tail(drawn: &str, markdown: &str, drawn_end: usize) -> String {
+    const MARKUP: [char; 5] = ['*', '_', '~', '`', '#'];
+    let symbols = drawn
+        .rsplit(char::is_alphanumeric)
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace());
+    let mut end = drawn_end;
+    for symbol in symbols {
+        let skipped = markdown[end..]
+            .find(|c: char| !(c.is_whitespace() || MARKUP.contains(&c)))
+            .unwrap_or(markdown.len() - end);
+        if !markdown[end + skipped..].starts_with(symbol) {
+            break;
+        }
+        end += skipped + symbol.len_utf8();
+    }
+    let tail = &markdown[end..];
+    let closing = tail
+        .find(|c: char| !MARKUP.contains(&c))
+        .unwrap_or(tail.len());
+    let mut drawn_lines = tail[closing..]
+        .split_inclusive('\n')
+        .filter(|line| !is_fence(line))
+        .collect::<String>();
+    // A fence that closes the text leaves the line break before it.
+    if drawn_lines.ends_with('\n') {
+        drawn_lines.pop();
+    }
+    drawn_lines
+}
+
+fn is_fence(line: &str) -> bool {
+    let line = line.trim();
+    line.strip_prefix("```")
+        .is_some_and(|language| language.chars().all(char::is_alphanumeric))
 }
 
 fn screen_rows(screen: &vt100::Screen) -> Vec<Row> {

@@ -288,3 +288,206 @@ fn drawn_text_is_matched_with_its_markdown() {
     assert!(!drawn_from("Summary", "Some unrelated text that mentions many letters in a row: s u m m a r y and a long tail after it that goes on and on for a while"));
     assert!(!drawn_from("", "anything"));
 }
+
+/// The screen of a Claude run, drawn from the top: `rows` as they are written.
+fn draw(rows: &[&str]) -> Vec<u8> {
+    let mut screen = b"\x1b[2J\x1b[H".to_vec();
+    for row in rows {
+        screen.extend_from_slice(row.as_bytes());
+        screen.extend_from_slice(b"\r\n");
+    }
+    screen
+}
+
+fn read_twice(reply: &mut LiveReply, prompt_id: &str, screen: &[u8]) -> Vec<LiveDelta> {
+    let mut deltas = reply.read(Some(prompt_id), screen);
+    deltas.extend(reply.read(Some(prompt_id), b""));
+    deltas
+}
+
+#[test]
+fn the_tail_after_a_streamed_code_block_does_not_repeat_its_closing_brace() {
+    let mut reply = LiveReply::new(40, 120);
+    let deltas = read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Here is the loop:",
+            "",
+            "  fn main() {",
+            "      run();",
+            "  }",
+            "",
+            "  It runs once and stops.",
+            "",
+            "✻ Working (3s)",
+        ]),
+    );
+    let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
+    assert_eq!(streamed, "Here is the loop:\n\nfn main() {\n    run();\n}");
+    let markdown =
+        "Here is the loop:\n\n```rust\nfn main() {\n    run();\n}\n```\n\nIt runs once and stops.";
+    assert_eq!(
+        reply.adopt(markdown),
+        Adoption::Streamed {
+            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            rest: "\n\nIt runs once and stops.".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_withheld_closing_row_of_a_code_block_is_sent_without_its_fence() {
+    let mut reply = LiveReply::new(40, 120);
+    read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Run it:",
+            "",
+            "  fn main() {",
+            "      run();",
+            "  }",
+            "",
+            "✻ Working (3s)",
+        ]),
+    );
+    let Adoption::Streamed { rest, .. } =
+        reply.adopt("Run it:\n\n```rust\nfn main() {\n    run();\n}\n```")
+    else {
+        panic!("the streamed block was not adopted");
+    };
+    assert_eq!(rest, "\n}");
+}
+
+#[test]
+fn a_new_answer_that_opens_with_the_previous_answers_first_line_still_streams() {
+    let mut reply = LiveReply::new(40, 120);
+    read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Summary",
+            "  Old body one.",
+            "  Old body two.",
+            "  Old body three.",
+            "",
+            "✻ Working (1s)",
+        ]),
+    );
+    // The new turn only spins while the old answer stays on the screen.
+    assert!(read_twice(&mut reply, "prompt-2", b"").is_empty());
+    let deltas = read_twice(
+        &mut reply,
+        "prompt-2",
+        &draw(&[
+            "● Summary",
+            "  New body one.",
+            "  New body two.",
+            "  New body three.",
+            "",
+            "✻ Working (2s)",
+        ]),
+    );
+    let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
+    assert_eq!(streamed, "Summary\nNew body one.\nNew body two.");
+    assert!(deltas
+        .iter()
+        .all(|delta| delta.merge_key_suffix.contains("prompt-2")));
+}
+
+#[test]
+fn a_second_block_of_a_turn_may_open_with_the_line_of_a_block_the_transcript_has() {
+    let mut reply = LiveReply::new(40, 120);
+    let first = read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Result",
+            "  First body one.",
+            "  First body two.",
+            "  First body three.",
+            "",
+            "✻ Working (1s)",
+        ]),
+    );
+    assert_eq!(
+        first.last().unwrap().text_so_far,
+        "Result\nFirst body one.\nFirst body two."
+    );
+    // Claude writes the first block to its transcript before it opens the next.
+    assert!(matches!(
+        reply.adopt("Result\nFirst body one.\nFirst body two.\nFirst body three."),
+        Adoption::Streamed { .. }
+    ));
+    let second = read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Result",
+            "  Second body one.",
+            "  Second body two.",
+            "  Second body three.",
+            "",
+            "✻ Working (2s)",
+        ]),
+    );
+    let streamed: String = second.iter().map(|delta| delta.text.as_str()).collect();
+    assert_eq!(streamed, "Result\nSecond body one.\nSecond body two.");
+    assert!(second
+        .iter()
+        .all(|delta| delta.merge_key_suffix == "assistant:live-prompt-1-2:0"));
+}
+
+#[test]
+fn a_block_drawn_again_is_not_streamed_a_second_time() {
+    let mut reply = LiveReply::new(40, 120);
+    let screen = draw(&[
+        "● Result",
+        "  First body one.",
+        "  First body two.",
+        "  First body three.",
+        "",
+        "✻ Working (1s)",
+    ]);
+    read_twice(&mut reply, "prompt-1", &screen);
+    // A new block opens, then the first one is drawn again.
+    read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&[
+            "● Other",
+            "  Other one.",
+            "  Other two.",
+            "  Other three.",
+            "",
+            "✻ Working",
+        ]),
+    );
+    assert!(read_twice(&mut reply, "prompt-1", &screen).is_empty());
+}
+
+#[test]
+fn a_repeated_line_is_confirmed_as_often_as_it_was_shown() {
+    let mut reply = LiveReply::new(40, 120);
+    read_twice(
+        &mut reply,
+        "prompt-1",
+        &draw(&["● Start", "  }", "  middle", "  end", "", "✻ Working (1s)"]),
+    );
+    // A second `}` appears for the first time: one read cannot confirm it.
+    let deltas = reply.read(
+        Some("prompt-1"),
+        &draw(&[
+            "● Start",
+            "  }",
+            "  middle",
+            "  }",
+            "  more",
+            "",
+            "✻ Working (2s)",
+        ]),
+    );
+    let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
+    assert!(!streamed.ends_with('}'), "{streamed:?}");
+}

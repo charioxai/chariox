@@ -543,6 +543,50 @@ fn a_heading_reply_shows_its_last_row_live_without_reloading_history() {
     assert_eq!(turn.stored_replies(), [HEADING_REPLY]);
 }
 
+fn screen(rows: &[&str]) -> Vec<u8> {
+    let mut bytes = b"\x1b[2J\x1b[H".to_vec();
+    for row in rows {
+        bytes.extend_from_slice(row.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+    }
+    bytes
+}
+
+#[test]
+fn a_code_block_streamed_before_its_last_paragraph_is_not_repeated_by_the_transcript() {
+    let mut turn = running_turn("streamed-code-block");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Here is the loop:",
+        "",
+        "  fn main() {",
+        "      run();",
+        "  }",
+        "",
+        "  It runs once and stops.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(
+        turn.output_rows().concat(),
+        "Here is the loop:\n\nfn main() {\n    run();\n}"
+    );
+
+    let reply =
+        "Here is the loop:\n\n```rust\nfn main() {\n    run();\n}\n```\n\nIt runs once and stops.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(
+        turn.output_rows().concat(),
+        "Here is the loop:\n\nfn main() {\n    run();\n}\n\nIt runs once and stops.",
+        "live clients see every row once, without the fences"
+    );
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
 #[test]
 fn a_stopped_turn_streams_nothing_more() {
     const PLAIN: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.pty.jsonl");
