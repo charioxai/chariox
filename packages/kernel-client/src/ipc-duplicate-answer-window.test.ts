@@ -35,3 +35,32 @@ test("a command that ran past the retry deadline is answered once the kernel's r
   assert.deepEqual(await client.send({ CreateSession: { name: "long mutation" } }), { ok: true })
   assert.equal(attempts, 4)
 })
+
+test("a kernel that keeps refusing a finished command ends the retries once, 30 s after the original deadline", { timeout: 15_000 }, async (t) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let attempts = 0
+  server.on("connection", socket => {
+    socket.on("message", payload => {
+      const frame = JSON.parse(String(payload))
+      attempts++
+      socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: null,
+        error: { code: "duplicate_command_unavailable", message: "original duplicate command result was unavailable", retryable: true } }))
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    controlRequestRetryDeadlineMs: 200, duplicateAnswerRetryMs: 600, controlResponseStallMs: 100, reconnectJitterMs: 0,
+  })
+  t.after(() => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    return new Promise<void>(resolve => server.close(() => resolve()))
+  })
+  const startedAt = Date.now()
+  await assert.rejects(client.send({ CreateSession: { name: "long mutation" } }), { code: "duplicate_command_unavailable" })
+  const elapsedMs = Date.now() - startedAt
+  assert.ok(elapsedMs >= 700 && elapsedMs < 2_000, `retries ended after ${elapsedMs} ms, expected the 200 ms deadline plus one 600 ms extension`)
+  assert.ok(attempts > 1)
+})
