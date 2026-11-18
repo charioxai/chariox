@@ -1,4 +1,4 @@
-// Relay registration proof drill (relay peer 450): a real relay and a real kernel, plus an impersonator that holds the
+// Relay registration proof drill (relay peer 449): a real relay and a real kernel, plus an impersonator that holds the
 // kernel's leaked relay token and public key but not its identity key. The kernel registers by signing the relay's
 // challenge; the impersonator is refused and never displaces it; the kernel registers again after a relay restart.
 // Usage: RELAY_BIN=<chariox-relay> KERNEL_BIN=<chariox-kernel> DRILL_STATE=<empty scratch dir> DRILL_EVIDENCE=<dir>

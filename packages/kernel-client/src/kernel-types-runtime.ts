@@ -696,7 +696,7 @@ export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelA
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
-/** Protocol 1023: one open card of the owner; `person_only` says why only the person answers it. */
+/** Protocol 1012: one open card of the owner; `person_only` says why only the person answers it. */
 export type OwnerInteraction = {
   /** The card's Room; absent for a card outside any Room (answered with AnswerUserDomainInteraction). */
   session_id?: string

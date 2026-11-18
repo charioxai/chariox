@@ -759,13 +759,13 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     );
 }
 
-// MP-08/MP-10: provisional 1021 names each Tab's icon; a state wait sends only the icons the viewer lacks.
+// MP-08/MP-10: protocol 1012 names each Tab's icon; a state wait sends only the icons the viewer lacks.
 #[test]
-fn mp08_mp10_browser_favicon_cache_1021_shape_and_hash() {
-    let bytes = include_bytes!("browser-favicon-cache-1021.json");
+fn mp08_mp10_browser_favicon_cache_1012_shape_and_hash() {
+    let bytes = include_bytes!("browser-favicon-cache-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b93b6539cc39843819000f33785ebe2c8738b1d34da16f6dab2506682b759ba0"
+        "87c221c6a1fdc3350f4d3594a40e9abd407c6314cb18b7cbd2e6f5e73b33ff90"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
