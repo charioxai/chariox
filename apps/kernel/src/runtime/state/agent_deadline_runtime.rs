@@ -225,7 +225,16 @@ impl KernelRuntimeState {
     pub(super) async fn tick_agent_deadlines(&self, now: u64) -> Result<(), DaemonError> {
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         let mut due = Vec::new();
-        for deadline in self.owned.durable_state_store.agent_deadlines()? {
+        let deadlines = self.owned.durable_state_store.agent_deadlines()?;
+        if deadlines
+            .iter()
+            .any(|deadline| deadline.state == AgentDeadlineState::Armed)
+        {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::BeatDeadlineClock { now })?;
+        }
+        for deadline in deadlines {
             if deadline.deadline_ms > now {
                 continue;
             }

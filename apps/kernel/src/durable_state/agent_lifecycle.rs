@@ -6,6 +6,7 @@ mod batch_tests;
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
+mod deadline_clock;
 #[cfg(test)]
 mod deadline_tests;
 mod deadlines;

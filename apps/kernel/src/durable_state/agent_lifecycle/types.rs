@@ -275,6 +275,14 @@ pub(crate) enum Operation {
         deadline: Option<u64>,
         inherited: Vec<(String, Option<u64>)>,
     },
+    /// The deadline tick: a kernel that is running counts down its deadlines.
+    BeatDeadlineClock {
+        now: u64,
+    },
+    /// A kernel start gives back the time since the last beat.
+    ResumeDeadlines {
+        now: u64,
+    },
     ReachDeadline {
         room: String,
         agent: String,
