@@ -1018,8 +1018,9 @@ export class Mirror2 {
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
+    // A lease captures the browser's native window: a headless browser (always on macOS) has none, so the still stays.
     const viewport = this.host.pageSize(tab.tab_id);
-    if (!boxes.length || regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || this.host.chromium?.display && regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();

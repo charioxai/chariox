@@ -1212,6 +1212,20 @@ for (const distorted of [false, 'canvas']) test(`MP-08/MP-10: opaque area and st
   assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
 });
 
+// browserfidelity r2: Excalidraw's full-viewport canvas was black in the viewer of a headless browser (always on macOS).
+// Its region video lease needs the browser's native window, so without one the still is all that carries the canvas.
+for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas has a still exactly when no native window can carry its video (${display ? 'headed' : 'headless'})`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[0,0,1192,666],distorted:'canvas'}];
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),chromium:{display},async screenshot(tab,clip){
+    shots.push(clip);return {data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255))};
+  }};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>null;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,display?[]:[{x:0,y:0,width:1192,height:666,scale:1}]);
+  assert.equal(tiles.length,display?0:1);
+});
+
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
   const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
   let viewport = {width:1610,height:900};
