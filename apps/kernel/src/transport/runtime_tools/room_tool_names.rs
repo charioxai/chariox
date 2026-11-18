@@ -52,6 +52,9 @@ pub(crate) fn canonical_room_tool_name(tool: &str) -> Option<&'static str> {
         })
 }
 
+/// The authority rules of every room tool, stated once here instead of on each of them.
+const ROOM_RUN_COMMAND_DESCRIPTION: &str = "Run a room command (syntax in chariox.commands.docs) in the current room, or reach other rooms of the same owner on this kernel with room agents, room cards and agent answer --room, under current authority; no sudo or capability authority is inherited. Secret cards stay owner-only and guests cannot reach other rooms. Read, message and prompt any peer. Spawn regular agents and create workflows without an agent quota or a task plan. New workflow bindings require yourself or your immutable direct children; existing public same-room workflows may execute their saved peer bindings. Mutate only workflow objects you or your direct children created; rename or delete only direct children.";
+
 pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     meta_runtime_tool_specs().into_iter().filter_map(|mut spec| {
         spec.name = room_name(&spec.name)?;
@@ -65,7 +68,11 @@ pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             spec.description = "Read a room peer's sanitized public turn events. Private reasoning, hidden context and unknown legacy provenance are excluded.".into();
             return Some(spec);
         }
-        spec.description = format!("{}: operate in the current room and reach other rooms of the same owner on this kernel with room agents, room cards and agent answer --room, under current authority. Secret cards stay owner-only and guests cannot reach other rooms. Read/message/prompt any peer; New workflow bindings require self or immutable direct children; existing public same-room workflows may execute their saved peer bindings. Spawn regular agents and create workflows without an agent quota or a task plan. Mutations require self-created workflow objects or immutable direct-child creators; agent rename/delete require a direct child. Use chariox.commands.docs for command syntax. No sudo or capability authority is inherited.", spec.name);
+        spec.description = if spec.name == "chariox.room.run_command" {
+            ROOM_RUN_COMMAND_DESCRIPTION.into()
+        } else {
+            format!("{}: a room tool under your current authority; the rules are in chariox.room.run_command and the syntax in chariox.commands.docs.", spec.name)
+        };
         Some(spec)
     }).collect()
 }
@@ -73,6 +80,32 @@ pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 #[cfg(test)]
 mod history_search_tests {
     use super::*;
+
+    #[test]
+    fn the_authority_rules_are_stated_once_on_run_command() {
+        let specs = room_runtime_tool_specs();
+        let with_rules: Vec<&str> = specs
+            .iter()
+            .filter(|spec| spec.description.contains("immutable direct children"))
+            .map(|spec| spec.name.as_str())
+            .collect();
+        assert_eq!(with_rules, ["chariox.room.run_command"]);
+        let pointers: Vec<&RuntimeToolSpec> = specs
+            .iter()
+            .filter(|spec| {
+                spec.description
+                    .contains("a room tool under your current authority")
+            })
+            .collect();
+        assert!(
+            pointers.len() > 20,
+            "{} pointer descriptions",
+            pointers.len()
+        );
+        for spec in pointers {
+            assert!(spec.description.len() < 260, "{}", spec.name);
+        }
+    }
 
     #[test]
     fn public_history_search_is_a_room_tool() {
