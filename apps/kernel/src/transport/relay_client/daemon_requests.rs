@@ -1238,12 +1238,23 @@ async fn dispatch_relay_client_request(
             .reserve(&command.command_id, fingerprint)
             .await
         {
-            CommandReservation::Wait(wait_rx) => {
-                return match wait_rx.await {
-                    // A retry's answer window starts when the result exists, not when the retry
-                    // arrived: retries of a command that ran for minutes would each claim an
-                    // expired window and all receive the result at once.
-                    Ok(_) if !command_result_cache.may_answer_retry(&command.command_id) => {
+            CommandReservation::Wait(mut wait_rx) => {
+                // Only a replay of a result that already exists is refused inside the answer
+                // window. Every retry that waited for the original to finish is answered: the
+                // client abandons an attempt that stalled and keeps the newest, so answering one
+                // waiter would leave the live attempt with `duplicate_command_unavailable` after
+                // a slice operation that ran for minutes. Answering opens the window for replays.
+                let ready = wait_rx.try_recv().ok();
+                let replay_of_finished = ready.is_some();
+                let waited = match ready {
+                    Some(cached) => Ok(cached),
+                    None => wait_rx.await,
+                };
+                return match waited {
+                    Ok(_)
+                        if !command_result_cache.may_answer_retry(&command.command_id)
+                            && replay_of_finished =>
+                    {
                         RelayDispatchOutcome::RelayError(relay_error(
                             "duplicate_command_unavailable",
                             "original duplicate command result was unavailable",
