@@ -4915,6 +4915,11 @@ fn enforce_codex_file_credentials(codex_home: &Path) -> Result<(), DaemonError> 
     }
     let mut config = lines.join("\n");
     config.push('\n');
+    // Every resolve of the default profile lands here, including the external
+    // session poller's pass every two seconds; a settled file needs no fsync.
+    if config == existing {
+        return Ok(());
+    }
     atomic_write_private(&config_path, config.as_bytes())
 }
 
@@ -7275,6 +7280,34 @@ mod tests {
                 );
             }
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolving_the_default_codex_profile_leaves_a_settled_config_in_place() {
+        use std::os::unix::fs::MetadataExt;
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+        let config_path = Path::new(&environment["CODEX_HOME"]).join("config.toml");
+        let settled = fs::metadata(&config_path).unwrap().ino();
+
+        registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+
+        assert_eq!(fs::metadata(&config_path).unwrap().ino(), settled);
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            "cli_auth_credentials_store = \"file\"\n"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
