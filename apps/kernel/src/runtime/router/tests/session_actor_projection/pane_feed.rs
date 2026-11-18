@@ -292,3 +292,122 @@ async fn reported_settings_survive_a_kernel_restart() {
         Some(crate::provider::AgentPermissionLevel::Required)
     );
 }
+
+/// A run of a person-responsible workflow fails two steps down (A -> B -> C, C needs help): the
+/// attention stripe is in C's pane and names C; A's and B's panes have none.
+#[tokio::test]
+async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
+    use crate::session::{
+        WorkflowFailureEvent, WorkflowFailureKind, WorkflowNodeRun, WorkflowNodeRunStatus,
+        WorkflowRun, WorkflowRunStatus,
+    };
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let mut session = crate::session::RuntimeSession::new(
+        format!("pane-workflow-{:016x}", rand::random::<u64>()),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "kernel",
+    );
+    session.set_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
+    let session_id = session.id().to_owned();
+    app.sessions_mut().restore_session(session);
+    let agents = ["entry", "middle", "deploy"].map(|name| {
+        let id = format!("{name}-{:016x}", rand::random::<u64>());
+        app.agents_mut()
+            .restore_agent(crate::agent::AgentInstance::new(
+                id.clone(),
+                name,
+                session_id.clone(),
+                Some(name.to_string()),
+                "dev-stub",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            ));
+        id
+    });
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("release-pipeline".into()))
+        .unwrap();
+    let mut session = app.sessions_mut().get_session(&session_id).unwrap();
+    let steps = agents
+        .iter()
+        .zip(["node-a", "node-b", "node-c"])
+        .enumerate()
+        .map(|(index, (agent, node))| {
+            let status = if index == 2 {
+                WorkflowNodeRunStatus::Failed
+            } else {
+                WorkflowNodeRunStatus::Completed
+            };
+            WorkflowNodeRun::new(format!("node-run-{index}"), node, agent, 0, status)
+        })
+        .collect::<Vec<_>>();
+    let mut run = WorkflowRun::new(
+        "run-1",
+        workflow.id(),
+        "endpoint",
+        "node-a",
+        None,
+        None,
+        steps,
+        vec![],
+    )
+    // Started by the entry agent, as a run through the Room is; its creator makes it visible.
+    .with_creator(Some(agents[0].clone()));
+    run.add_failure_event(WorkflowFailureEvent::new(
+        WorkflowFailureKind::StepNeedsHelp,
+        "node-run-2",
+        vec![],
+        "the deploy step needs a person",
+    ));
+    run.set_status(WorkflowRunStatus::Failed);
+    session.create_workflow_run(run);
+    app.sessions_mut().restore_session(session);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let mut attention = Vec::new();
+    for agent_id in &agents {
+        let request = LocalDaemonRequest::GetPaneFeed(GetPaneFeedRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+        });
+        let command = KernelCommand::from_local_request("pane", None, None, &request);
+        let LocalDaemonResponse::PaneFeed { feed } =
+            router.dispatch(command, request).await.unwrap()
+        else {
+            panic!("expected the pane feed");
+        };
+        attention.push(
+            feed.stripes
+                .into_iter()
+                .filter(|stripe| stripe.id.starts_with("attention:"))
+                .map(|stripe| stripe.text)
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert!(
+        attention[0].is_empty(),
+        "the entry agent's pane: {:?}",
+        attention[0]
+    );
+    assert!(
+        attention[1].is_empty(),
+        "the middle agent's pane: {:?}",
+        attention[1]
+    );
+    assert_eq!(
+        attention[2].len(),
+        1,
+        "the failing agent's pane: {:?}",
+        attention[2]
+    );
+    assert!(
+        attention[2][0].ends_with("failed: deploy needs help — the deploy step needs a person"),
+        "{}",
+        attention[2][0]
+    );
+}
