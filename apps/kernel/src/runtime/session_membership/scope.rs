@@ -703,6 +703,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RemoteEnvironmentOperation(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
+        | LocalDaemonRequest::Watcher(_)
         | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)

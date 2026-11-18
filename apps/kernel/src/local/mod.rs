@@ -342,6 +342,10 @@ pub use api::{
     NotesRequest,
 };
 pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
+pub use api::{
+    WatcherCoalesce, WatcherDryRun, WatcherEvent, WatcherEventDeclaration, WatcherHealth,
+    WatcherManifest, WatcherMode, WatcherRequest, WatcherScript, WatcherState, WatcherSummary,
+};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 

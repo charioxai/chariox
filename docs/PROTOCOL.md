@@ -7438,6 +7438,21 @@ Following it uses the same outside grant, subscription, receipt and acknowledgem
 kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
 
+### A watcher as a notification source — local 1012
+
+NC-14 / NC-15 / NC-21: `NotificationSourceKind` gains `watcher`. A watcher is a script this kernel runs
+for the owner; it has one source (`source_id` `watcher_<id>`, `workflow_id` the watcher id,
+`exit_node_id` `event`, `name` / `display_name` the watcher's name, `session_id` the Room it was made in),
+enabled while the watcher exists. `Watcher(WatcherRequest)` with `create {session_id, manifest, script}`,
+`update {watcher_id, manifest, script}` (back to draft), `dry_run`, `activate`, `pause {paused}`,
+`check_now`, `rename {watcher_id, name}` (keeps its dry run), `remove {watcher_id}` and `list {}` answers `Watcher {watcher}`, `WatcherDryRun {result}`,
+`WatcherRemoved {watcher_id}` or `Watchers {watchers}`. A summary's `dry_run` is the last dry run of the
+current revision (null after a change); activation requires it. A run's events, cursor, reading and health commit in one write; occurrence ids are
+`<run>.<commit>:<n>`. Health is `ok | failing | gap | noisy` (30 events in 10 minutes, then one a minute);
+entering a non-ok state wakes the creating agent once with a `watcher_health` inbox event. Agent tools:
+`chariox.watcher.create|dry_run|activate|status|remove`. Focused check:
+`cargo test -p chariox-kernel --lib watcher`.
+
 ### A tool call's picture count in the outline preview — local 1000
 
 MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`

@@ -35,8 +35,10 @@ pub(super) fn source_available(
     };
     match source.kind {
         // An App's event source belongs to the owner's installation, not to a Room: listing
-        // keeps it enabled exactly while the installation and the route exist.
-        crate::local::NotificationSourceKind::AppEvent => true,
+        // keeps it enabled exactly while the installation and the route exist. A watcher's
+        // source is enabled exactly while the watcher exists.
+        crate::local::NotificationSourceKind::AppEvent
+        | crate::local::NotificationSourceKind::Watcher => true,
         crate::local::NotificationSourceKind::OwnerAction => in_live_room(),
         crate::local::NotificationSourceKind::WorkflowRun => {
             in_live_room()
@@ -67,7 +69,10 @@ pub(super) fn summaries(
         .iter()
         .filter(|source| source.enabled)
         .map(|source| {
-            if source.kind == NotificationSourceKind::AppEvent {
+            if matches!(
+                source.kind,
+                NotificationSourceKind::AppEvent | NotificationSourceKind::Watcher
+            ) {
                 return WorkflowNotificationSourceSummary {
                     kind: source.kind,
                     source_id: source.source_id.clone(),
