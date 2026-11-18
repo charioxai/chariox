@@ -345,7 +345,15 @@ impl KernelRuntimeState {
                 };
                 let result = self.owned.durable_state_store.agent_lifecycle(operation)?;
                 if let Outcome::Task(task) = result {
-                    self.ensure_task_owner_interaction(task).await?;
+                    if task.owner_action
+                        == Some(
+                            crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess,
+                        )
+                    {
+                        self.raise_browser_access_card(task).await?;
+                    } else {
+                        self.ensure_task_owner_interaction(task).await?;
+                    }
                 }
                 serde_json::json!({"blocked":true})
             }

@@ -61,7 +61,7 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
-        self.ensure_task_owner_interaction(blocked).await?;
+        self.raise_browser_access_card(blocked).await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

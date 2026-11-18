@@ -2350,6 +2350,74 @@ async fn blocked_for_browser_access_is_offered_when_a_loaded_grant_lacks_the_tab
         .any(|choice| choice.id() == "allow_browser"));
 }
 
+/// An agent that lost browser access asks again in every new turn: each ask answers the one before,
+/// so the owner sees one "Allow browser access" card, never one per retry.
+#[tokio::test]
+async fn a_browser_access_retry_replaces_the_agents_open_card() {
+    let f = fixture("owner-browser-card-retry", true).await;
+    let token = run_token(&f).await;
+    let ask = serde_json::json!({
+        "reason":"I need the signed-in tab.", "owner_action":"browser_access"
+    });
+    let first = f.begin(&f.prompt_id);
+    call(&f, &token, "chariox.events.blocked", &first, ask.clone())
+        .await
+        .unwrap();
+    for retry in 0..2 {
+        // The blocked turn ends; the agent's next turn asks again.
+        let next_prompt = {
+            let mut app = f.app.lock().await;
+            app.complete_active_prompt(&f.room, &f.agent, None).unwrap();
+            let attachment = f
+                .runtime
+                .owned
+                .attachment_store
+                .list_session_attachment_ids(&f.room)
+                .into_iter()
+                .next()
+                .unwrap();
+            let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+                .submit_prompt(
+                    &f.room,
+                    &attachment,
+                    Some(&f.agent),
+                    "try the browser again",
+                    Vec::new(),
+                )
+                .unwrap()
+            else {
+                panic!("the next turn starts at once");
+            };
+            prompt.id().to_owned()
+        };
+        let again = f.begin(&next_prompt);
+        call(&f, &token, "chariox.events.blocked", &again, ask.clone())
+            .await
+            .unwrap();
+        let open = f
+            .runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .filter(|card| card.title() == Some("Allow browser access"))
+            .map(|card| card.id().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            open,
+            [format!(
+                "task-blocked-{}-{}",
+                again.task_id,
+                f.task(&again.task_id).blocked_revision
+            )],
+            "retry {retry}: only the latest ask holds a card"
+        );
+        assert_eq!(f.task(&first.task_id).state, ExecutionState::Cancelled);
+    }
+}
+
 #[tokio::test]
 async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
     for stale in [false, true] {
