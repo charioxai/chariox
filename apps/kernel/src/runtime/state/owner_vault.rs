@@ -137,13 +137,8 @@ fn rekinded_credential(
     label: &str,
     use_binding: VaultUseBinding,
 ) -> Result<UserCredentialConfig, DaemonError> {
-    let made_by_owner = previous
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.created_by_kind.as_deref())
-        .is_some_and(|kind| kind.starts_with("owner_"));
     let current = VaultKind::of(previous)
-        .filter(|_| made_by_owner)
+        .filter(|_| VaultKind::made_by_owner(previous))
         .ok_or_else(|| {
             failure("Only entries made in the Vault window can change their Kind and Use.")
         })?;

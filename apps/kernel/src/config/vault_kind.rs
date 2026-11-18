@@ -136,12 +136,27 @@ impl VaultKind {
         if current == wanted || current.change_refusal(wanted).is_some() {
             return None;
         }
-        Some(format!(
-            "credential `{}` is saved as {} ({}); change Kind to {} in the Vault to use it for {word}",
-            credential.id,
-            current.label(),
-            current.effect(),
-            wanted.label(),
-        ))
+        let id = &credential.id;
+        let (saved, effect) = (current.label(), current.effect());
+        Some(if Self::made_by_owner(credential) {
+            format!(
+                "credential `{id}` is saved as {saved} ({effect}); change Kind to {} in the Vault to use it for {word}",
+                wanted.label(),
+            )
+        } else {
+            format!(
+                "credential `{id}` is saved as {saved} ({effect}) and was not made in the Vault window, so its Kind cannot change; copy it with chariox.vault.copy_for_use into a new {} entry for {word}",
+                wanted.label(),
+            )
+        })
+    }
+
+    /// Only an entry the owner made in the Vault window can change its Kind and Use in place.
+    pub(crate) fn made_by_owner(credential: &UserCredentialConfig) -> bool {
+        credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.created_by_kind.as_deref())
+            .is_some_and(|kind| kind.starts_with("owner_"))
     }
 }
