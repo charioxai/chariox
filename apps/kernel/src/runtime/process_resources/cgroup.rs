@@ -29,12 +29,20 @@ impl Drop for Unit {
     }
 }
 
+/// Agent and terminal work yields the CPU to the kernel. Under contention the
+/// kernel's own cgroup (default weight 100) gets ten times the share of all of
+/// it together, so a busy host slows agents, never the kernel's relay link.
+const WORKLOAD_CPU_WEIGHT: &str = "10\n";
+
 impl Budget {
     pub fn create() -> Option<Arc<Self>> {
         // A systemd scope has internal processes: use a sibling under its already
         // delegated parent. Do not change controllers on any existing directory.
-        let parent = delegated_parent()?;
-        remove_leftovers(&parent);
+        Self::create_under(&delegated_parent()?)
+    }
+
+    fn create_under(parent: &Path) -> Option<Arc<Self>> {
+        remove_leftovers(parent);
         let path = parent.join(format!(
             "chariox-{}-{}",
             std::process::id(),
@@ -52,6 +60,7 @@ impl Budget {
             Ok(())
         })()
         .ok()?;
+        weigh_cpu(parent, &budget.path);
         Some(budget)
     }
 
@@ -224,6 +233,24 @@ pub(super) fn members(path: &Path) -> Vec<u32> {
         .unwrap_or_default()
 }
 
+/// The weight applies only where the parent delegates the CPU controller.
+fn weigh_cpu(parent: &Path, budget: &Path) {
+    let delegated = std::fs::read_to_string(parent.join("cgroup.subtree_control"))
+        .is_ok_and(|controllers| controllers.split_whitespace().any(|name| name == "cpu"));
+    let outcome = if delegated {
+        std::fs::write(budget.join("cpu.weight"), WORKLOAD_CPU_WEIGHT).map_err(|e| e.to_string())
+    } else {
+        Err("the parent cgroup does not delegate the cpu controller".into())
+    };
+    if let Err(error) = outcome {
+        crate::logging::warn_with_fields(
+            "process_resources.cgroup",
+            "agent work keeps the kernel's CPU share; give the kernel's service Delegate=cpu",
+            serde_json::json!({"parent": parent.display().to_string(), "error": error}),
+        );
+    }
+}
+
 fn own() -> Option<PathBuf> {
     let current = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let relative = current.lines().find_map(|line| line.strip_prefix("0::"))?;
@@ -354,6 +381,25 @@ mod tests {
         .unwrap();
         std::fs::write(own.join("memory.max"), "1073741824\n").unwrap();
         (root, own)
+    }
+
+    // b3, 2026-11-18: cargo in agent terminals held every CPU and the kernel's
+    // relay link dropped. Agent work runs at a tenth of the kernel's weight.
+    #[test]
+    fn agent_work_yields_the_cpu_to_the_kernel_where_cpu_is_delegated() {
+        let (root, own) = service();
+        let parent = own.parent().unwrap();
+        std::fs::write(parent.join("cgroup.subtree_control"), "cpu memory\n").unwrap();
+        let budget = Budget::create_under(parent).expect("budget");
+        assert_eq!(
+            std::fs::read_to_string(budget.path.join("cpu.weight")).unwrap(),
+            WORKLOAD_CPU_WEIGHT
+        );
+        std::fs::write(parent.join("cgroup.subtree_control"), "memory\n").unwrap();
+        let memory_only = Budget::create_under(parent).expect("budget");
+        assert!(!memory_only.path.join("cpu.weight").exists());
+        drop((budget, memory_only));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

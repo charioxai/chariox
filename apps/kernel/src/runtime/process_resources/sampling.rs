@@ -912,6 +912,10 @@ pub(super) enum SamplingError {
     /// The sampler has read no table since it started or resumed; the next
     /// tick may read it.
     Pending,
+    /// `ps` did not answer within its deadline, as on a host whose CPUs are
+    /// all busy. The tree is as it was; the next tick may read it.
+    #[cfg(not(target_os = "linux"))]
+    TimedOut,
     /// Nothing will change by trying again: /proc is not mounted, or `ps` is
     /// missing, refused or answers with columns the monitor cannot read.
     Unusable(String),
@@ -929,6 +933,12 @@ impl std::fmt::Display for SamplingError {
             Self::Pending => {
                 f.write_str("process resource monitor has not read the process table yet")
             }
+            #[cfg(not(target_os = "linux"))]
+            Self::TimedOut => write!(
+                f,
+                "process resource monitor's ps timed out after {} s; the host is busy and the next sample retries",
+                PS_DEADLINE.as_secs()
+            ),
             Self::Unusable(message) => f.write_str(message),
         }
     }
@@ -1184,12 +1194,16 @@ pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A slower `ps` is retried at the next sample; the sampler keeps the last table.
 #[cfg(not(target_os = "linux"))]
-fn run_ps() -> std::io::Result<std::process::Output> {
+const PS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(not(target_os = "linux"))]
+fn run_ps(deadline: std::time::Duration) -> std::io::Result<std::process::Output> {
     crate::process_spawn::command("ps")
         .env("LC_ALL", "C")
         .args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="])
-        .output_with_deadline(std::time::Duration::from_secs(1))
+        .output_with_deadline(deadline)
 }
 
 /// Makes reading the process table fail with an errno for the tree of one root process,
@@ -1244,9 +1258,15 @@ fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
 
 #[cfg(not(target_os = "linux"))]
 fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
+    read_process_rows_within(PS_DEADLINE)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_process_rows_within(deadline: std::time::Duration) -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = run_ps().map_err(|error| match shortage(&error) {
+    let output = run_ps(deadline).map_err(|error| match shortage(&error) {
         Some(errno) => SamplingError::Short(errno),
+        None if error.kind() == std::io::ErrorKind::TimedOut => SamplingError::TimedOut,
         None => SamplingError::Unusable(format!(
             "process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"
         )),
@@ -1668,5 +1688,24 @@ mod stop_tests {
             still_running,
             "nothing is signalled without a current table"
         );
+    }
+}
+
+// Linux reads /proc; only the `ps` path has a deadline.
+#[cfg(all(test, unix, not(target_os = "linux")))]
+mod ps_deadline_tests {
+    use super::*;
+
+    // b3, 2026-11-18: ps outlived its deadline on a busy host and the monitor
+    // told the owner to install ps, then treated the tree as unreadable.
+    #[test]
+    fn a_ps_that_outlives_its_deadline_is_a_retryable_timeout() {
+        let Err(error) = read_process_rows_within(std::time::Duration::from_nanos(1)) else {
+            panic!("no ps answers within a nanosecond");
+        };
+        let text = error.to_string();
+        assert!(matches!(error, SamplingError::TimedOut), "{text}");
+        assert!(text.contains("timed out"), "{text}");
+        assert!(!text.contains("install"), "{text}");
     }
 }

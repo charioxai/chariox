@@ -18,6 +18,15 @@ pub(super) struct IncomingEnvelopeContext<'a> {
 pub(super) struct RelayReconnectGate {
     state: std::sync::Mutex<RelayReconnectGateState>,
     input_order: super::browser_input_order::BrowserInputOrder,
+    /// Reads in flight on this connection, cancelled when it ends: every client
+    /// that asked left with it (b3, 2026-11-18: a reconnect storm left reads running
+    /// whose answers then failed to send).
+    reads: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+}
+
+/// Requests that only read: cancelling one changes nothing.
+fn is_read_kind(request_kind: &str) -> bool {
+    request_kind.ends_with(".get") || request_kind.ends_with(".list")
 }
 
 #[derive(Debug, Default)]
@@ -35,6 +44,22 @@ pub(super) enum RelayReconnectDecision {
 }
 
 impl RelayReconnectGate {
+    fn track_read(&self, read: tokio::task::AbortHandle) {
+        let mut reads = self.reads.lock().unwrap_or_else(|e| e.into_inner());
+        reads.retain(|read| !read.is_finished());
+        reads.push(read);
+    }
+
+    /// Cancels the reads still running for clients of this connection.
+    pub(super) fn cancel_reads(&self) -> usize {
+        let reads = std::mem::take(&mut *self.reads.lock().unwrap_or_else(|e| e.into_inner()));
+        reads
+            .into_iter()
+            .filter(|read| !read.is_finished())
+            .inspect(tokio::task::AbortHandle::abort)
+            .count()
+    }
+
     fn begin_daemon_request(&self) -> bool {
         let mut state = self.state.lock().expect("relay reconnect gate poisoned");
         // A pending reconnect admits no new work, so in-flight requests drain.
@@ -137,6 +162,7 @@ pub(super) async fn handle_incoming_envelope(
             let command_sequence = Arc::clone(command_sequence);
             let outgoing_tx = outgoing_tx.clone();
             let command_result_cache = Arc::clone(command_result_cache);
+            let reads = Arc::clone(reconnect_gate);
             let reconnect_gate = Arc::clone(reconnect_gate);
             let display_subscriptions = Arc::clone(subscription_tasks);
             // MP-08/MP-10/MP-11: decrypt once in socket order, then reserve
@@ -171,7 +197,11 @@ pub(super) async fn handle_incoming_envelope(
                 chariox_relay::transport_timing::record("kernel_input_queued", timing_packet);
             }
             let local_browser = Arc::clone(local_browser);
-            tokio::spawn(async move {
+            // A read whose clients left with the connection has no one to answer.
+            let cancellable_read = reply_origin
+                .as_ref()
+                .is_some_and(|origin| is_read_kind(origin.request_kind));
+            let task = tokio::spawn(async move {
                 let turn = match turn {
                     Some(turn) => turn.enter(read).await,
                     None => None,
@@ -265,6 +295,9 @@ pub(super) async fn handle_incoming_envelope(
                     ),
                 }
             });
+            if cancellable_read {
+                reads.track_read(task.abort_handle());
+            }
         }
         RelayEnvelope::DaemonIncomingPeerRequest {
             relay_request_id,
@@ -1175,5 +1208,28 @@ mod tests {
             "the renewal opened a new socket to the relay"
         );
         assert!(state.read().await.pending_metadata_requests.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod read_cancellation_tests {
+    use super::*;
+
+    // b3, 2026-11-18: reads kept running after the relay link dropped, and each answer then
+    // failed to send. A connection's reads end with it; its other work does not.
+    #[tokio::test]
+    async fn a_connection_that_ends_cancels_its_reads_in_flight() {
+        assert!(is_read_kind("session.history.outline.get"));
+        assert!(is_read_kind("session.list"));
+        assert!(!is_read_kind("session.prompt.submit"));
+        let gate = RelayReconnectGate::default();
+        let read = tokio::spawn(std::future::pending::<()>());
+        let finished = tokio::spawn(async {});
+        tokio::task::yield_now().await;
+        gate.track_read(read.abort_handle());
+        gate.track_read(finished.abort_handle());
+        assert_eq!(gate.cancel_reads(), 1);
+        assert!(read.await.unwrap_err().is_cancelled());
+        assert_eq!(gate.cancel_reads(), 0);
     }
 }

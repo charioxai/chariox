@@ -257,6 +257,7 @@ pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
+    in_flight_reads: Arc<in_flight_reads::InFlightReads>,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
@@ -712,6 +713,7 @@ pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
+mod in_flight_reads;
 mod owner_vault;
 mod process_wait_notices;
 mod process_waits;
@@ -1196,6 +1198,7 @@ impl KernelRuntimeState {
             app,
             provider_runtime_lanes,
             provider_history_appends: Default::default(),
+            in_flight_reads: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
