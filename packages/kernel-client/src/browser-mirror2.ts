@@ -9,7 +9,7 @@ import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-sel
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import { Mirror2Navigation } from './browser-mirror2-navigation.js'
-import { isTileInk, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
+import { isTileInk, paddingOrigin, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -978,9 +978,10 @@ export class BrowserMirror2Renderer {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
     const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
     paintTileInk(element, tile, outside ? url : null); if (outside) return
-    const style = element.style
+    const style = element.style, [left, top] = paddingOrigin(element)
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
-    style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
+    style.setProperty('background-origin', 'padding-box', 'important'); style.setProperty('background-clip', 'border-box', 'important')
+    style.setProperty('background-position', `${tile.x - left}px ${tile.y - top}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; if (!this.retention) { this.sheetCache.clear(); this.fontCache.clear() } this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()

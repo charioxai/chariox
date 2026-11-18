@@ -129,8 +129,18 @@ for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: 
   }));
 
 // Review 5956294075: a closed root's content can paint outside its host's box (a fixed consent banner in a 0x0 or small host).
-for(const [size,box] of [['0x0',''],['20x20','width:20px;height:20px']])for(const dpr of [1,2])test(`MP-10: a ${size} closed host's banner is visible and clickable in the viewer at DPR${dpr}`,()=>roundtrip(
-  `<!doctype html><style>body{margin:0;height:3000px}</style><p>page</p><div id="h" style="position:fixed;z-index:9;${box}"></div><script>h.attachShadow({mode:"closed"}).innerHTML=\'<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)"><b onclick="window.clicked=1" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b></div>\'</script>`,
+// The kernel places a still and the viewer's click offset relative to the host's border box: a bordered (and padded) host
+// shows the still where the page paints it, and a click lands at the native point under it.
+const closedHost=(host,content)=>`<!doctype html><style>body{margin:0;height:3000px}</style><p>page</p><div id="h" style="position:fixed;z-index:9;${host}"></div><script>h.attachShadow({mode:"closed"}).innerHTML=\'${content}\'</script>`;
+const button='<b onclick="window.clicked=[event.clientX,event.clientY]" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b>';
+const closedHostCases=[
+  ['0x0 host, banner outside it','',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['20x20 host, banner outside it','width:20px;height:20px',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['bordered, padded 20x20 host, banner outside it','width:20px;height:20px;border:10px solid rgb(0,128,0);padding:5px',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['bordered, padded host, content inside it','left:50px;top:300px;width:100px;height:60px;border:10px solid rgb(0,128,0);padding:4px;background:rgb(255,0,0)',button,[64,314]],
+];
+for(const [name,host,content,[bx,by]] of closedHostCases)for(const dpr of [1,2])test(`MP-10: a closed ${name}: the still is drawn where the page paints it and a click lands under it at DPR${dpr}`,()=>roundtrip(
+  closedHost(host,content),
   '',async({page,next,apply,evaluate})=>{
     const painted=()=>page.evaluate(()=>{const h=window.r.frame.contentDocument.getElementById('h');return !!h&&(h.style.backgroundImage.startsWith('url(')||!!h.querySelector('[data-chariox-region-ink]'));});
     for(let i=0;i<10&&!await painted();i++)await apply(await next());
@@ -138,11 +148,11 @@ for(const [size,box] of [['0x0',''],['20x20','width:20px;height:20px']])for(cons
     const frame=await page.evaluate(()=>{const r=window.r.frame.getBoundingClientRect();return {x:r.x,y:r.y};});
     const pixel=async(x,y)=>{const png=(await page.screenshot({clip:{x:frame.x+x,y:frame.y+y,width:1,height:1},scale:'css'})).toString('base64');
       return page.evaluate(async png=>{const img=new Image();img.src=`data:image/png;base64,${png}`;await img.decode();const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(0,0,1,1).data.slice(0,3)];},png);};
-    assert.deepEqual(await pixel(300,300),[255,0,0],'MP-10: the banner outside its host is visible');
-    assert.deepEqual(await pixel(110,205),[0,0,255],'MP-10: the banner button is visible');
-    await page.mouse.click(frame.x+110,frame.y+205);
-    for(let i=0;i<80&&!await evaluate('window.clicked===1');i++)await page.waitForTimeout(25);
-    assert.equal(await evaluate('window.clicked===1'),true,'MP-08: a click on the banner reaches its button in the kernel');
+    for(const [x,y] of [[bx+1,by+1],[bx+38,by+18]])assert.deepEqual(await pixel(x,y),[0,0,255],`MP-10: the button is drawn at (${x},${y})`);
+    for(const [x,y] of [[bx+42,by+5],[bx+5,by+22]])assert.deepEqual(await pixel(x,y),[255,0,0],`MP-10: the button ends at (${x},${y})`);
+    await page.mouse.click(frame.x+bx+36,frame.y+by+16);
+    for(let i=0;i<80&&!await evaluate('!!window.clicked');i++)await page.waitForTimeout(25);
+    assert.deepEqual(await evaluate('window.clicked'),[bx+36,by+16],'MP-08: the click reaches the native point under the drawn button');
   },{dpr}));
 
 // MP-08/MP-10/MP-11: review a44f1afce F1, layout and pixels belong to the same opaque box.
