@@ -130,9 +130,9 @@ pub(crate) fn prepare_ticket(
         // `local` is accepted explicitly for Projects created before enrollment
         // by this OS owner's local kernel, never as a credential-storage alias.
         let project = runtime
-            .list_waiting_room_projects(&profile.user_id)
+            .list_room_list_projects(&profile.user_id)
             .into_iter()
-            .chain(runtime.list_waiting_room_projects("local"))
+            .chain(runtime.list_room_list_projects("local"))
             .find(|project| project.id() == project_id)
             .ok_or_else(|| {
                 admission_error("selected source Project is unavailable to this owner")

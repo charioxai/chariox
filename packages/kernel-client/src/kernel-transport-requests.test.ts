@@ -38,7 +38,7 @@ test("normalizeWebSocketRequest projects kernel subscribe controls", () => {
       type: "subscribe",
       session_id: "session-1",
       attachment_id: "attachment-1",
-      subscription_scope: "waiting_room_inventory",
+      subscription_scope: "room_list",
       resume_from_event_id: 42,
     },
   }), {
@@ -46,7 +46,7 @@ test("normalizeWebSocketRequest projects kernel subscribe controls", () => {
     request_id: "request-2",
     session_id: "session-1",
     attachment_id: "attachment-1",
-    subscription_scope: "waiting_room_inventory",
+    subscription_scope: "room_list",
     resume_from_event_id: 42,
   })
 })

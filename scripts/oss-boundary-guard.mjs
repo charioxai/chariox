@@ -12,10 +12,9 @@
 // may only shrink: an entry whose file no longer matches fails, so deleting a leak means deleting
 // its entry in the same change, and an entry that is not in the list at the merge base is red, so a
 // swapped-in entry cannot hide behind a deleted one.
-import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { acceptedEntries as acceptedListEntries, isAccepted as isAcceptedIn, newEntryProblems as newListEntryProblems, problem, readList, readText, trackedFiles } from './lib/ratchet.mjs'
 
 const PROVIDER_PATTERNS = [
   ['provider name', /hetzner|hcloud\b|\bovh|boat\.dev|\bboat_|digitalocean|linode|vultr|scaleway|\b(?:aws|ec2|gcp|azure)\b/i],
@@ -198,19 +197,7 @@ const REQUEST_ENUMS = [
 const CLIENT_BUILDER_FILE = /^packages\/kernel-client\/src\/ipc-(?:managed|disposable|cloud)-[^/]*\.ts$/
 const REQUEST_REASON = /^(?:generic seam: |Cloud-only, deleted by ).{8,}/
 
-function readText(root, path) {
-  try {
-    const text = readFileSync(resolve(root, path), 'utf8')
-    return text.includes('\u0000') ? null : text
-  } catch { return null }
-}
-
-function readAllowlist(root, name) {
-  const path = resolve(root, 'scripts', name)
-  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []
-}
-
-const problem = (file, kind, text, line = 0) => ({ file, line, kind, text })
+const readAllowlist = (root, name) => readList(root, `scripts/${name}`)
 
 // Every leak is owned: the plan row it belongs to and the slice (docs/design/OSS_BOUNDARY_PLAN.md,
 // section 2) that deletes it.
@@ -225,47 +212,11 @@ export const LEAK_SLICES = new Set(['B0', 'B1', 'B2', 'B3', 'B4a', 'B4b', 'B5', 
 const ALLOWED_FILES_LIST = { label: 'whole-file list', file: 'scripts/oss-boundary-files.allow.json', key: 'path', newKind: 'new allowed file' }
 const LEAK_LIST = { label: 'leak list', file: 'scripts/oss-boundary-leaks.allow.json', key: 'path', newKind: 'new leak entry' }
 const SHRINK_ONLY_LISTS = [ALLOWED_FILES_LIST, LEAK_LIST]
-const gitOut = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).trim()
+// The accepted entry keys of both lists at the merge base (scripts/lib/ratchet.mjs).
+export const acceptedEntries = (root, env = process.env) => acceptedListEntries(root, SHRINK_ONLY_LISTS, env)
 
-// The commit the change branches from: CHARIOX_BOUNDARY_BASE, else the merge base of HEAD and
-// origin/main. `reason` says why there is none. An explicit base that is not a commit throws.
-function baselineCommit(root, env) {
-  try { gitOut(root, 'rev-parse', '--git-dir') } catch { return { reason: 'not a git repository' } }
-  if (env.CHARIOX_BOUNDARY_BASE) {
-    try { return { base: gitOut(root, 'rev-parse', '--verify', `${env.CHARIOX_BOUNDARY_BASE}^{commit}`) } } catch {
-      throw new Error(`CHARIOX_BOUNDARY_BASE=${env.CHARIOX_BOUNDARY_BASE} is not a commit in ${root}: unset it or name the commit the change branches from`)
-    }
-  }
-  try { return { base: gitOut(root, 'merge-base', 'HEAD', 'origin/main') } } catch {
-    return { reason: 'no origin/main to compare with (fetch it or set CHARIOX_BOUNDARY_BASE to the commit the change branches from)' }
-  }
-}
-
-// For each shrink-only list, the entry keys at the accepted baseline. In CI (CI=true) a missing
-// baseline throws: a runner that cannot name one would let every entry pass. Locally `keys` is
-// null, with a note saying what was not checked, when there is no baseline to compare with.
-export function acceptedEntries(root, env = process.env) {
-  const { base, reason } = baselineCommit(root, env)
-  if (!base && env.CI === 'true') {
-    throw new Error(`${reason}. CI must fetch the commit the change branches from and export CHARIOX_BOUNDARY_BASE=<sha> for this step (see the "Fetch the commit the change branches from" step in .github/workflows/ci.yml); without it every list entry would pass unchecked`)
-  }
-  return new Map(SHRINK_ONLY_LISTS.map(list => {
-    const unchecked = why => ({ keys: null, note: `${list.label} ${list.file}: ${why}; membership NOT checked, so an entry added in this change is not detected` })
-    if (!base) return [list, unchecked(reason)]
-    let text
-    try { text = gitOut(root, 'show', `${base}:./${list.file}`) } catch {
-      return [list, unchecked(`not in ${base.slice(0, 12)}, so the list is introduced by this change`)]
-    }
-    return [list, { keys: new Set(JSON.parse(text).map(entry => entry[list.key])), note: null }]
-  }))
-}
-
-const isAccepted = (list, entry, accepted) => !accepted.get(list).keys || accepted.get(list).keys.has(entry[list.key])
-
-function newEntryProblems(list, entries, accepted) {
-  return entries.filter(entry => entry[list.key] && !isAccepted(list, entry, accepted))
-    .map(entry => problem(list.file, list.newKind, `${entry[list.key]} is not in the list at the merge base: move the logic to Cloud instead of adding an entry`))
-}
+const isAccepted = isAcceptedIn
+const newEntryProblems = (list, entries, accepted) => newListEntryProblems(list, entries, accepted, 'move the logic to Cloud instead of adding an entry')
 
 function allowedFileProblems(root, files, entries) {
   const problems = []
@@ -369,11 +320,6 @@ function requestProblems(root, files) {
 
 export function boundaryProblems(root, files = trackedFiles(root), accepted = acceptedEntries(root)) {
   return [...vocabularyProblems(root, files, accepted), ...controlPlanePathProblems(root, files), ...requestProblems(root, files)]
-}
-
-function trackedFiles(root) {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 })
-    .split('\u0000').filter(Boolean)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -218,14 +218,14 @@ async fn failed_inventory_refresh_retries_on_the_next_heartbeat() {
     assert!(!remote_inventory_refresh_due(1, &mut task));
     assert!(!remote_inventory_refresh_due(2, &mut task));
     assert!(remote_inventory_refresh_due(
-        RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        RELAY_ROOM_LIST_INTERVAL_TICKS,
         &mut task
     ));
 
     let (_tx, rx) = oneshot::channel::<()>();
     let mut running = Some(tokio::spawn(async move { rx.await.is_ok() }));
     assert!(!remote_inventory_refresh_due(
-        RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        RELAY_ROOM_LIST_INTERVAL_TICKS,
         &mut running
     ));
     running.unwrap().abort();

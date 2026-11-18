@@ -15,16 +15,11 @@ pnpm protocol:conformance
 pnpm lint:process-signals         # when spawning or signalling processes
 ```
 
-One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib <filter>`. Run locally: `pnpm start:kernel`, then `pnpm start:cli`. A kernel build needs 8–12 GB of RAM; never run two at once on one machine.
+One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib <filter>`. Every test removes the temp state it creates (`TestTempDir`); `scripts/check-test-temp.sh <test command>` fails when a run leaves anything in its private `TMPDIR`, and `CHARIOX_KEEP_TEST_TEMP=1` keeps test directories for debugging. Run locally: `pnpm start:kernel`, then `pnpm start:cli`. A kernel build needs 8–12 GB of RAM; never run two at once on one machine.
 
 ## Protocol changes
 
-When a serialized shape a client depends on changes:
-
-1. Increase `LOCAL_DAEMON_PROTOCOL_VERSION` (`apps/kernel/src/local/api/types.rs`), and `RELAY_PEER_PROTOCOL_VERSION` (`apps/kernel/src/transport/relay_peer.rs`) if peers are affected.
-2. Update the protocol snapshot and hash tests.
-3. Raise a client's minimum version only if it needs the new behaviour.
-4. Add or update a focused drill for the change.
+When a serialized shape a client depends on changes, `pnpm lint` requires the version bump (`LOCAL_DAEMON_PROTOCOL_VERSION` in `apps/kernel/src/local/api/types.rs`, and `RELAY_PEER_PROTOCOL_VERSION` in `apps/kernel/src/transport/relay_peer.rs` if peers are affected) and the snapshot update. By hand: raise a client's minimum version only if it needs the new behaviour, and add or update a focused drill.
 
 ## Development stage
 
@@ -33,12 +28,16 @@ Backward compatibility with older kernels, clients and stored data is not a goal
 ## Runtime rules
 
 1. The kernel is the authority for sessions, agents, provider runs, workspaces, history and state. Put behaviour in the kernel and the shared protocol, not in one client.
-2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (`docs/PROVIDER_ACCOUNTS.md`).
-3. The relay only carries encrypted traffic. It never reads prompts, outputs or data, and never decides session state.
+2. Providers run only through their official tools: their CLIs, local servers and documented hooks. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (`docs/PROVIDER_ACCOUNTS.md`).
 4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
 5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
-6. Hosted connections use `wss://` behind Caddy. Hosted settings that break these rules must fail loudly.
-7. OSS boundary (`scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): add no compute-provider or Cloud-only business logic to OSS (provider names, APIs, images, sizes, regions, prices, rental or auto-stop policy, Cloud account UI, hard-coded vendor hosts). A new control-plane API path or Cloud-shaped request goes in `scripts/control-plane-paths.allow.json` or `scripts/control-plane-requests.allow.json` with a justification and a generic seam. The leak list `scripts/oss-boundary-leaks.allow.json` and the whole-file list `scripts/oss-boundary-files.allow.json` only shrink: delete an entry in the change that removes its code; a change that adds one is rejected, move the logic to Cloud. The guard compares both lists with the merge-base version (`CHARIOX_BOUNDARY_BASE` overrides; CI fails without a base). Full wording and the guard's self-test: `docs/AGENT_RULE_DETAILS.md`.
+7. OSS boundary (`scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): add no compute-provider or Cloud-only business logic to OSS. Its lists only shrink: a change that adds an entry is rejected, move the logic to Cloud. Full wording: `docs/AGENT_RULE_DETAILS.md`.
+
+Rules 3 (the relay only carries encrypted traffic) and 6 (hosted connections use `wss://` behind Caddy) are checks, not prose.
+
+## Enforced by `pnpm lint`
+
+`pnpm lint:rules` (`scripts/checks/`) fails with the file, the line and the root fix for: provider SDKs, relay isolation, a protocol shape change without its version bump, retired names, a slice image missing a module it imports, plain `ws://` in deploy config and tracked state or logs. Each check's allow list holds today's violations and only shrinks (`node scripts/checks/run.mjs --shrink`). Each check, its rule and its root fix: `scripts/checks/README.md`.
 
 ## Writing clean code
 

@@ -41,7 +41,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             deadline_ms: Some(60_000),
             started_at_ms: 1,
             inbox_cursor: 3,
-            long_wait_notified: false,
             last_checked_at_ms: 1,
         }),
         last_progress_at_ms: 1,
@@ -62,13 +61,13 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         "obligations": [{"id": "obligation", "kind": "delegate", "resource_id": "child",
             "completion_task_id": "child-task", "status": "open", "dispatch_state": "accepted"}],
         "wait": {"registration_ids": ["reg"], "deadline_ms": 60000, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1},
+            "inbox_cursor": 3, "last_checked_at_ms": 1},
         "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     });
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "4ffa08d93b9e27134e13df1e08cefa349e44d8918028a1cac241d2e97f16cb01"
+        "e6f8d1eccae4c46390a0c86ef2272494f68d10f2016b458fb3e19916211a8ac6"
     );
 }
 
@@ -84,18 +83,17 @@ fn agent_wait_without_a_deadline_reports_a_null_deadline() {
         deadline_ms: None,
         started_at_ms: 1,
         inbox_cursor: 3,
-        long_wait_notified: false,
         last_checked_at_ms: 1,
     };
     let value = serde_json::to_value(wait).unwrap();
     assert_eq!(
         value,
         serde_json::json!({"registration_ids": ["reg"], "deadline_ms": null, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1})
+            "inbox_cursor": 3, "last_checked_at_ms": 1})
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "40729d74583fd594c73484f308a96a58c80aa1c991016f7728a3bb41a11c59ae"
+        "f8abdcd92861f4306d96055bcc034470df1d10ecc1969ff7f3cb00b085227077"
     );
 }
 
@@ -258,7 +256,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "cf63b24721ba6ea4ca39983f32032a4db5ec1105a21dd859b4eba202aa4729a8"
+        "56e6ba024e08c36d68c10080d9427d35b44549a544cd5a9c995602269da4be8e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -304,7 +302,7 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "e269b4a19c4c27088ceda99a1c89b6198f770e3df2ff91c9eeec131dbe0db33b"
+        "ef3310c0165a324b4ebae3fe15352a1f36b09549c51a69a7ce29959259efee0a"
     );
 }
 

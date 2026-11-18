@@ -160,7 +160,7 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
         .owner_user_id()
         .to_string();
 
-    // The peer ends its first turn with a delegate it never released: it is corrected once.
+    // The peer ends its first turn with a reply it still owes: it is corrected once.
     store
         .agent_lifecycle(Operation::RegisterObligation {
             owner: "local".into(),
@@ -169,7 +169,7 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
             prompt: first.child_prompt.id().into(),
             run: Some(first.child_run.clone()),
             id: "late".into(),
-            kind: "delegate".into(),
+            kind: "message".into(),
             resource: Some("late-worker".into()),
             now: 2,
         })
@@ -206,11 +206,27 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
         panic!("the unfinished first turn is corrected")
     };
     store
-        .agent_lifecycle(Operation::ReleaseSpawn {
+        .agent_lifecycle(Operation::SourceOutcome {
             room: team.room.clone(),
             source: "late-worker".into(),
+            occurrence: "late-worker-answered".into(),
+            success: true,
+            public_answer: None,
+            now: 3,
         })
         .unwrap();
+    // The corrected turn handles the answer it was told of.
+    for event in store.agent_inbox(&team.room, &peer, 0).unwrap() {
+        store
+            .agent_lifecycle(Operation::Ack {
+                room: team.room.clone(),
+                agent: peer.clone(),
+                sequence: event.sequence,
+                handled: true,
+                now: 3,
+            })
+            .unwrap();
+    }
     let corrected = store
         .agent_task(&task_id)
         .unwrap()

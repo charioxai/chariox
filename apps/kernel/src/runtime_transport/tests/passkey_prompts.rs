@@ -1,5 +1,5 @@
 //! Protocol 403 over live websockets: one critical approval is a popup on two
-//! terminals, one attached to its session and one in the waiting room. The
+//! terminals, one attached to its session and one in the Room list. The
 //! first correct answer closes it on both, a later answer is told it was
 //! already answered, and a connection that may not submit a passkey never
 //! gets the popup.
@@ -168,13 +168,13 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
     attached
         .subscribe(&kernel.session_id, &attachment_id, None)
         .await;
-    // Terminal two is not attached to any session: it is in the waiting room.
+    // Terminal two is not attached to any session: it is in the Room list.
     let mut waiting = Terminal::connect(&kernel, &token).await;
     waiting
         .subscribe(
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            ROOM_LIST_SENTINEL_ID,
+            ROOM_LIST_SENTINEL_ID,
+            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
         )
         .await;
 
@@ -196,7 +196,7 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
         .await
         .expect("a wrong passkey is refused");
     assert!(rejected.contains("PASSKEY_REJECTED"), "{rejected}");
-    // The waiting-room terminal answers first, and both popups close: the
+    // The room-list terminal answers first, and both popups close: the
     // next set either terminal gets is empty.
     assert_eq!(
         waiting.answer(&kernel, "approve", Some(PASSKEY)).await,
@@ -233,9 +233,9 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
     let mut controller = Terminal::connect(&host, "Bearer kernel-local-auth-sentinel").await;
     controller
         .subscribe(
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            ROOM_LIST_SENTINEL_ID,
+            ROOM_LIST_SENTINEL_ID,
+            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
         )
         .await;
     let watched_until = TokioInstant::now() + Duration::from_millis(1_500);
@@ -260,7 +260,7 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
 }
 
 #[tokio::test]
-async fn linked_cloud_owner_popup_reaches_the_local_waiting_room_terminal() {
+async fn linked_cloud_owner_popup_reaches_the_local_room_list_terminal() {
     let root = RuntimeTransportTempDir::new("cloud-owner-popup");
     let vault = root.path().join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -285,9 +285,9 @@ async fn linked_cloud_owner_popup_reaches_the_local_waiting_room_terminal() {
     let mut terminal = Terminal::connect(&kernel, &format!("Bearer {token}")).await;
     terminal
         .subscribe(
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            ROOM_LIST_SENTINEL_ID,
+            ROOM_LIST_SENTINEL_ID,
+            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
         )
         .await;
     let prompts = terminal.prompts().await;

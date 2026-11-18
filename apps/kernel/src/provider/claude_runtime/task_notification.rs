@@ -46,7 +46,10 @@ pub(crate) fn finished_background_task(value: &Value) -> Option<BackgroundTaskEn
         let rest = notification.split_once(open.as_str())?.1;
         Some(rest.split_once(close.as_str())?.0.trim())
     };
-    terminal(tag("status")).then(|| BackgroundTaskEnd {
+    // A helper that stopped with background work of its own still running reports `completed`
+    // with this note; the same task id notifies again when that work ends.
+    let interim = tag("note").is_some_and(|note| note.contains("may be interim"));
+    (terminal(tag("status")) && !interim).then(|| BackgroundTaskEnd {
         tool_use_id: tag("tool-use-id"),
         task_id: tag("task-id"),
     })

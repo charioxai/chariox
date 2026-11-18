@@ -383,6 +383,13 @@ impl WorkflowPublicationDefinition {
         &self.created_by_user_id
     }
 
+    /// Cloud enrollment: a publication the local owner made is the enrolled owner's.
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        if self.created_by_user_id == super::DEFAULT_LOCAL_USER_ID {
+            self.created_by_user_id = owner.into();
+        }
+    }
+
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
     }

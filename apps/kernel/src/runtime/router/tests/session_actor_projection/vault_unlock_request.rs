@@ -19,6 +19,8 @@ pub(super) struct Fixture {
     agent: String,
     pub(super) kernel_id: String,
     pub(super) relay_public_key: String,
+    /// Declared last so the kernel stops before its directory goes.
+    _root: crate::test_support::TestTempDir,
 }
 
 impl Fixture {
@@ -54,9 +56,8 @@ impl Fixture {
         create_vault: bool,
         owner: Option<&str>,
     ) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("vault-unlock-{:016x}", rand::random::<u64>()));
-        std::fs::create_dir_all(&root).unwrap();
+        let owner_dir = crate::test_support::TestTempDir::new("vault-unlock");
+        let root = owner_dir.path().to_path_buf();
         let vault = root.join("vault.json");
         if create_vault {
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSPHRASE).unwrap();
@@ -106,6 +107,7 @@ impl Fixture {
             agent,
             kernel_id,
             relay_public_key,
+            _root: owner_dir,
         }
     }
 

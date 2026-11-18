@@ -1,8 +1,7 @@
 The workspace drill exercises MP-08 / MP-10 / MP-11 through two disposable kernels, the built `chariox context copy` command, actual source TUI approval, and a hosted WSS relay. It compares linked Git HEAD, index, working files, binary/untracked content, executable state and a supporting directory. It also verifies refusal of an occupied divergent destination and a fresh return snapshot.
 
 Build the shared client once in a fresh checkout with `pnpm build:kernel-client`.
-`node scripts/e2e-stack/movekernel/return-native-conflict.mjs --help` and
-`node scripts/e2e-stack/movekernel/durable-move.mjs --help` validate module loading
+`node scripts/e2e-stack/movekernel/return-native-conflict.mjs --help` validates module loading
 without starting kernels or creating state.
 
 Run on the b3 validation host with these environment variables:
@@ -22,20 +21,6 @@ systemd-run --scope -p MemoryMax=4G node scripts/e2e-stack/movekernel/workspace-
 The origin must have normal validation device approval and support the current kernel enrollment contract. The harness links the existing profile through the product API to satisfy terminal admission; it submits no provider turn. Copy selects an empty kernel context and transfers only the selected Project development setup.
 
 The divergence check observes only archive filenames in its own configured transfer store, then occupies the generated destination before import. It never calls private import helpers or constructs admission tickets. The target must refuse publication and preserve the existing inode, Git state and file tree. Runtime processes and disposable state are cleaned up; value-free JSON results and real TUI review captures remain in the evidence directory.
-
-`durable-move.mjs` uses the same environment with a protocol639/241 kernel and
-its real built TUI. It runs three short official Codex gpt-6-luna/low turns,
-Moves forward, Returns, and restarts the home kernel after each source capture.
-The same Room recalls the original marker and the intervening target turn;
-completed shell output proves execution at each receipt's primary path. The
-drill checks the supporting directory, latest target files, and preservation
-of divergent original home work. It uses the public Move requests while the
-route action UI remains a separate work item. Journal observation selects the
-restart moment; it never changes a record, artifact, receipt, or provider state.
-Cleanup retains only static native-probe stage metadata from kernel logs, then
-removes the disposable state. Hosted Web captures prove existing Room visibility
-at DPR 1 and 2; they do not prove the separately scoped Move route picker or
-`via <target>` label.
 
 MP-08 / MP-09 / MP-10 / MP-11: local protocol638 adds cancellation through
 `MoveAgentToLocal: {session_id, agent_ref, abort_pending: true}`. This restores

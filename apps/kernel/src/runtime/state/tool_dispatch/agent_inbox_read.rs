@@ -2,6 +2,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, InboxEvent, Operation};
 use crate::runtime::state::agent_inbox_sender::SenderRelation;
+use crate::runtime::state::decision_holder::DecisionHolder;
 use std::ops::ControlFlow;
 
 /// Events one read returns unless the agent asks for another count.
@@ -113,9 +114,10 @@ impl KernelRuntimeState {
         }))
     }
 
-    /// A decision event needs an answer only while its card is open: pending in this kernel or
-    /// shown in its room. A card that ended without one (its asker stopped, or the kernel that
-    /// held it stopped) leaves nothing to answer, so its event can be acknowledged.
+    /// A decision event needs an answer only while its card is open and its agent holds it: a card
+    /// another holder (or the user) has now, or one that ended without an answer (its asker
+    /// stopped, or the kernel that held it stopped), leaves this agent nothing to answer, so its
+    /// event can be acknowledged.
     fn decision_open(&self, room: &str, event: &InboxEvent) -> bool {
         if !ledger::needs_answer(event) {
             return false;
@@ -123,17 +125,18 @@ impl KernelRuntimeState {
         let Some(card) = event.payload["interaction_id"].as_str() else {
             return true;
         };
-        self.owned.pending_interactions.write().contains_key(card)
-            || self
-                .owned
-                .session_store
-                .get_session(room)
-                .is_ok_and(|session| {
-                    session
-                        .active_interactions()
-                        .iter()
-                        .any(|open| open.id() == card)
-                })
+        if let Some(pending) = self.owned.pending_interactions.write().get(card) {
+            return pending.holder == DecisionHolder::Agent(event.agent_id.clone());
+        }
+        self.owned
+            .session_store
+            .get_session(room)
+            .is_ok_and(|session| {
+                session
+                    .active_interactions()
+                    .iter()
+                    .any(|open| open.id() == card)
+            })
     }
 
     /// Who sent `event`, as far as the agent tree and the peer stamps tell.

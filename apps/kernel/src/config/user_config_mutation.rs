@@ -125,6 +125,12 @@ impl CharioxUserConfig {
                 self.agents.offload_without_asking =
                     Some(parse_config_bool("agents.offload_without_asking", &value)?)
             }
+            "agents.usage_limit_resume" => {
+                self.agents.usage_limit_resume = Some(super::UsageLimitResume::parse(
+                    "agents.usage_limit_resume",
+                    &value,
+                )?)
+            }
             "history.operational.backend" => {
                 self.history.operational.backend =
                     HistoryOperationalBackend::parse("history.operational.backend", &value)?
@@ -565,6 +571,7 @@ impl CharioxUserConfig {
             "secret_link.page_url" => self.secret_link.page_url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
             "agents.offload_without_asking" => self.agents.offload_without_asking = None,
+            "agents.usage_limit_resume" => self.agents.usage_limit_resume = None,
             "history.operational.backend" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "history.operational.backend",

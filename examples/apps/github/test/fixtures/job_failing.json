@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/actions/jobs/132710337474",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"b46c5b08761fcc25363fb1962b9c24d6db9975298e31d093eb5b6abf1dcab1de\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4943",
+  "x-ratelimit-reset": "1794740201",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"id\": 132710337474,\n \"run_id\": 43680658254,\n \"workflow_name\": \"ci\",\n \"head_branch\": \"drill/gha4-rich\",\n \"run_attempt\": 1,\n \"node_id\": \"CR_kwDOVutRM88AAAAe5icLwg\",\n \"head_sha\": \"271de153c2b8c196681165cc32ff2688634e1238\",\n \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/actions/runs/43680658254/job/132710337474\",\n \"status\": \"completed\",\n \"conclusion\": \"failure\",\n \"created_at\": \"2026-11-15T05:20:31Z\",\n \"started_at\": \"2026-11-15T05:20:32Z\",\n \"completed_at\": \"2026-11-15T05:20:35Z\",\n \"name\": \"failing\",\n \"steps\": [\n  {\n   \"name\": \"Set up job\",\n   \"status\": \"completed\",\n   \"conclusion\": \"success\",\n   \"number\": 1,\n   \"started_at\": \"2026-11-15T05:20:33Z\",\n   \"completed_at\": \"2026-11-15T05:20:33Z\"\n  },\n  {\n   \"name\": \"Run echo \\\"e2e: expected a green banner\\\"\",\n   \"status\": \"completed\",\n   \"conclusion\": \"failure\",\n   \"number\": 2,\n   \"started_at\": \"2026-11-15T05:20:33Z\",\n   \"completed_at\": \"2026-11-15T05:20:33Z\"\n  },\n  {\n   \"name\": \"Complete job\",\n   \"status\": \"completed\",\n   \"conclusion\": \"success\",\n   \"number\": 3,\n   \"started_at\": \"2026-11-15T05:20:33Z\",\n   \"completed_at\": \"2026-11-15T05:20:34Z\"\n  }\n ],\n \"labels\": [\n  \"ubuntu-latest\"\n ],\n \"runner_id\": 1000002232,\n \"runner_name\": \"GitHub Actions 1000002232\",\n \"runner_group_id\": 0,\n \"runner_group_name\": \"GitHub Actions\"\n}"
+}

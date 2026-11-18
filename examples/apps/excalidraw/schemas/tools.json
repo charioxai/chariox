@@ -60,6 +60,80 @@
       }
     },
     {
+      "name": "save_draft",
+      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id, at most four at once (a new id is refused until one is discarded or an hour old).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "scene": {
+            "type": "object",
+            "required": [
+              "type",
+              "version",
+              "elements",
+              "appState",
+              "files"
+            ],
+            "properties": {
+              "type": {
+                "const": "excalidraw"
+              },
+              "version": {
+                "const": 2
+              },
+              "elements": {
+                "type": "array",
+                "maxItems": 10000
+              },
+              "appState": {
+                "type": "object"
+              },
+              "files": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "scene"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_drafts",
+      "description": "The kept drafts, oldest first, as {drafts: [{id, scene}]}. Drafts kept for an hour or longer are not returned.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "discard_draft",
+      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts never removes them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "write_file",
       "description": "Write a named private diagram or an export, optionally offering an export grant.",
       "inputSchema": {
@@ -110,12 +184,351 @@
     },
     {
       "name": "pick_file",
-      "description": "Request a user-selected diagram through the broker.",
+      "description": "Request a user-selected diagram through the broker. Waits up to 20 seconds for the owner's choice in their prompt and returns {grants}; while the owner has not chosen it returns {pending: true, pickId}: call again with that pickId to keep waiting (the request stays open for ten minutes).",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "pickId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
         "required": [],
         "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_elements",
+      "description": "Add shapes, text or arrows to the canvas. Labels are bound text elements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "type": {
+                  "enum": [
+                    "rectangle",
+                    "ellipse",
+                    "diamond",
+                    "text",
+                    "arrow"
+                  ]
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "width": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                },
+                "height": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "endX": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "endY": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "elements"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_elements",
+      "description": "Move or resize existing elements by ID. Bound text and arrow connections follow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          },
+          "dx": {
+            "type": "number",
+            "minimum": -100000,
+            "maximum": 100000
+          },
+          "dy": {
+            "type": "number",
+            "minimum": -100000,
+            "maximum": 100000
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_elements",
+      "description": "Delete elements and repair their bound labels and arrow connections.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "group_elements",
+      "description": "Group elements so they can be selected and moved together.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "connect_elements",
+      "description": "Connect two shapes with a bound, optionally labelled arrow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "select_elements",
+      "description": "Select elements on the visible canvas.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "scene_summary",
+      "description": "Read actual canvas elements, IDs, geometry, labels, groups and bindings. Page with offset/limit.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_file",
+      "description": "Save to a named private file, or export a uniquely named diagram copy when no name is given.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "open_file",
+      "description": "Open a named private diagram, or request a user-selected .excalidraw file when no name is given. The owner's choice is waited for up to 20 seconds; while it is not made this returns {pending: true, pickId}: call again with that pickId to keep waiting (the request stays open for ten minutes).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          },
+          "pickId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "export_file",
+      "description": "Export the current diagram as an Excalidraw JSON copy through the kernel file broker. Returns an export grant. PNG and SVG are exported from the open window's menu.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "enum": [
+              "json"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_actions",
+      "description": "The actions this backend registers for its view",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_state",
+      "description": "The state of this backend's view",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_changes",
+      "description": "The changes this backend's view recorded after `since`",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
       }
     }
   ]

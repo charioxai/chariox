@@ -277,6 +277,8 @@ mod tests {
         let acquire = ControlPlaneRequest::Acquire {
             capability_revision: "forged".into(),
             request_id: "one".into(),
+            class_id: None,
+            region: None,
         };
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
@@ -297,6 +299,8 @@ mod tests {
         let request = ControlPlaneRequest::Acquire {
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
+            class_id: None,
+            region: None,
         };
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/cloud-contract/agent-acquire-request.json"

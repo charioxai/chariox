@@ -8,6 +8,12 @@
   {
     "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
     "fn": "run_agent_wake_scheduler",
+    "call": "tick_usage_limit_stops",
+    "reason": "the tick only claims due resumes and stores their state; each send runs on its own spawned task (usage_limit_runtime.rs), so a provider that waits for the person never holds the scheduler"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
+    "fn": "run_agent_wake_scheduler",
     "call": "tick_agent_wakes",
     "reason": "awaits nothing itself (tick_agent_wakes is checked as a loop function too); deliveries run in spawned tasks"
   },

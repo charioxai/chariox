@@ -1,6 +1,6 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession } from "./kernel-types.js"
 
-export type PromptProviderSelectionWaitingRoomState = {
+export type PromptProviderSelectionStartState = {
   readonly providerId?: string | null
   readonly modelId?: string | null
   readonly effort?: string | null
@@ -9,7 +9,7 @@ export type PromptProviderSelectionWaitingRoomState = {
 export type PromptProviderSelectionOptions = {
   readonly providerRun: RuntimeProviderRun | null
   readonly focusedAgent?: AgentInstance | null
-  readonly waitingRoomState: PromptProviderSelectionWaitingRoomState
+  readonly startState: PromptProviderSelectionStartState
   readonly defaultProvider?: string | null
   readonly defaultModel?: string | null
   readonly defaultEffort?: string | null
@@ -17,7 +17,7 @@ export type PromptProviderSelectionOptions = {
 
 /**
  * `null` means nothing is selected yet: no configured `config.toml` default,
- * no waiting room selection, and no active provider run/agent to inherit
+ * no selection made before the session starts, and no active provider run/agent to inherit
  * from. Callers must treat a `null` field as "a session cannot be started."
  */
 export type PromptProviderSelection = {
@@ -48,17 +48,17 @@ export function derivePromptProviderSelection(
   return {
     provider: providerRun?.provider
       ?? normalizePromptProvider(options.focusedAgent?.provider)
-      ?? options.waitingRoomState.providerId
+      ?? options.startState.providerId
       ?? options.defaultProvider
       ?? null,
     model: providerRun?.model
       ?? options.focusedAgent?.model
-      ?? options.waitingRoomState.modelId
+      ?? options.startState.modelId
       ?? options.defaultModel
       ?? null,
     effort: providerRun?.variant
       ?? options.focusedAgent?.effort
-      ?? options.waitingRoomState.effort
+      ?? options.startState.effort
       ?? options.defaultEffort
       ?? null,
   }

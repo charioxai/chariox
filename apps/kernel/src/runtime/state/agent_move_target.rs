@@ -162,7 +162,7 @@ impl KernelRuntimeState {
         self.finish_agent_move_native_probe(&account_owner, &account_profile, imported)?;
         self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
-        self.record_waiting_room_change();
+        self.record_room_list_change();
         Ok(())
     }
 

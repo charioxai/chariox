@@ -1,0 +1,12 @@
+{
+ "path": "/search/issues?q=is%3Apr%20review-requested%3A%40me&per_page=25&page=1",
+ "status": 200,
+ "headers": {
+  "x-ratelimit-limit": "30",
+  "x-ratelimit-remaining": "27",
+  "x-ratelimit-reset": "1794720119",
+  "x-ratelimit-resource": "search",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"total_count\": 0,\n \"incomplete_results\": false,\n \"items\": [],\n \"search_type\": \"lexical\"\n}"
+}

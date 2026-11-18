@@ -15,10 +15,10 @@ use crate::runtime::projection::{
     RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::room_list_projection::RoomListSessionSummaryProjectionStore;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
-use crate::runtime::waiting_room_public_projection::WaitingRoomSessionSummaryProjectionStore;
 use crate::runtime::workflow_actor::WorkflowRuntime;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
@@ -63,6 +63,9 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
+    /// Keeps the host App calls reach the kernel through alive as long as this router.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    _routing_host: Arc<crate::runtime::app_event_routing_broker::RoutingHost>,
     _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: KernelRuntimeState,
@@ -75,7 +78,7 @@ pub(crate) struct CommandRouter {
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
-    waiting_room_session_summaries: WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: RoomListSessionSummaryProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
@@ -247,6 +250,8 @@ mod tests {
     mod credential_enrollment;
     mod interactive_command_admission;
     mod kernel_browser;
+    #[cfg(unix)]
+    mod large_user_app_views;
     mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;

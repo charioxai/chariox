@@ -38,15 +38,14 @@ use super::{
     DeleteSessionRequest, DeleteWorkspaceWorktreeRequest, DestroyAgentRequest,
     DetachFromSessionRequest, DetachWorkspaceLinkRequest, EditFileCapabilityRequest,
     EndSessionRequest, ExportDebugBundleRequest, FocusAgentRequest, GetDaemonHealthRequest,
-    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
-    GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
-    GetWorkspaceLiveSyncStatusRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, KernelClientConnection,
-    LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest, ListProjectsRequest,
-    ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
-    ListRoomEnvironmentActionHistoryRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
+    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetRoomListSnapshotRequest,
+    GetSessionStateRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, GetWorkspaceLiveSyncStatusRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    KernelClientConnection, LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest,
+    ListProjectsRequest, ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
     ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     MaterializeWorkflowPublicationRequest, MoveAgentToLocalRequest,
     NativeProviderInteractionResolution, PauseWorkflowRunRequest, PollRuntimeNoticesRequest,
@@ -86,13 +85,13 @@ mod protocol_shapes;
 mod provider_prompt_runtime;
 mod remote_inventory;
 mod room_environment;
+mod room_list_projection;
 mod session_control;
 mod session_retirement_upgrade;
 mod session_state_history;
 mod session_view;
 mod session_worktree_paths;
 mod terminal_output;
-mod waiting_room_projection;
 mod workflow_definition_control;
 mod workflow_run_control;
 mod workspace_capabilities;

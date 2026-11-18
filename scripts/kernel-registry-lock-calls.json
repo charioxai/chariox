@@ -49,7 +49,7 @@
   },
   {
     "path": "apps/kernel/src/runtime/state/agent_config_runtime_state.rs",
-    "fn": "update_agent_profile",
+    "fn": "update_agent_profile_as",
     "call": "remove_run",
     "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
   },
@@ -178,5 +178,11 @@
     "fn": "stop_session_processes",
     "call": "keys_for_session",
     "reason": "known, tracked: keys_for_session reaches the registry mutex through listed_keys inline in an async fn (two call sites)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_settings_swap_runtime.rs",
+    "fn": "swap_turn_process",
+    "call": "remove_run",
+    "reason": "the same retirement of the old process as an idle profile update (update_agent_profile_as): remove_run runs in a with_app_side_effect closure once per settings swap, which is rare and one per agent"
   }
 ]

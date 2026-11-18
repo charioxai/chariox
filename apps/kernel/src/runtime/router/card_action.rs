@@ -7,7 +7,8 @@ use crate::transport::runtime_tools::{RequestPopupArgs, RuntimeToolResult};
 impl CommandRouter {
     /// A `request_popup` call that carries an `action`. The agent waits for the person's
     /// decision; on approval the kernel runs exactly the request the card described and
-    /// returns its result. The person's passkey is the authority, not the agent's session.
+    /// returns its result. The person's passkey is the authority, not the agent's session. A
+    /// request that only reads the Room (see `is_read_only`) runs at once and raises no card.
     pub(super) async fn dispatch_action_card(
         &self,
         run: crate::provider::RuntimeProviderRun,
@@ -29,6 +30,27 @@ impl CommandRouter {
             message: "no action on this card".into(),
         })?;
         let request = crate::runtime::card_action::parse_card_action(action.request)?;
+        if crate::runtime::card_action::is_read_only(&request) {
+            let agent = self.runtime_state.card_action_agent(&run)?;
+            let payload = match self
+                .run_card_action(
+                    format!("read-only-action:{}", agent.id()),
+                    agent.owner_user_id(),
+                    request,
+                )
+                .await
+            {
+                Ok(response) => {
+                    serde_json::json!({"status": "answered", "ran": true, "response": response})
+                }
+                Err(error) => serde_json::json!({
+                    "status": "answered",
+                    "ran": false,
+                    "error": crate::secret_redaction::redact_secrets(&error.to_string()),
+                }),
+            };
+            return Ok(RuntimeToolResult { ok: true, payload });
+        }
         let mut card = self
             .runtime_state
             .raise_action_card(&run, &request, args.timeout_sec)
@@ -48,20 +70,6 @@ impl CommandRouter {
                 }),
             });
         }
-        let mut caller = crate::runtime::command::KernelCaller::for_source(
-            &crate::runtime::command::KernelCommandSource::LocalIpc,
-        )
-        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
-        caller.caller_id = format!("card-action:{interaction_id}");
-        caller.user_id = Some(card.owner_user_id.clone());
-        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
-            format!("card-action:{interaction_id}"),
-            crate::runtime::command::KernelCommandSource::LocalIpc,
-            caller,
-            None,
-            None,
-            &request,
-        );
         // Approval may race prompt cancellation after the pending card resolved.
         if !card.is_live() {
             return Ok(RuntimeToolResult {
@@ -71,7 +79,14 @@ impl CommandRouter {
                 }),
             });
         }
-        let payload = match Box::pin(self.dispatch(command, request)).await {
+        let payload = match self
+            .run_card_action(
+                format!("card-action:{interaction_id}"),
+                &card.owner_user_id,
+                request,
+            )
+            .await
+        {
             Ok(response) => serde_json::json!({
                 "interaction_id": interaction_id,
                 "status": "answered",
@@ -88,5 +103,29 @@ impl CommandRouter {
             }),
         };
         Ok(RuntimeToolResult { ok: true, payload })
+    }
+
+    /// Runs one request as the owner's terminal: the card's approval, or the Room read that needs none.
+    async fn run_card_action(
+        &self,
+        caller_id: String,
+        owner_user_id: &str,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let mut caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+        caller.caller_id = caller_id.clone();
+        caller.user_id = Some(owner_user_id.to_owned());
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            caller_id,
+            crate::runtime::command::KernelCommandSource::LocalIpc,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        Box::pin(self.dispatch(command, request)).await
     }
 }

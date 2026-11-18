@@ -317,6 +317,7 @@ mod turns;
 mod watchdogs;
 mod workflow_code;
 mod workflow_defs;
+mod workflow_responsible;
 
 pub use helpers::classify_workflow_failure_kind;
 use helpers::{

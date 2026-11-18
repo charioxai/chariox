@@ -2,11 +2,15 @@
 //! event generator connections. The router checked the connection with its
 //! generator; here the App's signed manifest must declare that generator.
 //! Which actions it may take there comes only from that manifest.
+//! Protocol 1011: the same grant lets an App whose manifest declares
+//! `eventRouting` for the generator manage its own inbox routes inside it.
 use super::KernelRuntimeState;
 use crate::durable_state::app_active_release::ActiveReleaseError;
 use crate::durable_state::app_connections::ConnectionGrantCommand;
+use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
 use crate::local::{
-    AppConnectionSummary, AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse,
+    AppConnectionSummary, AppEventRoutingSummary, AppRequestErrorCode, LocalDaemonRequest,
+    LocalDaemonResponse,
 };
 
 impl KernelRuntimeState {
@@ -19,20 +23,26 @@ impl KernelRuntimeState {
         // Only a grant needs the active release's manifest; an owner can
         // still list and revoke after an uninstall or while the release
         // cannot be verified.
-        let access = match &request {
+        let declared = match &request {
             LocalDaemonRequest::GrantAppConnection(_) => {
-                self.app_connection_access(&owner, &installation).await?
+                self.app_connection_capabilities(&owner, &installation)
+                    .await?
             }
             _ => self
-                .app_connection_access(&owner, &installation)
+                .app_connection_capabilities(&owner, &installation)
                 .await
                 .unwrap_or_default(),
         };
+        let access = declared.connections;
+        let routing = declared.event_routing;
         let command = match request {
             LocalDaemonRequest::GrantAppConnection(request) => {
                 if !access
                     .iter()
                     .any(|declared| declared.generator == request.generator_id)
+                    && routing
+                        .as_ref()
+                        .is_none_or(|routing| routing.generator != request.generator_id)
                 {
                     return Err(AppRequestErrorCode::InvalidRequest);
                 }
@@ -74,7 +84,15 @@ impl KernelRuntimeState {
             if let Some(command) = command {
                 store.app_connection_grant(command)?;
             }
-            store.app_connection_grants(&list_owner, &list_installation)
+            let grants = store.app_connection_grants(&list_owner, &list_installation)?;
+            let routes = match store.app_inbox(AppInboxOperation::Routes {
+                owner: list_owner,
+                installation: list_installation,
+            }) {
+                Ok(AppInboxOutcome::Routes(routes)) => routes,
+                _ => return Err("STORAGE_UNAVAILABLE"),
+            };
+            Ok((grants, routes))
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
@@ -83,6 +101,7 @@ impl KernelRuntimeState {
             "LIMIT_EXCEEDED" => AppRequestErrorCode::LimitExceeded,
             _ => AppRequestErrorCode::StorageUnavailable,
         })?;
+        let (grants, routes) = grants;
         Ok(LocalDaemonResponse::AppConnections {
             installation_id: installation,
             connections: grants
@@ -93,6 +112,22 @@ impl KernelRuntimeState {
                         .find(|declared| declared.generator == grant.generator_id)
                         .map(|declared| declared.actions.clone())
                         .unwrap_or_default(),
+                    event_routing: routing
+                        .as_ref()
+                        .filter(|routing| routing.generator == grant.generator_id)
+                        .map(|routing| {
+                            let own = routes.iter().filter(|(route, _)| {
+                                route.app_managed
+                                    && route.source.as_ref().is_some_and(|source| {
+                                        source.connection_id == grant.connection_id
+                                    })
+                            });
+                            AppEventRoutingSummary {
+                                max_routes: routing.max_routes,
+                                routes: own.clone().count() as u32,
+                                paused: own.filter(|(route, _)| route.paused).count() as u32,
+                            }
+                        }),
                     generator_id: grant.generator_id,
                     connection_id: grant.connection_id,
                     granted_at_ms: grant.granted_at_ms,
@@ -101,17 +136,17 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(crate) async fn app_connection_access(
+    pub(crate) async fn app_connection_capabilities(
         &self,
         owner: &str,
         installation: &str,
-    ) -> Result<Vec<chariox_app_package::ConnectionAccess>, AppRequestErrorCode> {
+    ) -> Result<chariox_app_package::Capabilities, AppRequestErrorCode> {
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         let permit = self.app_control().try_admit()?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.active_app_connection_access(&owner, &installation)
+            store.active_app_connection_capabilities(&owner, &installation)
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?

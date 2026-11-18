@@ -74,7 +74,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None,
         } },
         "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
-            name: "a".into(), kind: KernelFileKind::Directory, size: 0, modified_ms: None,
+            name: "a".into(), kind: KernelFileKind::Directory, target_kind: None, size: 0, modified_ms: None,
             revision: "2049:18:0:5.0:5.0".into(), mode: 0o755,
         }], truncated: false },
         "chunk": LocalDaemonResponse::KernelFileChunk { path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), size: 3, eof: true },
@@ -229,7 +229,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "6c8a09d3ebbe9adeb6756bffdf4fad71e4a089de732e6e7154a4fd5e4e15b6d1"
+        "31c9e69b27ce7758f2ac9289b87bdb29e604d2057476456c1df51bcb2c2b2b5e"
     );
 }
 

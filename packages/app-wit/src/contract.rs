@@ -2,6 +2,10 @@ use wit_parser::{PackageId, Resolve, SourceMap};
 
 const DEPENDENCIES: &[(&str, &str)] = &[
     (
+        "deps/app-1.1.0/package.wit",
+        include_str!("../wit/deps/app-1.1.0/package.wit"),
+    ),
+    (
         "deps/cli-0.2.0/package.wit",
         include_str!("../wit/deps/cli-0.2.0/package.wit"),
     ),
@@ -75,4 +79,14 @@ pub(super) fn with_app(app: &str) -> (Resolve, PackageId) {
         .push_groups(main, dependencies)
         .expect("embedded WIT dependencies resolve");
     (resolve, package)
+}
+
+/// The package that adds `event-routing`, vendored beside the WASI packages.
+pub(super) fn minor_1_1(resolve: &Resolve) -> PackageId {
+    resolve
+        .packages
+        .iter()
+        .find(|(_, package)| package.name.to_string() == "chariox:app@1.1.0")
+        .map(|(id, _)| id)
+        .expect("embedded App 1.1.0 package")
 }

@@ -26,6 +26,10 @@ pub struct AgentLiveness {
     pub last_activity_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<AgentWaitingOn>,
+    /// Every event the agent's waiting task would wake on, oldest first: what a client lists
+    /// as "Waiting on …". `waiting_on` names only the oldest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_events: Vec<AgentWaitEvent>,
     /// Working, with no transcript activity for [`STALLED_AFTER_MS`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stalled: bool,
@@ -57,6 +61,7 @@ impl AgentLiveness {
                 resource: None,
                 since_ms: floored.unwrap_or(now_ms),
             }),
+            waiting_events: Vec::new(),
             stalled: quiet_since.is_some_and(|at| now_ms.saturating_sub(at) > STALLED_AFTER_MS),
         }
     }
@@ -72,6 +77,72 @@ pub struct AgentWaitingOn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<WaitReason>,
     pub since_ms: u64,
+}
+
+/// One event a waiting task is registered for: an armed wake, or a source (an agent, a workflow
+/// run) that has not reported yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWaitEvent {
+    /// The wake id for a wake, the registration id for any other source.
+    pub id: String,
+    pub kind: AgentWaitKind,
+    /// What the event is, in plain words: "sub-agent sub-agent-1", "timer: check the build".
+    pub label: String,
+    pub since_ms: u64,
+    /// The task that waits, and when its wait began: the owner ends the whole wait with these.
+    pub task_id: String,
+    pub wait_started_at_ms: u64,
+    /// Set when the owner can end this one event alone (a wake, or the follow of a peer): the id to
+    /// send with `CancelAgentWake`. A sub-agent's end and a workflow run end on their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_wake_id: Option<String>,
+}
+
+/// How a source the agent waits on is named in the pane: the agents and workflow runs of its Room.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceLabels(BTreeMap<String, String>);
+
+impl SourceLabels {
+    /// A child agent reads "sub-agent <name>", any other agent "agent <name>", a run "workflow <name>".
+    pub(crate) fn of_session(session: &crate::session::RuntimeSession) -> Self {
+        let mut labels = BTreeMap::new();
+        for agent in session.agents() {
+            let name = agent.alias().unwrap_or_else(|| agent.agent_ref());
+            let kind = if agent.parent_agent_id().is_some() {
+                "sub-agent"
+            } else {
+                "agent"
+            };
+            labels.insert(agent.id().to_owned(), format!("{kind} {name}"));
+        }
+        for run in session.workflow_runs() {
+            let name = session
+                .workflows()
+                .iter()
+                .find(|workflow| workflow.id() == run.workflow_id())
+                .and_then(|workflow| workflow.alias())
+                .unwrap_or_else(|| run.workflow_id());
+            labels.insert(run.id().to_owned(), format!("workflow {name}"));
+        }
+        Self(labels)
+    }
+
+    #[cfg(test)]
+    fn from_pairs<const N: usize>(pairs: [(&str, &str); N]) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(id, label)| (id.to_owned(), label.to_owned()))
+                .collect(),
+        )
+    }
+
+    fn of(&self, source_id: &str) -> String {
+        self.0
+            .get(source_id)
+            .cloned()
+            .unwrap_or_else(|| format!("task {source_id}"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,12 +218,14 @@ pub(crate) fn annotate_waits(
     activity: &mut BTreeMap<String, AgentRuntimeActivity>,
     processes: &[SessionProcess],
     yielded: &YieldedSources,
+    labels: &SourceLabels,
 ) {
     for (agent_id, activity) in activity.iter_mut() {
         let waiting = command_wait(agent_id, processes).or_else(|| yielded_wait(agent_id, yielded));
         if let Some(waiting) = waiting {
             activity.liveness.waiting_on = Some(waiting);
         }
+        activity.liveness.waiting_events = yielded_events(agent_id, yielded, labels);
     }
 }
 
@@ -238,6 +311,96 @@ fn yielded_wait(agent_id: &str, yielded: &YieldedSources) -> Option<AgentWaiting
     wake_waits
         .chain(source_waits)
         .min_by_key(|wait| wait.since_ms)
+}
+
+/// Everything the agent's waiting task is registered for, oldest first: its live wakes, and the
+/// other sources (a sub-agent, a workflow run) that have not reported yet.
+fn yielded_events(
+    agent_id: &str,
+    yielded: &YieldedSources,
+    labels: &SourceLabels,
+) -> Vec<AgentWaitEvent> {
+    let YieldedSources {
+        tasks,
+        wakes,
+        registrations,
+    } = yielded;
+    let mut events = Vec::new();
+    for task in tasks
+        .iter()
+        .filter(|task| task.agent_id == agent_id && task.state == ExecutionState::Waiting)
+    {
+        let wait_started_at_ms = task
+            .wait
+            .as_ref()
+            .map_or(task.last_progress_at_ms, |wait| wait.started_at_ms);
+        let registered = task
+            .wait
+            .as_ref()
+            .map_or(&[][..], |wait| &wait.registration_ids[..]);
+        let live_wakes = wakes
+            .iter()
+            .filter(|wake| wake.task_id == task.task_id)
+            .filter(|wake| matches!(wake.state.as_str(), "scheduled" | "starting" | "running"))
+            .collect::<Vec<_>>();
+        for wake in &live_wakes {
+            let (kind, noun) = match wake.kind.as_str() {
+                "process" => (AgentWaitKind::BackgroundCommand, "command"),
+                "terminal" => (AgentWaitKind::BackgroundCommand, "terminal"),
+                "timer" => (AgentWaitKind::Timer, "timer"),
+                _ => (AgentWaitKind::Source, "event"),
+            };
+            let text = if wake.label.is_empty() {
+                wake.command.join(" ")
+            } else {
+                wake.label.clone()
+            };
+            events.push(AgentWaitEvent {
+                id: wake.id.clone(),
+                kind,
+                label: if text.is_empty() {
+                    noun.to_owned()
+                } else {
+                    format!("{noun} {text}")
+                },
+                since_ms: wake.created_at_ms,
+                task_id: task.task_id.clone(),
+                wait_started_at_ms,
+                cancel_wake_id: Some(wake.id.clone()),
+            });
+        }
+        for registration in registrations.iter().filter(|registration| {
+            registration.live
+                && registration.task_id == task.task_id
+                && registered.contains(&registration.id)
+                && !live_wakes
+                    .iter()
+                    .any(|wake| wake.registration_id == registration.id)
+        }) {
+            events.push(AgentWaitEvent {
+                id: registration.id.clone(),
+                kind: AgentWaitKind::Source,
+                // A delegation binds its completion source to the child's task: its obligation names the child agent.
+                label: labels.of(task
+                    .obligations
+                    .iter()
+                    .find(|o| {
+                        o.completion_task_id.as_deref() == Some(registration.source_id.as_str())
+                    })
+                    .and_then(|o| o.resource_id.as_deref())
+                    .unwrap_or(&registration.source_id)),
+                since_ms: wait_started_at_ms,
+                task_id: task.task_id.clone(),
+                wait_started_at_ms,
+                // A completion source covers an obligation the task still owes; only a follow of a
+                // peer ends alone.
+                cancel_wake_id: (registration.peer && registration.obligation_id.is_none())
+                    .then(|| registration.id.clone()),
+            });
+        }
+    }
+    events.sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.id.cmp(&b.id)));
+    events
 }
 
 /// What the waiting tasks of a room yielded on, read once for the activity of its agents.
@@ -411,7 +574,12 @@ mod tests {
             row("a", paused_since(5_000)),
             row("b", paused_since(1)),
         ];
-        annotate_waits(&mut activity, &processes, &YieldedSources::default());
+        annotate_waits(
+            &mut activity,
+            &processes,
+            &YieldedSources::default(),
+            &SourceLabels::default(),
+        );
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::CommandPaused);
         assert_eq!(waiting.resource, Some(WaitReason::Memory));
@@ -461,6 +629,7 @@ mod tests {
                 wakes: wakes.to_vec(),
                 registrations: Vec::new(),
             },
+            &SourceLabels::default(),
         );
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::BackgroundCommand);
@@ -480,7 +649,6 @@ mod tests {
             deadline_ms: Some(started + 60 * MINUTE),
             started_at_ms: started,
             inbox_cursor: 0,
-            long_wait_notified: false,
             last_checked_at_ms: started,
         });
         task
@@ -510,10 +678,193 @@ mod tests {
                 wakes: Vec::new(),
                 registrations: registrations.to_vec(),
             },
+            &SourceLabels::default(),
         );
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::Source);
         assert_eq!(waiting.detail, "delegate-task-9");
         assert_eq!(waiting.since_ms, 7_000);
+    }
+
+    /// Reviewer P2: a parent waiting on a dispatched helper reads "sub-agent <name>", not the child's opaque task id the
+    /// delegation binding rewrites the completion source to.
+    #[test]
+    fn a_parent_waiting_on_a_bound_delegation_names_the_child_agent() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let root =
+            std::env::temp_dir().join(format!("chariox-waits-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir(&root).unwrap();
+        let store =
+            crate::durable_state::DurableKernelStateStore::open_owned(root.join("state.sqlite"))
+                .unwrap();
+        let apply = |op| store.agent_lifecycle(op).unwrap();
+        let begin = |agent: &str, prompt: &str| {
+            apply(Operation::Begin {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: agent.into(),
+                prompt: prompt.into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+        };
+        begin("parent", "p");
+        apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "obligation".into(),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        });
+        apply(Operation::DispatchReceipt {
+            id: "obligation".into(),
+            accepted: true,
+            resource: Some("child".into()),
+        });
+        apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "reg".into(),
+                task_id: "p".into(),
+                source_id: "child".into(),
+                obligation_id: Some("obligation".into()),
+                source_cursor: 0,
+                live: true,
+                peer: false,
+            },
+        });
+        begin("child", "child-task");
+        apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: "child-task".into(),
+        });
+        apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: Some(60_000),
+            reason: "child result".into(),
+            now: 2,
+        });
+        apply(Operation::Settle {
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 3,
+        });
+        let mut activity = BTreeMap::from([("parent".to_string(), idle_activity())]);
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources::of_room(&store, "room"),
+            &SourceLabels::from_pairs([("child", "sub-agent builder")]),
+        );
+        let labels = activity["parent"]
+            .liveness
+            .waiting_events
+            .iter()
+            .map(|event| event.label.as_str())
+            .collect::<Vec<_>>();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(labels, vec!["sub-agent builder"]);
+    }
+
+    /// The owner removes one event alone wherever the kernel can end it: a wake of any kind and the
+    /// follow of another agent. A sub-agent's end (a source an obligation covers) has no such control.
+    #[test]
+    fn the_owner_can_remove_a_process_and_a_peer_follow_but_not_a_sub_agents_end() {
+        let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);
+        let tasks = [waiting_task("a", "t1", &["reg-child", "reg-peer"], 7_000)];
+        let mut peer = registration("t1", "reg-peer", "another-agent", true);
+        peer.peer = true;
+        let registrations = [registration("t1", "reg-child", "child-1", true), peer];
+        let wakes = [wake("a", "t1", "process", "running", 9_000)];
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources {
+                tasks: tasks.to_vec(),
+                wakes: wakes.to_vec(),
+                registrations: registrations.to_vec(),
+            },
+            &SourceLabels::from_pairs([("child-1", "sub-agent sub-agent-1")]),
+        );
+        let events = &activity["a"].liveness.waiting_events;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.id.as_str(), event.cancel_wake_id.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reg-child", None),
+                ("reg-peer", Some("reg-peer")),
+                ("wake-9000", Some("wake-9000")),
+            ]
+        );
+    }
+
+    /// Miguel 11-16: a waiting agent says what would wake it: every armed wake and every source it is registered for.
+    #[test]
+    fn a_waiting_agent_lists_every_event_it_waits_on_oldest_first() {
+        let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);
+        let tasks = [waiting_task(
+            "a",
+            "t1",
+            &["reg-child", "reg-run", "reg-done", "r"],
+            7_000,
+        )];
+        let registrations = [
+            registration("t1", "reg-child", "child-1", true),
+            registration("t1", "reg-run", "run-9", true),
+            registration("t1", "reg-done", "gone", false),
+            registration("t1", "r", "wake-9000", true),
+        ];
+        let wakes = [
+            wake("a", "t1", "timer", "scheduled", 9_000),
+            wake("a", "t1", "process", "exited", 8_000),
+        ];
+        let labels = SourceLabels::from_pairs([
+            ("child-1", "sub-agent sub-agent-1"),
+            ("run-9", "workflow Review"),
+        ]);
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources {
+                tasks: tasks.to_vec(),
+                wakes: wakes.to_vec(),
+                registrations: registrations.to_vec(),
+            },
+            &labels,
+        );
+        let events = &activity["a"].liveness.waiting_events;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (
+                    event.label.as_str(),
+                    event.since_ms,
+                    event.cancel_wake_id.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("sub-agent sub-agent-1", 7_000, None),
+                ("workflow Review", 7_000, None),
+                ("timer build", 9_000, Some("wake-9000")),
+            ],
+            "the live registrations and the live timer; an ended source or wake is not waited on"
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.task_id == "t1" && event.wait_started_at_ms == 7_000));
     }
 }

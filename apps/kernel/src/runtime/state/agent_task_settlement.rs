@@ -13,6 +13,8 @@ impl KernelRuntimeOwnedState {
         let wakes = self
             .durable_state_store
             .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?;
+        // An outcome the kernel expired because the task was blocked is still owed its
+        // acknowledgement: the resumed task names it, so it never has to guess the sequence.
         let mut inbox = Vec::new();
         if task
             .obligations
@@ -25,7 +27,7 @@ impl KernelRuntimeOwnedState {
                 0,
                 None,
                 |event| {
-                    if !matches!(event.state.as_str(), "handled" | "expired" | "failed")
+                    if !matches!(event.state.as_str(), "handled" | "failed")
                         && task.obligations.iter().any(|o| {
                             o.requires_resolution()
                                 && o.completion_source()
@@ -60,7 +62,7 @@ impl KernelRuntimeOwnedState {
                         obligation
                             .completion_source()
                             .is_some_and(|source| event.reports_source(source))
-                            && !matches!(event.state.as_str(), "handled" | "expired" | "failed")
+                            && !matches!(event.state.as_str(), "handled" | "failed")
                     })
                     .map(|event| {
                         format!(
@@ -108,7 +110,7 @@ impl KernelRuntimeOwnedState {
                     .as_ref()
                     .map_or(String::new(), |_| " and a future deadline_ms".into());
                 steps.push(format!(
-                    "To wait, call chariox.events.yield with registration_ids {}, inbox_cursor {} and reason \"Wait for unresolved work\"{deadline}; include any newly subscribed registrations so every open obligation is covered. End the turn immediately after yield",
+                    "To wait, call chariox.events.yield with registration_ids {}, inbox_cursor {} and reason \"Wait for unresolved work\"{deadline}; add any newly subscribed registrations, and pass cancel with the wake ids of timers you no longer need. End the turn immediately after yield",
                     serde_json::to_string(&ids).expect("registration ids serialize"),
                     task.wait.as_ref().map_or(0, |wait| wait.inbox_cursor)
                 ));

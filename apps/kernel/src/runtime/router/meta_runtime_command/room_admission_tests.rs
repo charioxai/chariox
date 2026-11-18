@@ -195,3 +195,105 @@ fn deadline_values_are_checked_by_both_commands_without_panicking() {
         );
     }
 }
+
+fn settings(
+    actor: &crate::agent::AgentInstance,
+    agents: &[crate::agent::AgentInstance],
+    args: &[&str],
+) -> Result<crate::local::LocalDaemonRequest, crate::error::DaemonError> {
+    let mut tokens = vec!["settings".to_string(), "set".to_string()];
+    tokens.extend(args.iter().map(|arg| arg.to_string()));
+    super::request::meta_agent_request(&session(), actor, &tokens, agents, true)
+}
+
+#[test]
+fn settings_set_changes_the_callers_own_profile_by_default() {
+    let a = agent("a", None);
+    let request = settings(
+        &a,
+        std::slice::from_ref(&a),
+        &[
+            "--model",
+            "sonnet",
+            "--effort",
+            "high",
+            "--reason",
+            "deeper review",
+        ],
+    )
+    .expect("an agent changes itself");
+    let crate::local::LocalDaemonRequest::UpdateAgentProfile(request) = request else {
+        panic!("a model and effort are a profile change");
+    };
+    assert_eq!(request.agent_id, "a");
+    assert_eq!(request.model.as_deref(), Some("sonnet"));
+    assert_eq!(request.effort.as_deref(), Some("high"));
+    assert_eq!(request.reason.as_deref(), Some("deeper review"));
+}
+
+#[test]
+fn settings_set_changes_mode_permission_and_directory_as_a_config() {
+    let a = agent("a", None);
+    let request = settings(
+        &a,
+        std::slice::from_ref(&a),
+        &[
+            "--mode",
+            "plan",
+            "--permission",
+            "required",
+            "--dir",
+            "/work/tree",
+        ],
+    )
+    .unwrap();
+    let crate::local::LocalDaemonRequest::UpdateAgentConfig(request) = request else {
+        panic!("mode, permission and directory are a config change");
+    };
+    assert_eq!(
+        request.execution_mode,
+        Some(crate::provider::AgentExecutionMode::Plan)
+    );
+    assert_eq!(
+        request.permission_level,
+        Some(crate::provider::AgentPermissionLevel::Required)
+    );
+    assert_eq!(request.worktree_id.as_deref(), Some("/work/tree"));
+    assert!(
+        request.self_settings.is_none(),
+        "an agent never sets what it may change"
+    );
+}
+
+#[test]
+fn settings_set_reaches_an_agent_below_and_no_other() {
+    let a = agent("a", None);
+    let child = agent("c", Some("a"));
+    let sibling = agent("s", None);
+    let agents = [a.clone(), child.clone(), sibling];
+    assert!(settings(&a, &agents, &["c", "--model", "sonnet"]).is_ok());
+    assert!(settings(&child, &agents, &["a", "--model", "sonnet"]).is_err());
+    assert!(settings(&child, &agents, &["s", "--model", "sonnet"]).is_err());
+}
+
+#[test]
+fn settings_set_refuses_a_mixed_command_and_an_empty_one() {
+    let a = agent("a", None);
+    assert!(settings(
+        &a,
+        std::slice::from_ref(&a),
+        &["--model", "sonnet", "--mode", "plan"]
+    )
+    .is_err());
+    assert!(settings(&a, std::slice::from_ref(&a), &[]).is_err());
+    assert!(settings(&a, std::slice::from_ref(&a), &["--mode", "sideways"]).is_err());
+}
+
+#[test]
+fn room_admission_admits_the_settings_command() {
+    let tokens = |text: &str| text.split(' ').map(str::to_string).collect::<Vec<_>>();
+    assert!(
+        crate::runtime::room_tool_admission::command(&tokens("agent settings set --model x"))
+            .is_ok()
+    );
+}

@@ -55,8 +55,12 @@ fn mp11_machine_files_local_1005_and_peer_444_are_pinned() {
         "job": LocalDaemonResponse::FileTransfer { job: job() },
         "jobs": LocalDaemonResponse::FileTransfers { jobs: vec![job()] },
         "entry": KernelDirectoryEntry {
-            name: "a.log".into(), kind: KernelFileKind::File, size: 3, modified_ms: Some(7),
+            name: "a.log".into(), kind: KernelFileKind::File, target_kind: None, size: 3, modified_ms: Some(7),
             revision: "2049:17:3:5.0:5.0".into(), mode: 0o644,
+        },
+        "link_entry": KernelDirectoryEntry {
+            name: "current".into(), kind: KernelFileKind::Symlink, target_kind: Some(KernelFileKind::Directory),
+            size: 0, modified_ms: Some(7), revision: "2049:19:0:5.0:5.0".into(), mode: 0o755,
         },
     });
     assert_eq!(
@@ -80,6 +84,8 @@ fn mp11_machine_files_local_1005_and_peer_444_are_pinned() {
                 "files_total": 3, "skipped": 0, "current": "/srv/logs/a.log", "started_ms": 5}]}},
             "entry": {"name": "a.log", "kind": "file", "size": 3, "modified_ms": 7,
                 "revision": "2049:17:3:5.0:5.0", "mode": 420},
+            "link_entry": {"name": "current", "kind": "symlink", "target_kind": "directory", "size": 0,
+                "modified_ms": 7, "revision": "2049:19:0:5.0:5.0", "mode": 493},
         })
     );
 

@@ -47,7 +47,7 @@ type ProviderSelectionDefaults = {
 
 type ProviderSelectionControllerDeps = {
   currentProviderSelection: () => CurrentProviderSelection
-  waitingRoomState: () => WaitingRoomState
+  startState: () => WaitingRoomState
   availableSessions: () => SessionListEntry[]
   providerCatalog: () => ProviderCatalog
   providerAccounts?: () => readonly ProviderAccountProfile[]
@@ -162,7 +162,7 @@ export function createProviderSelectionController(
       const localFallback = providerCatalogIsLocalFallback(catalog)
       const decision = deriveWaitingRoomModelSelectionDecision({
         modelId,
-        state: deps.waitingRoomState(),
+        state: deps.startState(),
         sessions: deps.availableSessions(),
         catalog,
         themeRegistry: deps.themeRegistry(),
@@ -191,7 +191,7 @@ export function createProviderSelectionController(
         variant,
         currentModelId: currentSelection.model,
         currentProviderId: normalizeBackendProviderId(currentSelection.provider),
-        state: deps.waitingRoomState(),
+        state: deps.startState(),
         sessions: deps.availableSessions(),
         catalog,
         themeRegistry: deps.themeRegistry(),
@@ -241,7 +241,7 @@ export function createProviderSelectionController(
 
       deps.setDefaults(nextDefaults)
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         providerId,
         accountProfileId: accountProfile,
         modelId: nextDefaults.model,
@@ -332,7 +332,7 @@ export function createProviderSelectionController(
       }
       deps.setDefaults(nextSelection)
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         providerId: provider,
         accountProfileId: profile.profile_id,
         modelId: selected.id,
@@ -356,7 +356,7 @@ export function createProviderSelectionController(
         return
       }
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         executionMode: mode,
       })
       if (!deps.isAttached()) {
@@ -374,7 +374,7 @@ export function createProviderSelectionController(
         return
       }
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         permissionLevel: permission,
       })
       if (!deps.isAttached()) {

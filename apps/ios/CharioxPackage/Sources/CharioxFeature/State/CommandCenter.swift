@@ -146,7 +146,7 @@ public enum CommandCenterCatalog {
         CommandCenterItem(
             id: "waiting",
             label: "/waiting",
-            detail: "Show waiting-room context",
+            detail: "Show Room list context",
             value: "/waiting",
             submitsImmediately: true
         ),

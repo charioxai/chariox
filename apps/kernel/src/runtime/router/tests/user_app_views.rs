@@ -280,7 +280,7 @@ fn run_drill(stall: bool, browser: bool) {
                 };
                 assert_eq!(result, serde_json::json!({"ok":true}));
                 if browser { Box::pin(check_browser_page(&router, &view, &observed, 3)).await; }
-                else { assert!(view.browser.is_none()); }
+                else { assert!(view.browser.is_none()); check_projection_refused(&router).await; }
                 let recorded = observed.tool_requests().unwrap();
                 assert_eq!(recorded.len(), if browser { 3 } else { 1 });
                 assert_eq!(
@@ -830,6 +830,29 @@ async fn wait_for_page(router: &CommandRouter, browser: &UserAppViewBrowser, tex
     })
     .await
     .unwrap_or_else(|_| panic!("page text {text}"));
+}
+
+// A kernel told to refuse projecting an App answers the kernel-browser open with that sentence and keeps no view of it.
+async fn check_projection_refused(router: &CommandRouter) {
+    const SWITCH: &str = "CHARIOX_REFUSE_PROJECTED_APP_VIEWS";
+    std::env::set_var(SWITCH, "1");
+    let refused = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await;
+    std::env::remove_var(SWITCH);
+    let error = refused.expect_err("the kernel browser open is refused");
+    assert!(
+        error
+            .to_string()
+            .contains("does not project App views into its browser"),
+        "{error}"
+    );
 }
 
 // MP-08/MP-10/MP-11: an agent drives the owner's App Tab as itself. Its

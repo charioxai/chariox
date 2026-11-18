@@ -4,12 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
-use crate::local::WaitingRoomLaunchTarget;
+use crate::local::RoomListLaunchTarget;
 
 pub(crate) fn search_workspace_directories(
     query: &str,
     limit: usize,
-    launch_target: Option<WaitingRoomLaunchTarget>,
+    launch_target: Option<RoomListLaunchTarget>,
 ) -> Result<Vec<String>, DaemonError> {
     let mut results = Vec::new();
     let mut seen = HashSet::new();

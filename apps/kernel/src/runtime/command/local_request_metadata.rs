@@ -734,6 +734,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetAppLogs(_) => "app.logs",
         LocalDaemonRequest::CreateAppInboxRoute(_) => "app.inbox.route.create",
         LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
+        LocalDaemonRequest::SetAppInboxRoutePaused(_) => "app.inbox.route.pause",
+        LocalDaemonRequest::PauseAppAutomation(_) => "app.automation.pause",
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
         LocalDaemonRequest::GetAppSet(_) => "app.set",
@@ -741,6 +743,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PrepareDeploymentApps(_) => "app.deployment.prepare",
         LocalDaemonRequest::RevokeAppConnection(_) => "app.connection.revoke",
         LocalDaemonRequest::ListAppConnections(_) => "app.connection.list",
+        LocalDaemonRequest::GrantAppAccount(_) => "app.account.grant",
+        LocalDaemonRequest::RevokeAppAccount(_) => "app.account.revoke",
+        LocalDaemonRequest::ListAppAccounts(_) => "app.account.list",
+        LocalDaemonRequest::GrantAppStanding(_) => "app.standing.grant",
+        LocalDaemonRequest::RevokeAppStanding(_) => "app.standing.revoke",
+        LocalDaemonRequest::ListAppStanding(_) => "app.standing.list",
         LocalDaemonRequest::TestAppInboxRoute(_) => "app.inbox.route.test",
         LocalDaemonRequest::GrantAppFile(_) => "app.file.grant",
         LocalDaemonRequest::SaveAppFileExport(_) => "app.file.save",
@@ -941,9 +949,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::QueryFreshRemoteMachineKernels(_) => {
             "remote_machine.kernel.query_fresh"
         }
-        LocalDaemonRequest::ListWaitingRoomSessions(_) => "waiting_room.sessions.list",
-        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
-        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
+        LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
         LocalDaemonRequest::RefreshExternalProviderSessions(_) => {
             "external_provider_session.refresh"
@@ -1094,6 +1101,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExportWorkflowCodeSource(_) => "workflow_code_source.export",
         LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",
         LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",
+        LocalDaemonRequest::SetWorkflowResponsible(_) => "workflow.set_responsible",
+        LocalDaemonRequest::ClearWorkflowRunAttention(_) => "workflow_run.clear_attention",
         LocalDaemonRequest::ListWorkflows(_) => "workflow.list",
         LocalDaemonRequest::ResolveWorkflow(_) => "workflow.resolve",
         LocalDaemonRequest::CreateWorkflowPublication(_) => "workflow_publication.create",

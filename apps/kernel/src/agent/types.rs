@@ -133,6 +133,105 @@ pub struct GridPosition {
     pub col_span: u32,
 }
 
+/// Where an agent stopped by the provider's usage limit stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum UsageLimitStopState {
+    /// The person decides whether the kernel resumes the turn.
+    Asking,
+    /// The kernel goes on with the turn at `at_ms`.
+    Armed { at_ms: u64 },
+    /// The kernel took the resume at `since_ms`; `sent` is set once the turn was admitted, so a
+    /// kernel that went away before that finds the claim again and sends it.
+    Resuming {
+        since_ms: u64,
+        #[serde(default)]
+        sent: bool,
+    },
+    /// The person left it stopped.
+    Declined,
+}
+
+/// An agent whose turn ended on the provider's usage limit, until it is resumed or left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageLimitStop {
+    /// The stopped turn.
+    pub prompt_id: String,
+    pub provider: String,
+    /// The account that ran out, by profile id and by name.
+    pub account_profile: String,
+    pub account_label: String,
+    pub stopped_at_ms: u64,
+    /// When the provider says usage is back; absent when it named no time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes_at_ms: Option<u64>,
+    /// Resumes the provider refused again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub refused: u32,
+    pub state: UsageLimitStopState,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// One setting an agent may change about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfSettingKind {
+    Model,
+    Effort,
+    AccountProfile,
+    Directory,
+}
+
+/// What the person lets an agent change about itself without asking: the models, efforts,
+/// account profiles and directories it may switch to. `"*"` allows any value of that kind. A
+/// value outside the set takes one decision from the person, who may add it to the set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSelfSettings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_profiles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<String>,
+}
+
+impl AgentSelfSettings {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    fn entries(&self, kind: SelfSettingKind) -> &Vec<String> {
+        match kind {
+            SelfSettingKind::Model => &self.models,
+            SelfSettingKind::Effort => &self.efforts,
+            SelfSettingKind::AccountProfile => &self.account_profiles,
+            SelfSettingKind::Directory => &self.directories,
+        }
+    }
+
+    pub fn allows(&self, kind: SelfSettingKind, value: &str) -> bool {
+        self.entries(kind)
+            .iter()
+            .any(|entry| entry == "*" || entry == value)
+    }
+
+    pub fn with_allowed(mut self, kind: SelfSettingKind, value: &str) -> Self {
+        if !self.allows(kind, value) {
+            match kind {
+                SelfSettingKind::Model => self.models.push(value.to_string()),
+                SelfSettingKind::Effort => self.efforts.push(value.to_string()),
+                SelfSettingKind::AccountProfile => self.account_profiles.push(value.to_string()),
+                SelfSettingKind::Directory => self.directories.push(value.to_string()),
+            }
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSubstituteProfile {
     pub provider: String,
@@ -276,6 +375,10 @@ pub struct AgentInstance {
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "AgentSelfSettings::is_empty")]
+    self_settings: AgentSelfSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage_limit_stop: Option<UsageLimitStop>,
     #[serde(
         default = "default_visible_in_freeform",
         skip_serializing_if = "is_default_visible_in_freeform"
@@ -338,6 +441,8 @@ impl AgentInstance {
             remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
             substitution_timeout_ms: None,
+            self_settings: AgentSelfSettings::default(),
+            usage_limit_stop: None,
             visible_in_freeform: true,
             archived: false,
             hidden: false,
@@ -543,6 +648,14 @@ impl AgentInstance {
         self.substitution_timeout_ms
     }
 
+    pub fn self_settings(&self) -> &AgentSelfSettings {
+        &self.self_settings
+    }
+
+    pub fn usage_limit_stop(&self) -> Option<&UsageLimitStop> {
+        self.usage_limit_stop.as_ref()
+    }
+
     pub fn state(&self) -> AgentState {
         self.state
     }
@@ -621,6 +734,8 @@ impl AgentInstance {
         self.extension_grants.clear();
         self.substitutes.clear();
         self.substitution_timeout_ms = None;
+        self.self_settings = AgentSelfSettings::default();
+        self.usage_limit_stop = None;
         self
     }
 
@@ -912,6 +1027,16 @@ impl AgentInstance {
 
     pub fn clear_substitutes(&mut self) {
         self.substitutes.clear();
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
+        self.usage_limit_stop = stop;
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn set_self_settings(&mut self, self_settings: AgentSelfSettings) {
+        self.self_settings = self_settings;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 

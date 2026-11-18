@@ -172,7 +172,7 @@ fn run() -> wasmtime::Result<()> {
             let launch:Launch=serde_json::from_slice(&bounded_read(config,256*1024)?)?;
             launch.limits.validate()?;
             launch.manifest.validate(&chariox_app_package::Limits::default())?;
-            wasmtime::ensure!(launch.manifest.world==chariox_app_wit::APP_WORLD,"backend requires the App world");
+            wasmtime::ensure!([chariox_app_wit::APP_WORLD,chariox_app_wit::APP_WORLD_1_1].contains(&launch.manifest.world.as_str()),"backend requires the App world");
             let bytes=bounded_read(&launch.component,chariox_app_wit::MAX_COMPONENT_BYTES)?;
             // Union: R4's installation directories are opened with the other
             // native inputs, before R5 removes filesystem authority.

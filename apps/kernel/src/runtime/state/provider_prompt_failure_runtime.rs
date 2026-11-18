@@ -148,11 +148,13 @@ impl KernelRuntimeState {
             return Ok(true);
         }
         let safe_message = failure.notice();
+        let resume_notice = self.usage_limit_resume_notice(&agent_id, &active_prompt, &failure);
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
             message,
             failure: &failure,
+            resume_notice,
             project_failure_output,
             // Exit reconciliation may guard the prompt after the provider has
             // already supplied its definitive diagnostic. Keep that original.
@@ -222,6 +224,8 @@ impl KernelRuntimeState {
             let Some(completion) = completion else {
                 return Ok(false);
             };
+            self.note_usage_limit_stop(&agent_id, &active_prompt, &failure, &provider_run)
+                .await;
             expected_active_prompt = Some(active_prompt);
             expected_completion = Some(completion);
         } else if self
@@ -349,6 +353,10 @@ impl KernelRuntimeState {
         if completion.is_none() {
             return Ok(false);
         }
+        if expected_prompt_id.is_none() {
+            self.note_usage_limit_stop(&agent_id, &active_prompt, &failure, &provider_run)
+                .await;
+        }
         Box::pin(self.finish_failed_agent_task_settlement(
             task_settlement,
             &active_prompt,
@@ -427,7 +435,10 @@ impl KernelRuntimeState {
                 session_id,
                 provider_run.id(),
                 attempt.agent_id,
-                attempt.failure,
+                attempt
+                    .resume_notice
+                    .clone()
+                    .unwrap_or_else(|| attempt.failure.notice()),
             );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run.id())
@@ -686,6 +697,8 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) message: &'a str,
     /// The failure the turn settles with; the transcript entry renders this one.
     pub(super) failure: &'a crate::provider::TurnOutcome,
+    /// The failed turn's line when the kernel resumes it by itself; else the failure's own notice.
+    pub(super) resume_notice: Option<String>,
     pub(super) project_failure_output: bool,
     pub(super) record_diagnostic: bool,
     pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,

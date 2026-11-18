@@ -18,7 +18,7 @@ assert.ok(home !== checkout && !home.startsWith(checkout + "/"), "Use a kernel h
 await mkdir(workspace, { recursive: true })
 const client = new LocalIpcClient(`ws://127.0.0.1:${process.env.CHARIOX_KERNEL_PORT}`, { localAuthEnvironment: process.env })
 const unwrap = (reply, variant) => { assert.ok(reply[variant], `Expected ${variant}`); return reply[variant] }
-const snapshot = async () => unwrap(await client.send(request.getWaitingRoomPublicSnapshotRequest()), "WaitingRoomPublicSnapshot").snapshot
+const snapshot = async () => unwrap(await client.send(request.getRoomListSnapshotRequest()), "RoomListSnapshot").snapshot
 const wait = async predicate => {
   const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
@@ -48,8 +48,8 @@ try {
     'Reply with exactly "Activity verified." Do no other work and call no tools.', []))
   const started = await wait(value => value.sessions.some(session => session.id === sessionId && session.last_activity_at_ms > row.last_activity_at_ms))
   assert.notEqual(started.inventory_version, ordered.inventory_version, "ordering changes invalidate a paging cursor")
-  await assert.rejects(client.send({ ListWaitingRoomSessions: { cursor: null, limit: 1, inventory_version: ordered.inventory_version } }),
-    error => error instanceof LocalIpcError && error.code === "waiting_room_inventory_changed")
+  await assert.rejects(client.send({ ListRoomListSessions: { cursor: null, limit: 1, inventory_version: ordered.inventory_version } }),
+    error => error instanceof LocalIpcError && error.code === "room_list_changed")
   const completed = await wait(value => value.sessions.some(session => session.id === sessionId
     && session.last_activity_at_ms > row.last_activity_at_ms && session.activity.working_agent_count === 0 && session.activity.active_prompt_count === 0))
   const agent = completed.sessions.find(session => session.id === sessionId).agents.find(agent => agent.id === created.agent.id)

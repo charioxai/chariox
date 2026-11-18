@@ -195,6 +195,12 @@ impl KernelRuntimeState {
                 message: "Agent interaction requires an agent subject".into(),
             })?
             .to_owned();
+        if let Some(refused) = self
+            .refuse_run_step_interaction(session_id, &agent_id, &interaction)
+            .await?
+        {
+            return Ok(refused);
+        }
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
         self.owned.register_runtime_interaction(

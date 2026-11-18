@@ -138,7 +138,7 @@
       <p class="summary">
         Unify the local web terminal and staging web app onto one API server implementation.
         Local mode should only shortcut authentication and swap in local backing adapters.
-        Routes, response contracts, dashboard projection, waiting room projection, and relay
+        Routes, response contracts, dashboard projection, Room list projection, and relay
         bootstrap behavior should be shared.
       </p>
     </header>
@@ -149,7 +149,7 @@
         The web UI is mostly shared, but the API path has diverged. Staging uses the normal
         Cloud API server, Cloud auth, Cloud repositories, and shared service code. Local web
         terminal currently runs a separate <code>local-browser-terminal-server.ts</code> path
-        that reimplements enough auth, dashboard, waiting room, and relay bootstrap behavior
+        that reimplements enough auth, dashboard, Room list, and relay bootstrap behavior
         to look like Cloud.
       </p>
       <p>
@@ -173,7 +173,7 @@
   auth,
   dashboardRepository,
   relayTargetRepository,
-  waitingRoomRepository,
+  roomListRepository,
   relayTokenIssuer,
   staticWebRoot,
   mode,
@@ -226,7 +226,7 @@
           Share these routes completely across both modes:
           <code>/dashboard</code>,
           <code>/browser/relay-kernel/bootstrap</code>,
-          <code>/browser/waiting-room/public-snapshot-cache</code>,
+          <code>/browser/Room list/public-snapshot-cache</code>,
           <code>/auth/session</code>, and
           <code>/auth/cloud-session</code>.
         </li>
@@ -236,7 +236,7 @@
           on the configured host/port.
         </li>
         <li>
-          Add route contract tests that run the same dashboard, bootstrap, and waiting-room
+          Add route contract tests that run the same dashboard, bootstrap, and Room list
           assertions against hosted/mock dependencies and local adapters.
         </li>
         <li>
@@ -262,7 +262,7 @@
           clients, collaborators, and pending invites using the same hosted dashboard contract.
         </li>
         <li>
-          <span class="label">Waiting room repository:</span> provide the same waiting-room
+          <span class="label">Room list repository:</span> provide the same Room list
           snapshot/cache contract, with local/in-memory backing where needed.
         </li>
         <li>
@@ -287,7 +287,7 @@
       <ul>
         <li><span class="ok">Automated:</span> shared route contract tests for hosted/mock and local modes.</li>
         <li><span class="ok">Automated:</span> web and API builds.</li>
-        <li><span class="ok">Manual:</span> local waiting room and pane footer screenshots from the live web app.</li>
+        <li><span class="ok">Manual:</span> local Room list and pane footer screenshots from the live web app.</li>
         <li><span class="warn">Operational:</span> ensure stale local servers on <code>4321</code> are stopped before visual validation.</li>
       </ul>
     </section>
@@ -300,7 +300,7 @@
         shortcut auth satisfies every route that currently expects hosted auth/session state.
       </p>
       <p>
-        The payoff is that future changes to aliases, waiting room display, bootstrap selection,
+        The payoff is that future changes to aliases, Room list display, bootstrap selection,
         footer metadata, and relay target behavior are implemented once and apply equally to
         local and staging.
       </p>

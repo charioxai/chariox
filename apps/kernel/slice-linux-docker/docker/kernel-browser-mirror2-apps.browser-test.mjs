@@ -3,15 +3,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'MP-11: explicit disposable root required');
-const ui = new URL('../../../../examples/apps/todo/bundle/ui/', import.meta.url);
-const assets = await Promise.all([['index.html', 'text/html'], ['style.css', 'text/css'], ['app.js', 'text/javascript']].map(async ([name, type]) => ({
-  path: name, content_type: type, body_base64: (await readFile(new URL(name, ui))).toString('base64'),
-})));
+// The Todo page as the App Tab path serves it: its source bundled to one script beside its style and a shell document.
+const view = new URL('../../../../examples/apps/todo/view/', import.meta.url);
+const { build } = createRequire(import.meta.url)(fileURLToPath(new URL('../../../../packages/app-sdk-tools/node_modules/esbuild/lib/main.js', import.meta.url)));
+const script = (await build({ entryPoints: [fileURLToPath(new URL('app.js', view))], bundle: true, write: false, format: 'esm', target: 'es2022' })).outputFiles[0].text;
+const shell = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Todo</title><link rel="stylesheet" href="style.css"><script type="module" src="app.js"></script></head><body><div id="app"></div></body></html>';
+const assets = [['index.html', 'text/html', Buffer.from(shell)], ['style.css', 'text/css', await readFile(new URL('style.css', view))], ['app.js', 'text/javascript', Buffer.from(script)]]
+  .map(([name, type, bytes]) => ({ path: name, content_type: type, body_base64: bytes.toString('base64') }));
 
 for (const dpr of [1, 2]) test(`MP-08/MP-10/MP-11: Todo App text, styled controls and Notes share v2 at DPR${dpr}`, async () => {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'mirror2-app-'));

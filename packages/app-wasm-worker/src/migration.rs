@@ -14,15 +14,15 @@ use wasmtime::{
     Store,
 };
 
-pub use crate::bindings::chariox::app::app_types as types;
+pub use crate::bindings::chariox::app1_0_0::app_types as types;
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../app-wit/wit",
-        world: "chariox:app/migration",
+        world: "chariox:app/migration@1.0.0",
         require_store_data_send: true,
         with: {
-            "chariox:app/state": crate::bindings::chariox::app::state,
-            "chariox:app/app-types": crate::bindings::chariox::app::app_types,
+            "chariox:app/state": crate::bindings::chariox::app1_0_0::state,
+            "chariox:app/app-types": crate::bindings::chariox::app1_0_0::app_types,
         },
     });
 }
@@ -50,7 +50,7 @@ impl MigrationWorker {
     ) -> wasmtime::Result<Self> {
         limits.validate()?;
         let mut linker = Linker::new(engine.engine());
-        crate::bindings::chariox::app::state::add_to_linker::<_, HasSelf<Host>>(
+        crate::bindings::chariox::app1_0_0::state::add_to_linker::<_, HasSelf<Host>>(
             &mut linker,
             |host| host,
         )?;
@@ -115,7 +115,7 @@ impl MigrationWorker {
         attribution.starting(scope.clone());
         let running = store.run_concurrent(async |accessor| {
             migration
-                .chariox_app_migration_handlers()
+                .chariox_app1_0_0_migration_handlers()
                 .call_migrate(accessor, from, to, context, cancel)
                 .await
         });

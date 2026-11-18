@@ -582,7 +582,7 @@
 
     <div class="task">
       <h4>E4. Styles out of TypeScript <span class="repo">chariox-cloud</span></h4>
-      <div class="where"><code>apps/web/src/styles/</code> — <code>workflows.ts</code> (3,876), <code>freeform.ts</code> (3,648), <code>terminal.ts</code> (2,957), <code>tokens.ts</code> (1,613), <code>waiting-room.ts</code> (1,488)</div>
+      <div class="where"><code>apps/web/src/styles/</code> — <code>workflows.ts</code> (3,876), <code>freeform.ts</code> (3,648), <code>terminal.ts</code> (2,957), <code>tokens.ts</code> (1,613), <code>Room list.ts</code> (1,488)</div>
       <ul>
         <li>~13,500 lines of CSS living as TS strings defeats tooling (no CSS linting, no dead-rule detection) and forces the <code>unsafe-inline</code> style CSP carve-out from C4.</li>
         <li>Move to plain <code>.css</code> files bundled by the existing build, keeping <code>tokens.ts</code> as the single source that generates CSS custom properties. Do this after C4's report-only phase identifies what inline styles remain.</li>

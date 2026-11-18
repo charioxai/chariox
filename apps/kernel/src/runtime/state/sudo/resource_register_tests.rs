@@ -258,7 +258,7 @@ fn resource_register_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0bf52355d763593ac6a793a8f189ca76ef195dad6f7853b8ee4477a2b2c7c4bc"
+        "c6e5630090b798df31f346b49960f8789bfaf5a19025a3da4d209e2cda059d58"
     );
 }
 
@@ -334,6 +334,7 @@ async fn resource_register_http_revoke_uses_vault_and_never_echoes_response() {
             provider_run_id: None,
             vault_key: Some("service-revoke-key".into()),
             updated_at_ms: Some(42),
+            copied_from: None,
         }),
     };
     f.state

@@ -667,16 +667,15 @@ async fn an_unreachable_kernel_is_a_typed_refusal_and_the_launch_stays_held() {
 }
 
 impl SecondKernel {
-    async fn snapshot(&self) -> crate::local::WaitingRoomPublicSnapshot {
-        let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-            crate::local::GetWaitingRoomPublicSnapshotRequest,
-        );
+    async fn snapshot(&self) -> crate::local::RoomListSnapshot {
+        let request =
+            LocalDaemonRequest::GetRoomListSnapshot(crate::local::GetRoomListSnapshotRequest);
         let answer = self
             .dispatch(format!("probe:{}", rand::random::<u64>()), &request)
             .await
             .unwrap();
         match serde_json::from_value(answer).unwrap() {
-            LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+            LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
             other => panic!("not a snapshot: {other:?}"),
         }
     }
@@ -746,7 +745,7 @@ async fn a_given_directory_is_used_and_the_target_default_is_not_read() {
 #[test]
 fn a_room_without_a_directory_needs_a_default_on_the_target() {
     use crate::room_exec::gateway_placement::room_location;
-    let target = crate::local::WaitingRoomLaunchTarget {
+    let target = crate::local::RoomListLaunchTarget {
         repository_state: None,
         git_available: false,
         workspace_id: "/srv/work".into(),

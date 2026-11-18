@@ -230,7 +230,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let catalog_matches =
                 run.remote_extension_catalog_matches_launch(remote_extension_manifest);
-            if existing_profile_matches && environment_matches && mcp_matches && catalog_matches {
+            if existing_profile_matches
+                && environment_matches
+                && mcp_matches
+                && catalog_matches
+                && !run.settings_stale()
+            {
                 if run.remote_extension_manifest() != remote_extension_manifest {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -327,6 +332,79 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
 
+        let request = self.leased_launch_request(
+            leased_agent,
+            lease.owner_user_id,
+            required_mcps
+                .iter()
+                .map(|required| required.config.clone())
+                .collect(),
+            remote_extension_manifest,
+            existing.as_ref(),
+            existing_profile_matches,
+        )?;
+        Ok(LeasedProviderRunMatch::LaunchRequired(request))
+    }
+
+    /// The launch of a replacement process for the turn the leased agent is running: it takes the
+    /// MCP set and tool catalog of the process that ended, and the agent's conversation resumes.
+    /// `None` when the backing agent is not a leased agent's.
+    pub(crate) fn prepare_leased_turn_relaunch(
+        &mut self,
+        backing_session_id: &str,
+        backing_agent_id: &str,
+    ) -> Result<Option<LaunchProviderRequest>, DaemonError> {
+        let Some(leased_agent) = self
+            .app
+            .leased_agents
+            .values()
+            .find(|leased| {
+                leased.backing_session_id == backing_session_id
+                    && leased.backing_agent_id == backing_agent_id
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let owner_user_id = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .map(|lease| lease.owner_user_id.clone())
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased_agent.lease_id.clone(),
+            })?;
+        let ended = self
+            .app
+            .providers
+            .get_latest_run_for_agent(backing_session_id, backing_agent_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "relaunch leased provider",
+                message: format!(
+                    "leased agent `{}` has no provider run to continue",
+                    leased_agent.id
+                ),
+            })?;
+        self.leased_launch_request(
+            &leased_agent,
+            owner_user_id,
+            ended.mcp_servers().to_vec(),
+            &ended.remote_extension_manifest().clone(),
+            None,
+            false,
+        )
+        .map(Some)
+    }
+
+    fn leased_launch_request(
+        &self,
+        leased_agent: &LeasedAgent,
+        owner_user_id: String,
+        mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
+        remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
+        existing: Option<&crate::provider::RuntimeProviderRun>,
+        existing_profile_matches: bool,
+    ) -> Result<LaunchProviderRequest, DaemonError> {
         let mut request = LaunchProviderRequest::new(
             &leased_agent.backing_session_id,
             &leased_agent.provider,
@@ -338,19 +416,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .unwrap_or_else(|| "default".to_string()),
         )
         .with_agent_id(&leased_agent.backing_agent_id)
-        .with_owner_user_id(lease.owner_user_id)
+        .with_owner_user_id(owner_user_id)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions
                 .get_session(&leased_agent.backing_session_id)?
                 .worktree_id(),
         ))
-        .with_mcp_servers(
-            required_mcps
-                .iter()
-                .map(|required| required.config.clone())
-                .collect(),
-        );
+        .with_mcp_servers(mcp_servers);
         let mut mcp_servers = request.mcp_servers.clone();
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if !mcp_servers.iter().any(|server| server.name == name) {
@@ -372,7 +445,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if leased_agent.effort.is_some() {
             request = request.with_variant(leased_agent.effort.clone());
         }
-        if let Some(run) = existing.as_ref().filter(|_| existing_profile_matches) {
+        if let Some(run) = existing.filter(|_| existing_profile_matches) {
             request = request.with_resume_state(run.resume_state().clone());
             // Catalog refresh must keep the environment validated by ordinary Project setup.
             if let Some((home, path)) = run.preparation_environment() {
@@ -402,6 +475,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(&session),
             ),
         );
-        Ok(LeasedProviderRunMatch::LaunchRequired(request))
+        Ok(request)
     }
 }

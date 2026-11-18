@@ -71,6 +71,7 @@ fn redact_parameters(node: &mut AgentTreeNode) {
     node.workspace_id = None;
     node.worktree_id = None;
     node.worker_kernel_id = None;
+    node.usage_limit_stop = None;
 }
 
 /// What the viewer reads of `tree`, by the rule the session projection applies to agents: an agent
@@ -207,6 +208,7 @@ pub(crate) fn project_agent_tree(
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
             deadline_ms: deadline_ms(agent.id()),
             created_at_ms: agent.created_at_ms(),
+            usage_limit_stop: agent.usage_limit_stop().cloned(),
         });
     }
     let totals = totals_of(&nodes);
@@ -735,6 +737,30 @@ mod tests {
             ),
             (None, None, None)
         );
+    }
+
+    // A sub-agent is in no Room agent list, so its usage limit stop reaches a client with its node.
+    #[test]
+    fn a_child_usage_limit_stop_travels_with_its_node_until_the_parameters_are_redacted() {
+        let mut child = settings_child("c", "root", 2, None, None, None);
+        child.set_usage_limit_stop(Some(crate::agent::UsageLimitStop {
+            prompt_id: "p".into(),
+            provider: "codex".into(),
+            account_profile: "work".into(),
+            account_label: "work".into(),
+            stopped_at_ms: 3,
+            resumes_at_ms: None,
+            refused: 0,
+            state: crate::agent::UsageLimitStopState::Asking,
+        }));
+        let mut tree = read_tree(&session(vec![agent("root", None, 1), child]));
+        let node = &mut tree.nodes[0];
+        assert_eq!(
+            node.usage_limit_stop.as_ref().map(|stop| &stop.state),
+            Some(&crate::agent::UsageLimitStopState::Asking)
+        );
+        redact_parameters(node);
+        assert!(node.usage_limit_stop.is_none());
     }
 
     // The client controller tests read this file as the kernel's answer once every child finished.

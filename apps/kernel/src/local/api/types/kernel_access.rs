@@ -64,8 +64,9 @@ pub struct AppInstallPresentation {
 }
 
 /// What a person-confirmed App action's card is about, written by the kernel from the
-/// verified installed release. The preview beside it is the App's own component; this
-/// frame is never App-supplied text.
+/// verified installed release. The preview beside it is the App's own: its component's pixels,
+/// or, for an App whose backend serves its view, `preview` rows. The six words of the frame are
+/// never App-supplied text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfirmationFrame {
@@ -75,6 +76,18 @@ pub struct AppConfirmationFrame {
     pub publisher_id: String,
     pub publisher_name: String,
     pub action_name: String,
+    /// The App's own rows for this exact input, shown under the frame as the App's words.
+    /// Present when no App Tab shows the preview; the kernel bounds them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Vec<AppConfirmationPreviewRow>>,
+}
+
+/// One line of a backend-supplied preview: plain text, never markup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppConfirmationPreviewRow {
+    pub label: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

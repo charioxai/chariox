@@ -8,8 +8,8 @@ use crate::local::{
     SearchWorkspaceDirectoriesRequest,
 };
 use crate::runtime::projection::SessionStateProjectionStore;
+use crate::runtime::room_list_projection::infer_room_list_launch_target;
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::waiting_room_public_projection::infer_waiting_room_launch_target;
 use crate::runtime::workspace_git_actions::{
     commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
     push_workspace_branch,
@@ -18,7 +18,7 @@ use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
 use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
 use crate::runtime::workspace_worktrees::{
-    create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
+    create_workspace_worktree, delete_workspace_worktree, list_workspace_worktrees,
 };
 
 pub(crate) async fn execute_workspace_command_request(
@@ -76,7 +76,7 @@ pub(crate) fn execute_search_workspace_directories_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
     let directories =
-        search_workspace_directories(&request.query, limit, infer_waiting_room_launch_target(&[]))?;
+        search_workspace_directories(&request.query, limit, infer_room_list_launch_target(&[]))?;
     let workspace_git = directories
         .iter()
         .map(|path| crate::local::WorkspaceDirectoryGitSummary {
@@ -103,7 +103,7 @@ pub(crate) fn execute_create_workspace_directory_request(
 pub(crate) fn execute_list_workspace_worktrees_request(
     request: ListWorkspaceWorktreesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let launch_target = infer_waiting_room_launch_target(&[]);
+    let launch_target = infer_room_list_launch_target(&[]);
     let worktrees = list_workspace_worktrees(
         &request.workspace_id,
         launch_target
@@ -120,8 +120,8 @@ pub(crate) fn execute_create_workspace_worktree_request(
     runtime_state: &KernelRuntimeState,
     request: CreateWorkspaceWorktreeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let launch_target = infer_waiting_room_launch_target(&[]);
-    let worktree = create_waiting_room_worktree(
+    let launch_target = infer_room_list_launch_target(&[]);
+    let worktree = create_workspace_worktree(
         &request.workspace_id,
         request.path.as_deref(),
         request.branch.as_deref(),

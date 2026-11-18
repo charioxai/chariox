@@ -131,6 +131,7 @@ impl KernelRuntimeState {
                 vault_key: Some(handle.into()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
+                copied_from: None,
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;

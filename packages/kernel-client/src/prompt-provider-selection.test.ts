@@ -11,7 +11,7 @@ import {
   splitProviderModelRef,
 } from "./prompt-provider-selection.js"
 
-test("derivePromptProviderSelection prefers a focused provider run then agent and waiting room defaults", () => {
+test("derivePromptProviderSelection prefers a focused provider run then agent and Room list defaults", () => {
   assert.deepEqual(
     derivePromptProviderSelection({
       providerRun: providerRun({
@@ -19,7 +19,7 @@ test("derivePromptProviderSelection prefers a focused provider run then agent an
         model: "opencode/gpt-5.4",
         variant: "low",
       }),
-      waitingRoomState: {
+      startState: {
         modelId: "anthropic/claude-sonnet-4",
         effort: "medium",
       },
@@ -41,7 +41,7 @@ test("derivePromptProviderSelection prefers a focused provider run then agent an
         model: "openai/gpt-5.3-codex",
         effort: "medium",
       }),
-      waitingRoomState: {
+      startState: {
         providerId: "claude",
         modelId: "anthropic/claude-sonnet-4",
         effort: "high",
@@ -61,7 +61,7 @@ test("derivePromptProviderSelection resolves to null fields when nothing is conf
   assert.deepEqual(
     derivePromptProviderSelection({
       providerRun: null,
-      waitingRoomState: {},
+      startState: {},
     }),
     {
       provider: null,
@@ -75,7 +75,7 @@ test("derivePromptProviderSelection uses the configured default provider/model/e
   assert.deepEqual(
     derivePromptProviderSelection({
       providerRun: null,
-      waitingRoomState: {},
+      startState: {},
       defaultProvider: "codex",
       defaultModel: "gpt-5.1",
       defaultEffort: "high",
@@ -111,7 +111,7 @@ test("derivePromptProviderSelection does not infer focused agent ownership from 
         model: "openai/gpt-5.3-codex",
         effort: "medium",
       }),
-      waitingRoomState: {
+      startState: {
         providerId: "claude-p",
         modelId: "anthropic/claude-sonnet-4",
         effort: "high",

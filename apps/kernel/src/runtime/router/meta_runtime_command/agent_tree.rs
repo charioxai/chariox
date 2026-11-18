@@ -35,6 +35,12 @@ impl CommandRouter {
         if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
             return Ok(Some(listed));
         }
+        if let Some(placed) = self
+            .dispatch_workflow_responsible_placed(session, caller, command, tokens)
+            .await
+        {
+            return Ok(Some(placed));
+        }
         if tokens.first().map(String::as_str) != Some("agent") {
             return Ok(None);
         }
@@ -102,6 +108,16 @@ impl CommandRouter {
                     args,
                 )
                 .await?,
+            ),
+            Some("promote") => Some(
+                self.dispatch_meta_agent_promote_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    args,
+                )
+                .await,
             ),
             Some(verb @ ("steer" | "message")) => Some(
                 self.dispatch_meta_agent_message_command(

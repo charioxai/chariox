@@ -6,6 +6,7 @@ use chariox_app_runtime::worker_process::WorkerExit;
 pub(super) struct Context {
     pub http_limits: Arc<crate::runtime::app_http::HttpLimits>,
     pub event_config: super::EventConfig,
+    pub routing_host: crate::runtime::app_event_routing_broker::RoutingHostSlot,
     pub store: DurableKernelStateStore,
     pub publisher: AppWorkerPublisher,
     pub admission: Arc<Semaphore>,

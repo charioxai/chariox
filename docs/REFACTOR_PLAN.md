@@ -177,7 +177,7 @@ Why this mattered:
 
 Done:
 
-- extracted detached waiting-room reset state and attached-session UI reset state into `apps/cli/src/session-state.ts`
+- extracted detached Room list reset state and attached-session UI reset state into `apps/cli/src/session-state.ts`
 - added focused transition coverage in `apps/cli/src/session-state.test.ts`
 - simplified `apps/cli/src/index.tsx` so `transitionToNoSession()` and the post-attach state reset path now delegate their pure transition bundles to the CLI state core
 
@@ -186,17 +186,17 @@ Why this mattered:
 - attach/detach transitions had still been encoded as large inline state mutation bundles in `index.tsx`
 - moving those reset bundles out makes the remaining CLI state work more mechanical and reduces the chance of drift across session-entry and session-exit paths
 
-### 14. CLI waiting-room controller extraction
+### 14. CLI Room list controller extraction
 
 Done:
 
-- extracted waiting-room normalization, activation, and model/variant selection decisions into `apps/cli/src/waiting-room-controller.ts`
-- added focused controller coverage in `apps/cli/src/waiting-room-controller.test.ts`
-- simplified `apps/cli/src/index.tsx` so waiting-room selection and launch handlers now delegate their decision logic instead of mixing validation, normalization, and side-effect setup inline
+- extracted Room list normalization, activation, and model/variant selection decisions into `apps/cli/src/Room list-controller.ts`
+- added focused controller coverage in `apps/cli/src/Room list-controller.test.ts`
+- simplified `apps/cli/src/index.tsx` so Room list selection and launch handlers now delegate their decision logic instead of mixing validation, normalization, and side-effect setup inline
 
 Why this mattered:
 
-- the waiting-room flow had still been combining state normalization, command validation, and attached-session launch preparation inside `index.tsx`
+- the Room list flow had still been combining state normalization, command validation, and attached-session launch preparation inside `index.tsx`
 - moving those decisions into a tested controller keeps Phase 5 centered on explicit CLI state transitions and reduces the amount of session-entry logic coupled to the render shell
 
 ### 15. CLI session chrome runtime-state extraction
@@ -256,9 +256,9 @@ Why this mattered:
 
 Done:
 
-- extracted transcript-scroll history-load decisions and waiting-room intro animation decisions into `apps/cli/src/background-effects.ts`
+- extracted transcript-scroll history-load decisions and Room list intro animation decisions into `apps/cli/src/background-effects.ts`
 - added focused coverage in `apps/cli/src/background-effects.test.ts`
-- simplified `apps/cli/src/index.tsx` so the transcript scroll monitor, short-viewport history check, and waiting-room animation loop now delegate their control decisions to a dedicated background-effects module
+- simplified `apps/cli/src/index.tsx` so the transcript scroll monitor, short-viewport history check, and Room list animation loop now delegate their control decisions to a dedicated background-effects module
 
 Why this mattered:
 
@@ -314,7 +314,7 @@ The refactor has started, but the largest simplification targets still remain:
 - `apps/kernel/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
 - `apps/kernel/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
 - `apps/kernel/src/bin/chariox-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
-- `apps/cli/src/index.tsx` still contains most runtime wiring, but the session-state, attach/detach, waiting-room decision, and session-chrome runtime-state seams are now extracted
+- `apps/cli/src/index.tsx` still contains most runtime wiring, but the session-state, attach/detach, Room list decision, and session-chrome runtime-state seams are now extracted
 
 ## Next Phases
 

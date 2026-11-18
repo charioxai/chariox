@@ -245,22 +245,13 @@ fn is_chariox_source_workspace(root: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::io::types::{AgentEditOperation, ArtifactEditWarning, TextRange};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace() -> WorkspaceIdentity {
         WorkspaceIdentity::local("repo-a")
     }
 
-    fn test_root(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "chariox-workspace-live-sync-file-io-{name}-{nanos}"
-        ));
-        fs::create_dir_all(&root).expect("create test root");
-        root
+    fn test_root(name: &str) -> crate::test_support::TestTempDir {
+        crate::test_support::TestTempDir::new(&format!("workspace-live-sync-file-io-{name}"))
     }
 
     fn text_range_of(haystack: &str, needle: &str) -> TextRange {
@@ -279,7 +270,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("src.txt"),
                 domain: ArtifactDomainKind::TextDocument,
             },
@@ -300,7 +291,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root.clone(),
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("src.txt"),
                 domain: ArtifactDomainKind::TextDocument,
             },
@@ -312,7 +303,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
                     path: PathBuf::from("src.txt"),
@@ -349,7 +340,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root.clone(),
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("src.txt"),
                 domain: ArtifactDomainKind::TextDocument,
             },
@@ -365,7 +356,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
                     path: PathBuf::from("src.txt"),
@@ -402,7 +393,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root.clone(),
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("src.txt"),
                 domain: ArtifactDomainKind::TextDocument,
             },
@@ -414,7 +405,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
                     path: PathBuf::from("src.txt"),
@@ -447,7 +438,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("../outside.txt"),
                 domain: ArtifactDomainKind::TextDocument,
             },
@@ -469,7 +460,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
                     path: PathBuf::from("nested/created.txt"),
@@ -498,7 +489,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::OpaqueBlob,
                 intent: AgentEditIntent {
                     path: PathBuf::from("assets/image.bin"),
@@ -527,7 +518,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
-                workspace_root: root.clone(),
+                workspace_root: root.to_path_buf(),
                 path: PathBuf::from("asset.bin"),
                 domain: ArtifactDomainKind::OpaqueBlob,
             },
@@ -539,7 +530,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root,
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::OpaqueBlob,
                 intent: AgentEditIntent {
                     path: PathBuf::from("asset.bin"),
@@ -577,7 +568,7 @@ mod tests {
             &mut coordinator,
             WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
-                workspace_root: root.clone(),
+                workspace_root: root.to_path_buf(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
                     path: PathBuf::from(

@@ -21,11 +21,11 @@ world drill {
     world: "drill",
     generate_all,
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext, Wake},
     registry, state,
 };
-use exports::chariox::app::handlers::Guest;
+use exports::chariox::app1_0_0::handlers::Guest;
 use futures::future::{select, Either};
 use serde_json::{json, Value};
 use wit_bindgen::{FutureReader, StreamResult};

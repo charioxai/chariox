@@ -1,10 +1,14 @@
 //! MP-08/MP-09/MP-10/MP-11: real component and WASI data directory.
 //! The file broker is a fixture; this is supplementary to hosted acceptance.
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
 };
 use wasmtime::component::{
@@ -27,7 +31,7 @@ wasmtime::component::bindgen!({
     world: "drill",
     exports: { "chariox:app/handlers.register": async },
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext},
     files, host, registry, state,
 };
@@ -38,6 +42,56 @@ struct Host {
     offers: Vec<(String, Vec<u8>)>,
     export_barrier: Option<Arc<tokio::sync::Barrier>>,
     fault: Option<(FileStage, bool, Arc<tokio::sync::Notify>)>,
+    /// The App's state, with the kernel's versions: every key a transaction writes takes its revision.
+    records: BTreeMap<String, state::StateRecord>,
+    revision: u64,
+    /// A scene that another window commits right after the next transaction, before any later read.
+    rival: Option<String>,
+    /// The person's choice of a diagram: how many asks still find it unanswered, and how many requests were made.
+    unanswered: u32,
+    requests: u32,
+}
+impl Host {
+    fn commit(&mut self, tx: state::Transaction) -> Result<state::Committed, AppError> {
+        for check in &tx.checks {
+            if self.records.get(&check.key).map(|r| r.version) != check.version {
+                return Err(AppError {
+                    code: "CONFLICT".into(),
+                    message: check.key.clone(),
+                    retryable: None,
+                });
+            }
+        }
+        self.revision += 1;
+        for write in tx.writes {
+            match write {
+                state::Write::Put((key, value)) => {
+                    let version = self.revision;
+                    self.records
+                        .insert(key, state::StateRecord { value, version });
+                }
+                state::Write::Delete(key) => {
+                    self.records.remove(&key);
+                }
+            }
+        }
+        let committed = state::Committed {
+            revision: self.revision,
+            receipts: vec![],
+        };
+        if let Some(scene) = self.rival.take() {
+            self.revision += 1;
+            let version = self.revision;
+            self.records.insert(
+                "scene".into(),
+                state::StateRecord {
+                    value: scene,
+                    version,
+                },
+            );
+        }
+        Ok(committed)
+    }
 }
 impl WasiView for Host {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -47,7 +101,7 @@ impl WasiView for Host {
         }
     }
 }
-impl chariox::app::app_types::Host for Host {}
+impl chariox::app1_0_0::app_types::Host for Host {}
 impl registry::Host for Host {
     fn tool(&mut self, _: String) {}
     fn event(&mut self, _: String) {
@@ -59,14 +113,17 @@ impl registry::Host for Host {
 }
 impl state::Host for Host {}
 impl<T: Send> state::HostWithStore<T> for HasSelf<Host> {
-    async fn get(_: &Accessor<T, Self>, _: String) -> Result<Option<state::StateRecord>, AppError> {
-        panic!("unexpected state read")
+    async fn get(
+        accessor: &Accessor<T, Self>,
+        key: String,
+    ) -> Result<Option<state::StateRecord>, AppError> {
+        Ok(accessor.with(|mut access| access.get().records.get(&key).cloned()))
     }
     async fn transact(
-        _: &Accessor<T, Self>,
-        _: state::Transaction,
+        accessor: &Accessor<T, Self>,
+        tx: state::Transaction,
     ) -> Result<state::Committed, AppError> {
-        panic!("unexpected state write")
+        accessor.with(|mut access| access.get().commit(tx))
     }
 }
 impl host::Host for Host {}
@@ -85,7 +142,39 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
         panic!("unexpected clipboard")
     }
     async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
-        panic!("unexpected picker")
+        panic!("a call that waits for the person cannot outlast the kernel's 30 s")
+    }
+    async fn request_file(
+        accessor: &Accessor<T, Self>,
+        request: host::Pick,
+    ) -> Result<host::Picked, AppError> {
+        assert!(!request.multiple && request.accept.contains(&".excalidraw".to_owned()));
+        Ok(accessor.with(|mut access| {
+            access.get().requests += 1;
+            access.get().choice()
+        }))
+    }
+    async fn await_file(
+        accessor: &Accessor<T, Self>,
+        operation_id: String,
+        wait_ms: u32,
+    ) -> Result<host::Picked, AppError> {
+        assert_eq!(operation_id, "pick-1");
+        assert!(
+            wait_ms <= 25_000,
+            "a call waits less than the kernel's limit"
+        );
+        Ok(accessor.with(|mut access| access.get().choice()))
+    }
+}
+impl Host {
+    /// Where the person's choice stands after one more ask.
+    fn choice(&mut self) -> host::Picked {
+        if self.unanswered == 0 {
+            return host::Picked::Granted(vec!["grant-1".into()]);
+        }
+        self.unanswered -= 1;
+        host::Picked::Pending("pick-1".into())
     }
 }
 struct Contents(
@@ -199,13 +288,22 @@ impl Drop for Scratch {
     }
 }
 
+/// A directory only this test uses: tests of one process run in parallel, so
+/// the process id alone does not keep two scratch roots apart.
+fn scratch(label: &str) -> wasmtime::Result<Scratch> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let root = Scratch(std::env::temp_dir().join(format!(
+        "excalidraw-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    fs::create_dir(&root.0)?;
+    Ok(root)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn offered_copies_leave_no_private_files_and_named_writes_persist() -> wasmtime::Result<()> {
-    let root = Scratch(
-        PathBuf::from(std::env::var("TMPDIR")?)
-            .join(format!("excalidraw-files-{}", std::process::id())),
-    );
-    fs::create_dir(&root.0)?;
+    let root = scratch("files")?;
     let (mut store, app) = runtime(&root.0).await?;
     let scene = r#"{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}"#;
     for (name, offer) in [
@@ -233,7 +331,7 @@ async fn offered_copies_leave_no_private_files_and_named_writes_persist() -> was
                     turn_id: None,
                     actor: None,
                 };
-                app.chariox_app_handlers()
+                app.chariox_app1_0_0_handlers()
                     .call_call_tool(accessor, "write_file".into(), input, context, cancel)
                     .await?
                     .unwrap();
@@ -288,23 +386,29 @@ async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill
             offers: vec![],
             export_barrier: None,
             fault: None,
+            records: BTreeMap::new(),
+            revision: 0,
+            rival: None,
+            unanswered: 0,
+            requests: 0,
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
-    app.chariox_app_handlers()
+    app.chariox_app1_0_0_handlers()
         .call_register(&mut store)
         .await?
         .unwrap();
     Ok((store, app))
 }
 
-async fn invoke(
+/// The App's answer to a tool call: the result text, or the error it refused with.
+async fn try_invoke(
     store: &mut Store<Host>,
     app: &Drill,
     name: &str,
     input: serde_json::Value,
-) -> wasmtime::Result<serde_json::Value> {
-    let result = store
+) -> wasmtime::Result<Result<String, AppError>> {
+    store
         .run_concurrent(async |accessor| {
             let cancel = accessor.with(|mut access| {
                 FutureReader::new(
@@ -322,21 +426,21 @@ async fn invoke(
                 turn_id: None,
                 actor: None,
             };
-            app.chariox_app_handlers()
+            app.chariox_app1_0_0_handlers()
                 .call_call_tool(accessor, name.into(), input.to_string(), context, cancel)
                 .await
         })
-        .await??;
-    Ok(serde_json::from_str(&result.unwrap()).unwrap())
+        .await?
 }
 
-fn scratch(label: &str) -> wasmtime::Result<Scratch> {
-    let root = Scratch(
-        PathBuf::from(std::env::var("TMPDIR")?)
-            .join(format!("excalidraw-{label}-{}", std::process::id())),
-    );
-    fs::create_dir(&root.0)?;
-    Ok(root)
+async fn invoke(
+    store: &mut Store<Host>,
+    app: &Drill,
+    name: &str,
+    input: serde_json::Value,
+) -> wasmtime::Result<serde_json::Value> {
+    let result = try_invoke(store, app, name, input).await?;
+    Ok(serde_json::from_str(&result.unwrap()).unwrap())
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -456,7 +560,7 @@ async fn interrupted_export(stage: FileStage, cancel: bool) -> wasmtime::Result<
                 turn_id: None,
                 actor: None,
             };
-            app.chariox_app_handlers()
+            app.chariox_app1_0_0_handlers()
                 .call_call_tool(accessor, "write_file".into(), input, context, cancel)
                 .await
         })
@@ -492,4 +596,264 @@ async fn cancelled_replacement_releases_export_staging() -> wasmtime::Result<()>
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_offer_releases_export_staging() -> wasmtime::Result<()> {
     interrupted_export(FileStage::Export, true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_save_returns_its_own_revision_when_another_window_commits_right_after(
+) -> wasmtime::Result<()> {
+    let root = scratch("own-revision")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let mine =
+        serde_json::json!({"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}});
+    let theirs = r#"{"type":"excalidraw","version":2,"elements":[{"id":"theirs"}],"appState":{},"files":{}}"#;
+    store.data_mut().rival = Some(theirs.into());
+    let saved = invoke(
+        &mut store,
+        &app,
+        "save_scene",
+        serde_json::json!({"scene": mine, "version": null}),
+    )
+    .await?;
+    // The version this window holds is the one its own transaction committed, not the rival's.
+    assert_eq!(saved["version"], "1");
+    let loaded = invoke(&mut store, &app, "load_scene", serde_json::json!({})).await?;
+    assert_eq!(
+        loaded["version"], "2",
+        "the rival's commit is a later version"
+    );
+    assert_ne!(
+        saved["version"], loaded["version"],
+        "the window's next save checks against the version it holds, so the rival's commit is not overwritten"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_person_who_takes_longer_than_one_call_still_picks_with_the_same_request(
+) -> wasmtime::Result<()> {
+    let root = scratch("slow-pick")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    // The call that asks finds the choice unmade twice (the request, then its wait), and so does the next one's wait.
+    store.data_mut().unanswered = 3;
+    let first = invoke(&mut store, &app, "pick_file", serde_json::json!({})).await?;
+    assert_eq!(
+        first,
+        serde_json::json!({"pending": true, "pickId": "pick-1"})
+    );
+    let second = invoke(
+        &mut store,
+        &app,
+        "pick_file",
+        serde_json::json!({"pickId": "pick-1"}),
+    )
+    .await?;
+    assert_eq!(
+        second,
+        serde_json::json!({"pending": true, "pickId": "pick-1"})
+    );
+    let third = invoke(
+        &mut store,
+        &app,
+        "pick_file",
+        serde_json::json!({"pickId": "pick-1"}),
+    )
+    .await?;
+    assert_eq!(third, serde_json::json!({"grants": ["grant-1"]}));
+    assert_eq!(
+        store.data().requests,
+        1,
+        "asking again never opens a second request"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn each_window_keeps_its_own_draft_in_the_data_directory_and_discards_only_that_one(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
+    for (window, element) in [("window-1", "left"), ("window-2", "right")] {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": window, "scene": scene(element)}),
+        )
+        .await?;
+    }
+    // A later write of a window replaces its own draft only.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-1", "scene": scene("left-again")}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let kept: Vec<(&str, &str)> = read["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| {
+            (
+                draft["id"].as_str().unwrap(),
+                draft["scene"]["elements"][0]["id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(kept.len(), 2);
+    assert!(kept.contains(&("window-1", "left-again")));
+    assert!(kept.contains(&("window-2", "right")));
+
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-1"}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    assert_eq!(
+        read["drafts"].as_array().unwrap().len(),
+        1,
+        "the other window's draft stays"
+    );
+    assert_eq!(read["drafts"][0]["id"], "window-2");
+
+    // An id names a file in the drafts folder and nothing else.
+    for bad in ["../scene", "a/b", ""] {
+        let refused = try_invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": bad, "scene": scene("x")}),
+        )
+        .await?;
+        assert!(refused.is_err(), "{bad:?} must be refused");
+    }
+    assert_eq!(
+        fs::read_dir(root.0.join("drafts"))?.count(),
+        1,
+        "only window-2's draft is on disk"
+    );
+    Ok(())
+}
+
+/// The review's second repro, at the App: a draft that a recovering window read and that its window then
+/// advanced is still the newer one afterwards, and nothing a window sends removes another window's draft.
+#[tokio::test(flavor = "current_thread")]
+async fn a_window_recovering_drafts_cannot_remove_the_newer_draft_of_another_window(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts-copy")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |ids: &[&str]| {
+        serde_json::json!({"type":"excalidraw","version":2,
+            "elements": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>(),
+            "appState":{},"files":{}})
+    };
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "open", "scene": scene(&["one"])}),
+    )
+    .await?;
+    // The recovering window reads, then the open window keeps a second element.
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    assert_eq!(
+        read["drafts"][0]["scene"]["elements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "open", "scene": scene(&["one", "two"])}),
+    )
+    .await?;
+    // It writes its own draft and discards its own; every call it makes names its own id.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "recovering", "scene": scene(&["one"])}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "recovering"}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let kept = read["drafts"].as_array().unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["id"], "open");
+    assert_eq!(kept[0]["scene"]["elements"].as_array().unwrap().len(), 2);
+    Ok(())
+}
+
+/// At the cap a window with a new id is refused and no other window's draft is removed to make room.
+#[tokio::test(flavor = "current_thread")]
+async fn at_the_cap_a_new_window_is_refused_and_no_draft_is_removed_to_make_room(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts-cap")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
+    for n in 0..4 {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": format!("window-{n}"), "scene": scene("kept")}),
+        )
+        .await?;
+    }
+    let refused = try_invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-new", "scene": scene("new")}),
+    )
+    .await?;
+    assert_eq!(refused.unwrap_err().code, "INVALID_STATE");
+    // A window that keeps a draft already can still rewrite it.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-0", "scene": scene("again")}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let mut ids: Vec<&str> = read["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| draft["id"].as_str().unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, ["window-0", "window-1", "window-2", "window-3"]);
+    // One window gives its draft up, and the new window fits.
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-3"}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-new", "scene": scene("new")}),
+    )
+    .await?;
+    assert_eq!(fs::read_dir(root.0.join("drafts"))?.count(), 4);
+    Ok(())
 }

@@ -39,7 +39,7 @@ test("waiting room lifecycle action archives the selected session", async () => 
 
 test("waiting room lifecycle action deletes all sessions and closes the session browser", async () => {
   const harness = createHarness({
-    state: waitingRoomState({ focus: "join-sessions" }),
+    state: startState({ focus: "join-sessions" }),
     sessionBrowserOpen: true,
   })
 
@@ -54,7 +54,7 @@ test("waiting room lifecycle action deletes all sessions and closes the session 
 
 test("waiting room lifecycle action deletes inactive machines and child kernels", async () => {
   const harness = createHarness({
-    state: waitingRoomState({ focus: "machine" }),
+    state: startState({ focus: "machine" }),
     remoteMachines: [
       remoteMachine("machine-1", { online: false, kernel_count: 1 }),
       remoteMachine("machine-2", { online: true, kernel_count: 1 }),
@@ -75,7 +75,7 @@ test("waiting room lifecycle action deletes inactive machines and child kernels"
 
 test("waiting room lifecycle action hides inactive kernels", async () => {
   const harness = createHarness({
-    state: waitingRoomState({ focus: "remote-kernel" }),
+    state: startState({ focus: "remote-kernel" }),
     remoteKernels: [
       remoteKernel("kernel-1", "machine-1", {
         accepting_remote_leases: false,
@@ -96,7 +96,7 @@ test("waiting room lifecycle action hides inactive kernels", async () => {
 
 test("waiting room lifecycle action deletes idle slices", async () => {
   const harness = createHarness({
-    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    state: startState({ focus: "slice-entry", sliceIndex: 0 }),
     slices: [
       slice("slice-1", "linux-dev"),
       slice("slice-2", "other-dev"),
@@ -114,7 +114,7 @@ test("waiting room lifecycle action deletes idle slices", async () => {
 
 test("waiting room lifecycle action blocks active slice deletion before confirmation", async () => {
   const harness = createHarness({
-    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    state: startState({ focus: "slice-entry", sliceIndex: 0 }),
     slices: [
       slice("slice-1", "busy-dev", { agent_ids: ["agent-1"] }),
     ],
@@ -129,7 +129,7 @@ test("waiting room lifecycle action blocks active slice deletion before confirma
 test("waiting room lifecycle action archives a selected project through the aggregate kernel command", async () => {
   const project = projectSummary()
   const harness = createHarness({
-    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    state: startState({ focus: "project-entry", projectIndex: 0 }),
     projects: [project],
   })
 
@@ -143,7 +143,7 @@ test("waiting room lifecycle action surfaces the kernel idle blocker for project
   const project = projectSummary()
   const blocker = "Project project-1 cannot be archived until all sessions are idle; active sessions: session-1"
   const harness = createHarness({
-    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    state: startState({ focus: "project-entry", projectIndex: 0 }),
     projects: [project],
     projectArchiveError: blocker,
   })
@@ -157,7 +157,7 @@ test("waiting room lifecycle action surfaces the kernel idle blocker for project
 test("waiting room lifecycle action deletes a selected project through the aggregate kernel command", async () => {
   const project = projectSummary()
   const harness = createHarness({
-    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    state: startState({ focus: "project-entry", projectIndex: 0 }),
     projects: [project],
     sessionBrowserOpen: true,
   })
@@ -202,7 +202,7 @@ function createHarness(options: {
   let remoteMachines = options.remoteMachines ?? []
   let remoteKernels = options.remoteKernels ?? []
   let slices = options.slices ?? []
-  const state = options.state ?? waitingRoomState({ focus: "session" })
+  const state = options.state ?? startState({ focus: "session" })
   const archivedSessionIds: string[] = []
   const deletedSessionIds: string[] = []
   const forgottenMachineIds: string[] = []
@@ -362,7 +362,7 @@ function session(id: string, alias: string): SessionListEntry {
   }
 }
 
-function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState>): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

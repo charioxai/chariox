@@ -59,7 +59,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Web comes first, then iOS/Android, all reusing the semantics proven by the polished CLI.
 - [ ] **IOS-001** Add OSS iOS client
   - Note: Build the native iOS app in the OSS repo as a kernel client, not a runtime authority. The planning baseline lives in `docs/ios/IOS_APP_PLAN.md`.
-  - Scope: SwiftUI app under `apps/ios`, direct kernel WebSocket transport, waiting room, freeform prompt/transcript, multi-agent panes, command center, optional Cloud/relay login, and simulator-driven QA.
+  - Scope: SwiftUI app under `apps/ios`, direct kernel WebSocket transport, Room list, freeform prompt/transcript, multi-agent panes, command center, optional Cloud/relay login, and simulator-driven QA.
   - Progress: Initial SwiftUI app shell, local WebSocket request/response client, subscribe/unsubscribe event stream, session list/create/select/attach/detach, replay cursor handling, recent history loading, transcript rendering, prompt submit/cancel, agent focus/cycle controls, and the first `/session`/`/agent`/`/stop` command-center subset are implemented. Package tests cover protocol envelopes, app-model flows, and command routing; simulator tests pass.
   - QA direction: use XcodeBuildMCP for the default build/test/run validation loop, and use iOS Simulator MCP for explicit QA/dogfooding passes when Miguel requests or confirms them. Future agents may suggest Maestro when useful, but must ask Miguel before adding it to the repo or official QA gate.
 - [ ] **M7-001** Add Claude Code, Codex, and generalized provider-adapter/protocol support
@@ -69,7 +69,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 - [x] **M5.6-001** Add Chariox Cloud device login and relay onboarding
   - Note: Hosted relay onboarding is closed in `docs/ROADMAP.md`.
-  - Result: Browser/device login, kernel-owned cloud profile state, hosted relay pairing, runtime-token minting, client-token minting, logout, waiting-room cloud entry point, and live cloud relay drill coverage are landed. The old terminal email bootstrap helper remains dev/manual compatibility only.
+  - Result: Browser/device login, kernel-owned cloud profile state, hosted relay pairing, runtime-token minting, client-token minting, logout, Room list cloud entry point, and live cloud relay drill coverage are landed. The old terminal email bootstrap helper remains dev/manual compatibility only.
   - Commits: `cca2910`, `18c91b0`
 
 - [x] **M7.5-001** Add Chariox Shell command REPL and script runner

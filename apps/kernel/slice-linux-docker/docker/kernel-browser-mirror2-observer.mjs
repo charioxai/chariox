@@ -257,6 +257,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Sheets the viewer retains (digests it advertised for this snapshot): they arrive by reference, never pruned.
     const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set();
     const viewerRetains = text => retained.size > 0 && retained.has(sha256(text).slice(0, 24));
+    // A sheet of the top document is pruned against that one document (see usedCss): the kernel reads a repeated link once.
+    const topRoot = node => window === window.top && node.getRootNode?.()?.nodeType === 9;
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
@@ -469,7 +471,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (media && media.length <= 4096) record.attrs.media = media;
       if (sheet) {
         if (sheet.disabled) record.attrs.media = 'not all';
-        try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
+        try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href, top: topRoot(node) }); }
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
       if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }
@@ -770,7 +772,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState === 'complete' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -1309,6 +1311,30 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       visit(document, 0);
       return { mirrored: mirroredText, total };
     };
+    // Every character the document can show now, for the font subsetter: text nodes (shadow roots too), the values
+    // and placeholders of fields, and the text pseudo-elements generate (an icon font's glyphs). Bounded: past the
+    // budget the rest of the text is not read.
+    const textCodePoints = () => {
+      const seen = new Set(); let budget = 2_000_000;
+      const take = text => { if (typeof text !== 'string') return; budget -= text.length; for (const char of text) seen.add(char.codePointAt(0)); };
+      const visit = (node, depth) => {
+        if (depth > DEPTH || budget <= 0) return;
+        if (node.nodeType === 3) { take(node.data); return; }
+        if (node.nodeType === 1) {
+          if (['script', 'style', 'noscript', 'template'].includes(node.localName)) return;
+          if (node.localName === 'input' || node.localName === 'textarea') { take(node.value); take(node.placeholder); }
+        }
+        for (const child of node.childNodes) visit(child, depth + 1);
+        if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+      };
+      visit(document, 0);
+      const all = document.getElementsByTagName('*'), deadline = performance.now() + 40;
+      for (let at = 0; at < all.length && at < 6000; at++) {
+        if ((at & 63) === 63 && performance.now() > deadline) break;
+        for (const pseudo of ['::before', '::after']) { const content = getComputedStyle(all[at], pseudo).content; if (content !== 'none' && content !== 'normal') take(content); }
+      }
+      return [...seen];
+    };
     const sheetChanged = owner => {
       if (owner === 'adopted') adoptedDirty = true;
       else if (owner === 'imports') { for (const entry of styleNodes.values()) if (entry.imports) dirty.sheets.add(entry.node); }
@@ -1397,6 +1423,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

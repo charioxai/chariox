@@ -1,11 +1,11 @@
 import {
-  waitingRoomSessionActivityNextAction,
-  waitingRoomSessionActivityHasWork,
-  waitingRoomSessionActivityWorkLabel,
-  waitingRoomSessionRecencyMs,
-  waitingRoomSessionStatusLabel,
-  waitingRoomTimestampLabel,
-} from "@chariox/kernel-client/waiting-room-activity"
+  roomListSessionActivityNextAction,
+  roomListSessionActivityHasWork,
+  roomListSessionActivityWorkLabel,
+  roomListSessionRecencyMs,
+  roomListSessionStatusLabel,
+  roomListTimestampLabel,
+} from "@chariox/kernel-client/room-list-activity"
 import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
 import { formatWorkspaceLiveSyncModeCompactLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
@@ -218,7 +218,7 @@ export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
 }
 
 export function sessionLastActiveMs(session: SessionListEntry) {
-  return waitingRoomSessionRecencyMs(session)
+  return roomListSessionRecencyMs(session)
 }
 
 function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, start: number) {
@@ -241,23 +241,23 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionStatus(session: SessionListEntry) {
-  return waitingRoomSessionStatusLabel(session)
+  return roomListSessionStatusLabel(session)
 }
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
-  return waitingRoomSessionActivityNextAction(session) ?? "-"
+  return roomListSessionActivityNextAction(session) ?? "-"
 }
 
 function formatWaitingRoomSessionWork(session: SessionListEntry) {
-  return waitingRoomSessionActivityWorkLabel(session.activity)
+  return roomListSessionActivityWorkLabel(session.activity)
 }
 
 function sessionHasActiveWork(session: SessionListEntry) {
-  return waitingRoomSessionActivityHasWork(session.activity)
+  return roomListSessionActivityHasWork(session.activity)
 }
 
 function formatSessionTimestamp(value: number | null) {
-  return waitingRoomTimestampLabel(value, { missingLabel: "—" })
+  return roomListTimestampLabel(value, { missingLabel: "—" })
 }
 
 function formatWaitingRoomColumnHeader(label: string, width: number) {

@@ -514,6 +514,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AliasWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetWorkflowResponsible(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClearWorkflowRunAttention(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListWorkflows(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -749,6 +755,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppLogs(_)
         | LocalDaemonRequest::CreateAppInboxRoute(_)
         | LocalDaemonRequest::RemoveAppInboxRoute(_)
+        | LocalDaemonRequest::SetAppInboxRoutePaused(_)
+        | LocalDaemonRequest::PauseAppAutomation(_)
         | LocalDaemonRequest::ListAppInboxRoutes(_)
         | LocalDaemonRequest::TestAppInboxRoute(_)
         | LocalDaemonRequest::GrantAppConnection(_)
@@ -757,6 +765,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::PrepareDeploymentApps(_)
         | LocalDaemonRequest::RevokeAppConnection(_)
         | LocalDaemonRequest::ListAppConnections(_)
+        | LocalDaemonRequest::GrantAppAccount(_)
+        | LocalDaemonRequest::RevokeAppAccount(_)
+        | LocalDaemonRequest::ListAppAccounts(_)
+        | LocalDaemonRequest::GrantAppStanding(_)
+        | LocalDaemonRequest::RevokeAppStanding(_)
+        | LocalDaemonRequest::ListAppStanding(_)
         | LocalDaemonRequest::GrantAppFile(_)
         | LocalDaemonRequest::SaveAppFileExport(_)
         | LocalDaemonRequest::CreateSession(_)
@@ -884,9 +898,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreSliceBackup(_)
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
-        | LocalDaemonRequest::GetWaitingRoomInventory(_)
-        | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
-        | LocalDaemonRequest::ListWaitingRoomSessions(_)
+        | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::ListRoomListSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
         | LocalDaemonRequest::ImportExternalProviderSession(_)

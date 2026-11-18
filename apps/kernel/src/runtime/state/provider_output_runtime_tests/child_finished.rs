@@ -730,3 +730,74 @@ async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
 }
+
+async fn end_kid(family: &Family, kid: &Kid) {
+    let store = &family.runtime.owned.durable_state_store;
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: family.room.clone(),
+            agent: kid.child.clone(),
+            prompt: kid.child_prompt.id().into(),
+            run: kid.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    family
+        .runtime
+        .owned
+        .complete_local_prompt_without_advance(&family.room, &kid.child, Some(&kid.child_run))
+        .unwrap();
+    family
+        .runtime
+        .finish_agent_task_settlement(Some((task, correction)), &kid.child_prompt)
+        .await
+        .unwrap();
+}
+
+fn wake_prompts(family: &Family) -> Vec<Option<String>> {
+    family
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&family.room, &family.parent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "child_finished")
+        .map(|event| event.prompt_id)
+        .collect()
+}
+
+/// AO-IN-02: workers that finish together reach their parent in one wake. A finish that leaves
+/// a sibling working waits a moment for the others instead of waking the parent three times.
+#[tokio::test]
+async fn children_that_finish_together_wake_their_parent_once() {
+    let family = family("child-finished-together", 3, None, false).await;
+    for kid in &family.kids {
+        end_kid(&family, kid).await;
+    }
+    let prompts = wake_prompts(&family);
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert!(
+        prompts[0].is_some() && prompts.iter().all(|prompt| *prompt == prompts[0]),
+        "one wake carries the three finishes: {prompts:?}"
+    );
+}
+
+/// A sibling that keeps working does not hold the parent for ever: the window ends.
+#[tokio::test]
+async fn a_finish_waits_for_its_siblings_only_for_a_moment() {
+    let family = family("child-finished-window", 2, None, false).await;
+    end_kid(&family, &family.kids[0]).await;
+    assert_eq!(wake_prompts(&family), [None], "held for the sibling");
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let prompts = wake_prompts(&family);
+    assert!(
+        prompts[0].is_some(),
+        "the window ended and woke the parent: {prompts:?}"
+    );
+}

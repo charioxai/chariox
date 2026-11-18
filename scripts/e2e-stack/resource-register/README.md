@@ -3,7 +3,7 @@
 Run against a private build of the kernel, relay and the production Cloud new-UI
 bundle on an owned valenv stack. No old UI,
 TUI, component fixture entry or provider stub is used. The real kernel enrolls on the hosted WSS relay through the product device flow.
-The page opens `/waiting-room?ui=os` and submits `/sudo` from the Prompt bar;
+The page opens `/terminal` and submits `/sudo` from the Prompt bar;
 approval uses its masked Chariox passkey field. Fixture sign-in/enrollment is setup
 through the product dev-auth APIs; runtime actions all use the new shell.
 

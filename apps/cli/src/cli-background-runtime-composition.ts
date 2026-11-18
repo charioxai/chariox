@@ -178,7 +178,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   setWorkingAnimationFrame: AnyFn
   sessionStatusMode: AnyFn
   renderSplitPaneFooters: AnyFn
-  waitingRoomState: AnyFn
+  startState: AnyFn
   setWaitingRoomState: AnyFn
   kernelConnected: AnyFn
   hydrateCurrentAttachedSession: AnyFn
@@ -777,7 +777,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     scheduleInterval: deps.scheduleInterval,
     clearInterval: deps.clearInterval,
     isAttached: deps.isAttached,
-    getWaitingRoomState: deps.waitingRoomState,
+    getWaitingRoomState: deps.startState,
     setWaitingRoomState: deps.setWaitingRoomState,
     rebuildTranscript: deps.rebuildTranscript,
   })
