@@ -3,14 +3,15 @@
 //! asks for it again when it starts.
 //!
 //! A draft belongs to one editor, a window that edits a document: it is kept per (document, editor),
-//! so two windows on the same document each have their own, and `save_draft` and `discard_draft`
-//! only ever write or remove the file of the editor that sent them. A replaced window's successor
-//! is a new editor with no memory of its predecessor, so it asks `claim_draft`: the one place a draft
-//! changes hands. It keeps what the editor already has, and otherwise moves the most recently kept
-//! draft of another editor to itself (own copy written first, then the source removed) and a draft
-//! whose document was deleted is dropped, since nothing is left to come back to. Each draft records
-//! the revision its edit started from, so a save after someone else's change is still refused as a
-//! conflict, never merged.
+//! so two windows on the same document each have their own. A draft is written and removed only by
+//! the editor it belongs to (`save_draft`, `discard_draft`) or by the age sweep once it is older than
+//! a day: nothing ever moves or deletes another editor's draft, because that editor may still be open
+//! and typing. A replaced window's successor is a new editor with no memory of its predecessor, so it
+//! asks `claim_draft`: it keeps what the editor already has, and otherwise is handed a COPY of the most
+//! recently kept draft of another editor, written under its own name; the source stays. The cost is
+//! that an edit one window gives up can come back in a later window until it ages out, a duplicate
+//! the person can discard, never a lost edit. Each draft records the revision its edit started from,
+//! so a save after someone else's change is still refused as a conflict, never merged.
 
 use crate::{model, store};
 use chariox_app_sdk::{app_types::AppError, error};
@@ -20,6 +21,8 @@ const FOLDER: &str = "drafts";
 const MAX_ID: usize = 64;
 /// Drafts the App keeps at once, so windows that were closed with unsaved edits cannot fill the disk.
 const MAX_DRAFTS: usize = 32;
+/// A draft nobody has written for this long is dropped; the one removal that is not its editor's own.
+const MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 fn plain(what: &str, value: &str) -> Result<(), AppError> {
     let plain = !value.is_empty()
@@ -108,42 +111,61 @@ impl Kept {
     fn path(&self) -> Result<String, AppError> {
         path_of(&self.id, &self.editor)
     }
+
+    fn expired(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.saved_at_ms) > MAX_AGE_MS
+    }
 }
 
-/// What `claim_draft` does for an editor.
+/// What `claim_draft` hands an editor.
+#[derive(Clone)]
 pub enum Claim {
-    /// The editor already has a draft; nothing changes hands.
+    /// The editor already has a draft; nothing is written.
     Keep(Value),
-    /// The most recently kept draft of another editor moves to this one.
-    Take {
+    /// The most recently kept draft of another editor, copied to a file of this editor's own. The
+    /// copy keeps the source's age, so copying never restarts the day it is kept for.
+    Copy {
+        path: String,
         text: String,
-        source: String,
         edit: Value,
     },
+    /// The same edit when the drafts kept are at the cap and no copy fits: the source stays.
+    Uncopied(Value),
     Nothing,
 }
 
-/// What the kept drafts say to an editor that asks for one, and the files of drafts whose document
-/// no longer exists.
+/// What `claim_draft` does: the draft to hand over, and the files the age sweep removes.
+#[derive(Clone)]
+pub struct Plan {
+    pub claim: Claim,
+    pub expired: Vec<String>,
+}
+
+/// What the kept drafts say to an editor that asks for one. A draft whose document no longer exists
+/// is not offered; it is not removed either, it ages out like any other.
 pub fn choose(
     docs: &[model::Doc],
     editor: &str,
     texts: &[String],
-    saved_at_ms: u64,
-) -> Result<(Claim, Vec<String>), AppError> {
+    now_ms: u64,
+) -> Result<Plan, AppError> {
     plain("editor", editor)?;
-    let mut gone = Vec::new();
-    let mut alive = Vec::new();
+    let mut expired = Vec::new();
+    let mut live = 0;
+    let mut offered = Vec::new();
     for text in texts {
         let kept = Kept::parse(text)?;
+        if kept.expired(now_ms) {
+            expired.push(kept.path()?);
+            continue;
+        }
+        live += 1;
         if docs.iter().any(|doc| doc.id == kept.id) {
-            alive.push(kept);
-        } else {
-            gone.push(kept.path()?);
+            offered.push(kept);
         }
     }
     let latest = |own: bool| {
-        alive
+        offered
             .iter()
             .filter(|kept| (kept.editor == editor) == own)
             .max_by_key(|kept| kept.saved_at_ms)
@@ -151,18 +173,21 @@ pub fn choose(
     let claim = if let Some(own) = latest(true) {
         Claim::Keep(own.edit())
     } else if let Some(other) = latest(false) {
-        let mut moved = other.value.clone();
-        moved["editor"] = json!(editor);
-        moved["saved_at_ms"] = json!(saved_at_ms);
-        Claim::Take {
-            text: moved.to_string(),
-            source: other.path()?,
-            edit: other.edit(),
+        if live < MAX_DRAFTS {
+            let mut copy = other.value.clone();
+            copy["editor"] = json!(editor);
+            Claim::Copy {
+                path: path_of(&other.id, editor)?,
+                text: copy.to_string(),
+                edit: other.edit(),
+            }
+        } else {
+            Claim::Uncopied(other.edit())
         }
     } else {
         Claim::Nothing
     };
-    Ok((claim, gone))
+    Ok(Plan { claim, expired })
 }
 
 pub async fn save(
@@ -172,9 +197,14 @@ pub async fn save(
     base_revision: u64,
     edit: &Value,
 ) -> Result<Value, AppError> {
-    let text = parse_new(docs, editor, id, base_revision, edit, store::now_ms())?;
+    let now = store::now_ms();
+    let text = parse_new(docs, editor, id, base_revision, edit, now)?;
     let path = path_of(id, editor)?;
-    let kept = store::private_files(FOLDER)?;
+    let mut kept = store::private_files(FOLDER)?;
+    if kept.len() >= MAX_DRAFTS && !kept.contains(&path) {
+        sweep(now)?;
+        kept = store::private_files(FOLDER)?;
+    }
     if kept.len() >= MAX_DRAFTS && !kept.contains(&path) {
         return Err(error(
             "INVALID_STATE",
@@ -185,19 +215,33 @@ pub async fn save(
     Ok(json!({"saved": true}))
 }
 
-/// The draft the editor asks for when its window starts; see `choose`.
+/// The age sweep: removes the drafts older than a day. It reads and removes without waiting in
+/// between, so a draft rewritten meanwhile is never removed as the old one.
+fn sweep(now_ms: u64) -> Result<(), AppError> {
+    for text in store::read_private_folder(FOLDER)? {
+        let Ok(kept) = Kept::parse(&text) else {
+            continue;
+        };
+        if kept.expired(now_ms) {
+            store::remove_private(&kept.path()?)?;
+        }
+    }
+    Ok(())
+}
+
+/// The draft the editor asks for when its window starts; see `choose`. The read, the plan and the
+/// sweep's removals run without waiting in between; the copy is the one write, and it is the
+/// editor's own file, which no other editor writes.
 pub async fn claim(docs: &[model::Doc], editor: &str) -> Result<Value, AppError> {
     let texts = store::read_private_folder(FOLDER)?;
-    let (claim, gone) = choose(docs, editor, &texts, store::now_ms())?;
-    for path in gone {
-        store::remove_private(&path)?;
+    let plan = choose(docs, editor, &texts, store::now_ms())?;
+    for path in &plan.expired {
+        store::remove_private(path)?;
     }
-    let draft = match claim {
-        Claim::Keep(edit) => Some(edit),
-        Claim::Take { text, source, edit } => {
-            let own = path_of(edit["id"].as_str().unwrap_or_default(), editor)?;
-            store::replace(&own, text.into_bytes()).await?;
-            store::remove_private(&source)?;
+    let draft = match plan.claim {
+        Claim::Keep(edit) | Claim::Uncopied(edit) => Some(edit),
+        Claim::Copy { path, text, edit } => {
+            store::replace(&path, text.into_bytes()).await?;
             Some(edit)
         }
         Claim::Nothing => None,
@@ -260,13 +304,17 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_of_a_missing_document_is_refused_and_one_whose_document_was_deleted_is_dropped() {
+    fn a_draft_of_a_missing_document_is_refused_and_one_whose_document_was_deleted_is_not_offered_or_removed(
+    ) {
         let docs = docs();
         assert!(parse_new(&docs, "w1", "missing", 1, &edit("c"), 5).is_err());
         let text = kept("w1", "d1", "c", 5);
-        let (claim, gone) = choose(&[], "w2", &[text], 9).unwrap();
-        assert!(matches!(claim, Claim::Nothing));
-        assert_eq!(gone, ["drafts/d1.w1.json"]);
+        let plan = choose(&[], "w2", &[text], 9).unwrap();
+        assert!(matches!(plan.claim, Claim::Nothing));
+        assert!(
+            plan.expired.is_empty(),
+            "only age removes another editor's draft"
+        );
     }
 
     #[test]
@@ -304,33 +352,35 @@ mod tests {
             kept("w2", "d1", "second window", 6),
         ];
         for (editor, content) in [("w1", "first window"), ("w2", "second window")] {
-            let (claim, gone) = choose(&docs(), editor, &texts, 9).unwrap();
-            let Claim::Keep(draft) = claim else {
+            let plan = choose(&docs(), editor, &texts, 9).unwrap();
+            let Claim::Keep(draft) = plan.claim else {
                 panic!("{editor} has a draft of its own");
             };
             assert_eq!(draft["content"], content);
-            assert!(gone.is_empty());
+            assert!(plan.expired.is_empty());
         }
     }
 
     #[test]
-    fn a_new_editor_is_handed_the_latest_draft_of_another_editor_and_the_source_is_named_to_move() {
+    fn a_new_editor_is_handed_a_copy_of_the_latest_draft_of_another_editor_that_keeps_its_age() {
         let texts = vec![
             kept("w1", "d1", "earlier", 5),
             kept("w2", "d2", "later", 9),
             kept("w3", "d1", "earliest", 1),
         ];
-        let (claim, gone) = choose(&docs(), "w4", &texts, 20).unwrap();
-        let Claim::Take { text, source, edit } = claim else {
-            panic!("a draft changes hands");
+        let plan = choose(&docs(), "w4", &texts, 20).unwrap();
+        let Claim::Copy { path, text, edit } = plan.claim else {
+            panic!("a copy is handed over");
         };
-        assert_eq!(edit["content"], "later");
-        assert_eq!(edit["id"], "d2");
-        assert_eq!(source, "drafts/d2.w2.json");
-        let moved = Kept::parse(&text).unwrap();
-        assert_eq!((moved.editor.as_str(), moved.saved_at_ms), ("w4", 20));
-        assert_eq!(moved.path().unwrap(), "drafts/d2.w4.json");
-        assert!(gone.is_empty());
+        assert_eq!(
+            (edit["content"].as_str(), edit["id"].as_str()),
+            (Some("later"), Some("d2"))
+        );
+        assert_eq!(path, "drafts/d2.w4.json");
+        let copy = Kept::parse(&text).unwrap();
+        assert_eq!((copy.editor.as_str(), copy.saved_at_ms), ("w4", 9));
+        assert_eq!(copy.path().unwrap(), path);
+        assert!(plan.expired.is_empty());
     }
 
     #[test]
@@ -340,12 +390,271 @@ mod tests {
             kept("w1", "d1", "mine", 1),
             kept("w2", "d2", "newer, not mine", 9),
         ];
-        let (claim, _) = choose(&docs(), "w1", &texts, 20).unwrap();
-        let Claim::Keep(draft) = claim else {
+        let plan = choose(&docs(), "w1", &texts, 20).unwrap();
+        let Claim::Keep(draft) = plan.claim else {
             panic!("its own draft is kept");
         };
         assert_eq!(draft["content"], "mine");
-        let (claim, _) = choose(&docs(), "w9", &[], 20).unwrap();
-        assert!(matches!(claim, Claim::Nothing));
+        let plan = choose(&docs(), "w9", &[], 20).unwrap();
+        assert!(matches!(plan.claim, Claim::Nothing));
+    }
+
+    #[test]
+    fn a_draft_older_than_a_day_is_swept_and_never_offered_and_one_a_day_old_is_not() {
+        let day = MAX_AGE_MS;
+        let texts = vec![
+            kept("w1", "d1", "stale", 5),
+            kept("w2", "d2", "a day old", 6),
+        ];
+        let plan = choose(&docs(), "w3", &texts, 6 + day).unwrap();
+        assert_eq!(plan.expired, ["drafts/d1.w1.json"]);
+        let Claim::Copy { edit, .. } = plan.claim else {
+            panic!("the draft that is not stale is offered");
+        };
+        assert_eq!(edit["content"], "a day old");
+        let plan = choose(&docs(), "w3", &texts, 7 + day).unwrap();
+        assert_eq!(plan.expired.len(), 2);
+        assert!(matches!(plan.claim, Claim::Nothing));
+    }
+
+    #[test]
+    fn at_the_cap_the_draft_is_handed_over_without_a_copy_and_the_source_stays() {
+        let docs = docs();
+        let mut texts: Vec<String> = (0..MAX_DRAFTS)
+            .map(|n| kept(&format!("w{n}"), "d1", &format!("edit {n}"), 10 + n as u64))
+            .collect();
+        let plan = choose(&docs, "late", &texts, 100).unwrap();
+        let Claim::Uncopied(edit) = plan.claim else {
+            panic!("nothing fits beside {MAX_DRAFTS} drafts");
+        };
+        assert_eq!(edit["content"], format!("edit {}", MAX_DRAFTS - 1));
+        // Room that opens (one draft aged out) lets the copy be written.
+        texts[0] = kept("w0", "d1", "edit 0", 1);
+        let plan = choose(&docs, "late", &texts, 1 + MAX_AGE_MS + 1).unwrap();
+        assert_eq!(plan.expired, ["drafts/d1.w0.json"]);
+        assert!(matches!(plan.claim, Claim::Copy { .. }));
+    }
+
+    /// The files of the App's drafts folder, as the real `claim`, `save` and `discard` leave them.
+    #[derive(Clone)]
+    struct World {
+        files: std::collections::BTreeMap<String, String>,
+        now: u64,
+        writes: u32,
+        /// What each editor last wrote or was handed, with the time its file was written: the edit
+        /// it would lose if its file changed under it.
+        owns: std::collections::BTreeMap<&'static str, (String, u64)>,
+        /// A claim read and planned, waiting for its one write.
+        claiming: std::collections::BTreeMap<&'static str, (Plan, u64)>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Save(&'static str),
+        Discard(&'static str),
+        Begin(&'static str),
+        Finish(&'static str),
+        /// More than a day passes.
+        Tick,
+    }
+
+    const EDITORS: [&str; 2] = ["a", "b"];
+
+    fn steps() -> Vec<Step> {
+        let mut steps = vec![Step::Tick];
+        for editor in EDITORS {
+            steps.extend([
+                Step::Save(editor),
+                Step::Discard(editor),
+                Step::Begin(editor),
+                Step::Finish(editor),
+            ]);
+        }
+        steps
+    }
+
+    impl World {
+        fn new() -> Self {
+            Self {
+                files: Default::default(),
+                now: 1_000,
+                writes: 0,
+                owns: Default::default(),
+                claiming: Default::default(),
+            }
+        }
+
+        fn texts(&self) -> Vec<String> {
+            self.files.values().cloned().collect()
+        }
+
+        /// One editor's calls run one at a time, so it has nothing else to do while its claim waits.
+        fn allowed(&self, step: Step) -> bool {
+            match step {
+                Step::Save(e) | Step::Discard(e) | Step::Begin(e) => !self.claiming.contains_key(e),
+                Step::Finish(e) => self.claiming.contains_key(e),
+                Step::Tick => true,
+            }
+        }
+
+        /// Applies the step with the real `parse_new`, `choose` and the removals `claim` makes, and
+        /// returns every path the step changed.
+        fn step(&mut self, step: Step) -> Vec<String> {
+            let before = self.files.clone();
+            match step {
+                Step::Tick => self.now += MAX_AGE_MS + 1,
+                Step::Save(editor) => {
+                    self.writes += 1;
+                    let content = format!("{editor}{}", self.writes);
+                    let text =
+                        parse_new(&docs(), editor, "d1", 1, &edit(&content), self.now).unwrap();
+                    self.files.insert(path_of("d1", editor).unwrap(), text);
+                    self.owns.insert(editor, (content, self.now));
+                }
+                Step::Discard(editor) => {
+                    self.files.remove(&path_of("d1", editor).unwrap());
+                    self.owns.remove(editor);
+                }
+                Step::Begin(editor) => {
+                    let plan = choose(&docs(), editor, &self.texts(), self.now).unwrap();
+                    for path in &plan.expired {
+                        self.files.remove(path);
+                    }
+                    self.claiming.insert(editor, (plan, self.now));
+                }
+                Step::Finish(editor) => {
+                    let (plan, _) = self.claiming.remove(editor).unwrap();
+                    match plan.claim {
+                        Claim::Copy { path, text, edit } => {
+                            let at = Kept::parse(&text).unwrap().saved_at_ms;
+                            self.files.insert(path, text);
+                            let content = edit["content"].as_str().unwrap().to_owned();
+                            self.owns.insert(editor, (content, at));
+                        }
+                        Claim::Keep(_) | Claim::Uncopied(_) | Claim::Nothing => {}
+                    }
+                }
+            }
+            let mut changed: Vec<String> = before
+                .iter()
+                .filter(|(path, text)| self.files.get(*path) != Some(text))
+                .map(|(path, _)| path.clone())
+                .collect();
+            changed.extend(
+                self.files
+                    .keys()
+                    .filter(|p| !before.contains_key(*p))
+                    .cloned(),
+            );
+            changed
+        }
+
+        /// What no sequence of steps may break.
+        fn check(&self, step: Step, changed: &[String], before: &World) {
+            let own = |editor: &str| path_of("d1", editor).unwrap();
+            // A step writes or removes only its own editor's file; the age sweep, run by a claim,
+            // is the one removal of anyone else's, and only of a draft older than a day.
+            for path in changed {
+                let owner = match step {
+                    Step::Save(e) | Step::Discard(e) | Step::Finish(e) => Some(own(e)),
+                    Step::Begin(_) | Step::Tick => None,
+                };
+                if owner.as_ref() == Some(path) {
+                    continue;
+                }
+                let swept = matches!(step, Step::Begin(_))
+                    && !self.files.contains_key(path)
+                    && before
+                        .files
+                        .get(path)
+                        .is_some_and(|text| Kept::parse(text).unwrap().expired(before.now));
+                assert!(
+                    swept,
+                    "{step:?} changed {path}, which is not its editor's own"
+                );
+            }
+            // The edit an editor kept or was handed stays in its own file until it discards it
+            // or the file is a day old.
+            for (editor, (content, at)) in &self.owns {
+                if self.now.saturating_sub(*at) > MAX_AGE_MS {
+                    continue;
+                }
+                let kept = self
+                    .files
+                    .get(&own(editor))
+                    .map(|t| Kept::parse(t).unwrap());
+                assert_eq!(
+                    kept.as_ref().map(|k| k.value["content"].as_str().unwrap()),
+                    Some(content.as_str()),
+                    "after {step:?} editor {editor} lost its edit"
+                );
+            }
+        }
+
+        /// The edit a claim hands over is one some draft held when it read them.
+        fn check_handed(&self, editor: &str, before: &World) {
+            let (plan, _) = &self.claiming[editor];
+            let edit = match &plan.claim {
+                Claim::Keep(edit) | Claim::Uncopied(edit) | Claim::Copy { edit, .. } => edit,
+                Claim::Nothing => return,
+            };
+            assert!(
+                before
+                    .files
+                    .values()
+                    .any(|text| Kept::parse(text).unwrap().value["content"] == edit["content"]),
+                "claim by {editor} handed an edit no draft held"
+            );
+        }
+    }
+
+    fn explore(world: &World, depth: usize, steps: &[Step], visited: &mut u64) {
+        if depth == 0 {
+            return;
+        }
+        for &step in steps {
+            if !world.allowed(step) {
+                continue;
+            }
+            let mut next = world.clone();
+            let changed = next.step(step);
+            next.check(step, &changed, world);
+            if let Step::Begin(editor) = step {
+                next.check_handed(editor, world);
+            }
+            *visited += 1;
+            explore(&next, depth - 1, steps, visited);
+        }
+    }
+
+    /// Two editors that save, discard, claim, with the claim's read and its write apart, a day
+    /// passing between any two steps: every order of up to `DEPTH` steps keeps every editor's edit in
+    /// its own file and changes no file but its own editor's (or an expired one, swept).
+    #[test]
+    fn no_order_of_saves_discards_claims_and_days_loses_an_edit_or_touches_another_editors_draft() {
+        const DEPTH: usize = 6;
+        let mut visited = 0;
+        explore(&World::new(), DEPTH, &steps(), &mut visited);
+        assert!(visited > 50_000, "the search covered {visited} steps");
+    }
+
+    /// The reviewer's first repro, in order: the live editor's only draft, another editor opens
+    /// and discards, and the live editor's window is replaced.
+    #[test]
+    fn a_live_editors_only_draft_survives_another_editor_claiming_and_discarding() {
+        let mut world = World::new();
+        for step in [
+            Step::Save("a"),
+            Step::Begin("b"),
+            Step::Finish("b"),
+            Step::Discard("b"),
+        ] {
+            world.step(step);
+        }
+        let a = world.files[&path_of("d1", "a").unwrap()].clone();
+        assert_eq!(Kept::parse(&a).unwrap().value["content"], "a1");
+        // Its successor is handed the edit.
+        world.step(Step::Begin("b"));
+        assert!(matches!(world.claiming["b"].0.claim, Claim::Copy { .. }));
     }
 }

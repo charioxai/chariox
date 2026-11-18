@@ -309,7 +309,8 @@ test('a save that fails for a reason that is not a conflict is reported once and
   await app.draw(300, 400);
   await waitUntil(() => backend.live().length === 4, { what: 'saving after the reload' });
   assert.equal(backend.saves.at(-1).scene.elements.length, 4, 'the existing rectangle, the two drawn before the reload and the new one');
-  await waitUntil(() => backend.drafts.size === 0, { what: 'the kept edits to be discarded once saved' });
+  await waitUntil(() => backend.drafts.size === 1, { what: 'the recovering window\'s own draft to be discarded once saved' });
+  assert.equal(backend.drafts.size, 1, 'only the replaced window\'s draft is left, for its age to remove');
   await app.shot('failure-recovery');
 }));
 
@@ -412,12 +413,14 @@ test('an edit still waiting for its automatic save comes back when the App updat
     await first.load();
     await first.draw();
     await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
+    const [replacedId] = backend.drafts.keys();
     assert.equal(backend.live().length, 0, 'nothing of the drawing reached the saved diagram');
     backend.holdSaves = null;
     second = await replaced(first, backend);
     assert.deepEqual((await second.elements()).map(element => element.type), ['rectangle'], 'the drawn rectangle comes back');
     await waitUntil(() => backend.live().length === 1, { what: 'the recovered edit to be saved' });
-    await waitUntil(() => backend.drafts.size === 0, { what: 'the kept edit to be discarded once saved' });
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the recovering window\'s own draft to be discarded once saved' });
+    assert(backend.drafts.has(replacedId), 'the replaced window\'s draft stays: only its window or its age removes it');
     second.assertClean();
   } finally { await first.close(); await second?.close(); }
 });
@@ -438,7 +441,7 @@ test('an unacknowledged automatic save does not lose newer edits when the App up
     second = await replaced(first, backend);
     assert.equal((await second.elements()).length, 3, 'the saved rectangle and the two drawn while the save waited');
     await waitUntil(() => backend.live().length === 3, { what: 'the recovered edits to be saved' });
-    await waitUntil(() => backend.drafts.size === 0, { what: 'the kept edit to be discarded once saved' });
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the recovering window\'s own draft to be discarded once saved' });
   } finally { await first.close(); await second?.close(); }
 });
 
@@ -485,25 +488,42 @@ test('a refused write of the recovering window\'s draft leaves the replaced wind
     third = await replaced(second, backend);
     assert.equal((await third.elements()).length, 1, 'the rectangle comes back again');
     await waitUntil(() => backend.live().length === 1, { what: 'the recovered edit to be saved' });
-    await waitUntil(() => backend.drafts.size === 0, { what: 'the kept drafts to be forgotten once saved' });
+    assert(backend.drafts.has(replacedId), 'the replaced window\'s draft is still kept, for its age to remove');
   } finally { await first.close(); await second?.close(); await third?.close(); }
 });
 
-test('a recovering window whose draft writes are refused forgets the replaced draft once its scene is saved', { timeout: 90_000 }, async () => {
+// The review's second repro: a window that is still open advances its draft after another window read it,
+// and nothing the recovering window does may remove the newer draft.
+test('a draft that advances after a recovering window read it is never removed by that window', { timeout: 90_000 }, async () => {
   const backend = fakeBackend();
   backend.holdSaves = 'lose';
-  const first = await openApp({ backend });
-  let second;
+  const open = await openApp({ backend });
+  let recovering, next;
   try {
-    await first.load();
-    await first.draw();
-    await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
-    backend.failDraftSaves = 'the draft store is unavailable';
+    await open.load();
+    await open.draw(300, 200);
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the open window\'s edit to be kept' });
+    const [openId] = backend.drafts.keys();
+    // The recovering window has its copy of that draft when the open window keeps a second rectangle.
+    backend.afterReadDrafts = async () => {
+      backend.afterReadDrafts = null;
+      await open.draw(700, 500);
+      await waitUntil(() => backend.drafts.get(openId).elements.length === 2, { what: 'the open window\'s second rectangle to be kept' });
+    };
+    recovering = await openApp({ backend });
+    await recovering.load();
+    await recovering.until(elements => elements.length === 1, { what: 'the recovering window to show what the draft held when it read it' });
+    // The recovering window's own writes finish; its scene save never commits (holdSaves).
+    await idle(1500);
+    assert.equal(backend.drafts.get(openId)?.elements.length, 2, 'the open window\'s newer draft is still kept');
+    // Both views are replaced; the next window finds both rectangles.
+    await open.close(); await recovering.close();
     backend.holdSaves = null;
-    second = await replaced(first, backend);
-    await waitUntil(() => backend.live().length === 1, { what: 'the recovered edit to be saved' });
-    await waitUntil(() => backend.drafts.size === 0, { what: 'the replaced draft to be forgotten after the committed save' });
-  } finally { await first.close(); await second?.close(); }
+    next = await openApp({ backend });
+    await next.load();
+    assert.equal((await next.elements()).length, 2, 'the rectangle kept after the other window read the draft is back');
+    await waitUntil(() => backend.live().length === 2, { what: 'both rectangles to be saved' });
+  } finally { await open.close(); await recovering?.close(); await next?.close(); }
 });
 
 test('two windows replaced together each get their edit back', { timeout: 90_000 }, async () => {
@@ -523,7 +543,7 @@ test('two windows replaced together each get their edit back', { timeout: 90_000
     await third.load();
     assert.equal((await third.elements()).length, 2, 'both windows\' rectangles come back');
     await waitUntil(() => backend.live().length === 2, { what: 'both edits to be saved' });
-    await waitUntil(() => backend.drafts.size === 0, { what: 'both kept edits to be discarded once saved' });
+    await waitUntil(() => backend.drafts.size === 2, { what: 'the recovering window\'s own draft to be discarded once saved' });
   } finally { await left.close(); await right.close(); await third?.close(); }
 });
 

@@ -92,6 +92,8 @@ export function fakeBackend() {
     drafts: new Map(),
     /** Message of the error every save_draft throws, with the kept drafts unchanged. */
     failDraftSaves: null,
+    /** Awaited by read_drafts after it took its copy of the kept drafts, before it answers. */
+    afterReadDrafts: null,
     /**
      * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
      * never answers: the two ways an App update can end a save the window is waiting for.
@@ -157,7 +159,11 @@ export function fakeBackend() {
         return { version: backend.version };
       }
       if (name === 'save_draft') { if (backend.failDraftSaves) throw Error(backend.failDraftSaves); backend.drafts.set(input.id, clone(input.scene)); return {}; }
-      if (name === 'read_drafts') return { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
+      if (name === 'read_drafts') {
+        const reply = { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
+        await backend.afterReadDrafts?.();
+        return reply;
+      }
       if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }
       if (name === 'write_file') {
         const bytes = input.base64 ? Buffer.from(input.base64, 'base64') : Buffer.from(input.text);

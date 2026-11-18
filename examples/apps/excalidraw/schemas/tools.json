@@ -61,7 +61,7 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id.",
+      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id, at most four at once (a new id is refused until one is discarded or an hour old).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -118,7 +118,7 @@
     },
     {
       "name": "discard_draft",
-      "description": "Forget the draft kept under this window id and no other.",
+      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts never removes them.",
       "inputSchema": {
         "type": "object",
         "properties": {
