@@ -10,55 +10,40 @@
 //! An option P is a listed class with its region, or the service's own default when it lists no
 //! options; both are remembered and replayed the same way, whatever the service lists later.
 //!
-//! | row \ outcome of a try | accepted (new or replay) | failed before the acquire was sent | lost response, timeout, transient or other code | definitive refusal | restart |
-//! |-----------------|-----------------------------|---------------------|---------------------|---------------------------------|---------|
-//! | none            | chose P → pending P → accepted P, ref | chose P → pending P | chose P → pending P | chose P → pending P → refused P | none |
-//! | pending P       | accepted P, ref             | pending P           | pending P           | refused P                       | pending P |
-//! | refused P       | accepted P, ref             | refused P           | refused P           | refused P                       | refused P |
-//! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref     | accepted P, ref                 | accepted P, ref |
+//! | row \ outcome of a try | accepted (new or replay) | anything else: refusal, failure before or after the post, lost response, timeout | restart |
+//! |-----------------|-----------------------------|---------------------|---------|
+//! | none            | chose P → pending P → accepted P, ref | chose P → pending P | none |
+//! | pending P       | accepted P, ref             | pending P           | pending P |
+//! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref |
 //!
-//! A try has one state of its own, and only the second step touches the row:
+//! Nothing the kernel or the service says today proves that a request holds nothing: tries of one
+//! request overlap, a try may still wait for its capability call or the owner's decision when
+//! another is refused, and the service may refuse one try before another commits. So a refusal
+//! never frees the option, never says nothing was allocated or charged and never sends the caller
+//! to another request_id on its own. It says what the service refused and that retrying the same
+//! request_id is safe, because the service never allocates twice under it and returns the
+//! allocation it accepted, if there is one. Changing the option needs a new request_id, and the
+//! refusal warns that a try of the old one may still be in flight.
 //!
-//! | try | what moves it | row |
-//! |-----|---------------|-----|
-//! | prepared | the option is chosen; the capability call, the owner's decision and every local refusal still lie ahead | none: a failure here ends the try and changes nothing |
-//! | sent | the kernel is about to post the acquire (`control_plane::execute_sending` runs the `BeforeSend` hook right before the post) | `unanswered` + 1 |
-//! | answered | the row records its acceptance or its refusal | `unanswered` - 1 on a refusal; an acceptance is final |
-//!
-//! A sent try stays unanswered until the row records its answer: a lost response, a timeout, a
-//! restart or any other failure after the post never answers it, so the count stays. A request is
-//! known to hold nothing only when it is refused and no sent try of it is unanswered: a refusal
-//! judged before an overlapping try commits says nothing about that try. Only then does a refusal
-//! say that nothing was allocated or charged and suggest another request_id; in every other case
-//! it tells the caller to retry the same request_id, which returns the allocation the service
-//! accepted, if there is one. A try that never reached the post holds nothing at the service, so
-//! it is never counted and never settled: it cannot keep a later refusal from saying so.
-//!
-//! - Definitive refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
-//!   (`AcquireFailure::Refused`) answering the acquire itself. Tries of one request can overlap:
-//!   the service can refuse one before another commits, and that refusal can arrive after the
-//!   committed try's response was lost. So a refusal only records the answer and never frees the
-//!   option; the retry resends it, and the service replays what it accepted. Everything else is
-//!   ambiguous and changes nothing: `internal_error`, `dependency_unavailable`, `rate_limited`,
-//!   `admission_denied`, any 5xx, a lost or undecodable response, a timeout, and the other codes
-//!   (`authorization_denied`, `identity_conflict`, `subscription_required`, ...).
-//! - A try that fails before the acquire is sent keeps the row whatever the failure says and is
-//!   not counted: the capability call before it, the owner's denial or approval timeout and a
-//!   local refusal. The connected-service
-//!   boundary passes the capability call's failure on without its Cloud code
-//!   (`control_plane_offer_unavailable`), so no code it carries is read as a refusal.
-//! - Accepted moves any row with the option the try sent but one accepted under another
+//! - Refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
+//!   (`AcquireFailure::Refused`) answering the acquire itself; the refusal names them. Every other
+//!   failure passes on as it is. The connected-service boundary passes the capability call's
+//!   failure before the acquire on without its Cloud code (`control_plane_offer_unavailable`), so
+//!   no code it carries is read as a refusal of the acquire.
+//! - Accepted moves a row with the option the try sent, unless it is accepted under another
 //!   allocation: the service's acceptance is the truth, even after a refusal.
 //! - Choosing writes only a missing row; a try that loses that race takes the option the winner
 //!   wrote. An explicit class_id or region that differs from the row's is refused before the
-//!   service is asked: another option needs a new request_id.
+//!   service is asked.
 //! - A restart keeps the row, so a retry after a restart resends what the first try sent.
 //! - Nothing removes a row or writes another option into it, so a request_id never forgets the
 //!   option under which the service may hold an allocation; releasing it is the owner's
 //!   `chariox.machines.release` of the allocation_ref.
 use super::*;
-use crate::durable_state::acquire_choices::{AcquireChoice, AcquireChoiceWrite, AcquireOption};
-use crate::runtime::cloud_api_client::{acquire_failure, AcquireFailure};
+use crate::durable_state::acquire_choices::{AcquireChoiceWrite, AcquireOption};
+use crate::runtime::cloud_api_client::{
+    acquire_failure, cloud_error_code, cloud_error_reason, AcquireFailure,
+};
 use sha2::Digest;
 
 /// The option an acquire asks for: the one the agent named, else the first option the service
@@ -89,51 +74,73 @@ pub(super) fn acquire_choice(
         }),
         None => Err(acquisition_error(
             "capacity_unavailable",
-            "No machine option is in stock right now; no request was sent, so nothing was allocated or charged. Try again later: chariox.machines.options shows the options and their stock",
+            "No machine option is in stock right now, so this try was not sent. Try again later: chariox.machines.options shows the options and their stock",
         )),
     }
 }
 
-/// A refused acquire. When the request is known to hold nothing it names what is in stock and how
-/// to choose it under a new request_id; otherwise it sends the caller back to the same request_id,
-/// which returns an allocation the service may have accepted.
-/// Only the refused option is left out: the same class in another region may be in stock.
-pub(super) fn out_of_stock_refusal(
+/// A refused acquire names what the service refused and sends the caller back to the same
+/// request_id, which is safe to retry; another try of it may still be in flight.
+pub(super) fn acquire_refusal(
     error: DaemonError,
     capability: &MachineAllocationCapability,
     option: &AcquireOption,
     request_id: &str,
-    request: &AcquireChoice,
 ) -> DaemonError {
-    if acquire_failure(&error) != (AcquireFailure::Refused { out_of_stock: true }) {
+    let AcquireFailure::Refused { out_of_stock } = acquire_failure(&error) else {
         return error;
-    }
-    let (chosen, chosen_region) = (option.class_id(), option.region());
-    let in_stock: Vec<String> = capability
-        .offers
-        .iter()
-        .filter(|option| {
-            option.available
-                && !(Some(option.class_id.as_str()) == chosen
-                    && chosen_region.is_none_or(|region| option.region == region))
-        })
-        .map(|option| format!("{} in {}", option.class_id, option.region))
-        .collect();
+    };
     let subject = match option {
         AcquireOption::Named { .. } => option_name(option),
         AcquireOption::ServiceDefault => "The default option".to_owned(),
     };
-    let message = if !request.holds_nothing() {
-        format!("{subject} is out of stock for this try, but request_id {request_id} may still hold an allocation: another try of it was not answered or was accepted. Retry chariox.machines.acquire with the same request_id and no other option: it returns the allocation if one was accepted, and is refused out of stock again if none was")
-    } else if in_stock.is_empty() {
-        format!("{subject} is out of stock and no other option is in stock; every try of request_id {request_id} was answered and none was accepted, so nothing was allocated or charged. Try again later")
+    let (code, refused) = if out_of_stock {
+        (
+            "capacity_unavailable".to_owned(),
+            format!("{subject} is out of stock"),
+        )
     } else {
-        format!(
-            "{subject} is out of stock; every try of request_id {request_id} was answered and none was accepted, so nothing was allocated or charged. In stock now: {}. Choose one by passing a new request_id with its class_id and region to chariox.machines.acquire, or a new request_id alone to take the first in stock",
-            in_stock.join(", ")
+        (
+            cloud_error_code(&error)
+                .unwrap_or("invalid_request")
+                .to_owned(),
+            format!(
+                "The service refused {}: {}",
+                option_name(option),
+                cloud_error_reason(&error).unwrap_or("no reason given")
+            ),
         )
     };
-    acquisition_error("capacity_unavailable", &message)
+    // Only the refused option is left out: the same class in another region may be in stock.
+    let (chosen, chosen_region) = (option.class_id(), option.region());
+    let in_stock: Vec<String> = capability
+        .offers
+        .iter()
+        .filter(|offer| {
+            out_of_stock
+                && offer.available
+                && !(Some(offer.class_id.as_str()) == chosen
+                    && chosen_region.is_none_or(|region| offer.region == region))
+        })
+        .map(|offer| format!("{} in {}", offer.class_id, offer.region))
+        .collect();
+    let in_stock = if in_stock.is_empty() {
+        String::new()
+    } else {
+        format!(" In stock now: {}.", in_stock.join(", "))
+    };
+    acquisition_error(
+        &code,
+        &format!(
+            "{refused}. Retrying chariox.machines.acquire with request_id {request_id} is safe: it keeps this option, the service never allocates twice under it and returns the machine if a try of it was accepted.{in_stock} {}.",
+            another_option(request_id)
+        ),
+    )
+}
+
+/// What changing a request's option means: no answer proves the old request_id holds nothing.
+fn another_option(request_id: &str) -> String {
+    format!("Another option needs a new request_id, but a try of request_id {request_id} may still be in flight and allocate a machine: check the machines list before you send one")
 }
 
 /// The service's request id: request_ids are the agent's own, so they are scoped to this kernel
@@ -164,16 +171,12 @@ impl KernelRuntimeState {
                         named.is_some() && named.as_deref() != kept
                     };
                     if differs(&class_id, option.class_id()) || differs(&region, option.region()) {
-                        let other = if choice.holds_nothing() {
-                            ", or pass a new request_id to choose another option"
-                        } else {
-                            " (the service may hold an allocation under it, so another option waits until a refusal says it holds nothing)"
-                        };
                         return Err(acquisition_error(
                             "invalid_request",
                             &format!(
-                                "request_id {request_id} already asked for {}; retry it without class_id and region{other}",
-                                option_name(&option)
+                                "request_id {request_id} already asked for {}; retry it without class_id and region. {}.",
+                                option_name(&option),
+                                another_option(request_id)
                             ),
                         ));
                     }
@@ -195,69 +198,28 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Records that a try sending `option` is about to be posted, before it is.
-    pub(super) fn begin_acquire_try(
+    /// Records the allocation the service accepted for the option this try sent.
+    pub(super) fn accept_acquire_option(
         &self,
         agent_id: &str,
         request_id: &str,
         option: &AcquireOption,
+        allocation_ref: &str,
     ) -> Result<(), DaemonError> {
-        self.owned.durable_state_store.write_acquire_choice(
+        if self.owned.durable_state_store.write_acquire_choice(
             agent_id,
             request_id,
-            AcquireChoiceWrite::Send {
-                option: option.clone(),
-            },
-        )?;
-        Ok(())
-    }
-
-    /// Records what the service said about the option this try sent, and returns the request's
-    /// row as it stands after that answer.
-    pub(super) fn settle_acquire_option(
-        &self,
-        agent_id: &str,
-        request_id: &str,
-        option: &AcquireOption,
-        outcome: Result<&str, &DaemonError>,
-    ) -> Result<AcquireChoice, DaemonError> {
-        let write = match outcome {
-            Ok(allocation_ref) => AcquireChoiceWrite::Accept {
+            AcquireChoiceWrite::Accept {
                 option: option.clone(),
                 allocation_ref: allocation_ref.to_owned(),
             },
-            Err(error) => match acquire_failure(error) {
-                AcquireFailure::Refused { .. } => AcquireChoiceWrite::Refuse {
-                    option: option.clone(),
-                },
-                AcquireFailure::Ambiguous => return self.request_row(agent_id, request_id),
-            },
-        };
-        let accepted = matches!(write, AcquireChoiceWrite::Accept { .. });
-        if !self
-            .owned
-            .durable_state_store
-            .write_acquire_choice(agent_id, request_id, write)?
-            && accepted
-        {
-            return Err(acquisition_error(
-                "invalid_response",
-                &format!("The service returned another allocation for request_id {request_id} than it accepted before; check chariox.machines.status for both"),
-            ));
+        )? {
+            return Ok(());
         }
-        self.request_row(agent_id, request_id)
-    }
-
-    fn request_row(&self, agent_id: &str, request_id: &str) -> Result<AcquireChoice, DaemonError> {
-        self.owned
-            .durable_state_store
-            .acquire_choice(agent_id, request_id)?
-            .ok_or_else(|| {
-                acquisition_error(
-                    "invalid_response",
-                    &format!("request_id {request_id} lost its saved option"),
-                )
-            })
+        Err(acquisition_error(
+            "invalid_response",
+            &format!("The service returned another allocation for request_id {request_id} than it accepted before; check chariox.machines.status for both"),
+        ))
     }
 }
 

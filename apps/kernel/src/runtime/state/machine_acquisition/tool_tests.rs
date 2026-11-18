@@ -27,8 +27,19 @@ struct Service {
     capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
 }
 
-/// For the next capability calls in order: a status and code to fail with, or none to answer.
-type CapabilityFailures = std::collections::VecDeque<Option<(&'static str, &'static str)>>;
+/// How the stand-in service answers the next capability calls, in order; it answers at once when
+/// none is queued.
+enum CapabilityAnswer {
+    Answer,
+    Fail(&'static str, &'static str),
+    /// Notifies `arrived` when the call comes in, and answers only when `release` is notified.
+    Hold {
+        arrived: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    },
+}
+
+type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
 
 /// A connected service that lists `offers` and, like Cloud, binds each accepted request id to its
 /// class and region and replays it, whatever the stock says now. A new request for a class named
@@ -78,12 +89,8 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
             let request = &body["request"];
             let error = |code: &str| serde_json::json!({"error":{"code":code,"message":code}});
             let (status, response) = match request["action"].as_str().unwrap() {
-                "capabilities" => 'capabilities: {
-                    if let Some(Some((status, code))) =
-                        next_capability_failure.lock().unwrap().pop_front()
-                    {
-                        break 'capabilities (status, error(code));
-                    }
+                "capabilities" => {
+                    let answer = next_capability_failure.lock().unwrap().pop_front();
                     let capability = MachineAllocationCapability {
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
@@ -92,10 +99,20 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         job_offers: vec![],
                         job_default_class_id: None,
                     };
-                    (
-                        "200 OK",
-                        serde_json::json!({"kind":"capabilities","machine_allocation":capability}),
-                    )
+                    let response =
+                        serde_json::json!({"kind":"capabilities","machine_allocation":capability});
+                    match answer {
+                        Some(CapabilityAnswer::Fail(status, code)) => (status, error(code)),
+                        Some(CapabilityAnswer::Hold { arrived, release }) => {
+                            arrived.notify_one();
+                            tokio::spawn(async move {
+                                release.notified().await;
+                                respond(socket, "200 OK", response).await;
+                            });
+                            continue;
+                        }
+                        Some(CapabilityAnswer::Answer) | None => ("200 OK", response),
+                    }
                 }
                 "acquire" => {
                     seen.lock().unwrap().push(request.clone());
@@ -322,13 +339,11 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         .to_string();
     assert!(error.contains("big in north is out of stock"), "{error}");
     assert!(error.contains("In stock now: small in south."), "{error}");
-    assert!(error.contains("class_id and region"), "{error}");
-    // The one try was answered and nothing accepted it: the request holds nothing.
-    assert!(error.contains("none was accepted"), "{error}");
-    assert!(
-        error.contains("nothing was allocated or charged"),
-        "{error}"
-    );
+    // The kernel cannot know that no other try of the request is on its way: the refusal claims
+    // nothing about what the request holds.
+    assert!(!error.contains("nothing was allocated"), "{error}");
+    assert!(error.contains("is safe"), "{error}");
+    assert!(error.contains("may still be in flight"), "{error}");
 }
 
 #[tokio::test]
@@ -403,7 +418,7 @@ async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again
     service.offers.lock().unwrap()[0].available = false;
     let error = acquire("r1").await.unwrap_err().to_string();
     assert!(error.contains("big in north is out of stock"), "{error}");
-    assert!(error.contains("a new request_id"), "{error}");
+    assert_retry_the_same_request(&error, "r1");
     acquire("r2").await.unwrap();
     let acquires = service.acquires.lock().unwrap();
     let pairs: Vec<_> = acquires
@@ -417,18 +432,21 @@ async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again
     );
 }
 
-/// A refusal of a request that may hold an allocation sends the caller back to that request_id:
-/// it never says nothing was charged and never offers another request_id.
+/// Any refusal may leave a try of its request in flight, so it sends the caller back to that
+/// request_id: it never says nothing was charged, and another option comes with the warning that
+/// the old request_id may still allocate.
 fn assert_retry_the_same_request(error: &str, request_id: &str) {
     assert!(!error.contains("nothing was allocated"), "{error}");
-    assert!(!error.contains("new request_id"), "{error}");
+    assert!(!error.contains("charged"), "{error}");
     assert!(
-        error.contains("Retry chariox.machines.acquire with the same request_id"),
+        error.contains(&format!(
+            "Retrying chariox.machines.acquire with request_id {request_id} is safe"
+        )),
         "{error}"
     );
     assert!(
         error.contains(&format!(
-            "request_id {request_id} may still hold an allocation"
+            "a try of request_id {request_id} may still be in flight and allocate a machine: check the machines list"
         )),
         "{error}"
     );
@@ -457,66 +475,6 @@ fn agent_of(state: &KernelRuntimeState, token: &str) -> String {
         ))
         .unwrap()
         .agent_id
-}
-
-/// A try counts as unanswered only once it is sent: a failure before the acquire leaves the
-/// service nothing to hold, so it never keeps a later refusal from saying the request is empty.
-#[tokio::test]
-async fn a_try_that_never_reached_the_service_does_not_keep_a_refusal_from_saying_nothing_is_held()
-{
-    let service = service(two_in_stock(), &["small"]).await;
-    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
-    let agent = agent_of(&state, &token);
-    let acquire = |request_id: &str| {
-        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
-    };
-    // The tool's own capability call answers; the one before the acquire fails.
-    let fail_before_the_acquire = || {
-        service
-            .capability_failures
-            .lock()
-            .unwrap()
-            .extend([None, Some(("429 Too Many Requests", "rate_limited"))]);
-    };
-    fail_before_the_acquire();
-    let error = acquire("r1").await.unwrap_err().to_string();
-    assert!(error.contains("nothing was requested"), "{error}");
-    assert!(service.acquires.lock().unwrap().is_empty());
-    let unanswered = |request_id: &str| {
-        state
-            .owned
-            .durable_state_store
-            .acquire_choice(&agent, request_id)
-            .unwrap()
-            .unwrap()
-            .unanswered
-    };
-    assert_eq!(unanswered("r1"), 0);
-    let error = acquire("r1").await.unwrap_err().to_string();
-    assert!(error.contains("small in north is out of stock"), "{error}");
-    assert!(
-        error.contains("nothing was allocated or charged"),
-        "{error}"
-    );
-    assert!(error.contains("a new request_id"), "{error}");
-    assert_eq!(unanswered("r1"), 0);
-    // A try that was sent and never answered still sends the caller back to the same request_id.
-    fail_before_the_acquire();
-    assert!(acquire("r2").await.is_err());
-    service
-        .answers
-        .lock()
-        .unwrap()
-        .push_back(Answer::LoseResponse);
-    assert!(acquire("r2").await.is_err());
-    service
-        .answers
-        .lock()
-        .unwrap()
-        .push_back(Answer::Refuse("429 Too Many Requests", "capacity_exceeded"));
-    let error = acquire("r2").await.unwrap_err().to_string();
-    assert_retry_the_same_request(&error, "r2");
-    assert_eq!(unanswered("r2"), 1);
 }
 
 #[tokio::test]
@@ -609,7 +567,7 @@ async fn a_refusal_after_a_lost_response_keeps_the_option_and_the_retry_recovers
             .acquire_choice(&agent, &request_id)
             .unwrap()
             .unwrap();
-        assert_eq!(row.state, AcquireChoiceState::Refused, "{code}");
+        assert_eq!(row.state, AcquireChoiceState::Pending, "{code}");
         service.offers.lock().unwrap()[0].available = false;
         let retried = acquire()
             .await
@@ -671,7 +629,6 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
         assert!(second.is_err(), "{code}");
         if code == "capacity_exceeded" {
             assert_retry_the_same_request(&first, "r1");
-            assert!(!first.contains("In stock now"), "{first}");
         }
         let recovered = acquire()
             .await
@@ -701,6 +658,58 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
             }
         );
     }
+}
+
+/// A try that chose its option but has not been sent yet (its capability call or the owner's
+/// decision still runs) can allocate under its request_id after another try of it was refused, so
+/// that refusal never says the request holds nothing: following its guidance leaves one machine.
+#[tokio::test]
+async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_the_same_request() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquire = |request_id: &str| {
+        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
+    };
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // The first try's own capability call answers; the one right before its acquire waits.
+    service.capability_failures.lock().unwrap().extend([
+        CapabilityAnswer::Answer,
+        CapabilityAnswer::Hold {
+            arrived: arrived.clone(),
+            release: release.clone(),
+        },
+    ]);
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::Refuse("429 Too Many Requests", "capacity_exceeded"));
+    let interleaving = async {
+        tokio::join!(acquire("r1"), async {
+            arrived.notified().await;
+            let refused = acquire("r1").await;
+            release.notify_one();
+            refused
+        })
+    };
+    let (waited, refused) = tokio::time::timeout(std::time::Duration::from_secs(60), interleaving)
+        .await
+        .expect("both tries of r1 end");
+    let refused = refused.unwrap_err().to_string();
+    assert_retry_the_same_request(&refused, "r1");
+    let waited = waited.unwrap();
+    // The caller follows the refusal's guidance and gets the machine the waiting try allocated.
+    let retried = acquire("r1").await.unwrap();
+    assert_eq!(
+        retried.payload["allocation"]["allocation_ref"],
+        waited.payload["allocation"]["allocation_ref"]
+    );
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires.len(), 3);
+    assert!(acquires
+        .iter()
+        .all(|sent| sent["request_id"] == acquires[0]["request_id"]));
 }
 
 #[tokio::test]
@@ -796,7 +805,10 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
         error.contains("request_id r1 already asked for small in north"),
         "{error}"
     );
-    assert!(!error.contains("new request_id"), "{error}");
+    assert!(
+        error.contains("a try of request_id r1 may still be in flight"),
+        "{error}"
+    );
     assert_eq!(service.acquires.lock().unwrap().len(), 1);
     let named_same = state
         .machine_tool(
@@ -841,13 +853,12 @@ async fn a_failure_before_the_acquire_is_sent_keeps_the_option_and_recovers_with
         assert!(acquire().await.is_err());
         let sent = service.acquires.lock().unwrap().len();
         // The tool's own capability call answers; the one before the acquire fails.
-        service
-            .capability_failures
-            .lock()
-            .unwrap()
-            .extend([None, Some(failure)]);
+        service.capability_failures.lock().unwrap().extend([
+            CapabilityAnswer::Answer,
+            CapabilityAnswer::Fail(failure.0, failure.1),
+        ]);
         let error = acquire().await.unwrap_err().to_string();
-        assert!(error.contains("nothing was requested"), "{error}");
+        assert!(error.contains("this try was not sent"), "{error}");
         assert_eq!(service.acquires.lock().unwrap().len(), sent);
         assert_eq!(
             state

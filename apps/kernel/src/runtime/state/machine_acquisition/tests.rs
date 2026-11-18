@@ -136,7 +136,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .unwrap();
     let error = gate.await.unwrap().unwrap_err().to_string();
     assert!(error.contains("denied"));
-    assert!(error.contains("nothing was allocated or charged"));
+    assert!(error.contains("it was not sent to the service"));
 }
 
 #[tokio::test]
@@ -267,7 +267,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("nothing was allocated or charged"));
+        .contains("it was not sent to the service"));
 }
 
 pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {

@@ -14,27 +14,12 @@ fn cloud_request_body(
     serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
 }
 
-/// Runs once, right before the acquire leaves for the service and after every local step that can
-/// still stop it, so a caller keeping a record of its tries counts only those that were sent.
-pub(crate) type BeforeSend<'a> = &'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync);
-
 pub(crate) async fn execute(
     config: &DaemonConfig,
     state: &KernelRuntimeState,
     command: &KernelCommand,
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    execute_sending(config, state, command, gateway, request, None).await
-}
-
-pub(crate) async fn execute_sending(
-    config: &DaemonConfig,
-    state: &KernelRuntimeState,
-    command: &KernelCommand,
-    gateway: &crate::runtime::kernel_gateway::KernelGateway,
-    request: &ControlPlaneRequest,
-    before_send: Option<BeforeSend<'_>>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
@@ -83,15 +68,15 @@ pub(crate) async fn execute_sending(
             ),
         )
         .await
-        // A Cloud code on an acquire's error is the service's answer to that acquire, and some
-        // codes tell the kernel the request holds nothing. This answer is not about the request,
-        // so it passes on without its code.
+        // A Cloud code on an acquire's error is the service's answer to that acquire, and the
+        // refusal the agent reads names it. This answer is not about the acquire, so it passes on
+        // without its code.
         .map_err(|error| DaemonError::RelayTransport {
             operation: "connected control plane",
             code: "control_plane_offer_unavailable".into(),
             retryable: true,
             message: format!(
-                "The connected service did not return its machine offer, so nothing was requested; retry: {error}"
+                "The connected service did not return its machine offer, so this try was not sent; retry it: {error}"
             ),
         })?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
@@ -124,9 +109,6 @@ pub(crate) async fn execute_sending(
                 ));
             }
         }
-    }
-    if let Some(before_send) = before_send {
-        before_send()?;
     }
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
