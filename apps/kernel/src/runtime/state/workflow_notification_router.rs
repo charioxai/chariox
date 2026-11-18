@@ -604,7 +604,11 @@ impl KernelRuntimeOwnedState {
                                         envelope: env.clone(),
                                     },
                                 )? {
-                                    NotificationOutcome::Ack(_) => {
+                                    NotificationOutcome::Ack(ack) => {
+                                        // A dropped loop raises a flag in the person's Inbox.
+                                        if ack == WorkflowNotificationAck::LoopDropped {
+                                            self.person_inbox_changes.record_change();
+                                        }
                                         // Local acceptance shares the source receipt: Accepted
                                         // already promoted it. Terminal ACKs must retire any
                                         // remaining retryable source work, just like peer ACKs.

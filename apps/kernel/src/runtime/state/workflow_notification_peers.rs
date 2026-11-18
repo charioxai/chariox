@@ -539,6 +539,9 @@ impl KernelRuntimeState {
                             },
                         )? {
                             NotificationOutcome::Ack(ack) => {
+                                if ack == WorkflowNotificationAck::LoopDropped {
+                                    self.record_person_inbox_change();
+                                }
                                 Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
                             }
                             _ => Err(store::error("notification admission failed")),

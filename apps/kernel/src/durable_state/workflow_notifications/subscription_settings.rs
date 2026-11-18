@@ -20,7 +20,7 @@ pub(super) fn initialize(db: &Connection) -> rusqlite::Result<()> {
       subscription_id TEXT PRIMARY KEY, options_json TEXT NOT NULL DEFAULT '{}',
       once INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
       fired INTEGER NOT NULL DEFAULT 0, last_fired_at_ms INTEGER,
-      loop_stopped_at_ms INTEGER, flag_raised INTEGER NOT NULL DEFAULT 0);
+      loop_stopped_at_ms INTEGER);
     CREATE TABLE IF NOT EXISTS notification_trace (
       subscription_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, at_ms INTEGER NOT NULL,
       outcome TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, turn_ref TEXT,
@@ -111,7 +111,7 @@ pub(super) fn save_in(
 pub(super) fn carry_in(tx: &Transaction<'_>, from: &str, to: &str) -> Result<(), DaemonError> {
     tx.execute(
         "INSERT OR REPLACE INTO notification_subscription_settings
-         SELECT ?2, options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms, flag_raised
+         SELECT ?2, options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms
          FROM notification_subscription_settings WHERE subscription_id=?1",
         params![from, to],
     )
@@ -394,7 +394,8 @@ pub(crate) struct SubscriptionSettings {
     pub(crate) paused: bool,
     pub(crate) fired: u64,
     pub(crate) last_fired_at_ms: Option<u64>,
-    pub(crate) loop_stopped: bool,
+    /// When a delivery came back to this subscription and was dropped.
+    pub(crate) loop_stopped_at_ms: Option<u64>,
     /// The source no longer declares an option the subscription picked.
     pub(crate) options_changed: bool,
 }
@@ -448,7 +449,7 @@ impl DurableKernelStateStore {
             paused,
             fired: fired as u64,
             last_fired_at_ms: last_fired.map(|at| at as u64),
-            loop_stopped: loop_stopped.is_some(),
+            loop_stopped_at_ms: loop_stopped.map(|at| at as u64),
             options_changed,
         })
     }

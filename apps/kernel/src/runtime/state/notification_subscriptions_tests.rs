@@ -1,6 +1,7 @@
 //! NC-09 / NC-10 / NC-11: the subscriptions table lists each subscription of the owner's agents
 //! once, with what it picked and its counters; pause holds delivery back and resume lets the
-//! next event through; Test is a dry run; an orphan says why and is removed cleanly.
+//! next event through; Test is a dry run; an orphan says why, raises a flag in the person's
+//! Inbox, and is removed cleanly.
 use super::options::{app_event_source, review_requested, subscribe};
 use super::*;
 use crate::local::{
@@ -15,7 +16,7 @@ impl Rig {
             .list_notification_subscriptions("local")
             .unwrap()
         {
-            LocalDaemonResponse::NotificationSubscriptions { subscriptions } => subscriptions,
+            LocalDaemonResponse::NotificationSubscriptions { subscriptions, .. } => subscriptions,
             other => panic!("expected the subscriptions, got {other:?}"),
         }
     }
@@ -41,6 +42,25 @@ impl Rig {
         {
             LocalDaemonResponse::NotificationTrace { lines, .. } => lines,
             other => panic!("expected the trace, got {other:?}"),
+        }
+    }
+
+    /// The flag cards of the person's Inbox: subscription and health.
+    fn flags(&self) -> Vec<(String, NotificationSubscriptionHealth)> {
+        match crate::runtime::person_inbox::execute_person_inbox_request(&self.runtime, "local")
+            .unwrap()
+        {
+            LocalDaemonResponse::PersonInbox { cards, .. } => cards
+                .into_iter()
+                .filter_map(|card| match card.body {
+                    crate::local::PersonInboxCardBody::Flag(flag) => {
+                        assert_eq!(card.card_id, format!("flag:{}", flag.subscription_id));
+                        Some((flag.subscription_id, flag.health))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            other => panic!("expected the Inbox, got {other:?}"),
         }
     }
 
@@ -214,11 +234,33 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
     let source = rig.register(&workflow);
     rig.trigger_on(&source).await;
     let id = rig.rows()[0].subscription.subscription_id.clone();
+    assert!(
+        rig.flags().is_empty(),
+        "a healthy subscription raises no flag"
+    );
     rig.set_source_enabled(&workflow, false).await;
     let row = rig.rows().remove(0);
     assert_eq!(
         (row.source.is_none(), row.health),
         (true, NotificationSubscriptionHealth::SourceGone)
+    );
+    assert_eq!(
+        rig.flags(),
+        vec![(id.clone(), NotificationSubscriptionHealth::SourceGone)]
+    );
+    let read = crate::runtime::person_inbox::execute_set_inbox_card_state(
+        &rig.runtime,
+        crate::local::SetInboxCardStateRequest {
+            card_ids: vec![format!("flag:{id}")],
+            change: crate::local::InboxCardChange::Read { read: true },
+        },
+        "local",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        read.contains("leaves when the subscription is fixed or removed"),
+        "{read}"
     );
     let moved = rig
         .runtime
@@ -241,6 +283,10 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
         .await
         .unwrap();
     assert!(rig.rows().is_empty(), "no stale row remains");
+    assert!(
+        rig.flags().is_empty(),
+        "the flag leaves with the subscription"
+    );
     assert!(rig.subscriptions().is_empty());
     assert!(rig
         .runtime
@@ -315,4 +361,58 @@ async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters()
         .map(|trigger| trigger.agent_id().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(triggers, vec![reviewer.id().to_owned()]);
+}
+
+/// NC-12: a delivery that comes back to the subscription that caused it is dropped, and the
+/// row and the person's Inbox say the loop was stopped.
+#[tokio::test]
+async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_raises_a_flag() {
+    let rig = rig().await;
+    rig.app_notification().await;
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let state = &rig.runtime.owned.prompt_state_owner;
+    state
+        .complete_active_prompt_only(&room, &rig.agent_id)
+        .unwrap();
+    state
+        .activate_next_queued_prompt(&room, &rig.agent_id, None)
+        .unwrap();
+    let workflow = rig.workflow_with_exit("reply");
+    let source = rig.register(&workflow);
+    rig.trigger_on(&source).await;
+    let row = |rig: &Rig| {
+        rig.rows()
+            .into_iter()
+            .find(|row| {
+                row.source
+                    .as_ref()
+                    .is_some_and(|summary| summary.source_id == source)
+            })
+            .unwrap()
+    };
+    let id = row(&rig).subscription.subscription_id;
+    let invocation = rig
+        .runtime
+        .owned
+        .inherit_agent_notification_ancestry(Some(&rig.agent_id), "entry", None)
+        .unwrap();
+    rig.complete_with_invocation(&workflow, "cycle", "done", invocation);
+    rig.pass().await;
+
+    let stopped = row(&rig);
+    assert_eq!(stopped.health, NotificationSubscriptionHealth::LoopStopped);
+    assert!(stopped.loop_stopped_at_ms.is_some());
+    assert_eq!(
+        rig.flags(),
+        vec![(id.clone(), NotificationSubscriptionHealth::LoopStopped)]
+    );
+    assert_eq!(
+        rig.trace(&id)[0].outcome,
+        NotificationTraceOutcome::LoopStopped
+    );
 }

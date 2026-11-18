@@ -54,7 +54,23 @@ pub struct NotificationSubscriptionRow {
     pub paused: bool,
     pub fired: u64,
     pub last_fired_at_ms: Option<u64>,
+    /// When a delivery came back to this subscription and was dropped.
+    pub loop_stopped_at_ms: Option<u64>,
+    /// The workflow whose finished runs this agent answers for, by name.
+    pub responsible_for: Option<String>,
     pub health: NotificationSubscriptionHealth,
+}
+
+/// A workflow whose failed runs come to the person as Inbox cards: its responsible is the
+/// person, so no subscription carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonResponsibilityRow {
+    pub session_id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    /// Runs of the workflow this kernel still holds that needed the person.
+    pub fired: u64,
+    pub last_fired_at_ms: Option<u64>,
 }
 
 /// The one thing the row needs the person to know, the most pressing first.

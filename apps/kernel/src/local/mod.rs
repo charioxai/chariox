@@ -23,16 +23,17 @@ pub use api::{
     SetInboxMuteRequest,
 };
 pub use api::{
-    ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
-    NotificationSubscriptionHealth, NotificationSubscriptionRow, NotificationTraceLine,
-    ReadNotificationTraceRequest, RemoveNotificationSubscriptionRequest,
-    TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
-};
-pub use api::{
     GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,
     JobPlacement, JobRanOn, JobResult, JobView, OffloadPolicy, RemoteJobEstimate,
     RemoteJobPlacement, RemoteJobPolicy, RunJobRequest, RunSessionProcessRemotelyRequest,
     SetRemoteJobPolicyRequest,
+};
+pub use api::{
+    ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
+    NotificationSubscriptionHealth, NotificationSubscriptionRow, NotificationTraceLine,
+    PersonInboxFlag, PersonInboxWorkflowRun, PersonResponsibilityRow, ReadNotificationTraceRequest,
+    RemoveNotificationSubscriptionRequest, TestNotificationSubscriptionRequest,
+    UpdateNotificationSubscriptionRequest,
 };
 mod api;
 pub use api::{

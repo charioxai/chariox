@@ -27,6 +27,36 @@ pub enum PersonInboxCardBody {
     },
     /// What an agent told the person with `chariox.notify_person`; nothing waits on it.
     Notice(PersonInboxNotice),
+    /// A run of a workflow the person answers for failed or holds on something. It leaves when
+    /// the person opens the run or a newer run starts.
+    Workflow(PersonInboxWorkflowRun),
+    /// A subscription in the person's Room stopped delivering; it leaves when the subscription
+    /// is fixed or removed.
+    Flag(PersonInboxFlag),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonInboxWorkflowRun {
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub run_id: String,
+    pub run_number: u32,
+    pub outcome: crate::session::WorkflowRunOutcome,
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonInboxFlag {
+    pub subscription_id: String,
+    /// None once the subscriber is gone.
+    pub subscriber_name: Option<String>,
+    /// None once the source is gone.
+    pub source_name: Option<String>,
+    pub health: NotificationSubscriptionHealth,
+    /// When the flag was raised, when the kernel knows it.
+    pub at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

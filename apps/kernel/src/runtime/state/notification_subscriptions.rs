@@ -10,8 +10,9 @@ use crate::durable_state::workflow_notifications::{
 use crate::local::{
     AgentTriggerSourceRequest, CreateAgentTriggerRequest, DetachWorkflowNotificationRequest,
     LocalDaemonResponse, NotificationSubscriptionChange, NotificationSubscriptionHealth,
-    NotificationSubscriptionRow, NotificationTraceOutcome, UpdateNotificationSubscriptionRequest,
-    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+    NotificationSubscriptionRow, NotificationTraceOutcome, PersonResponsibilityRow,
+    UpdateNotificationSubscriptionRequest, WorkflowNotificationSubscription,
+    WorkflowNotificationTargetKind,
 };
 use crate::session::AgentTriggerNotificationSource;
 
@@ -22,7 +23,41 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::NotificationSubscriptions {
             subscriptions: self.notification_subscription_rows(caller)?,
+            responsibilities: self.person_responsibilities(caller),
         })
+    }
+
+    /// The workflows of the caller's Rooms that the person answers for: each failed or held
+    /// run comes to the Inbox as a card, so the table shows "You" as the subscriber.
+    fn person_responsibilities(&self, caller: &str) -> Vec<PersonResponsibilityRow> {
+        self.owned
+            .session_store
+            .list_sessions()
+            .iter()
+            .filter(|room| self.acts_for_room_owner(room, caller))
+            .flat_map(|room| {
+                room.workflows()
+                    .iter()
+                    .filter(|workflow| workflow.responsible().is_person())
+                    .map(|workflow| {
+                        let needed = room
+                            .workflow_runs()
+                            .iter()
+                            .filter(|run| run.workflow_id() == workflow.id())
+                            .filter(|run| run.outcome().is_some())
+                            .map(|run| run.completed_at_ms().unwrap_or(run.created_at_ms()))
+                            .collect::<Vec<_>>();
+                        PersonResponsibilityRow {
+                            session_id: room.id().to_owned(),
+                            workflow_id: workflow.id().to_owned(),
+                            workflow_name: store::naming::workflow_name(workflow),
+                            fired: needed.len() as u64,
+                            last_fired_at_ms: needed.into_iter().max(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub(crate) async fn update_notification_subscription(
@@ -45,6 +80,7 @@ impl KernelRuntimeState {
                     .await?;
             }
         }
+        self.record_person_inbox_change();
         self.list_notification_subscriptions(caller)
     }
 
@@ -62,6 +98,7 @@ impl KernelRuntimeState {
             caller,
         )
         .await?;
+        self.record_person_inbox_change();
         self.list_notification_subscriptions(caller)
     }
 
@@ -134,7 +171,7 @@ impl KernelRuntimeState {
     }
 
     /// The subscriptions of agents and workflows in the Rooms the caller owns here.
-    fn notification_subscription_rows(
+    pub(crate) fn notification_subscription_rows(
         &self,
         caller: &str,
     ) -> Result<Vec<NotificationSubscriptionRow>, DaemonError> {
@@ -176,12 +213,22 @@ impl KernelRuntimeState {
                         .map(|workflow| store::naming::workflow_name(&workflow)),
                     WorkflowNotificationTargetKind::OutsideAgent => continue,
                 };
-                let prompt = subscription.trigger_id.as_deref().and_then(|trigger_id| {
+                let trigger = subscription.trigger_id.as_deref().and_then(|trigger_id| {
                     room.agent_triggers()
                         .iter()
                         .find(|trigger| trigger.id() == trigger_id)
-                        .map(|trigger| trigger.prompt().to_owned())
                 });
+                let prompt = trigger.map(|trigger| trigger.prompt().to_owned());
+                // A workflow of another kernel is named by its id; this kernel cannot read it.
+                let responsible_for =
+                    trigger
+                        .and_then(|trigger| trigger.responsible_for())
+                        .map(|workflow| {
+                            sessions
+                                .resolve_workflow_ref(&workflow.room_id, &workflow.workflow_id)
+                                .map(|definition| store::naming::workflow_name(&definition))
+                                .unwrap_or_else(|_| workflow.workflow_id.clone())
+                        });
                 let source = sources
                     .iter()
                     .find(|source| source.source_id == subscription.source_id && source.available)
@@ -198,6 +245,8 @@ impl KernelRuntimeState {
                     paused: settings.paused,
                     fired: settings.fired,
                     last_fired_at_ms: settings.last_fired_at_ms,
+                    loop_stopped_at_ms: settings.loop_stopped_at_ms,
+                    responsible_for,
                     health,
                 });
             }
@@ -285,7 +334,7 @@ fn health(
         NotificationSubscriptionHealth::SubscriberGone
     } else if settings.options_changed {
         NotificationSubscriptionHealth::OptionsChanged
-    } else if settings.loop_stopped {
+    } else if settings.loop_stopped_at_ms.is_some() {
         NotificationSubscriptionHealth::LoopStopped
     } else if settings.paused {
         NotificationSubscriptionHealth::Paused

@@ -210,3 +210,93 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         "a notice wakes the watched Inbox at once"
     );
 }
+
+/// NC-22: a run of a workflow the person answers for that failed is a card of the Inbox; it is
+/// not marked read, and it leaves when the person opens the run.
+#[tokio::test]
+async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run_is_opened() {
+    use crate::session::{
+        WorkflowFailureEvent, WorkflowFailureKind, WorkflowRun, WorkflowRunStatus,
+    };
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session = room(DEFAULT_LOCAL_USER_ID);
+    let session_id = session.id().to_owned();
+    app.sessions_mut().restore_session(session);
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("release-pipeline".into()))
+        .unwrap();
+    let mut session = app.sessions_mut().get_session(&session_id).unwrap();
+    for (run_id, failed) in [("run-ok", false), ("run-3", true)] {
+        let mut run = WorkflowRun::new(
+            run_id,
+            workflow.id(),
+            "endpoint",
+            "node",
+            None,
+            None,
+            vec![],
+            vec![],
+        );
+        if failed {
+            run.add_failure_event(WorkflowFailureEvent::new(
+                WorkflowFailureKind::StepNeedsHelp,
+                "node-run",
+                vec![],
+                "the deploy step needs a person",
+            ));
+            run.set_status(WorkflowRunStatus::Failed);
+        } else {
+            run.set_status(WorkflowRunStatus::Completed);
+        }
+        session.create_workflow_run(run);
+    }
+    app.sessions_mut().restore_session(session);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let cards = inbox(&router).await;
+    assert_eq!(card_ids(&cards), [(session_id.as_str(), "run:run-3")]);
+    let crate::local::PersonInboxCardBody::Workflow(run) = &cards[0].body else {
+        panic!("expected a workflow card, got {:?}", cards[0].body);
+    };
+    assert_eq!(
+        (run.workflow_name.as_str(), run.run_id.as_str()),
+        ("release-pipeline", "run-3")
+    );
+    assert!(
+        matches!(
+            run.outcome,
+            crate::session::WorkflowRunOutcome::Failed { .. }
+        ),
+        "{:?}",
+        run.outcome
+    );
+
+    let read = LocalDaemonRequest::SetInboxCardState(crate::local::SetInboxCardStateRequest {
+        card_ids: vec!["run:run-3".into()],
+        change: crate::local::InboxCardChange::Read { read: true },
+    });
+    let command = KernelCommand::from_local_request("read", None, None, &read);
+    let refusal = router
+        .dispatch(command, read)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("leaves when you open the run"),
+        "{refusal}"
+    );
+
+    let open = LocalDaemonRequest::ClearWorkflowRunAttention(
+        crate::local::ClearWorkflowRunAttentionRequest {
+            session_id: session_id.clone(),
+            run_ref: "run-3".into(),
+        },
+    );
+    let command = KernelCommand::from_local_request("open", None, None, &open);
+    router.dispatch(command, open).await.unwrap();
+    assert!(
+        inbox(&router).await.is_empty(),
+        "the opened run leaves the Inbox"
+    );
+}
