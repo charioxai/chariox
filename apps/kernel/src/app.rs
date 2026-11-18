@@ -64,7 +64,8 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, discover_external_provider_sessions_for_profiles,
+    claude_compaction_turn_id, discover_external_provider_sessions,
+    discover_external_provider_sessions_for_profiles,
     external_provider_session_candidate_paths_for_profiles,
     external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,

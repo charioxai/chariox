@@ -455,6 +455,7 @@ pub(super) fn execute_output_poll_command(
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             hook_context_delivered: false,
+            native_compactions: Vec::new(),
             skill_tool_delivery_acknowledgements,
             chunks: poll
                 .chunks
@@ -555,6 +556,7 @@ pub(super) fn execute_output_poll_command(
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         hook_context_delivered: false,
+        native_compactions: Vec::new(),
         skill_tool_delivery_acknowledgements,
         chunks: drain
             .chunks
