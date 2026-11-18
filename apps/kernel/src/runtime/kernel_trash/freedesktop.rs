@@ -1,28 +1,41 @@
 //! The freedesktop.org Trash specification: `files/` holds the items, `info/<name>.trashinfo` says
 //! where each came from. The home trash serves its own filesystem; an item on another one goes to that
-//! filesystem's `$topdir/.Trash/$uid` (when the admin made it) or `$topdir/.Trash-$uid`, so a move is
-//! always a rename and never a copy; where neither can be made the item stays and the reason says so.
-use std::fs::{DirBuilder, OpenOptions};
+//! filesystem's `$topdir/.Trash/$uid` (when the administrator made `.Trash`: a real folder with the
+//! sticky bit) or else `$topdir/.Trash-$uid`, so a move is always a rename and never a copy.
+//!
+//! Every trash folder used is the user's alone: owned by the user, closed to everyone else, not a
+//! link. Folders are opened one handle at a time (`Dir`), so what was checked is what is used. A
+//! location that fails a check is passed over for the next allowed one; when none is left the move
+//! fails and nothing moved.
+use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 
-use super::Located;
+use super::dir::Dir;
 use crate::error::DaemonError;
 use crate::runtime::kernel_files::{fail, io_failure};
 
 const STICKY: u32 = 0o1000;
 
+type DeviceOf = Box<dyn Fn(&Path) -> std::io::Result<u64> + Send + Sync>;
+
 pub(super) struct Trash {
     home_trash: PathBuf,
     uid: u32,
+    /// The filesystem a path is on; a test says which paths are another one.
+    device_of: DeviceOf,
 }
 
-/// One trash folder and, for a per-filesystem one, the mount point its `Path=` lines are relative to.
+/// One trash folder, opened and checked, and the mount point its `Path=` lines are relative to.
 struct Folder {
+    dir: Dir,
     root: PathBuf,
     topdir: Option<PathBuf>,
+}
+
+fn real_device(path: &Path) -> std::io::Result<u64> {
+    std::fs::metadata(path).map(|metadata| std::os::unix::fs::MetadataExt::dev(&metadata))
 }
 
 impl Trash {
@@ -45,7 +58,15 @@ impl Trash {
     }
 
     pub(super) fn new(home_trash: PathBuf, uid: u32) -> Self {
-        Self { home_trash, uid }
+        Self::on_devices(home_trash, uid, Box::new(real_device))
+    }
+
+    pub(super) fn on_devices(home_trash: PathBuf, uid: u32, device_of: DeviceOf) -> Self {
+        Self {
+            home_trash,
+            uid,
+            device_of,
+        }
     }
 
     /// Whether `path` lies in one of the trash folders this machine keeps.
@@ -58,222 +79,392 @@ impl Trash {
     }
 
     pub(super) fn move_to(&self, path: &Path) -> Result<PathBuf, DaemonError> {
-        let parent = path.parent().unwrap_or(path);
-        let device = std::fs::metadata(parent)
-            .map_err(|error| io_failure(parent, &error))?
-            .dev();
-        let folder = self.folder_for(parent, device)?;
-        let base = path.file_name().unwrap_or_default();
-        let recorded = match &folder.topdir {
-            Some(topdir) => path.strip_prefix(topdir).unwrap_or(path),
-            None => path,
-        };
-        let (name, info) = reserve(&folder.root, base.as_bytes(), recorded)?;
-        let target = folder.root.join("files").join(&name);
-        if let Err(error) = std::fs::rename(path, &target) {
-            let _ = std::fs::remove_file(&info);
-            return Err(fail(
-                "file_trash_failed",
-                format!(
-                    "{} could not be moved to the Trash: {error}.",
-                    path.display()
-                ),
-            ));
+        let name = path
+            .file_name()
+            .ok_or_else(|| fail("file_path_invalid", "A Trash item needs a name."))?;
+        let parent = std::fs::canonicalize(path.parent().unwrap_or(path))
+            .map_err(|error| io_failure(path, &error))?;
+        let parent_dir = Dir::open(&parent).map_err(|error| io_failure(&parent, &error))?;
+        let device = (self.device_of)(&parent).map_err(|error| io_failure(&parent, &error))?;
+        let mut problems = Vec::new();
+        if let Some(folder) = self.pick(&parent, device, &mut problems) {
+            return self.put(&parent_dir, &parent, path, name, folder);
         }
-        Ok(target)
+        Err(fail(
+            "file_trash_failed",
+            format!(
+                "{} could not be moved to a Trash that only you can use ({}). Nothing was moved.",
+                path.display(),
+                problems.join("; ")
+            ),
+        ))
     }
 
-    fn folder_for(&self, parent: &Path, device: u64) -> Result<Folder, DaemonError> {
-        make_folder(&self.home_trash)?;
-        if std::fs::metadata(&self.home_trash).is_ok_and(|home| home.dev() == device) {
-            return Ok(Folder {
-                root: self.home_trash.clone(),
-                topdir: None,
-            });
+    /// The first trash folder that may take an item of `parent` (on `device`), in the order of the
+    /// specification: the home trash when it is on that filesystem, then `$topdir/.Trash/$uid`, then
+    /// `$topdir/.Trash-$uid`. A location that fails a check adds its reason to `problems`.
+    fn pick(&self, parent: &Path, device: u64, problems: &mut Vec<String>) -> Option<Folder> {
+        match self.home_folder(device) {
+            Ok(Some(folder)) => return Some(folder),
+            Ok(None) => {}
+            Err(problem) => problems.push(problem),
         }
         let mut topdir = parent;
         while let Some(above) = topdir.parent() {
-            if std::fs::metadata(above).is_ok_and(|meta| meta.dev() == device) {
+            if (self.device_of)(above).is_ok_and(|other| other == device) {
                 topdir = above;
             } else {
                 break;
             }
         }
-        let shared = topdir.join(".Trash");
-        let uid_name = self.uid.to_string();
-        if let Ok(meta) = std::fs::symlink_metadata(&shared) {
-            if meta.is_dir() && meta.mode() & STICKY != 0 {
-                let own = shared.join(&uid_name);
-                if make_folder(&own).is_ok() {
-                    return Ok(Folder {
-                        root: own,
-                        topdir: Some(topdir.to_path_buf()),
-                    });
-                }
+        let top = match Dir::open(topdir) {
+            Ok(top) if (self.device_of)(topdir).is_ok_and(|other| other == device) => top,
+            _ => {
+                problems.push(format!("{} cannot be opened", topdir.display()));
+                return None;
+            }
+        };
+        match self.shared_folder(&top, topdir) {
+            Ok(Some(folder)) => return Some(folder),
+            Ok(None) => {}
+            Err(problem) => problems.push(problem),
+        }
+        match self.own_folder(&top, topdir) {
+            Ok(folder) => Some(folder),
+            Err(problem) => {
+                problems.push(problem);
+                None
             }
         }
-        let own = topdir.join(format!(".Trash-{}", self.uid));
-        make_folder(&own).map_err(|_| {
-            fail(
-                "file_trash_failed",
-                format!(
-                    "{} is on a different drive than your home folder, and the Trash folder for that drive ({}) cannot be made. Nothing was moved.",
-                    parent.display(),
-                    own.display()
-                ),
-            )
-        })?;
+    }
+
+    /// The home trash, made if needed, when it is on `device`.
+    fn home_folder(&self, device: u64) -> Result<Option<Folder>, String> {
+        let problem = |what: &str, error: std::io::Error| {
+            format!("{} {what}: {error}", self.home_trash.display())
+        };
+        let (Some(data_home), Some(name)) = (self.home_trash.parent(), self.home_trash.file_name())
+        else {
+            return Err(format!("{} has no folder", self.home_trash.display()));
+        };
+        std::fs::create_dir_all(data_home).map_err(|error| problem("cannot be made", error))?;
+        let data_home = std::fs::canonicalize(data_home)
+            .map_err(|error| problem("cannot be reached", error))?;
+        let parent = Dir::open(&data_home).map_err(|error| problem("cannot be reached", error))?;
+        parent
+            .make_at(name, 0o700)
+            .map_err(|error| problem("cannot be made", error))?;
+        let dir = parent
+            .open_at(name)
+            .map_err(|error| problem("is a link or not a folder", error))?;
+        if !dir
+            .is_private_to(self.uid)
+            .map_err(|error| problem("cannot be checked", error))?
+        {
+            return Err(format!(
+                "{} belongs to someone else",
+                self.home_trash.display()
+            ));
+        }
+        if (self.device_of)(&data_home.join(name)).is_ok_and(|other| other != device) {
+            return Ok(None);
+        }
+        Ok(Some(Folder {
+            dir,
+            root: self.home_trash.clone(),
+            topdir: None,
+        }))
+    }
+
+    /// `$topdir/.Trash/$uid`, when the administrator made `.Trash` a real folder with the sticky bit.
+    fn shared_folder(&self, top: &Dir, topdir: &Path) -> Result<Option<Folder>, String> {
+        let shared_name = OsStr::new(".Trash");
+        let shared_path = topdir.join(shared_name);
+        let shared = match top.open_at(shared_name) {
+            Ok(shared) => shared,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
+            Err(_) => {
+                return Err(format!(
+                    "{} is a link or not a folder",
+                    shared_path.display()
+                ))
+            }
+        };
+        let sticky = shared.stat().is_ok_and(|stat| stat.st_mode & STICKY != 0);
+        if !sticky {
+            return Err(format!(
+                "{} does not have the sticky bit",
+                shared_path.display()
+            ));
+        }
+        let uid_name = OsString::from(self.uid.to_string());
+        let own_path = shared_path.join(&uid_name);
+        let problem = |what: &str| format!("{} {what}", own_path.display());
+        shared
+            .make_at(&uid_name, 0o700)
+            .map_err(|_| problem("cannot be made"))?;
+        let dir = shared
+            .open_at(&uid_name)
+            .map_err(|_| problem("is a link or not a folder"))?;
+        if !dir.is_private_to(self.uid).unwrap_or(false) {
+            return Err(problem("belongs to someone else"));
+        }
+        Ok(Some(Folder {
+            dir,
+            root: own_path,
+            topdir: Some(topdir.to_path_buf()),
+        }))
+    }
+
+    /// `$topdir/.Trash-$uid`, made if needed.
+    fn own_folder(&self, top: &Dir, topdir: &Path) -> Result<Folder, String> {
+        let name = OsString::from(format!(".Trash-{}", self.uid));
+        let path = topdir.join(&name);
+        let problem = |what: &str| format!("{} {what}", path.display());
+        top.make_at(&name, 0o700)
+            .map_err(|_| problem("cannot be made"))?;
+        let dir = top
+            .open_at(&name)
+            .map_err(|_| problem("is a link or not a folder"))?;
+        if !dir.is_private_to(self.uid).unwrap_or(false) {
+            return Err(problem("belongs to someone else"));
+        }
         Ok(Folder {
-            root: own,
+            dir,
+            root: path,
             topdir: Some(topdir.to_path_buf()),
         })
     }
 
-    /// Checks `trash_path` is an item of one of this user's trash folders that was `original`, and says
-    /// where it goes back.
-    pub(super) fn locate(
+    /// Moves `name` of `parent_dir` into `folder` under a free name and records where it came from.
+    fn put(
         &self,
-        trash_path: &Path,
-        original: &Path,
-    ) -> Result<Located, DaemonError> {
-        let not_trash = || {
+        parent_dir: &Dir,
+        parent: &Path,
+        path: &Path,
+        name: &OsStr,
+        folder: Folder,
+    ) -> Result<PathBuf, DaemonError> {
+        let failed = |what: &str, error: std::io::Error| {
             fail(
-                "file_not_in_trash",
-                format!("{} is not an item in the Trash.", trash_path.display()),
+                "file_trash_failed",
+                format!(
+                    "{} could not be moved to the Trash: {what}: {error}.",
+                    path.display()
+                ),
             )
         };
-        let items = trash_path.parent().ok_or_else(not_trash)?;
-        let root = items.parent().ok_or_else(not_trash)?;
-        if items.file_name() != Some("files".as_ref()) {
-            return Err(not_trash());
-        }
-        let topdir = if root == self.home_trash {
-            None
-        } else if root.file_name().map(|n| n.as_bytes())
-            == Some(format!(".Trash-{}", self.uid).as_bytes())
-        {
-            root.parent().map(Path::to_path_buf)
-        } else if root.file_name().map(|n| n.as_bytes()) == Some(self.uid.to_string().as_bytes())
-            && root.parent().and_then(Path::file_name) == Some(".Trash".as_ref())
-        {
-            root.parent().and_then(Path::parent).map(Path::to_path_buf)
-        } else {
-            return Err(not_trash());
+        parent_dir
+            .stat_at(name)
+            .map_err(|error| io_failure(path, &error))?;
+        let parts = |part: &str| -> Result<Dir, DaemonError> {
+            folder
+                .dir
+                .make_at(OsStr::new(part), 0o700)
+                .map_err(|e| failed("the Trash folder is not usable", e))?;
+            let dir = folder
+                .dir
+                .open_at(OsStr::new(part))
+                .map_err(|e| failed("the Trash folder is not usable", e))?;
+            match dir.is_private_to(self.uid) {
+                Ok(true) => Ok(dir),
+                _ => Err(fail(
+                    "file_trash_failed",
+                    format!(
+                        "{} is not yours alone. Nothing was moved.",
+                        folder.root.join(part).display()
+                    ),
+                )),
+            }
         };
-        let name = trash_path.file_name().ok_or_else(not_trash)?;
-        let mut record_name = name.to_os_string();
-        record_name.push(".trashinfo");
-        let record = root.join("info").join(record_name);
-        std::fs::symlink_metadata(trash_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
+        let (files, info) = (parts("files")?, parts("info")?);
+        let recorded = match &folder.topdir {
+            Some(topdir) => parent.strip_prefix(topdir).unwrap_or(parent).join(name),
+            None => path.to_path_buf(),
+        };
+        for attempt in 0u32.. {
+            let mut candidate = name.as_bytes().to_vec();
+            if attempt > 0 {
+                candidate.extend_from_slice(format!(".{attempt}").as_bytes());
+            }
+            let candidate = OsString::from_vec(candidate);
+            if files.stat_at(&candidate).is_ok() {
+                continue;
+            }
+            let mut record = candidate.clone();
+            record.push(".trashinfo");
+            let mut file = match info.create_at(&record) {
+                Ok(file) => file,
+                Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
+                Err(error) => return Err(failed("the Trash record cannot be made", error)),
+            };
+            let text = format!(
+                "[Trash Info]\nPath={}\nDeletionDate={}\n",
+                encode(recorded.as_os_str().as_bytes()),
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
+            );
+            if let Err(error) = file.write_all(text.as_bytes()) {
+                let _ = info.unlink_at(&record);
+                return Err(failed("the Trash record cannot be written", error));
+            }
+            return match parent_dir.move_into(name, &files, &candidate) {
+                Ok(()) => Ok(folder.root.join("files").join(&candidate)),
+                Err(error) if error.raw_os_error() == Some(libc::EEXIST) => {
+                    let _ = info.unlink_at(&record);
+                    continue;
+                }
+                Err(error) => {
+                    let _ = info.unlink_at(&record);
+                    Err(failed("the move failed", error))
+                }
+            };
+        }
+        unreachable!("an unbounded range ends only by returning")
+    }
+
+    /// Puts the item at `trash_path` back at `wanted`, when the Trash records it as that. Returns where it is.
+    pub(super) fn restore(&self, trash_path: &Path, wanted: &Path) -> Result<PathBuf, DaemonError> {
+        let not_trash = |what: &str| {
+            fail(
+                "file_not_in_trash",
+                format!("{} {what}.", trash_path.display()),
+            )
+        };
+        let items = trash_path
+            .parent()
+            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
+        let root = items
+            .parent()
+            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
+        if items.file_name() != Some("files".as_ref()) {
+            return Err(not_trash("is not an item in the Trash"));
+        }
+        let name = trash_path
+            .file_name()
+            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
+        let (folder, topdir) = self
+            .open_root(root)
+            .ok_or_else(|| not_trash("is not an item in a Trash folder that only you can use"))?;
+        let (files, info) = match (
+            folder.open_at("files".as_ref()),
+            folder.open_at("info".as_ref()),
+        ) {
+            (Ok(files), Ok(info)) => (files, info),
+            _ => return Err(not_trash("is not an item in the Trash")),
+        };
+        if files.stat_at(name).is_err() {
+            return Err(fail(
+                "file_not_in_trash",
+                format!("{} is no longer in the Trash.", wanted.display()),
+            ));
+        }
+        let mut record = name.to_os_string();
+        record.push(".trashinfo");
+        let recorded = info
+            .read_at(&record, self.uid)
+            .ok()
+            .and_then(|text| original_of(&text, topdir.as_deref()))
+            .ok_or_else(|| {
                 fail(
                     "file_not_in_trash",
-                    format!("{} is no longer in the Trash.", original.display()),
+                    format!(
+                        "The Trash has no readable record of where {} came from.",
+                        trash_path.display()
+                    ),
                 )
-            } else {
-                io_failure(trash_path, &error)
-            }
-        })?;
-        let recorded = read_original(&record, topdir.as_deref())?;
-        if recorded != original {
+            })?;
+        if !same_place(&recorded, wanted) {
             return Err(fail(
                 "file_not_in_trash",
                 format!(
                     "The Trash keeps {} as {}, not {}.",
                     trash_path.display(),
                     recorded.display(),
-                    original.display()
+                    wanted.display()
                 ),
             ));
         }
-        Ok(Located {
-            trash_path: trash_path.to_path_buf(),
-            original: recorded,
-            record: Some(record),
-        })
-    }
-}
-
-/// `files/` and `info/` under `root`, private to the user as the specification asks.
-fn make_folder(root: &Path) -> Result<(), DaemonError> {
-    for part in ["files", "info"] {
-        let dir = root.join(part);
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|error| io_failure(&dir, &error))?;
-    }
-    Ok(())
-}
-
-/// A free name in the trash and its `.trashinfo`, created together so two moves never share a name.
-fn reserve(
-    root: &Path,
-    base: &[u8],
-    recorded: &Path,
-) -> Result<(std::ffi::OsString, PathBuf), DaemonError> {
-    for attempt in 0u32.. {
-        let mut name = base.to_vec();
-        if attempt > 0 {
-            name.extend_from_slice(format!(".{attempt}").as_bytes());
-        }
-        let name = std::ffi::OsString::from_vec(name);
-        if std::fs::symlink_metadata(root.join("files").join(&name)).is_ok() {
-            continue;
-        }
-        let mut record_name = name.clone();
-        record_name.push(".trashinfo");
-        let info = root.join("info").join(record_name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&info)
-        {
-            Ok(mut file) => {
-                let text = format!(
-                    "[Trash Info]\nPath={}\nDeletionDate={}\n",
-                    encode(recorded.as_os_str().as_bytes()),
-                    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
-                );
-                return match file.write_all(text.as_bytes()) {
-                    Ok(()) => Ok((name, info)),
-                    Err(error) => {
-                        let _ = std::fs::remove_file(&info);
-                        Err(io_failure(&info, &error))
-                    }
-                };
+        let (parent, original_name) = match (wanted.parent(), wanted.file_name()) {
+            (Some(parent), Some(name)) => (parent, name),
+            _ => return Err(fail("file_path_invalid", "A restored item needs a name.")),
+        };
+        std::fs::create_dir_all(parent).map_err(|error| io_failure(parent, &error))?;
+        let parent_path =
+            std::fs::canonicalize(parent).map_err(|error| io_failure(parent, &error))?;
+        let parent_dir = Dir::open(&parent_path).map_err(|error| io_failure(parent, &error))?;
+        files.move_into(name, &parent_dir, original_name).map_err(|error| {
+            if matches!(error.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
+                fail(
+                    "file_restore_conflict",
+                    format!(
+                        "{} is taken, so the item stays in the Trash. Move or rename what is there, then restore it again.",
+                        wanted.display()
+                    ),
+                )
+            } else {
+                io_failure(wanted, &error)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(io_failure(&info, &error)),
-        }
+        })?;
+        let _ = info.unlink_at(&record);
+        Ok(wanted.to_path_buf())
     }
-    unreachable!("an unbounded range ends only by returning")
+
+    /// The trash folder at `root`, opened and checked as a trash of this user, and its mount point;
+    /// `None` when `root` is not one or fails a check.
+    fn open_root(&self, root: &Path) -> Option<(Dir, Option<PathBuf>)> {
+        let own = |parent: &Path, name: &OsStr| -> Option<Dir> {
+            let parent = Dir::open(&std::fs::canonicalize(parent).ok()?).ok()?;
+            let dir = parent.open_at(name).ok()?;
+            dir.is_private_to(self.uid).ok()?.then_some(dir)
+        };
+        let name = root.file_name()?;
+        if root == self.home_trash {
+            return own(root.parent()?, name).map(|dir| (dir, None));
+        }
+        if name.as_bytes() == format!(".Trash-{}", self.uid).as_bytes() {
+            let topdir = root.parent()?;
+            return own(topdir, name).map(|dir| (dir, Some(topdir.to_path_buf())));
+        }
+        let shared = root.parent()?;
+        if name.as_bytes() == self.uid.to_string().as_bytes()
+            && shared.file_name() == Some(".Trash".as_ref())
+        {
+            let topdir = shared.parent()?;
+            let top = Dir::open(&std::fs::canonicalize(topdir).ok()?).ok()?;
+            let shared_dir = top.open_at(".Trash".as_ref()).ok()?;
+            if shared_dir.stat().ok()?.st_mode & STICKY == 0 {
+                return None;
+            }
+            let dir = shared_dir.open_at(name).ok()?;
+            return dir
+                .is_private_to(self.uid)
+                .ok()?
+                .then_some((dir, Some(topdir.to_path_buf())));
+        }
+        None
+    }
 }
 
-fn read_original(record: &Path, topdir: Option<&Path>) -> Result<PathBuf, DaemonError> {
-    let damaged = || {
-        fail(
-            "file_not_in_trash",
-            format!(
-                "The Trash has no readable record of where {} came from.",
-                record.display()
-            ),
-        )
-    };
-    let text = std::fs::read_to_string(record).map_err(|_| damaged())?;
-    let encoded = text
-        .lines()
-        .find_map(|line| line.strip_prefix("Path="))
-        .ok_or_else(damaged)?;
-    let path = PathBuf::from(std::ffi::OsString::from_vec(
-        decode(encoded).ok_or_else(damaged)?,
-    ));
+/// Whether two paths name the same place: the same name in the same folder, links above it resolved.
+fn same_place(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.file_name(), b.file_name(), a.parent(), b.parent()) {
+        (Some(x), Some(y), Some(pa), Some(pb)) if x == y => {
+            matches!((std::fs::canonicalize(pa), std::fs::canonicalize(pb)), (Ok(ca), Ok(cb)) if ca == cb)
+        }
+        _ => false,
+    }
+}
+
+fn original_of(record: &str, topdir: Option<&Path>) -> Option<PathBuf> {
+    let encoded = record.lines().find_map(|line| line.strip_prefix("Path="))?;
+    let path = PathBuf::from(OsString::from_vec(decode(encoded)?));
     if path.is_absolute() {
-        Ok(path)
+        Some(path)
     } else {
-        Ok(topdir.ok_or_else(damaged)?.join(path))
+        Some(topdir?.join(path))
     }
 }
 

@@ -14,6 +14,8 @@ use crate::local::{
 use crate::machine_files::StateGuard;
 
 #[cfg(not(target_os = "macos"))]
+mod dir;
+#[cfg(not(target_os = "macos"))]
 mod freedesktop;
 #[cfg(any(target_os = "macos", test))]
 mod macos;
@@ -22,18 +24,18 @@ use freedesktop as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests;
 
-/// Where a trashed item sits and where it belongs again.
-struct Located {
-    trash_path: PathBuf,
-    original: PathBuf,
-    /// The record the trash keeps beside the item (the freedesktop `.trashinfo`); removed once restored.
-    record: Option<PathBuf>,
+pub(crate) fn trash(
+    request: &TrashKernelFilesRequest,
+    guard: &StateGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    trash_with(&platform::Trash::from_env()?, request, guard)
 }
 
-pub(crate) fn trash(
+fn trash_with(
+    trash: &platform::Trash,
     request: &TrashKernelFilesRequest,
     guard: &StateGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -43,7 +45,6 @@ pub(crate) fn trash(
             "Name at least one file or folder to move to the Trash.",
         ));
     }
-    let trash = platform::Trash::from_env()?;
     let mut resolved: Vec<(String, PathBuf)> = Vec::new();
     let mut refused = Vec::new();
     for raw in &request.paths {
@@ -53,20 +54,25 @@ pub(crate) fn trash(
             Err(error) => refused.push((raw.clone(), error)),
         }
     }
-    let mut trashed = Vec::new();
+    // Folders first, so something named inside a folder that moved is found with it. When the folder
+    // is refused, what was named inside it is tried on its own and ends with its own result.
+    resolved.sort_by_key(|(_, path)| path.components().count());
+    let mut trashed: Vec<TrashedKernelFile> = Vec::new();
     for (raw, path) in &resolved {
-        // A folder and something inside it, both named: the folder takes the item along.
-        if resolved
-            .iter()
-            .any(|(_, other)| other != path && path.starts_with(other))
-        {
+        let item = |trash_path: &Path| TrashedKernelFile {
+            path: path.display().to_string(),
+            trash_path: trash_path.display().to_string(),
+        };
+        let inside = trashed.iter().find_map(|moved| {
+            let rest = path.strip_prefix(&moved.path).ok()?;
+            Some(Path::new(&moved.trash_path).join(rest))
+        });
+        if let Some(trash_path) = inside {
+            trashed.push(item(&trash_path));
             continue;
         }
-        match trash_one(&trash, path, guard) {
-            Ok(trash_path) => trashed.push(TrashedKernelFile {
-                path: path.display().to_string(),
-                trash_path: trash_path.display().to_string(),
-            }),
+        match trash_one(trash, path, guard) {
+            Ok(trash_path) => trashed.push(item(&trash_path)),
             Err(error) => refused.push((raw.clone(), error)),
         }
     }
@@ -78,18 +84,45 @@ pub(crate) fn restore(
     request: &RestoreKernelTrashRequest,
     guard: &StateGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    restore_with(&platform::Trash::from_env()?, request, guard)
+}
+
+fn restore_with(
+    trash: &platform::Trash,
+    request: &RestoreKernelTrashRequest,
+    guard: &StateGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
     if request.items.is_empty() {
         return Err(fail(
             "file_path_invalid",
             "Name at least one item to restore from the Trash.",
         ));
     }
-    let trash = platform::Trash::from_env()?;
-    let mut restored = Vec::new();
+    // Outer folders first: an item that was moved inside a folder named in the same request came back with it.
+    let mut items: Vec<&TrashedKernelFile> = request.items.iter().collect();
+    items.sort_by_key(|item| Path::new(&item.trash_path).components().count());
+    let mut restored: Vec<String> = Vec::new();
+    let mut back: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut refused = Vec::new();
-    for item in &request.items {
-        match restore_one(&trash, item, guard) {
-            Ok(original) => restored.push(original.display().to_string()),
+    for item in items {
+        let trash_path = Path::new(&item.trash_path);
+        let with_folder = back.iter().any(|(outer_trash, outer_path)| {
+            trash_path
+                .strip_prefix(outer_trash)
+                .ok()
+                .is_some_and(|rest| {
+                    outer_path.join(rest) == Path::new(&item.path) && Path::new(&item.path).exists()
+                })
+        });
+        if with_folder {
+            restored.push(item.path.clone());
+            continue;
+        }
+        match restore_one(trash, item, guard) {
+            Ok(original) => {
+                back.push((trash_path.to_path_buf(), original.clone()));
+                restored.push(original.display().to_string());
+            }
             Err(error) => refused.push((item.path.clone(), error)),
         }
     }
@@ -162,53 +195,5 @@ fn restore_one(
     guard: &StateGuard,
 ) -> Result<PathBuf, DaemonError> {
     let wanted = resolve(&item.path, guard)?;
-    let located = trash.locate(Path::new(&item.trash_path), &wanted)?;
-    if let Some(parent) = located.original.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| io_failure(parent, &error))?;
-    }
-    rename_without_replacing(&located.trash_path, &located.original)?;
-    if let Some(record) = &located.record {
-        let _ = std::fs::remove_file(record);
-    }
-    Ok(located.original)
-}
-
-/// Renames `from` to `to`, failing when anything is at `to`: the restore of an item whose path was
-/// taken meanwhile must not replace what is there.
-fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), DaemonError> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let c = |path: &Path| {
-        std::ffi::CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| fail("file_path_invalid", "A path holds a NUL byte."))
-    };
-    let (from_c, to_c) = (c(from)?, c(to)?);
-    #[cfg(target_os = "macos")]
-    // SAFETY: both arguments are NUL-terminated strings that live through the call.
-    let rc = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
-    #[cfg(not(target_os = "macos"))]
-    // SAFETY: both arguments are NUL-terminated strings that live through the call.
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            from_c.as_ptr(),
-            libc::AT_FDCWD,
-            to_c.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        ) as i32
-    };
-    if rc == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EEXIST) || error.raw_os_error() == Some(libc::ENOTEMPTY) {
-        return Err(fail(
-            "file_restore_conflict",
-            format!(
-                "{} is taken, so the item stays in the Trash. Move or rename what is there, then restore it again.",
-                to.display()
-            ),
-        ));
-    }
-    Err(io_failure(to, &error))
+    trash.restore(Path::new(&item.trash_path), &wanted)
 }

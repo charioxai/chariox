@@ -5,7 +5,8 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 use std::path::{Path, PathBuf};
 
-use super::Located;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+
 use crate::error::DaemonError;
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_files::{fail, io_failure};
@@ -83,11 +84,7 @@ impl Trash {
     }
 
     /// The system keeps no record Chariox can read, so the item goes back where the client says it was.
-    pub(super) fn locate(
-        &self,
-        trash_path: &Path,
-        original: &Path,
-    ) -> Result<Located, DaemonError> {
+    pub(super) fn restore(&self, trash_path: &Path, wanted: &Path) -> Result<PathBuf, DaemonError> {
         if !self.holds(trash_path) {
             return Err(fail(
                 "file_not_in_trash",
@@ -98,16 +95,100 @@ impl Trash {
             if error.kind() == std::io::ErrorKind::NotFound {
                 fail(
                     "file_not_in_trash",
-                    format!("{} is no longer in the Trash.", original.display()),
+                    format!("{} is no longer in the Trash.", wanted.display()),
                 )
             } else {
                 io_failure(trash_path, &error)
             }
         })?;
-        Ok(Located {
-            trash_path: trash_path.to_path_buf(),
-            original: original.to_path_buf(),
-            record: None,
-        })
+        if let Some(parent) = wanted.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| io_failure(parent, &error))?;
+        }
+        rename_without_replacing(trash_path, wanted)?;
+        Ok(wanted.to_path_buf())
+    }
+}
+
+/// The path `osascript` printed: the name exactly as the system gave it, minus the one newline the
+/// script's output ends with. A name may begin or end with a space, so nothing else is trimmed.
+fn trashed_path(stdout: &[u8]) -> PathBuf {
+    let path = stdout.strip_suffix(b"\n").unwrap_or(stdout);
+    PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()))
+}
+
+/// Renames `from` to `to`, failing when anything is at `to`: the restore of an item whose path was
+/// taken meanwhile must not replace what is there.
+fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), DaemonError> {
+    let c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| fail("file_path_invalid", "A path holds a NUL byte."))
+    };
+    let (from_c, to_c) = (c(from)?, c(to)?);
+    #[cfg(target_os = "macos")]
+    // SAFETY: both arguments are NUL-terminated strings that live through the call.
+    let rc = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: both arguments are NUL-terminated strings that live through the call.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        ) as i32
+    };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
+        return Err(fail(
+            "file_restore_conflict",
+            format!(
+                "{} is taken, so the item stays in the Trash. Move or rename what is there, then restore it again.",
+                to.display()
+            ),
+        ));
+    }
+    Err(io_failure(to, &error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_trashed_path_keeps_every_character_of_the_name() {
+        let home = PathBuf::from("/Users/me");
+        // The name starts and ends with spaces, so Undo must look for exactly that item.
+        assert_eq!(
+            trashed_path(b"/Users/me/.Trash/ report .txt  \n"),
+            home.join(".Trash/ report .txt  ")
+        );
+        assert_eq!(
+            trashed_path(b"/Users/me/.Trash/no newline"),
+            home.join(".Trash/no newline")
+        );
+        assert_eq!(
+            trashed_path(b"/Users/me/.Trash/two\n\n"),
+            home.join(".Trash/two\n"),
+            "only the one newline the script adds is removed"
+        );
+    }
+
+    #[test]
+    fn the_macos_trash_knows_its_folders_and_puts_back_only_what_is_in_them() {
+        let home = PathBuf::from("/Users/me");
+        let trash = Trash::new(home.clone(), 501);
+        assert!(trash.holds(&home.join(".Trash/a.txt")));
+        assert!(trash.holds(Path::new("/Volumes/Data/.Trashes/501/a.txt")));
+        assert!(!trash.holds(Path::new("/Volumes/Data/.Trashes/502/a.txt")));
+        assert!(!trash.holds(&home.join("Documents/a.txt")));
+        let outside = trash.restore(&home.join("Documents/a.txt"), &home.join("a.txt"));
+        assert!(
+            matches!(outside, Err(DaemonError::MachineRequest { code, .. }) if code == "file_not_in_trash")
+        );
     }
 }

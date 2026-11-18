@@ -1,5 +1,5 @@
 //! Move to Trash and Undo through the kernel requests, on a real filesystem.
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use super::{restore, trash};
@@ -311,87 +311,290 @@ fn the_home_folder_the_trash_and_the_kernels_state_are_not_moved() {
 }
 
 #[test]
-fn naming_a_folder_and_something_in_it_moves_the_folder_once() {
+fn naming_a_folder_and_something_in_it_gives_each_its_own_result_and_undoes_both() {
     let m = machine("nested");
     let folder = m.home.join("work/project");
     std::fs::create_dir_all(&folder).unwrap();
     let inner = folder.join("a.txt");
     std::fs::write(&inner, b"x").unwrap();
 
-    let (trashed, failed) = move_to_trash(&[&folder, &inner, &folder]).unwrap();
+    let (trashed, failed) = move_to_trash(&[&inner, &folder, &folder]).unwrap();
 
-    assert_eq!(trashed.len(), 1);
     assert!(failed.is_empty(), "{failed:?}");
-    put_back(&trashed).unwrap();
+    let by_path = |path: &Path| {
+        trashed
+            .iter()
+            .find(|item| item.path == path.display().to_string())
+    };
+    let (outer, nested) = (by_path(&folder).unwrap(), by_path(&inner).unwrap());
+    assert_eq!(trashed.len(), 2, "the folder named twice is one result");
+    assert_eq!(
+        nested.trash_path,
+        Path::new(&outer.trash_path)
+            .join("a.txt")
+            .display()
+            .to_string(),
+        "the inner item is reported where it now is, inside its folder"
+    );
+    let (restored, failed) = put_back(&trashed).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored.len(), 2);
     assert!(inner.exists());
 }
 
-struct Remove(PathBuf);
+#[test]
+fn a_refused_folder_does_not_hide_what_was_named_inside_it() {
+    let m = machine("refused-parent");
+    let state = m.home.join("work/kernel-home");
+    std::fs::create_dir_all(state.join("state")).unwrap();
+    let kept = m.home.join("work/a.txt");
+    std::fs::write(&kept, b"x").unwrap();
+    let inside_state = state.join("state/keep.txt");
+    std::fs::write(&inside_state, b"secret").unwrap();
+    let _chariox = Env::set(&[("CHARIOX_HOME", &state)]);
+    let guard = StateGuard::new(None);
 
-impl Drop for Remove {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+    // `work` holds the kernel's state, so it is refused; `a.txt` inside it still moves, and the file
+    // inside the state is refused with its own reason.
+    let (trashed, failed) =
+        move_guarded(&[&m.home.join("work"), &kept, &inside_state], &guard).unwrap();
+
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(trashed[0].path, kept.display().to_string());
+    assert_eq!(
+        failed.len(),
+        2,
+        "every requested path ends with a result: {failed:?}"
+    );
+    assert!(
+        failed
+            .iter()
+            .all(|reason| reason.contains("kernel's own state")),
+        "{failed:?}"
+    );
+    assert!(inside_state.exists());
+}
+
+/// A temp topdir that a test treats as another filesystem than the rest of the temp root, so the
+/// per-filesystem Trash is exercised without touching any real mount.
+struct Volume {
+    _dir: TestTempDir,
+    top: PathBuf,
+    home_trash: PathBuf,
+}
+
+fn volume(label: &str) -> Volume {
+    let dir = TestTempDir::new(&format!("trash-vol-{label}"));
+    let top = dir.join("vol");
+    std::fs::create_dir_all(top.join("sub")).unwrap();
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    let home_trash = dir.join("home/share/Trash");
+    Volume {
+        _dir: dir,
+        top,
+        home_trash,
     }
+}
+
+fn on_volume(v: &Volume, uid: u32) -> super::platform::Trash {
+    let top = v.top.clone();
+    super::platform::Trash::on_devices(
+        v.home_trash.clone(),
+        uid,
+        Box::new(move |path| {
+            if path.starts_with(&top) {
+                Ok(7_777)
+            } else {
+                std::fs::metadata(path).map(|metadata| metadata.dev())
+            }
+        }),
+    )
+}
+
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+fn trash_on(trash: &super::platform::Trash, path: &Path) -> Result<TrashedKernelFile, DaemonError> {
+    let request = TrashKernelFilesRequest {
+        paths: vec![path.display().to_string()],
+    };
+    match super::trash_with(trash, &request, &StateGuard::default())? {
+        LocalDaemonResponse::KernelFilesTrashed { mut trashed, .. } => Ok(trashed.remove(0)),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+fn restore_on(trash: &super::platform::Trash, item: &TrashedKernelFile) -> Result<(), DaemonError> {
+    let request = RestoreKernelTrashRequest {
+        items: vec![item.clone()],
+    };
+    super::restore_with(trash, &request, &StateGuard::default()).map(drop)
 }
 
 #[test]
 fn an_item_on_another_filesystem_uses_that_filesystems_trash_and_restores() {
-    let shm = Path::new("/dev/shm");
-    let m = machine("volume");
-    let folder = shm.join(format!("chariox-trash-{}", std::process::id()));
-    if !shm.is_dir() || std::fs::create_dir_all(&folder).is_err() {
-        return;
-    }
-    let uid = unsafe { libc::geteuid() };
-    let per_volume = shm.join(format!(".Trash-{uid}"));
-    let _cleanup = (Remove(folder.clone()), Remove(per_volume.clone()));
-    if std::fs::metadata(&folder).unwrap().dev() == std::fs::metadata(&m.home).unwrap().dev() {
-        return;
-    }
-    let file = folder.join("far.txt");
+    let v = volume("own");
+    let trash = on_volume(&v, euid());
+    let file = v.top.join("sub/far.txt");
     std::fs::write(&file, b"far").unwrap();
 
-    let (trashed, failed) = move_to_trash(&[&file]).unwrap();
+    let item = trash_on(&trash, &file).unwrap();
 
-    assert!(failed.is_empty(), "{failed:?}");
+    let own = v.top.join(format!(".Trash-{}", euid()));
     assert_eq!(
-        trashed[0].trash_path,
-        per_volume.join("files/far.txt").display().to_string()
+        item.trash_path,
+        own.join("files/far.txt").display().to_string()
     );
-    let info = std::fs::read_to_string(per_volume.join("info/far.txt.trashinfo")).unwrap();
+    let info = std::fs::read_to_string(own.join("info/far.txt.trashinfo")).unwrap();
     assert!(
-        info.contains(&format!(
-            "Path={}",
-            file.strip_prefix(shm).unwrap().display()
-        )),
-        "the path is relative to the mount point: {info}"
+        info.contains("Path=sub/far.txt\n"),
+        "relative to the mount point: {info}"
     );
-    assert!(!m.home.join(".local/share/Trash/files/far.txt").exists());
-    put_back(&trashed).unwrap();
+    assert_eq!(std::fs::metadata(&own).unwrap().mode() & 0o777, 0o700);
+    assert!(!v.home_trash.join("files/far.txt").exists());
+    restore_on(&trash, &item).unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"far");
 }
 
 #[test]
-fn an_item_where_no_trash_can_be_made_stays_and_the_reason_says_so() {
-    let _m = machine("nodrive");
-    // /proc is another filesystem on which no user can make a Trash folder.
-    let (code, message) = say(move_to_trash(&[Path::new("/proc/version")]));
-    assert_eq!(code, "file_trash_failed");
-    assert!(
-        message.contains("different drive") && message.contains("Nothing was moved"),
-        "{message}"
+fn the_shared_trash_folder_is_used_only_when_it_is_a_real_sticky_folder() {
+    let v = volume("shared");
+    let trash = on_volume(&v, euid());
+    let file = v.top.join("sub/a.txt");
+    let shared = v.top.join(".Trash");
+    let own = v.top.join(format!(".Trash-{}", euid()));
+
+    // Not sticky: passed over for `.Trash-$uid`.
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::write(&file, b"1").unwrap();
+    assert!(trash_on(&trash, &file)
+        .unwrap()
+        .trash_path
+        .starts_with(own.to_str().unwrap()));
+    assert_eq!(
+        std::fs::read_dir(&shared).unwrap().count(),
+        0,
+        "nothing was put in an open folder"
     );
-    assert!(Path::new("/proc/version").exists());
+
+    // A real sticky folder: `.Trash/$uid`, private to the user.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    std::fs::write(&file, b"2").unwrap();
+    let item = trash_on(&trash, &file).unwrap();
+    let mine = shared.join(euid().to_string());
+    assert!(
+        item.trash_path.starts_with(mine.to_str().unwrap()),
+        "{item:?}"
+    );
+    assert_eq!(std::fs::metadata(&mine).unwrap().mode() & 0o777, 0o700);
+    restore_on(&trash, &item).unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"2");
+
+    // A link in place of `.Trash` is never followed.
+    std::fs::remove_dir_all(&shared).unwrap();
+    let elsewhere = v.top.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &shared).unwrap();
+    assert!(trash_on(&trash, &file)
+        .unwrap()
+        .trash_path
+        .starts_with(own.to_str().unwrap()));
+    assert_eq!(
+        std::fs::read_dir(&elsewhere).unwrap().count(),
+        0,
+        "the link's target was left alone"
+    );
 }
 
 #[test]
-fn the_macos_trash_knows_its_folders_and_puts_back_only_what_is_in_them() {
-    let home = PathBuf::from("/Users/me");
-    let trash = super::macos::Trash::new(home.clone(), 501);
-    assert!(trash.holds(&home.join(".Trash/a.txt")));
-    assert!(trash.holds(Path::new("/Volumes/Data/.Trashes/501/a.txt")));
-    assert!(!trash.holds(Path::new("/Volumes/Data/.Trashes/502/a.txt")));
-    assert!(!trash.holds(&home.join("Documents/a.txt")));
-    let outside = trash.locate(&home.join("Documents/a.txt"), &home.join("a.txt"));
-    assert_eq!(say(outside).0, "file_not_in_trash");
+fn a_trash_folder_of_another_owner_or_behind_a_link_is_refused_and_nothing_moves() {
+    let v = volume("hostile");
+    let me = euid();
+    let file = v.top.join("sub/a.txt");
+    std::fs::write(&file, b"keep").unwrap();
+
+    // `.Trash-$uid` made by someone else (a different uid than the one this Trash acts as).
+    let other = on_volume(&v, me + 1);
+    let theirs = v.top.join(format!(".Trash-{}", me + 1));
+    std::fs::create_dir(&theirs).unwrap();
+    let (code, message) = say(trash_on(&other, &file));
+    assert_eq!(code, "file_trash_failed");
+    assert!(
+        message.contains("belongs to someone else") && message.contains("Nothing was moved"),
+        "{message}"
+    );
+    assert_eq!(
+        std::fs::read_dir(&theirs).unwrap().count(),
+        0,
+        "nothing was put in their folder"
+    );
+
+    // `.Trash-$uid` is a link to a folder someone else controls.
+    let trash = on_volume(&v, me);
+    let attacker = v.top.join("attacker");
+    std::fs::create_dir(&attacker).unwrap();
+    std::os::unix::fs::symlink(&attacker, v.top.join(format!(".Trash-{me}"))).unwrap();
+    let (code, message) = say(trash_on(&trash, &file));
+    assert_eq!(code, "file_trash_failed");
+    assert!(
+        message.contains("link") && message.contains("Nothing was moved"),
+        "{message}"
+    );
+    assert_eq!(std::fs::read_dir(&attacker).unwrap().count(), 0);
+    assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+}
+
+#[test]
+fn a_home_trash_that_is_a_link_is_passed_over_and_never_followed() {
+    let v = volume("homelink");
+    let trash = on_volume(&v, euid());
+    let attacker = v.top.join("attacker");
+    std::fs::create_dir(&attacker).unwrap();
+    std::fs::create_dir_all(v.home_trash.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&attacker, &v.home_trash).unwrap();
+    let file = v.top.join("sub/a.txt");
+    std::fs::write(&file, b"x").unwrap();
+
+    // On the volume the item takes the volume's own Trash; the link is only a problem report.
+    let item = trash_on(&trash, &file).unwrap();
+
+    assert!(item.trash_path.starts_with(v.top.to_str().unwrap()));
+    assert_eq!(std::fs::read_dir(&attacker).unwrap().count(), 0);
+}
+
+#[test]
+fn a_restore_through_a_swapped_trash_folder_or_record_moves_nothing() {
+    let m = machine("swap");
+    let file = m.home.join("work/a.txt");
+    std::fs::write(&file, b"keep").unwrap();
+    let (trashed, _) = move_to_trash(&[&file]).unwrap();
+    let root = m.home.join(".local/share/Trash");
+
+    // The record is a link: it is not read, and the item stays.
+    let record = root.join("info/a.txt.trashinfo");
+    let real = m.home.join("work/record-copy");
+    std::fs::rename(&record, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &record).unwrap();
+    assert_eq!(say(put_back(&trashed)).0, "file_not_in_trash");
+    std::fs::remove_file(&record).unwrap();
+    std::fs::rename(&real, &record).unwrap();
+
+    // `files` is a link to another folder: it is not entered.
+    let held = m.home.join("work/held-files");
+    std::fs::rename(root.join("files"), &held).unwrap();
+    std::os::unix::fs::symlink(&held, root.join("files")).unwrap();
+    assert_eq!(say(put_back(&trashed)).0, "file_not_in_trash");
+    assert!(!file.exists() && held.join("a.txt").exists());
+
+    // The Trash folder itself is a link: it is not used.
+    std::fs::remove_file(root.join("files")).unwrap();
+    std::fs::rename(&held, root.join("files")).unwrap();
+    let moved = m.home.join("work/Trash-moved");
+    std::fs::rename(&root, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &root).unwrap();
+    assert_eq!(say(put_back(&trashed)).0, "file_not_in_trash");
+    assert!(!file.exists());
 }
