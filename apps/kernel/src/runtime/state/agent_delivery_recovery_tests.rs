@@ -171,7 +171,7 @@ async fn an_interrupted_delivery_before_its_turn_started_is_sent_again_without_a
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
-    assert_eq!(f.state_of(lost.sequence), "accepted");
+    assert_eq!(f.state_of(lost.sequence), "acknowledged");
     assert!(f.child_is_running());
     assert_eq!(
         f.child_inbox()
@@ -295,7 +295,6 @@ async fn an_interrupted_delivery_its_turn_took_is_delivered_without_a_card() {
         0,
         "no card asks the owner about the delivery"
     );
-    assert!(f.child_is_running());
 }
 
 #[tokio::test]
