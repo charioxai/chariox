@@ -459,6 +459,66 @@ fn agent_of(state: &KernelRuntimeState, token: &str) -> String {
         .agent_id
 }
 
+/// A try counts as unanswered only once it is sent: a failure before the acquire leaves the
+/// service nothing to hold, so it never keeps a later refusal from saying the request is empty.
+#[tokio::test]
+async fn a_try_that_never_reached_the_service_does_not_keep_a_refusal_from_saying_nothing_is_held()
+{
+    let service = service(two_in_stock(), &["small"]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let agent = agent_of(&state, &token);
+    let acquire = |request_id: &str| {
+        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
+    };
+    // The tool's own capability call answers; the one before the acquire fails.
+    let fail_before_the_acquire = || {
+        service
+            .capability_failures
+            .lock()
+            .unwrap()
+            .extend([None, Some(("429 Too Many Requests", "rate_limited"))]);
+    };
+    fail_before_the_acquire();
+    let error = acquire("r1").await.unwrap_err().to_string();
+    assert!(error.contains("nothing was requested"), "{error}");
+    assert!(service.acquires.lock().unwrap().is_empty());
+    let unanswered = |request_id: &str| {
+        state
+            .owned
+            .durable_state_store
+            .acquire_choice(&agent, request_id)
+            .unwrap()
+            .unwrap()
+            .unanswered
+    };
+    assert_eq!(unanswered("r1"), 0);
+    let error = acquire("r1").await.unwrap_err().to_string();
+    assert!(error.contains("small in north is out of stock"), "{error}");
+    assert!(
+        error.contains("nothing was allocated or charged"),
+        "{error}"
+    );
+    assert!(error.contains("a new request_id"), "{error}");
+    assert_eq!(unanswered("r1"), 0);
+    // A try that was sent and never answered still sends the caller back to the same request_id.
+    fail_before_the_acquire();
+    assert!(acquire("r2").await.is_err());
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::LoseResponse);
+    assert!(acquire("r2").await.is_err());
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::Refuse("429 Too Many Requests", "capacity_exceeded"));
+    let error = acquire("r2").await.unwrap_err().to_string();
+    assert_retry_the_same_request(&error, "r2");
+    assert_eq!(unanswered("r2"), 1);
+}
+
 #[tokio::test]
 async fn an_ambiguous_failure_keeps_the_option_and_the_retry_recovers_the_allocation() {
     let service = service(two_in_stock(), &[]).await;

@@ -17,13 +17,22 @@
 //! | refused P       | accepted P, ref             | refused P           | refused P           | refused P                       | refused P |
 //! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref     | accepted P, ref                 | accepted P, ref |
 //!
-//! Every try counts as unanswered from the moment before it is sent until the row records its
-//! answer (accepted or refused). A lost response, a timeout, a restart or any other failure never
-//! answers it, so the count stays. A request is known to hold nothing only when it is refused and
-//! no try of it is unanswered: a refusal judged before an overlapping try commits says nothing
-//! about that try. Only then does a refusal say that nothing was allocated or charged and suggest
-//! another request_id; in every other case it tells the caller to retry the same request_id, which
-//! returns the allocation the service accepted, if there is one.
+//! A try has one state of its own, and only the second step touches the row:
+//!
+//! | try | what moves it | row |
+//! |-----|---------------|-----|
+//! | prepared | the option is chosen; the capability call, the owner's decision and every local refusal still lie ahead | none: a failure here ends the try and changes nothing |
+//! | sent | the kernel is about to post the acquire (`control_plane::execute_sending` runs the `BeforeSend` hook right before the post) | `unanswered` + 1 |
+//! | answered | the row records its acceptance or its refusal | `unanswered` - 1 on a refusal; an acceptance is final |
+//!
+//! A sent try stays unanswered until the row records its answer: a lost response, a timeout, a
+//! restart or any other failure after the post never answers it, so the count stays. A request is
+//! known to hold nothing only when it is refused and no sent try of it is unanswered: a refusal
+//! judged before an overlapping try commits says nothing about that try. Only then does a refusal
+//! say that nothing was allocated or charged and suggest another request_id; in every other case
+//! it tells the caller to retry the same request_id, which returns the allocation the service
+//! accepted, if there is one. A try that never reached the post holds nothing at the service, so
+//! it is never counted and never settled: it cannot keep a later refusal from saying so.
 //!
 //! - Definitive refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
 //!   (`AcquireFailure::Refused`) answering the acquire itself. Tries of one request can overlap:
@@ -33,8 +42,9 @@
 //!   ambiguous and changes nothing: `internal_error`, `dependency_unavailable`, `rate_limited`,
 //!   `admission_denied`, any 5xx, a lost or undecodable response, a timeout, and the other codes
 //!   (`authorization_denied`, `identity_conflict`, `subscription_required`, ...).
-//! - A try that fails before the acquire is sent keeps the row whatever the failure says: the
-//!   capability call before it, the owner's denial and a local refusal. The connected-service
+//! - A try that fails before the acquire is sent keeps the row whatever the failure says and is
+//!   not counted: the capability call before it, the owner's denial or approval timeout and a
+//!   local refusal. The connected-service
 //!   boundary passes the capability call's failure on without its Cloud code
 //!   (`control_plane_offer_unavailable`), so no code it carries is read as a refusal.
 //! - Accepted moves any row with the option the try sent but one accepted under another
@@ -185,7 +195,7 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Records that a try sending `option` is about to leave, before it does.
+    /// Records that a try sending `option` is about to be posted, before it is.
     pub(super) fn begin_acquire_try(
         &self,
         agent_id: &str,

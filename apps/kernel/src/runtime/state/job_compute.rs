@@ -64,6 +64,18 @@ impl KernelRuntimeState {
         request: &ControlPlaneRequest,
         command_id: &str,
     ) -> Result<ControlPlaneResponse, DaemonError> {
+        self.job_control_plane_sending(origin, request, command_id, None)
+            .await
+    }
+    /// `before_send` runs once, just before the request reaches the service; a request that fails
+    /// before that never ran it.
+    pub(super) async fn job_control_plane_sending(
+        &self,
+        origin: &Origin,
+        request: &ControlPlaneRequest,
+        command_id: &str,
+        before_send: Option<crate::runtime::control_plane::BeforeSend<'_>>,
+    ) -> Result<ControlPlaneResponse, DaemonError> {
         let subject = match origin.grant_id.strip_prefix("job:") {
             Some(job) => Some(self.job_acquisition_subject(job)?),
             None => {
@@ -115,12 +127,13 @@ impl KernelRuntimeState {
                 "The job gateway is unavailable; retry from your Room",
             )
         })?;
-        let response = crate::runtime::control_plane::execute(
+        let response = crate::runtime::control_plane::execute_sending(
             &self.owned.config_projection.snapshot(),
             self,
             &command,
             router.kernel_gateway(),
             request,
+            before_send,
         )
         .await?;
         match response {

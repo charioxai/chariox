@@ -306,9 +306,17 @@ impl KernelRuntimeState {
                     &reach.agent_id,
                     &request_id,
                 );
-                self.begin_acquire_try(&reach.agent_id, &request_id, &option)?;
+                // A try counts only once it is sent: the capability call, the owner's decision and
+                // every local refusal before the post can still stop it, and a try they stop holds
+                // nothing at the service.
+                let was_sent = std::sync::atomic::AtomicBool::new(false);
+                let record_send = || {
+                    self.begin_acquire_try(&reach.agent_id, &request_id, &option)?;
+                    was_sent.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                };
                 let sent = self
-                    .job_control_plane(
+                    .job_control_plane_sending(
                         &origin,
                         &ControlPlaneRequest::Acquire {
                             capability_revision: capability.revision.clone(),
@@ -317,6 +325,7 @@ impl KernelRuntimeState {
                             region: option.region().map(str::to_owned),
                         },
                         &format!("machine:{service_request_id}:acquire"),
+                        Some(&record_send),
                     )
                     .await;
                 let result = match sent {
@@ -336,6 +345,9 @@ impl KernelRuntimeState {
                             Ok(allocation_ref),
                         )?;
                         result
+                    }
+                    Err(error) if !was_sent.load(std::sync::atomic::Ordering::SeqCst) => {
+                        return Err(error)
                     }
                     Err(error) => {
                         let request = self.settle_acquire_option(
