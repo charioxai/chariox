@@ -564,6 +564,7 @@ impl KernelRuntimeState {
                         message: "Queued job moved".into(),
                     });
                 }
+                note_failed_end(self, record, output, &outcome)?;
                 return Ok(result_from_exit(record, outcome, stopped));
             }
         }
@@ -768,6 +769,7 @@ impl KernelRuntimeState {
                 }
             }
         };
+        note_failed_end(self, record, output, &outcome)?;
         let mut result = result_from_exit(record, outcome, stopped);
         // The command's end is saved before any of its files are accepted.
         record.advance(StageEvent::End(result.outcome))?;
@@ -877,6 +879,27 @@ fn uncollected_stop(
     let mut result = failed(record, String::new());
     result.outcome = outcome;
     Ok(result)
+}
+/// A command that ended without an exit status says why in its output, so the job never ends
+/// with no exit code and no reason.
+fn note_failed_end(
+    state: &KernelRuntimeState,
+    record: &Record,
+    output: &mut Output,
+    exit: &ExecOutcome,
+) -> Result<(), DaemonError> {
+    if let Some(notice) = failed_end_notice(exit) {
+        output.push(state, &record.room_id, notice.as_bytes(), true)?;
+    }
+    Ok(())
+}
+pub(super) fn failed_end_notice(exit: &ExecOutcome) -> Option<String> {
+    match exit {
+        ExecOutcome::Failed { message } => Some(format!(
+            "The command ended without an exit status: {message}\n"
+        )),
+        _ => None,
+    }
 }
 fn result_from_exit(record: &Record, exit: ExecOutcome, stopped: Option<JobOutcome>) -> JobResult {
     let mut result = failed(record, String::new());

@@ -507,3 +507,86 @@ async fn offload_job_duration_estimate_counts_completed_records_once_not_artifac
     driver.save(&second).unwrap();
     assert_eq!(state.job_duration_estimate(&next), Some(1100));
 }
+
+#[tokio::test]
+async fn offload_job_runs_while_other_agents_fill_the_rooms_exec_records() {
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let held: Vec<String> = (0..16)
+        .map(|_| {
+            execs
+                .open_as(
+                    &task.room_id,
+                    &task.owner_user_id,
+                    worktree.path(),
+                    &["/bin/sleep".to_string(), "60".to_string()],
+                    None,
+                    Some("another-agent".into()),
+                )
+                .unwrap()
+        })
+        .collect();
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert_eq!(result["result"]["outcome"], "completed", "{result}");
+    assert_eq!(result["result"]["exit_code"], 0, "{result}");
+}
+
+#[test]
+fn offload_job_command_that_ended_without_a_status_says_why() {
+    let notice = super::execute::failed_end_notice(&crate::room_exec::ExecOutcome::Failed {
+        message: "provider launch refused the directory".into(),
+    })
+    .expect("a failed end has a notice");
+    assert!(
+        notice.contains("without an exit status") && notice.contains("refused the directory"),
+        "{notice}"
+    );
+    assert_eq!(
+        super::execute::failed_end_notice(&crate::room_exec::ExecOutcome::Exited { code: 3 }),
+        None
+    );
+}
+
+#[tokio::test]
+async fn offload_job_refused_at_the_kernels_command_limit_names_the_jobs_tools() {
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let mut held = Vec::new();
+    while let Ok(id) = execs.open_as(
+        &task.room_id,
+        &task.owner_user_id,
+        worktree.path(),
+        &["/bin/sleep".to_string(), "60".to_string()],
+        None,
+        Some("another-agent".into()),
+    ) {
+        held.push(id);
+    }
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert_eq!(result["result"]["outcome"], "outside_end", "{result}");
+    let reason = result["result"]["output_tail"].as_str().unwrap();
+    assert!(reason.contains("chariox.jobs.cancel"), "{reason}");
+    assert!(!reason.contains("RoomTerminal"), "{reason}");
+}

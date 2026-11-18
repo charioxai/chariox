@@ -32,7 +32,13 @@ pub(super) async fn service(
     state.owned.config_projection.update(config);
     tokio::spawn(async move {
         for (action, status, response) in responses {
-            let (mut socket, _) = listener.accept().await.unwrap();
+            // A command that never ran never calls the service: end with that reason, not a hang.
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(60), listener.accept())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("the machine service never received its `{action}` call")
+                })
+                .unwrap();
             let mut bytes = Vec::new();
             let header_end = loop {
                 let mut chunk = [0; 4096];

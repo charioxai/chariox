@@ -34,7 +34,6 @@ pub(crate) use place_command::{
 };
 
 pub const CHUNK_BYTES: usize = 256 * 1024;
-const MAX_PER_ROOM: usize = 16;
 const MAX_PER_KERNEL: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,15 +281,14 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         if records.len() >= MAX_PER_KERNEL
             || self.inner.running.load(Ordering::Acquire) >= MAX_PER_KERNEL
-            || records
-                .values()
-                .filter(|record| record.intent.session_id == session_id)
-                .count()
-                >= MAX_PER_ROOM
         {
             return Err(error(
                 "exec_limit",
-                "use RoomTerminal exec_list to find and exec_close a collected or abandoned command before starting another",
+                if job {
+                    "this kernel is running its limit of commands; wait for a job to end (chariox.jobs.status) or end one with chariox.jobs.cancel, then run this job again"
+                } else {
+                    "use RoomTerminal exec_list to find and exec_close a collected or abandoned command before starting another"
+                },
             ));
         }
         let (sender, receiver) = mpsc::channel(8);
