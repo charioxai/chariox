@@ -1434,6 +1434,68 @@ async fn call(
         .await
 }
 
+/// A provider may pass a call its schema refuses: the kernel names the missing argument instead of
+/// reading it as empty.
+#[tokio::test]
+async fn an_event_tool_call_missing_a_required_argument_is_refused_naming_it() {
+    let f = fixture("event-tools-missing-argument", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":60_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+
+    let refused = call(
+        &f,
+        &token,
+        "mcp__chariox__chariox_events_yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("`inbox_cursor`") && refused.contains("`reason`"),
+        "{refused}"
+    );
+    assert!(
+        f.store()
+            .agent_tasks(Some(&f.room), Some(&f.agent))
+            .unwrap()
+            .iter()
+            .all(|t| t.wait.is_none()),
+        "a refused call accepts no wait"
+    );
+    let refused = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"no delay"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("`delay_ms`"), "{refused}");
+}
+
 #[tokio::test]
 async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     let f = fixture("event-tools-mcp", true).await;
