@@ -150,3 +150,45 @@ fn changing_an_agent_to_an_unknown_model_is_refused() {
         "{error}"
     );
 }
+
+fn provider_defaults(harness: &LocalRouterTestHarness) -> (Option<String>, Option<String>) {
+    let LocalDaemonResponse::UserConfig { config, .. } = harness
+        .dispatch(LocalDaemonRequest::GetUserConfig(
+            crate::local::GetUserConfigRequest,
+        ))
+        .expect("user config should be readable")
+    else {
+        panic!("unexpected local response");
+    };
+    (config.providers.default, config.providers.model)
+}
+
+#[test]
+fn creating_a_room_with_an_unknown_model_is_refused_and_saves_no_defaults() {
+    let worktree = crate::test_support::TestWorktree::new("room-model-unknown");
+    let harness = LocalRouterTestHarness::new();
+    let (_, profile_id) = room_with_claude_account(&harness, &worktree);
+    let before = provider_defaults(&harness);
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    account_profile: Some(profile_id),
+                    ..crate::session::SessionAgentDefaults::new("claude-p").with_model("haiku-5-5")
+                }),
+        ))
+        .expect_err("an unknown model must be refused");
+
+    assert!(
+        error.to_string().contains("unknown model \"haiku-5-5\""),
+        "{error}"
+    );
+    assert_eq!(provider_defaults(&harness), before);
+    harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .expect("a Room without explicit defaults must still be created");
+}

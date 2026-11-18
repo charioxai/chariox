@@ -49,12 +49,17 @@ pub(crate) fn dispatch_interactive_command<'a>(
     let runtime_state = runtime_state.with_kernel_command_authority(&command, &request);
     if let LocalDaemonRequest::CreateSession(mut inner) = request {
         return boxed_interactive_handler(move || async move {
-            inner.agent_defaults = runtime_state
-                .resolve_session_agent_defaults(inner.agent_defaults)
-                .await?;
+            // The selection is checked before anything is saved: a refused request changes nothing.
+            let explicit_defaults = inner.agent_defaults.clone();
+            inner.agent_defaults = runtime_state.seed_session_agent_defaults(inner.agent_defaults);
             if inner.kernel_ref.is_none() && inner.slice_ref.is_none() {
                 inner.agent_defaults = runtime_state
                     .resolve_new_session_defaults(&inner.owner_user_id, inner.agent_defaults)
+                    .await?;
+            }
+            if let Some(defaults) = &explicit_defaults {
+                runtime_state
+                    .persist_provider_launch_defaults(defaults)
                     .await?;
             }
             session_runtime
