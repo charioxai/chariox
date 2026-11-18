@@ -505,14 +505,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let deadline = deadline.unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS));
-            if ids.is_empty()
-                || deadline <= now
-                || deadline > i64::MAX as u64
-                || reason.trim().is_empty()
-            {
-                return Err(error(
-                    "yield requires named live sources and, when given, a future deadline",
-                ));
+            if ids.is_empty() {
+                return Err(error("registration_ids is empty: name the registrations to wait on; chariox.events.subscriptions lists the registrations of this task"));
+            }
+            if deadline <= now || deadline > i64::MAX as u64 {
+                return Err(error(format!("deadline_ms {deadline} is not a future Unix time in milliseconds; now_ms is {now}")));
+            }
+            if reason.trim().is_empty() {
+                return Err(error("reason required: say in a few words what this wait is for; it is shown with the waiting task"));
             }
             let regs = registrations(tx, &task)?;
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {

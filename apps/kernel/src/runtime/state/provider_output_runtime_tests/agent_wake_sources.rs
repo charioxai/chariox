@@ -1656,6 +1656,72 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     scheduler.abort();
 }
 
+/// A refused yield names its actual cause: a wait on a live timer without a reason says the
+/// reason is missing, not that the sources are dead or the deadline is past.
+#[tokio::test]
+async fn a_refused_yield_names_the_missing_part_instead_of_blaming_live_sources() {
+    let f = fixture("yield-refusal-cause", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":3_600_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+    let now = crate::session::unix_epoch_ms();
+    for (args, cause) in [
+        (
+            serde_json::json!({"registration_ids":[registration],"inbox_cursor":0}),
+            "reason required",
+        ),
+        (
+            serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"  "}),
+            "reason required",
+        ),
+        (
+            serde_json::json!({"registration_ids":[],"inbox_cursor":0,"reason":"nothing named"}),
+            "registration_ids is empty",
+        ),
+    ] {
+        let refused = call(&f, &token, "chariox.events.yield", &task, args.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(cause) && !refused.contains("named live sources"),
+            "{args}: {refused}"
+        );
+    }
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"reason":"waiting for the check-in"}),
+    )
+    .await
+    .unwrap();
+    scheduler.abort();
+}
+
 /// An agent may always end its turn: a yield that leaves a timer out is accepted, lists the
 /// open timer in its result, and cancels the timers named in `cancel` in the same call.
 #[tokio::test]
