@@ -237,19 +237,38 @@ impl KernelRuntimeState {
                 continue;
             }
             if let Some((prompt_id, refusal)) = vault_refused_head {
-                if let Err(error) = self
+                match self
                     .owned
                     .end_queued_prompt_without_vault(session_id, agent_id, &prompt_id, &refusal)
                 {
-                    self.owned.record_notice(
+                    // A workflow step waits on its prompt: the run fails with the reason.
+                    Ok(Some(ended)) => match self.owned.workflow_fail_prompt_needing_help(
                         session_id,
-                        None,
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(session_id),
-                        format!("Queued prompt remained pending after its Vault unlock was refused: {error}"),
-                    );
-                    return None;
+                        &ended,
+                        &refusal.to_string(),
+                    ) {
+                        Ok(dispatches) => self.spawn_workflow_prompt_dispatches(dispatches),
+                        Err(error) => self.owned.record_notice(
+                            session_id,
+                            None,
+                            self.owned
+                                .attachment_store
+                                .list_session_attachment_ids(session_id),
+                            format!("The workflow step of an ended queued prompt was not settled: {error}"),
+                        ),
+                    },
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.owned.record_notice(
+                            session_id,
+                            None,
+                            self.owned
+                                .attachment_store
+                                .list_session_attachment_ids(session_id),
+                            format!("Queued prompt remained pending after its Vault unlock was refused: {error}"),
+                        );
+                        return None;
+                    }
                 }
                 continue;
             }

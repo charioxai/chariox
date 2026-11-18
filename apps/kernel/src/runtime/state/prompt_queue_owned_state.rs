@@ -2017,19 +2017,20 @@ impl KernelRuntimeOwnedState {
     /// A queued prompt whose Vault unlock timed out cannot start without the owner, and nothing
     /// else will start it: it ends with the reason in the Room, so the prompts behind it still
     /// get their turn. An owner who declines the unlock keeps the queue as it is.
+    /// Answers the prompt it ended, `None` when it was already gone.
     pub(super) fn end_queued_prompt_without_vault(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt_id: &str,
         refusal: &DaemonError,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(mut prompt) = self
             .prompt_state_owner
             .remove_queued_prompt(&session, agent_id, prompt_id)
         else {
-            return Ok(());
+            return Ok(None);
         };
         prompt.set_status(crate::session::PromptStatus::Cancelled);
         let (active_prompt, queued_prompts) =
@@ -2044,7 +2045,7 @@ impl KernelRuntimeOwnedState {
                 prompt.id()
             ),
         );
-        Ok(())
+        Ok(Some(prompt))
     }
 
     pub(super) fn update_queued_prompt(
