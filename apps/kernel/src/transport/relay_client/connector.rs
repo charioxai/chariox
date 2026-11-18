@@ -1344,7 +1344,10 @@ async fn run_daemon_relay_connector_inner(
                                 published_accounts = accounts;
                             }
                             if refresh_remote_inventory {
-                                let attached = !subscription_tasks.lock().await.is_empty();
+                                // Local clients and relay clients alike: either one following
+                                // the machine list keeps it fresh.
+                                let attached = router.remote_machines_watched()
+                                    || !subscription_tasks.lock().await.is_empty();
                                 let due = remote_inventory_refresh_due(
                                     heartbeat_tick,
                                     &mut inventory_refresh_task,

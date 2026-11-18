@@ -293,6 +293,16 @@ impl CommandRouter {
         self.remote_relay_inventory_projection.inventory()
     }
 
+    /// A local client follows the machine list for as long as it holds the watch.
+    pub(crate) fn watch_remote_machines(&self) -> crate::runtime::projection::RemoteInventoryWatch {
+        self.remote_relay_inventory_projection.watch()
+    }
+
+    /// Whether a local client follows the machine list now.
+    pub(crate) fn remote_machines_watched(&self) -> bool {
+        self.remote_relay_inventory_projection.watched()
+    }
+
     pub(crate) fn kernel_resource_changes(
         &self,
     ) -> &crate::transport::kernel_resource_feed::KernelResourceChanges {

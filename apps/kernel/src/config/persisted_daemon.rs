@@ -150,6 +150,16 @@ pub(super) fn update_persisted_daemon_config<T>(
     operation: &'static str,
     update: impl FnOnce(&mut PersistedDaemonConfig) -> Result<T, DaemonError>,
 ) -> Result<T, DaemonError> {
+    update_persisted_daemon_config_then(operation, update, |_| {})
+}
+
+/// As `update_persisted_daemon_config`, and `saved` runs once the change is on disk, while the
+/// config is still held.
+pub(super) fn update_persisted_daemon_config_then<T>(
+    operation: &'static str,
+    update: impl FnOnce(&mut PersistedDaemonConfig) -> Result<T, DaemonError>,
+    saved: impl FnOnce(&T),
+) -> Result<T, DaemonError> {
     let _writing = DaemonConfigLock::acquire(&default_daemon_config_path(), operation)?;
     let mut persisted = load_persisted_daemon_config();
     let before = persisted.clone();
@@ -157,6 +167,7 @@ pub(super) fn update_persisted_daemon_config<T>(
     if persisted != before || !default_daemon_config_path().exists() {
         save_persisted_daemon_config(&persisted, operation)?;
     }
+    saved(&result);
     Ok(result)
 }
 

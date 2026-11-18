@@ -1,6 +1,21 @@
 //! Which machines are online, reconnecting or offline. The relay says who is connected now and
 //! forgets everyone else; this keeps when each machine was last seen, so a dropped connection
 //! reads as Reconnecting for a while (unknown is not offline), then Offline, then is forgotten.
+//!
+//! Presence state table. One owner per transition; every writer holds the machine registry.
+//!
+//! | trigger | owner | transition | test |
+//! |---|---|---|---|
+//! | client follows the list (local socket or relay) | connector refresh gate: projection watch + relay subscriptions | live passes keep running | relay_client: a_machine_list_followed_only_by_a_local_client_stays_fresh |
+//! | live pass lists it | `reconcile` | -> Online; approval read from the registry now; sighting written at most once a minute | a_connected_machine_is_written_at_most_once_a_minute, a_live_machine_has_the_approval_the_registry_holds_now |
+//! | live pass or disconnect misses it | `reconcile` | Online -> Reconnecting; the clock starts at the first miss, however old the written sighting | a_machine_gone_for_less_than_ten_minutes_is_reconnecting, a_machine_shown_online_starts_its_clock_when_first_missed, relay_client: a_machine_shown_online_is_reconnecting_after_a_disconnect_however_old_its_written_sighting |
+//! | missed again soon after | `reconcile` | stays Reconnecting, clock kept | two_misses_close_together_keep_the_first_clock |
+//! | listed inside the window | `reconcile` | -> Online; a later miss starts a new window | a_reconnect_inside_the_window_restarts_it |
+//! | missed past 10 minutes | `reconcile` | -> Offline (not listed) | a_machine_gone_for_ten_minutes_is_offline_and_not_listed |
+//! | Offline, listed again | `reconcile` | -> Online | a_machine_that_reconnects_is_online_again_by_itself |
+//! | missed past 30 days | `reconcile` | -> forgotten | a_machine_offline_for_thirty_days_is_forgotten |
+//! | Remove | `DaemonConfig::forget_remote_machine`, then the projection removal after the save, under the registry; raises the removal generation | -> Removed; Pending if it connects again | relay_client: a_remove_during_a_disconnected_pass_is_not_undone |
+//! | live pass in flight + Remove | `publish_live` compare and set on the removal generation | the stale pass does not publish and runs again | relay_client: a_live_pass_overtaken_by_remove_does_not_publish_the_old_approval |
 use crate::config::PersistedMachineRegistration;
 use crate::local::{
     OfflineMachineRecord, RemoteMachineInventory, RemoteMachinePresence, RemoteMachineRecord,
@@ -41,12 +56,30 @@ pub(crate) fn still_reconnecting(last_seen_ms: u64, now_ms: u64) -> bool {
 /// Records the machines connected now (`live`, all online) in `registry`, and sorts every other
 /// machine the registry knows into reconnecting, offline or forgotten (removed from `registry`).
 /// The host machine is never tracked: this kernel runs on it.
+///
+/// The registry is the one owner of trust and of the presence clock, and the caller holds it:
+/// each live machine's approval is read here, never from an earlier read, and a machine that was
+/// shown Online (`shown_online`) and is missing now was seen gone only now, however old its last
+/// written sighting, so it is Reconnecting before it is Offline.
 pub(crate) fn reconcile(
     registry: &mut Vec<PersistedMachineRegistration>,
-    live: Vec<RemoteMachineRecord>,
+    mut live: Vec<RemoteMachineRecord>,
+    shown_online: &std::collections::BTreeSet<String>,
     host_machine_id: &str,
     now_ms: u64,
 ) -> RemoteMachineInventory {
+    for machine in live.iter_mut() {
+        let approved = machine.machine_id == host_machine_id
+            || registry
+                .iter()
+                .any(|entry| entry.machine_id == machine.machine_id && entry.approved);
+        machine.trust_status = if approved {
+            RemoteMachineTrustStatus::Approved
+        } else {
+            RemoteMachineTrustStatus::Pending
+        };
+        machine.pending = !approved;
+    }
     for machine in live
         .iter()
         .filter(|machine| machine.machine_id != host_machine_id)
@@ -79,8 +112,9 @@ pub(crate) fn reconcile(
         {
             return true;
         }
-        if entry.last_seen_ms == 0 {
-            // Approved or paired before it was ever listed: the clock starts when first missed.
+        if entry.last_seen_ms == 0 || shown_online.contains(&entry.machine_id) {
+            // Never listed before (approved or paired early), or shown Online until this pass:
+            // the clock starts when it is first missed.
             entry.last_seen_ms = now_ms;
         }
         let display_name = entry
@@ -167,7 +201,7 @@ mod tests {
     #[test]
     fn a_machine_gone_for_less_than_ten_minutes_is_reconnecting() {
         let mut registry = vec![entry("b", NOW - RECONNECTING_WINDOW_MS + 1)];
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, NOW);
         assert_eq!(
             ids(&inventory.machines),
             vec![("b", RemoteMachinePresence::Reconnecting)]
@@ -184,7 +218,7 @@ mod tests {
             entry("twenty-nine-days", NOW - 29 * 24 * 60 * minute),
             entry("thirty-one-days", NOW - 31 * 24 * 60 * minute),
         ];
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, NOW);
         assert_eq!(
             ids(&inventory.machines),
             vec![("nine", RemoteMachinePresence::Reconnecting)]
@@ -203,7 +237,7 @@ mod tests {
     #[test]
     fn a_machine_gone_for_ten_minutes_is_offline_and_not_listed() {
         let mut registry = vec![entry("b", NOW - RECONNECTING_WINDOW_MS)];
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, NOW);
         assert!(inventory.machines.is_empty());
         assert_eq!(
             inventory.offline_machines,
@@ -221,7 +255,7 @@ mod tests {
             entry("old", NOW - FORGET_AFTER_MS),
             entry("older", NOW - FORGET_AFTER_MS - 1),
         ];
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, NOW);
         assert_eq!(
             inventory
                 .offline_machines
@@ -239,23 +273,57 @@ mod tests {
         );
     }
 
-    // Presence state table (one test per row):
-    // | was          | relay pass                          | becomes                               | test |
-    // | online       | listed                              | online, seen now (written once a min) | a_connected_machine_is_written_at_most_once_a_minute |
-    // | online       | missed                              | reconnecting                          | a_machine_gone_for_less_than_ten_minutes_is_reconnecting |
-    // | reconnecting | missed again soon after             | reconnecting, clock not restarted     | two_misses_close_together_keep_the_first_clock |
-    // | reconnecting | listed inside the window            | online; a later miss starts a new window | a_reconnect_inside_the_window_restarts_it |
-    // | reconnecting | missed past 10 min                  | offline (not listed)                  | a_machine_gone_for_ten_minutes_is_offline_and_not_listed |
-    // | offline      | listed                              | online                                | a_machine_that_reconnects_is_online_again_by_itself |
-    // | offline      | missed past 30 days                 | forgotten                             | a_machine_offline_for_thirty_days_is_forgotten |
-    // | any          | Remove during a disconnected pass   | removed, not re-projected             | relay_client tests: a_remove_during_a_disconnected_pass_is_not_undone |
-    // Every relay disconnect runs the "missed" row for all machines (relay_client tests: remembered_machines).
+    // The presence state table is in the module documentation; each row names its test.
+    #[test]
+    fn a_machine_shown_online_starts_its_clock_when_first_missed() {
+        let mut registry = vec![entry("b", NOW - 11 * 60_000)];
+        let shown_online = std::collections::BTreeSet::from(["b".to_string()]);
+        let inventory = reconcile(&mut registry, Vec::new(), &shown_online, HOST, NOW);
+        assert_eq!(
+            ids(&inventory.machines),
+            [("b", RemoteMachinePresence::Reconnecting)]
+        );
+        assert_eq!(registry[0].last_seen_ms, NOW);
+    }
+
+    #[test]
+    fn a_live_machine_has_the_approval_the_registry_holds_now() {
+        let mut registry = vec![PersistedMachineRegistration {
+            approved: false,
+            ..entry("b", NOW)
+        }];
+        let inventory = reconcile(
+            &mut registry,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
+        assert!(inventory.machines[0].pending);
+        assert_eq!(
+            inventory.machines[0].trust_status,
+            RemoteMachineTrustStatus::Pending
+        );
+        let mut removed = Vec::new();
+        let inventory = reconcile(
+            &mut removed,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
+        assert!(
+            inventory.machines[0].pending,
+            "a removed machine that connects is pending"
+        );
+    }
+
     #[test]
     fn two_misses_close_together_keep_the_first_clock() {
         let dropped_at = NOW - 2 * 60_000;
         let mut registry = vec![entry("b", dropped_at)];
         for now in [NOW, NOW + 1_000] {
-            let inventory = reconcile(&mut registry, Vec::new(), HOST, now);
+            let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, now);
             assert_eq!(
                 ids(&inventory.machines),
                 vec![("b", RemoteMachinePresence::Reconnecting)]
@@ -267,13 +335,19 @@ mod tests {
     #[test]
     fn a_reconnect_inside_the_window_restarts_it() {
         let mut registry = vec![entry("b", NOW - RECONNECTING_WINDOW_MS + 60_000)];
-        let inventory = reconcile(&mut registry, vec![live("b")], HOST, NOW);
+        let inventory = reconcile(
+            &mut registry,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
         assert_eq!(
             ids(&inventory.machines),
             vec![("b", RemoteMachinePresence::Online)]
         );
         let later = NOW + RECONNECTING_WINDOW_MS - 1;
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, later);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, later);
         assert_eq!(
             ids(&inventory.machines),
             vec![("b", RemoteMachinePresence::Reconnecting)]
@@ -283,7 +357,13 @@ mod tests {
     #[test]
     fn a_machine_that_reconnects_is_online_again_by_itself() {
         let mut registry = vec![entry("b", NOW - FORGET_AFTER_MS / 2)];
-        let inventory = reconcile(&mut registry, vec![live("b")], HOST, NOW);
+        let inventory = reconcile(
+            &mut registry,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
         assert_eq!(
             ids(&inventory.machines),
             vec![("b", RemoteMachinePresence::Online)]
@@ -295,7 +375,13 @@ mod tests {
     #[test]
     fn a_machine_seen_for_the_first_time_is_remembered_with_its_name() {
         let mut registry = Vec::new();
-        let _ = reconcile(&mut registry, vec![live("new")], HOST, NOW);
+        let _ = reconcile(
+            &mut registry,
+            vec![live("new")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
         assert_eq!(registry.len(), 1);
         assert_eq!(registry[0].display_name.as_deref(), Some("new name"));
         assert_eq!(registry[0].last_seen_ms, NOW);
@@ -305,7 +391,7 @@ mod tests {
     #[test]
     fn an_approved_machine_never_seen_starts_its_clock_when_first_missed() {
         let mut registry = vec![entry("b", 0)];
-        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        let inventory = reconcile(&mut registry, Vec::new(), &Default::default(), HOST, NOW);
         assert_eq!(
             ids(&inventory.machines),
             vec![("b", RemoteMachinePresence::Reconnecting)]
@@ -316,7 +402,13 @@ mod tests {
     #[test]
     fn the_host_machine_is_never_tracked() {
         let mut registry = Vec::new();
-        let inventory = reconcile(&mut registry, vec![live(HOST)], HOST, NOW);
+        let inventory = reconcile(
+            &mut registry,
+            vec![live(HOST)],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
         assert!(registry.is_empty());
         assert_eq!(
             ids(&inventory.machines),
@@ -327,9 +419,21 @@ mod tests {
     #[test]
     fn a_connected_machine_is_written_at_most_once_a_minute() {
         let mut registry = vec![entry("b", NOW - 30_000)];
-        let _ = reconcile(&mut registry, vec![live("b")], HOST, NOW);
+        let _ = reconcile(
+            &mut registry,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW,
+        );
         assert_eq!(registry[0].last_seen_ms, NOW - 30_000);
-        let _ = reconcile(&mut registry, vec![live("b")], HOST, NOW + 30_000);
+        let _ = reconcile(
+            &mut registry,
+            vec![live("b")],
+            &Default::default(),
+            HOST,
+            NOW + 30_000,
+        );
         assert_eq!(registry[0].last_seen_ms, NOW + 30_000);
     }
 }

@@ -2,7 +2,7 @@ use super::{
     normalized_optional,
     persisted_daemon::{
         load_persisted_daemon_config, normalized_terminal_type, update_persisted_daemon_config,
-        upsert_client_pairing, upsert_machine_registration,
+        update_persisted_daemon_config_then, upsert_client_pairing, upsert_machine_registration,
     },
     validate_non_empty, DaemonConfig, PersistedClientPairing, PersistedMachineRegistration,
 };
@@ -100,22 +100,31 @@ impl DaemonConfig {
 
     /// Removes the machine from the registry: its trust is gone and it is listed again, as
     /// pending, if it ever connects again. The name it had is returned for the answer.
+    /// `on_removed` runs once the removal is saved, while the registry is still held, so what it
+    /// writes (the machine list without the machine) cannot be overtaken by a pass that read the
+    /// registry before.
     pub fn forget_remote_machine(
         machine_id: impl Into<String>,
+        on_removed: impl FnOnce(&str),
     ) -> Result<Option<PersistedMachineRegistration>, DaemonError> {
         let machine_id = machine_id.into();
         validate_non_empty("machine_id", &machine_id)?;
-        update_persisted_daemon_config("persist forgotten machine", |persisted| {
-            let removed = persisted
-                .machines
-                .iter()
-                .position(|entry| entry.machine_id == machine_id)
-                .map(|index| persisted.machines.remove(index));
-            if !persisted.revoked_worker_machines.contains(&machine_id) {
-                persisted.revoked_worker_machines.push(machine_id);
-            }
-            Ok(removed)
-        })
+        let forgotten = machine_id.clone();
+        update_persisted_daemon_config_then(
+            "persist forgotten machine",
+            |persisted| {
+                let removed = persisted
+                    .machines
+                    .iter()
+                    .position(|entry| entry.machine_id == machine_id)
+                    .map(|index| persisted.machines.remove(index));
+                if !persisted.revoked_worker_machines.contains(&machine_id) {
+                    persisted.revoked_worker_machines.push(machine_id);
+                }
+                Ok(removed)
+            },
+            |_| on_removed(&forgotten),
+        )
     }
 
     /// The owner removed this machine and has not approved it again: its worker leases are revoked.

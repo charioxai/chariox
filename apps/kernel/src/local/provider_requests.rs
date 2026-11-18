@@ -1,5 +1,4 @@
 use crate::app::DaemonApp;
-use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, OpenCodeProviderCatalog, ProviderClientInterface};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -7,9 +6,8 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
 use super::api::{
-    ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse, RelayStatus,
-    RemoteMachineInventory,
+    ConfigureRelayRequest, LaunchProviderRunRequest, ListRemoteMachineKernelsRequest,
+    LocalDaemonResponse, RelayStatus, RemoteMachineInventory,
 };
 
 mod blocking;
@@ -170,41 +168,6 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref,
             kernels,
-        })
-    }
-
-    pub(super) fn approve_remote_machine_response(
-        &mut self,
-        request: ApproveRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))
-        .unwrap_or_default();
-        let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::approve_remote_machine(machine.machine_id.clone())?;
-        self.provider_catalog_cache.clear();
-        let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
-        Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
-    }
-
-    pub(super) fn forget_remote_machine_response(
-        &mut self,
-        request: ForgetRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))
-        .unwrap_or_default();
-        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        let removed = DaemonConfig::forget_remote_machine(machine.clone())?;
-        self.provider_catalog_cache.clear();
-        let display_name = forgotten_machine_name(&machine, removed, &live);
-        Ok(LocalDaemonResponse::RemoteMachineForgotten {
-            machine_id: machine,
-            display_name,
         })
     }
 }
@@ -369,6 +332,7 @@ pub(crate) fn launch_provider_request_from_local(
 mod tests {
     use super::*;
     use crate::app::KernelSessionService;
+    use crate::config::DaemonConfig;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::{CreateSessionRequest, SessionAgentDefaults};
 

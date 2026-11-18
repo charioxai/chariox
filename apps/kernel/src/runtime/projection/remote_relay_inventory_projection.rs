@@ -9,6 +9,18 @@ use crate::session::unix_epoch_ms;
 #[derive(Clone, Default)]
 pub(crate) struct RemoteRelayInventoryProjectionStore {
     state: Arc<StdMutex<RemoteRelayInventoryProjectionState>>,
+    /// Clients following the machine list, local and over the relay: while any is attached the
+    /// connector keeps the list fresh.
+    watchers: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// One client following the machine list; dropping it ends its demand.
+pub(crate) struct RemoteInventoryWatch(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for RemoteInventoryWatch {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -22,6 +34,9 @@ struct RemoteRelayInventoryProjectionState {
     appeared_kernels: std::collections::BTreeSet<String>,
     /// The kernels the owner's Cloud directory still linked on its last two reads, oldest first.
     directory_reads: std::collections::VecDeque<std::collections::BTreeSet<String>>,
+    /// The removal generation: raised by every Remove while the registry is held, so a live pass
+    /// that started before a Remove does not publish (`publish_live`).
+    registry_revision: u64,
 }
 
 impl RemoteRelayInventoryProjectionStore {
@@ -140,15 +155,54 @@ impl RemoteRelayInventoryProjectionStore {
         false
     }
 
-    pub(crate) fn update(
+    /// A client starts following the machine list.
+    pub(crate) fn watch(&self) -> RemoteInventoryWatch {
+        self.watchers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        RemoteInventoryWatch(Arc::clone(&self.watchers))
+    }
+
+    /// Whether a local client follows the machine list now.
+    pub(crate) fn watched(&self) -> bool {
+        self.watchers.load(std::sync::atomic::Ordering::SeqCst) > 0
+    }
+
+    /// The registry revision a live pass starts from; see `publish_live`.
+    pub(crate) fn registry_revision(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .registry_revision
+    }
+
+    /// The machines shown Online now: one missing from the next pass has been seen gone only
+    /// from that pass on.
+    pub(crate) fn online_machine_ids(&self) -> std::collections::BTreeSet<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remote_machines
+            .iter()
+            .filter(|machine| machine.presence == crate::local::RemoteMachinePresence::Online)
+            .map(|machine| machine.machine_id.clone())
+            .collect()
+    }
+
+    /// Publishes a live pass unless a Remove landed since it started (compare and set on the
+    /// removal generation); the caller holds the registry. False: the pass is stale.
+    pub(crate) fn publish_live(
         &self,
+        started_revision: u64,
         inventory: RemoteMachineInventory,
         remote_kernels: Vec<RelayKernelPresence>,
-    ) {
+    ) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.registry_revision != started_revision {
+            return false;
+        }
         state.offline_machines = inventory.offline_machines;
         state.remote_machines = inventory
             .machines
@@ -173,8 +227,21 @@ impl RemoteRelayInventoryProjectionStore {
         state.appeared_kernels.extend(appeared);
         state.refreshed_at_ms = unix_epoch_ms();
         state.refresh_requested_at_ms = state.refreshed_at_ms;
+        true
     }
 
+    /// Publishes a live pass as of now, for tests that set the inventory directly.
+    #[cfg(test)]
+    pub(crate) fn update(
+        &self,
+        inventory: RemoteMachineInventory,
+        remote_kernels: Vec<RelayKernelPresence>,
+    ) {
+        assert!(self.publish_live(self.registry_revision(), inventory, remote_kernels));
+    }
+
+    /// An approved machine's record. A live pass needs no compare and set against it: it reads
+    /// the approval from the registry it holds when it publishes.
     pub(crate) fn update_machine(&self, machine: RemoteMachineRecord) {
         let mut state = self
             .state
@@ -194,11 +261,14 @@ impl RemoteRelayInventoryProjectionStore {
         crate::local::provider_requests::sort_remote_machines(&mut state.remote_machines);
     }
 
+    /// A removed machine leaves every list; the caller holds the registry it was removed from.
     pub(crate) fn remove_machine(&self, machine_id: &str) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove_machine(machine_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.registry_revision += 1;
+        state.remove_machine(machine_id);
     }
 
     /// Holds the projection so a test can stop a writer just before its write.

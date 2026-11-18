@@ -86,13 +86,14 @@ pub(crate) async fn execute_forget_remote_machine_request(
                 .resolve_leased_worker_machine_ref(&request.machine_ref)
                 .ok_or(error)
         })?;
-    let removed = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
+    let removed = crate::config::DaemonConfig::forget_remote_machine(machine.clone(), |machine| {
+        remote_relay_inventory_projection.remove_machine(machine)
+    })?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
     runtime_state
         .end_worker_leases_of_forgotten_machine(&machine)
         .await;
     let display_name = forgotten_machine_name(&machine, removed, &live);
-    remote_relay_inventory_projection.remove_machine(&machine);
     Ok(LocalDaemonResponse::RemoteMachineForgotten {
         machine_id: machine,
         display_name,

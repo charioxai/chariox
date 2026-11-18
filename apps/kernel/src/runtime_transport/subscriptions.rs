@@ -907,6 +907,8 @@ async fn run_room_list_subscription_loop(
     let mut room_list_event_projection = RoomListEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<RemoteMachineInventory> = None;
+    // This client follows the machine list: the relay connector keeps it fresh meanwhile.
+    let _remote_machines_watch = router.watch_remote_machines();
     let mut previous_provider_catalog = None;
     let mut previous_slices = None;
     let mut inventory_dirty = true;

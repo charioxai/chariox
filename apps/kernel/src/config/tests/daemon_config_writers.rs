@@ -39,7 +39,7 @@ fn a_presence_refresh_never_brings_back_a_machine_the_owner_removed() {
 
     let removed = refresh_while(
         |registry| registry[0].last_seen_ms = 42,
-        || DaemonConfig::forget_remote_machine("machine-a"),
+        || DaemonConfig::forget_remote_machine("machine-a", |_| {}),
     )
     .expect("Remove should persist");
 
@@ -77,7 +77,7 @@ fn sibling_kernel_removes_machine_a() {
         return;
     };
     std::fs::write(&marker, b"started").expect("sibling should say it started");
-    DaemonConfig::forget_remote_machine("machine-a").expect("Remove should persist");
+    DaemonConfig::forget_remote_machine("machine-a", |_| {}).expect("Remove should persist");
 }
 
 // Two kernel processes share one `CHARIOX_HOME`: the other one's Remove, made while this one's
