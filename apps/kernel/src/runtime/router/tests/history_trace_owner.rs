@@ -92,3 +92,92 @@ async fn a_private_member_cannot_read_another_users_agent_history() {
         "the room owner must still read their agent's history outline: {owner_outline:?}"
     );
 }
+
+// b3, 2026-11-18: each history outline built two full session snapshots (~800 ms with the
+// room's tasks, wakes and queued messages) on the kernel's async workers; 59 of them at once
+// starved the runtime and the relay dropped the kernel. History reads need only the room and
+// its agents.
+#[tokio::test]
+async fn history_reads_build_no_full_session_snapshot() {
+    let (router, session_id, owner_agent_id) = room_with_private_member();
+    let requests = [
+        LocalDaemonRequest::GetSessionHistoryOutline(
+            crate::local::GetSessionHistoryOutlineRequest {
+                session_id: session_id.clone(),
+                agent_ids: None,
+                latest_prompt_count: Some(4),
+                cursor: None,
+                include_prefetched_content: false,
+            },
+        ),
+        LocalDaemonRequest::PeekAgentTranscript(crate::local::PeekAgentTranscriptRequest {
+            session_id: session_id.clone(),
+            agent_id: owner_agent_id.clone(),
+            limit: None,
+            before: None,
+        }),
+    ];
+    let _ = crate::runtime::state::KernelRuntimeState::take_session_snapshot_builds();
+    for request in requests {
+        let request = crate::runtime::history_executor::authorize_history_request(
+            &router.runtime_state,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            request,
+        )
+        .await
+        .expect("the owner may read the room's history");
+        crate::runtime::history_executor::execute_history_request(
+            router.history_store.clone(),
+            router.operational_history_store.clone(),
+            &router.runtime_state,
+            &router.config_projection,
+            request,
+        )
+        .await
+        .expect("history read");
+    }
+    assert_eq!(
+        crate::runtime::state::KernelRuntimeState::take_session_snapshot_builds(),
+        0
+    );
+}
+
+// b3, 2026-11-18: a reconnecting web view asked for the same outline once per pane and per
+// attachment, 59 times in two minutes. Identical outline reads in flight read the history once.
+#[tokio::test]
+async fn identical_outline_reads_in_flight_read_the_history_once() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 16);
+    let dispatch = |n: usize| {
+        let request = LocalDaemonRequest::GetSessionHistoryOutline(
+            crate::local::GetSessionHistoryOutlineRequest {
+                session_id: session.id().to_string(),
+                agent_ids: None,
+                latest_prompt_count: Some(2),
+                cursor: None,
+                include_prefetched_content: true,
+            },
+        );
+        let command =
+            KernelCommand::from_local_request(format!("outline-{n}"), None, None, &request);
+        router.dispatch(command, request)
+    };
+    dispatch(0).await.expect("first outline");
+    let served = || router.operational_history_store.reads_served();
+    let before = served();
+    dispatch(1).await.expect("one outline");
+    let one = served() - before;
+    assert!(one > 0, "an outline reads the history");
+    let before = served();
+    for outline in futures_util::future::join_all((2..8).map(dispatch)).await {
+        outline.expect("concurrent outline");
+    }
+    assert_eq!(
+        served() - before,
+        one,
+        "six identical outline reads in flight each read the history"
+    );
+}

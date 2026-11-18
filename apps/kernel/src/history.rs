@@ -661,6 +661,8 @@ pub struct OperationalHistoryStore {
     reclaim_in_progress: Arc<AtomicBool>,
     appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
+    #[cfg(test)]
+    delayed_reads: Arc<AtomicU64>,
     max_size_bytes: u64,
     capture_enabled: Arc<AtomicBool>,
     writer: Arc<OperationalHistoryWriter>,
@@ -789,6 +791,8 @@ impl OperationalHistoryStore {
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
+            #[cfg(test)]
+            delayed_reads: Arc::default(),
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
             capture_enabled: Arc::new(AtomicBool::new(true)),
             writer: Arc::new(OperationalHistoryWriter {
@@ -802,9 +806,23 @@ impl OperationalHistoryStore {
     }
 
     pub(crate) fn delay_read_if_configured(&self) {
+        #[cfg(test)]
+        self.delayed_reads.fetch_add(1, Ordering::SeqCst);
         if self.read_delay_ms > 0 {
             thread::sleep(Duration::from_millis(self.read_delay_ms));
         }
+    }
+
+    /// The sequence the next appended event takes: equal values mean nothing was
+    /// appended in between.
+    pub(crate) fn written_sequence(&self) -> u64 {
+        self.next_sequence.load(Ordering::Acquire)
+    }
+
+    /// How many reads this store served, for tests that count repeated work.
+    #[cfg(test)]
+    pub(crate) fn reads_served(&self) -> u64 {
+        self.delayed_reads.load(Ordering::SeqCst)
     }
 
     pub fn capture_enabled(&self) -> bool {
