@@ -60,4 +60,23 @@ Each gate runs first where a developer runs it (`pnpm lint`, `pnpm test`, or the
 
 ## Kernel
 
-`perf-budgets/kernel.json` and this section are owned by the kernelstarve work: kernel budgets (CPU, attach and history latency), their gates and their measurements are written there.
+`perf-budgets/kernel.json`. The kernel answers every client and agent of the machine, so one slow read path or one large state event costs every Room. The numbers, how they were measured and the RED/GREEN runs are in the round notes of perfbudgets-kernel; the `measured` field of each budget says what its ceiling comes from.
+
+Budgets a gate measures:
+
+- `outline_p95_ms`, `session_state_p95_ms`, `attach_view_p95_ms`: the p95 a client sees for a Room's history outline (`GetSessionHistoryOutline`, 20 latest prompts with prefetched content), its state (`GetSessionState`) and an attach view (`AttachSessionView`, then the detach), read by the probe client during the load phase of the KR-06 multi-agent load drill (`scripts/drills/kernel-responsiveness.mjs --multi-agent-load <seconds>`: ten dev-stub lanes taking turns, 500 leftover Rooms, session churn, readers and durable toggles).
+- `stalled_operations`: "kernel operation stalled" lines (`runtime/stall_watchdog.rs`: an operation that held a runtime worker or a shared lock for 2 s) in the kernel logs of the whole drill run. The ceiling is 0.
+- `session_state_bytes`, `attach_view_bytes`: the size of the state read and of the attach view of a Room whose two agents have 35 queued 4,000-character messages each (`runtime::router::tests::peer_rooms::queued`, real router dispatch).
+- `event_envelope_bytes`: the largest state event a subscriber receives. Every kernel test that sends an event through a local subscription (`runtime_transport/outbound.rs`) or the relay (`transport/relay_client/events.rs`) checks it (`transport/perf_budget.rs`) and fails over the ceiling; terminal output and kernel browser frames are byte streams with their own flow control and are not counted. Release builds keep the relay writer's large-frame log.
+
+Rules a lint check holds (`pnpm lint:rules`, each with a planted-violation test and a shrink-only list of today's sites):
+
+- `no-full-snapshot-on-read-path`: a read request does not build a full Room snapshot (it also reads the Room's tasks, wakes and queued messages from the durable store and republishes it: ~800 ms under load, #1445). The read-path files are listed in the check; a read takes the stored Room with its agents (`session_with_agents`).
+- `no-spawn-in-periodic-loop`: a loop that waits on a clock does not start a subprocess, directly or through a function of the same file (a `ps` per tick timed out on a busy host, #1445).
+- `no-polling-where-subscription`: client code under `apps/*/src` and `packages/*/src` does not re-read on a timer (`setInterval`, or a loop that sleeps) a read the kernel pushes as an event: `GetSessionState`, `ListSessions`, `ListAgents`, `GetSessionHistoryOutline`.
+
+| Check | Runs in | Fails when |
+|---|---|---|
+| Latency and stalls (`kernel.outline_p95_ms`, `kernel.session_state_p95_ms`, `kernel.attach_view_p95_ms`, `kernel.stalled_operations`) | KR-06 drill on a release kernel (`node scripts/drills/kernel-responsiveness.mjs --kernel-binary <kernel> --state-root ~/.chariox/dev/<task>/kr06 --evidence-dir <dir> --multi-agent-load 120`); its verdict logic in `scripts/multi-agent-load-verdict.test.mjs` (`pnpm test`) | a p95 is over its ceiling, a probe never completed, or the kernel logged a stalled operation |
+| Sizes (`kernel.session_state_bytes`, `kernel.attach_view_bytes`, `kernel.event_envelope_bytes`) | OSS kernel tests (`cargo test -p chariox-kernel --lib`) | a response or a state event is over its ceiling |
+| `no-full-snapshot-on-read-path`, `no-spawn-in-periodic-loop`, `no-polling-where-subscription` | OSS `pnpm lint` (`pnpm lint:rules`) | a new site breaks the rule |

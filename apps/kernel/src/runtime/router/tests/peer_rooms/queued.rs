@@ -308,7 +308,11 @@ fn many_long_queued_messages_keep_the_session_state_small() {
         let queued = response["SessionState"]["session"]["queued_agent_messages"]
             .as_array()
             .expect("the queued messages");
-        assert!(bytes < 32_000, "the session state is {bytes} bytes");
+        let budget = crate::transport::perf_budget::budget("session_state_bytes");
+        assert!(
+            bytes <= budget,
+            "the session state is {bytes} bytes, over kernel.session_state_bytes {budget}"
+        );
         for agent in [idle.id(), rooms.peer.id()] {
             let shown: Vec<_> = queued
                 .iter()
@@ -320,5 +324,31 @@ fn many_long_queued_messages_keep_the_session_state_small() {
             assert_eq!(shown[0]["truncated"], true);
         }
         assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 35);
+
+        // A client opening the Room pays one attach view: the state above plus the latest turns.
+        let request =
+            LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
+                session_id: rooms.peer_room.clone(),
+                client_id: "perf-budget".into(),
+                capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+                preferred_agent_id: None,
+                latest_prompt_count: None,
+            });
+        let command = KernelCommand::from_local_request("cmd-attach-view", None, None, &request);
+        let response = rooms
+            .router
+            .dispatch(command, request)
+            .await
+            .expect("the attach view");
+        assert!(matches!(
+            response,
+            crate::local::LocalDaemonResponse::SessionViewAttached { .. }
+        ));
+        let bytes = serde_json::to_vec(&response).unwrap().len();
+        let budget = crate::transport::perf_budget::budget("attach_view_bytes");
+        assert!(
+            bytes <= budget,
+            "the attach view is {bytes} bytes, over kernel.attach_view_bytes {budget}"
+        );
     });
 }

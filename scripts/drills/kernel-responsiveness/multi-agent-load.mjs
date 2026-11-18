@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
+import { budgetChecks, laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -63,6 +63,14 @@ function seedSubscriptions(root, kernel, sizes, targets, runStates, padding) {
 function countTaskStates(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
   try { return Object.fromEntries(db.prepare('SELECT state, count(*) AS n FROM agent_tasks GROUP BY state').all().map(row => [row.state ?? 'unreadable', row.n])) } finally { db.close() }
+}
+// The stall watchdog's line (apps/kernel/src/runtime/stall_watchdog.rs) in every kernel log file of the run.
+function countStalls(path) {
+  try {
+    const stat = statSync(path)
+    if (stat.isDirectory()) return readdirSync(path).reduce((sum, name) => sum + countStalls(join(path, name)), 0)
+    return readFileSync(path, 'utf8').split('kernel operation stalled').length - 1
+  } catch { return 0 }
 }
 function countEvents(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
@@ -209,6 +217,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     const rssSamples = []
     // How big the probed Room's state reads, once per five seconds: a Room that keeps its finished turns grows it.
     const stateBytes = []
+    const attachBytes = []
     const end = performance.now() + seconds * 1000
     while (performance.now() < end) {
       const next = performance.now() + 250
@@ -216,6 +225,20 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       await guarded('probe', () => timed(timings, 'GetSessionState')(async () => { const state = await probe.send({ GetSessionState: { session_id: probeSession } }); if (n % 20 === 0) stateBytes.push([performance.now(), JSON.stringify(state).length]); return state }))
       await guarded('probe', () => timed(timings, 'ListSessions')(() => probe.send({ ListSessions: {} })))
       if (n % 4 === 0) {
+        // What a client pays to open a Room: its history outline and one attach view (then the detach).
+        await guarded('probe', () => timed(timings, 'GetSessionHistoryOutline')(async () => {
+          const outline = await probe.send({ GetSessionHistoryOutline: { session_id: probeSession, latest_prompt_count: 20, include_prefetched_content: true } })
+          if (outline.Error) throw new Error(`GetSessionHistoryOutline: ${outline.Error.code}`)
+          return outline }))
+        await guarded('probe', async () => {
+          const view = await timed(timings, 'AttachSessionView')(() => probe.send({ AttachSessionView: { session_id: probeSession, client_id: 'kr06-probe', capability_level: 'FullTerminal' } }))
+          if (!view.SessionViewAttached) throw new Error(`AttachSessionView: ${view.Error?.code ?? Object.keys(view)[0]}`)
+          if (n % 20 === 0) attachBytes.push(JSON.stringify(view).length)
+          // The kernel may have detached a view that stopped pumping already; that is not a load error.
+          await probe.send({ DetachFromSession: { attachment_id: view.SessionViewAttached.attachment.id } }).catch(error => {
+            if (!String(error.message).includes('was not found')) throw error
+          })
+        })
         await guarded('probe', () => timed(timings, 'GetDaemonHealth')(() => probe.send({ GetDaemonHealth: null })))
         await guarded('probe', () => timed(timings, 'McpInitialize')(async () => {
           const response = await fetch(mcpUrl, { method: 'POST', headers: { authorization: 'Bearer responsiveness-probe', 'content-type': 'application/json' },
@@ -237,6 +260,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       writer_cpu_percent: +(100 * (after.writer - before.writer) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       process_cpu_percent: +(100 * (after.process - before.process) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
+      attach_view_bytes_max: attachBytes.length ? Math.max(...attachBytes) : null,
       state_bytes_per_minute: load ? perMinute(stateBytes.map(([at, bytes]) => [at, bytes]), before.at).map(v => v && v.p99_ms) : undefined,
       rss_slope_after_warmup_mb_per_min: load ? rssSlopeAfterWarmup(rssSamples, o.rssWarmupSeconds) : null, rss_samples: load ? rssSamples : undefined,
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
@@ -256,6 +280,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     const tasks = (await probe.send({ GetSessionState: { session_id: lane.session_id } })).SessionState.session.agent_tasks ?? []
     lane.unsettled_tasks = tasks.filter(task => task.state !== 'done' && task.state !== 'cancelled').length
   }
+  out.stalled_operations = countStalls(logPath)
   const { idle, load } = out.phases
   const p99 = (ph, kind) => ph.latency[kind]?.p99_ms ?? 0
   const checks = {
@@ -275,6 +300,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
     ...laneChecks(out.lanes),
+    ...budgetChecks(JSON.parse(readFileSync(new URL('../../../perf-budgets/kernel.json', import.meta.url), 'utf8')), load.latency, out.stalled_operations),
   }
   out.checks = checks
   Object.assign(out, verdictOf(checks))
