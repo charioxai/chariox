@@ -1415,6 +1415,135 @@ fn assert_mixed_old_provider_runtime_cleared(runtime: &KernelRuntimeState, provi
     );
 }
 
+/// The message was stored when the send returned; its delivery runs on its own.
+async fn wait_for_message_state(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    sequence: u64,
+    state: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let current = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(session_id, agent_id, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.sequence == sequence)
+            .map(|event| event.state);
+        if current.as_deref() == Some(state) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "message {sequence} stayed {current:?}, wanted {state}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[test]
+/// An urgent send to an agent whose provider lane is held (a turn deep in a long tool call) hands
+/// back its message id at once and delivers when the lane frees; the sender never waits for the
+/// receiver's provider.
+fn urgent_send_to_a_busy_receiver_returns_at_once_and_delivers_when_it_frees() {
+    run_kernel_mixed_01_with_large_stack("urgent-send-busy-receiver", || async {
+        let worktree = crate::test_support::TestWorktree::new("urgent-send-busy-receiver");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app =
+            crate::test_support::bootstrap_authenticated_app(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let session_id = session.id().to_string();
+        let receiver = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("receiver"),
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-urgent-send",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let sender_run = mixed_launch_provider(&mut app, &session_id, sender.id(), "sender");
+        let receiver_run = mixed_launch_provider(&mut app, &session_id, receiver.id(), "receiver");
+        let (sender_prompt, _) = mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            sender.id(),
+            "sender turn\n",
+            "sender queued\n",
+        );
+        mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            receiver.id(),
+            "receiver turn\n",
+            "receiver queued\n",
+        );
+        spawn_inert_pty_for_run(&mut app, receiver_run.id());
+        let app = Arc::new(Mutex::new(app));
+        let _pty_cleanup = InertPtyCleanup {
+            app: Arc::clone(&app),
+            provider_run_id: receiver_run.id().to_string(),
+        };
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app, 4);
+        let runtime = router.runtime_state();
+        let token = sender_run.runtime_mcp_auth_token().unwrap().to_string();
+        // The receiver's turn holds its lane for as long as its tool call runs.
+        let lane = runtime
+            .provider_runtime_lanes
+            .acquire(receiver_run.id())
+            .await;
+
+        let started = std::time::Instant::now();
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": "@receiver",
+                    "message": "stop and report",
+                    "origin_prompt_id": sender_prompt,
+                    "urgent": true,
+                }),
+            ),
+        )
+        .await
+        .expect("the send must return within a second while the receiver's lane is held")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(sent.ok, "{:?}", sent.payload);
+        assert_eq!(sent.payload["status"], "steering");
+        let sequence = sent.payload["sequence"].as_u64().unwrap();
+        assert_eq!(sent.payload["message_id"], sequence.to_string());
+        assert_ne!(
+            runtime
+                .owned
+                .durable_state_store
+                .agent_inbox(&session_id, receiver.id(), 0)
+                .unwrap()[0]
+                .state,
+            "accepted",
+            "the receiver's provider has not taken it while its lane is held"
+        );
+
+        drop(lane);
+        wait_for_message_state(&runtime, &session_id, receiver.id(), sequence, "accepted").await;
+    });
+}
+
 #[test]
 /// Exercises kernel-owned stale provider termination/reconciliation for two sibling agents while
 /// a healthy sibling keeps durable progress. Staleness is simulated by ending provider records
@@ -1534,11 +1663,19 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
         .await
         .expect("agent message should dispatch through the kernel");
     assert!(first_message.ok, "{:?}", first_message.payload);
-    assert_eq!(first_message.payload["status"], "durable");
+    assert_eq!(first_message.payload["status"], "steering");
     let message_sequence = first_message.payload["sequence"]
         .as_u64()
         .expect("message should return a durable inbox sequence");
     let runtime = router.runtime_state();
+    wait_for_message_state(
+        &runtime,
+        &session_id,
+        &stale_b_id,
+        message_sequence,
+        "accepted",
+    )
+    .await;
     let b_inbox_after_first = runtime
         .owned
         .durable_state_store

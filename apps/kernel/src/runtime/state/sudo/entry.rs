@@ -652,7 +652,7 @@ impl KernelRuntimeState {
         };
         let submission = match submitted {
             Err(DaemonError::LocalTransport { message, .. })
-                if message == "target agent is busy; retry when its provider is ready" =>
+                if message == crate::runtime::prompt_state::TARGET_BUSY_MESSAGE =>
             {
                 if durable_work {
                     let _ = self.owned.withdraw_agent_task(&entry.entry_id);

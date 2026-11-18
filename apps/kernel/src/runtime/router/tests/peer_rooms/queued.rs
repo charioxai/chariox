@@ -98,7 +98,7 @@ fn an_urgent_message_to_an_idle_agent_starts_its_turn() {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let idle = spawn_idle(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({"urgent": true})).await;
-        assert_eq!(sent["status"], "durable");
+        assert_eq!(sent["status"], "steering");
         assert!(
             rooms
                 .wait_for_message_delivery(&rooms.peer_room, idle.id())
