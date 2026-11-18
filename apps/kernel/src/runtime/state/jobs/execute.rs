@@ -9,9 +9,9 @@ use zeroize::Zeroizing;
 /// Output is protected as complete lines, including values that cross relay chunk boundaries.
 pub(super) struct Output {
     pending: Vec<u8>,
-    tail: String,
+    pub(super) tail: String,
     file: std::fs::File,
-    log: String,
+    pub(super) log: String,
     discarding_line: bool,
 }
 
@@ -98,7 +98,19 @@ impl Output {
         }
         Ok(())
     }
-    fn page(
+    /// Writes a notice of the kernel's own. A line the producer left unfinished ends first and the
+    /// discard of an over-long line stops, so the notice is neither joined to it nor swallowed.
+    pub(super) fn notice(
+        &mut self,
+        state: &KernelRuntimeState,
+        room: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        self.discarding_line = false;
+        self.push(state, room, &[], true)?;
+        self.push(state, room, text.as_bytes(), true)
+    }
+    pub(super) fn page(
         &mut self,
         state: &KernelRuntimeState,
         room: &str,
@@ -875,7 +887,7 @@ fn uncollected_stop(
     } else {
         "Job cancelled. Command output is partial and returned files are unavailable.\n"
     };
-    output.push(state, &record.room_id, notice.as_bytes(), true)?;
+    output.notice(state, &record.room_id, notice)?;
     let mut result = failed(record, String::new());
     result.outcome = outcome;
     Ok(result)
@@ -889,7 +901,7 @@ fn note_failed_end(
     exit: &ExecOutcome,
 ) -> Result<(), DaemonError> {
     if let Some(notice) = failed_end_notice(exit) {
-        output.push(state, &record.room_id, notice.as_bytes(), true)?;
+        output.notice(state, &record.room_id, &notice)?;
     }
     Ok(())
 }
