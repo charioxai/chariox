@@ -209,7 +209,8 @@ fn queued_agent_messages_follow_agent_trace_visibility() {
         id: "queued-agent-message-1".into(),
         agent_id: "agent".into(),
         sender: "peer".into(),
-        prompt: "private instruction".into(),
+        preview: "private instruction".into(),
+        truncated: false,
     }]);
 
     let owner = session

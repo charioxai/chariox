@@ -99,7 +99,7 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .agent_wakes
         .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
-    // A queued message carries the sender's prompt text for the recipient agent.
+    // A queued message carries the start of the sender's text for the recipient agent.
     session
         .queued_agent_messages
         .retain(|message| visible_agent_ids.contains(&message.agent_id));

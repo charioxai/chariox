@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1011,
+  "local_protocol": 1033,
   "peer_protocol": 448,
   "tool_with_image": {
     "tool": "Read",
