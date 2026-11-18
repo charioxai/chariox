@@ -1807,6 +1807,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Whether `name` is a file the Vault named `vault_name` keeps beside itself:
+/// a transferred key envelope or a write in progress.
+pub(crate) fn is_vault_companion(vault_name: &str, name: &str) -> bool {
+    let envelope = name
+        .strip_prefix(vault_name)
+        .and_then(|rest| rest.strip_prefix(".managed-context-key-"))
+        .is_some_and(|rest| rest.ends_with(".json"));
+    let write = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_prefix(vault_name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|rest| rest.ends_with(".tmp"));
+    envelope || write
+}
+
 fn vault_temp_path(path: &Path) -> PathBuf {
     let mut suffix = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut suffix);
@@ -1962,7 +1977,7 @@ fn unlocked_vaults() -> &'static Mutex<BTreeMap<PathBuf, UnlockedVault>> {
     VAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn normalize_vault_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_vault_path(path: PathBuf) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -2645,7 +2660,7 @@ mod tests {
             rand::random::<u64>()
         ));
         let source_path = root.join("source-vault.json");
-        let target_path = root.join("target-vault.json");
+        let target_path = root.join("target").join("target-vault.json");
         let source_store = test_store(source_path.clone());
         unlock_chariox_encrypted_vault(
             &source_path,
@@ -2845,7 +2860,9 @@ mod tests {
         .to_string()
         .contains("source or context binding does not match"));
 
-        let forged_path = root.join("forged-on-disk-vault.json");
+        // The kernel accepts a Vault outside its home only in a folder of its own.
+        let forged_path = root.join("forged").join("forged-on-disk-vault.json");
+        fs::create_dir_all(forged_path.parent().unwrap()).expect("forged Vault folder");
         fs::write(
             &forged_path,
             decode_transferred_vault_bytes(&attacker_snapshot)

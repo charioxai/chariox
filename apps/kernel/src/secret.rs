@@ -48,6 +48,7 @@ pub(crate) use vault::{
     create_chariox_encrypted_vault_for_test, expire_chariox_encrypted_vault_for_test,
     fail_next_vault_dir_sync_for_test,
 };
+pub(crate) use vault::{is_vault_companion, normalize_vault_path};
 
 #[cfg(test)]
 pub(crate) fn set_chariox_encrypted_vault_secret_for_test(

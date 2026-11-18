@@ -131,6 +131,8 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        // The fixture root holds the Vault's own folder and the drill's results.
+        let results = vault.parent().and_then(std::path::Path::parent).unwrap();
         if let Some(handle) = action.strip_prefix("vault-secret-sha256:") {
             use sha2::Digest;
             let user_config = self.owned.config_projection.snapshot().user_config;
@@ -141,7 +143,7 @@ impl KernelRuntimeState {
             .unwrap();
             let value = service.vault_secret_for_dictation(handle).unwrap().unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("vault-secret-sha256"),
+                results.join("vault-secret-sha256"),
                 format!("{:x}", sha2::Sha256::digest(value.as_bytes())),
             )
             .unwrap();
@@ -154,7 +156,7 @@ impl KernelRuntimeState {
                 .find(|credential| credential.id == handle)
                 .unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("credential-hosts"),
+                results.join("credential-hosts"),
                 credential.allowed_hosts.join("\n"),
             )
             .unwrap();
@@ -209,7 +211,7 @@ impl KernelRuntimeState {
                 .find(|credential| credential.id == handle)
                 .unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("credential-record"),
+                results.join("credential-record"),
                 serde_json::to_string(&credential).unwrap(),
             )
             .unwrap();
@@ -239,7 +241,7 @@ impl KernelRuntimeState {
                 Err(DaemonError::LocalTransport { operation, .. }) => operation.to_owned(),
                 Err(other) => other.to_string(),
             };
-            std::fs::write(vault.parent().unwrap().join("credential-policy"), verdict).unwrap();
+            std::fs::write(results.join("credential-policy"), verdict).unwrap();
             return;
         }
         if self.control_credential_access_for_test(action, vault).await {

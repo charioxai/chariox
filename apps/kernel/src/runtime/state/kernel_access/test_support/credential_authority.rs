@@ -135,7 +135,12 @@ impl KernelRuntimeState {
         const SESSION: &str = "access-session";
         const AGENT: &str = "access-vault-agent";
         const PASSKEY: &str = "Access TEST Passkey";
-        let root = vault.parent().unwrap().to_owned();
+        // The fixture root holds the Vault's own folder.
+        let root = vault
+            .parent()
+            .and_then(std::path::Path::parent)
+            .unwrap()
+            .to_owned();
         match action {
             "agent-question" | "agent-critical-question" => {
                 let critical = action == "agent-critical-question";

@@ -93,7 +93,8 @@ async fn assert_placed_project_environment(remote: bool) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::CharioxEncrypted;
-    config.user_config.credential_vault.path = root.path().join("vault.json").display().to_string();
+    config.user_config.credential_vault.path =
+        root.path().join("vault/vault.json").display().to_string();
     crate::secret::unlock_chariox_encrypted_vault(
         std::path::Path::new(&config.user_config.credential_vault.path),
         "fixture-pass",

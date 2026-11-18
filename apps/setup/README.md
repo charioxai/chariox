@@ -14,6 +14,10 @@ For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
 repair or upgrade so the user service survives logout. It enables lingering
 for the current user when host policy permits. Otherwise it stops with the exact
 administrator command before consuming an enrollment code; it never invokes sudo.
+Agents run inside Bubblewrap, so Linux Setup also checks that `bwrap` can make a
+mount namespace: run as root it installs the `bubblewrap` package with apt-get or
+dnf, otherwise it stops with the administrator command, before consuming an
+enrollment code.
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
 libc floor is the build target's. CI also packages an unsigned amd64 `.deb`
 for Linux (libc 2.35+); it contains only the generic executable and metadata,

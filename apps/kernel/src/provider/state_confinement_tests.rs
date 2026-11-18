@@ -23,9 +23,8 @@ pub(crate) const SECRET_FILES: &[&str] = &[
     "state/cloud-relay.json",
     "state/kernel.db",
     "state/provider-accounts/local/claude/other/claude/.credentials.json",
-    "vault.json",
-    "vault.json.managed-context-key-0.json",
     "vault/vault.json",
+    "vault/vault.json.managed-context-key-0.json",
     "credentials/cap-1.yaml",
     "machine/identity.json",
     "daemon/config.json",
@@ -247,47 +246,70 @@ fn run_confined(kernel: &DummyKernelHome, script: &str) -> String {
 }
 
 #[test]
-fn a_file_written_beside_a_vault_in_a_user_folder_reaches_the_disk() {
+fn a_vault_that_shares_its_folder_is_refused_at_start() {
     crate::test_support::isolated_env_test!();
     let kernel = DummyKernelHome::new();
     let folder = kernel.workspace.parent().unwrap().join("alice");
     write(&folder.join("vault.json"), SECRET);
-    write(
-        &folder.join("vault.json.managed-context-key-1.json"),
-        SECRET,
-    );
     write(&folder.join("notes.txt"), "mine");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.path = folder.join("vault.json").display().to_string();
-    super::configure(&config);
+    let error = super::configure(&config).expect_err("a Vault beside other files is refused");
+    let error = error.to_string();
+    assert!(error.contains("notes.txt"), "{error}");
+    assert!(error.contains("credential_vault.path"), "{error}");
+    assert!(
+        error.contains(
+            &folder
+                .join("chariox-secret/vault.json")
+                .display()
+                .to_string()
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_vault_replaced_while_an_agent_runs_stays_hidden() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let folder = kernel.workspace.parent().unwrap().join("alice/vault");
+    let vault = folder.join("vault.json");
+    write(&vault, SECRET);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.path = vault.display().to_string();
+    super::configure(&config).expect("a Vault in a folder of its own is accepted");
+    let started = folder.parent().unwrap().join("started");
+    let replaced = folder.parent().unwrap().join("replaced");
+    let replacer = {
+        let (vault, started, replaced) = (vault.clone(), started.clone(), replaced.clone());
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !started.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let temp = vault.with_file_name(".vault.json.next.tmp");
+            std::fs::write(&temp, format!("{SECRET}-replaced")).unwrap();
+            std::fs::rename(&temp, &vault).unwrap();
+            std::fs::write(&replaced, "").unwrap();
+        })
+    };
     let output = run_confined(
         &kernel,
         &format!(
-            "cd '{}' && echo new > new.txt && echo more >> notes.txt && ls && cat vault.json; cat vault.json.managed-context-key-1.json",
-            folder.display()
+            "touch '{started}'; while [ ! -e '{replaced}' ]; do sleep 0.05; done; cat '{vault}'; ls -a '{folder}'",
+            started = started.display(),
+            replaced = replaced.display(),
+            vault = vault.display(),
+            folder = folder.display(),
         ),
     );
-    assert_eq!(
-        std::fs::read_to_string(folder.join("new.txt")).unwrap_or_default(),
-        "new\n",
-        "a new file beside the Vault is on disk after the agent ends:\n{output}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(folder.join("notes.txt")).unwrap(),
-        "minemore\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(folder.join("vault.json")).unwrap(),
-        SECRET
-    );
+    replacer.join().unwrap();
     assert!(
         !output.contains(SECRET),
-        "the Vault reached the agent:\n{output}"
+        "the replaced Vault reached the agent:\n{output}"
     );
-    assert!(
-        output.contains("vault.json: No such device or address"),
-        "reading the Vault fails clearly:\n{output}"
-    );
+    assert!(output.contains("No such file or directory"), "{output}");
 }
 
 #[test]
@@ -305,4 +327,182 @@ fn a_confined_agent_rereads_its_workflow_node_instructions() {
     assert!(file.starts_with(&kernel.home.display().to_string()));
     let output = run_confined(&kernel, &format!("cat '{file}'"));
     assert_eq!(output, "Write the plan.", "{file}");
+}
+
+/// Runs `script` as an agent command; every listed path keeps the agent's
+/// line on the host after the process ends.
+fn assert_writes_reach_the_disk(kernel: &DummyKernelHome, paths: &[PathBuf]) -> String {
+    let script = paths
+        .iter()
+        .map(|path| format!("echo agent >> '{}'\n", path.display()))
+        .collect::<String>();
+    let output = run_confined(kernel, &script);
+    for path in paths {
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .ends_with("agent\n"),
+            "the agent's write to {} is on disk after it ends:\n{output}",
+            path.display()
+        );
+    }
+    output
+}
+
+#[test]
+fn a_write_beside_the_default_state_folder_reaches_the_disk() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let user = kernel.workspace.parent().unwrap().join("user");
+    std::env::remove_var("CHARIOX_HOME");
+    std::env::remove_var("XDG_STATE_HOME");
+    std::env::remove_var("XDG_CONFIG_HOME");
+    std::env::set_var("HOME", &user);
+    let state = user.join(".local/state/chariox");
+    write(&state.join("cloud-relay.json"), SECRET);
+    let notes = user.join(".local/state/chariox-notes/today.md");
+    write(&notes, "mine\n");
+    let output = assert_writes_reach_the_disk(&kernel, &[notes]);
+    let output = output
+        + &run_confined(
+            &kernel,
+            &format!("cat '{}'", state.join("cloud-relay.json").display()),
+        );
+    assert!(!output.contains(SECRET), "{output}");
+}
+
+/// Over a scratch tree with secrets at the kernel home and at configured places
+/// elsewhere: exactly the declared secrets are hidden, and the agent's write to
+/// every other path (name-prefix look-alikes, companion look-alikes, paths
+/// reached through symlinks) is on disk after it ends.
+#[test]
+fn exactly_the_declared_secrets_are_hidden() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let root = kernel.workspace.parent().unwrap().to_path_buf();
+    let home = kernel.home.clone();
+    let mut config =
+        crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("sessions"));
+    config.user_config.credential_vault.path =
+        root.join("alice/vault/vault.json").display().to_string();
+    config.user_config.history.operational.path =
+        Some(root.join("ops/operational.db").display().to_string());
+    config.user_config.state.path = Some(root.join("kstate/state.db").display().to_string());
+    let secrets = [
+        "alice/vault/vault.json",
+        "alice/vault/vault.json.managed-context-key-ab12.json",
+        "alice/vault/.vault.json.Xy9.tmp",
+        "ops/operational.db",
+        "ops/operational.db-wal",
+        "ops/operational.db-shm",
+        "ops/operational.db-journal",
+        "kstate/state.db",
+        "kstate/cloud-relay.json",
+        "kstate/provider-accounts.json",
+        "sessions/room-1.jsonl",
+    ]
+    .map(|secret| root.join(secret));
+    for secret in &secrets {
+        write(secret, SECRET);
+    }
+    let public = root.join("public.txt");
+    write(&public, "mine\n");
+    std::os::unix::fs::symlink(
+        &public,
+        root.join("alice/vault.json.managed-context-key-ln.json"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(home.join("state"), root.join("into-state")).unwrap();
+    let outside = root.join("outside.txt");
+    write(&outside, "mine\n");
+    std::os::unix::fs::symlink(&outside, home.join("state/link-out")).unwrap();
+    super::configure(&config).expect("every secret file has a folder of its own");
+
+    let mut others = [
+        "alice/vault.json",
+        "alice/vault-notes/a.txt",
+        "alice/vaultx",
+        "alice/notes.txt",
+        "ops-notes/a.txt",
+        "ops.db",
+        "opsx/operational.db",
+        "kstate-notes/a.txt",
+        "kstate.db",
+        "sessions-old/a.jsonl",
+        "public.txt",
+        "outside.txt",
+    ]
+    .map(|other| root.join(other))
+    .to_vec();
+    for folder in [
+        "state-notes",
+        "statements",
+        "vault-notes",
+        "history-export",
+        "kernels.bak",
+        "credentials2",
+        "machines",
+        "daemons",
+        "sessions-old",
+    ] {
+        others.push(home.join(folder).join("a.txt"));
+    }
+    others.push(home.join("vault.json"));
+    for other in &others {
+        if !other.exists() {
+            write(other, "mine\n");
+        }
+    }
+    others.push(root.join("alice/new.txt"));
+    others.push(root.join("alice/public-link"));
+
+    let output = assert_writes_reach_the_disk(&kernel, &others);
+    let reads = secrets
+        .iter()
+        .chain([&root.join("into-state/cloud-relay.json"), &home.join("state/cloud-relay.json")])
+        .map(|secret| {
+            format!(
+                "if cat '{0}' >/dev/null 2>&1; then echo 'secret-open {0}'; fi\ncat '{0}' 2>/dev/null\n",
+                secret.display()
+            )
+        })
+        .collect::<String>();
+    let reads = run_confined(
+        &kernel,
+        &format!(
+            "{reads}{}",
+            [
+                home.join("state"),
+                root.join("alice/vault"),
+                root.join("ops"),
+                root.join("kstate")
+            ]
+            .iter()
+            .map(|folder| format!(
+                "echo agent > '{0}/new' || echo 'covered-write-refused {0}'\n",
+                folder.display()
+            ))
+            .collect::<String>()
+        ),
+    );
+    assert!(
+        !reads.contains("secret-open") && !reads.contains(SECRET),
+        "a declared secret reached the agent:\n{reads}"
+    );
+    for folder in [
+        home.join("state"),
+        root.join("alice/vault"),
+        root.join("ops"),
+        root.join("kstate"),
+    ] {
+        assert!(
+            reads.contains(&format!("covered-write-refused {}", folder.display())),
+            "a write into a covered folder fails:\n{reads}"
+        );
+        assert!(!folder.join("new").exists());
+    }
+    assert!(!output.contains(SECRET), "{output}");
+    for secret in &secrets {
+        assert_eq!(std::fs::read_to_string(secret).unwrap(), SECRET);
+    }
 }

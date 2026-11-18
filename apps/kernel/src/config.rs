@@ -340,8 +340,9 @@ impl DaemonConfig {
         let state_dir = state_root.path();
         let path_string = |path: PathBuf| path.display().to_string();
         config.session_history_root_default = state_dir.join("session-history");
-        config.user_config.history.operational.path =
-            Some(path_string(state_dir.join("operational-history.db")));
+        config.user_config.history.operational.path = Some(path_string(
+            state_dir.join("operational-history").join("operational.db"),
+        ));
         config.user_config.artifacts.operational.root =
             Some(path_string(state_dir.join("operational-artifacts")));
         config.user_config.artifacts.operational.index_path =
