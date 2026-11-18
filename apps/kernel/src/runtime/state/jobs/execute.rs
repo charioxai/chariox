@@ -122,9 +122,6 @@ impl Output {
                 .scrub(room, text)
                 .unwrap_or_else(|_| "[sensitive job output withheld]".into());
             text.push('\n');
-            self.file
-                .write_all(text.as_bytes())
-                .map_err(|e| ledger::error(format!("Cannot keep job output: {e}")))?;
             self.tail.push_str(&text);
             if self.tail.len() > TAIL_BYTES {
                 let mut start = self.tail.len() - TAIL_BYTES;
@@ -133,6 +130,9 @@ impl Output {
                 }
                 self.tail.drain(..start);
             }
+            self.file
+                .write_all(text.as_bytes())
+                .map_err(|e| ledger::error(format!("Cannot keep job output: {e}")))?;
         }
         // A producer cannot consume unbounded memory with one unterminated line.
         if self.pending.len() > 1024 * 1024 {
@@ -244,31 +244,35 @@ impl KernelRuntimeState {
             super::local::LocalProgress,
         )>,
     ) {
-        let (output, progress) = match local {
-            Some((output, active, progress)) => (Ok(output), Some((active, progress))),
-            None => (Output::new(self, &record), None),
-        };
-        let mut output = match output {
-            Ok(output) => output,
-            Err(error) => {
-                if record.remote.awaits_command() {
-                    // Without its output the command cannot be followed: stop it and its worker.
-                    self.stop_held_command(&record).await;
-                    self.give_up_pending_return(&mut record);
-                    self.settle_or_warn(&record).await;
-                    if let (Some(allocation), Some(revision)) =
-                        (&record.allocation_ref, &record.capability_revision)
-                    {
-                        record.deleted = self
-                            .job_compute_release_ref(allocation, revision)
-                            .await
-                            .is_ok();
+        let (mut output, progress) = match local {
+            Some((output, active, progress)) => (output, Some((active, progress))),
+            None => loop {
+                match Output::new(self, &record) {
+                    Ok(output) => break (output, None),
+                    Err(error) if record.remote.awaits_command() && !*cancelled.borrow() => {
+                        tracing::warn!(%error, job_id = %record.job_id, "job output log cannot be opened; retrying");
+                        tokio::time::sleep(LOCAL_STORAGE_RETRY).await;
+                    }
+                    Err(error) => {
+                        if record.remote.awaits_command() {
+                            self.stop_held_command(&record).await;
+                            self.give_up_pending_return(&mut record);
+                            self.settle_or_warn(&record).await;
+                            if let (Some(allocation), Some(revision)) =
+                                (&record.allocation_ref, &record.capability_revision)
+                            {
+                                record.deleted = self
+                                    .job_compute_release_ref(allocation, revision)
+                                    .await
+                                    .is_ok();
+                            }
+                        }
+                        let result = failed(&record, error.to_string());
+                        self.finish_job(&wake, &mut record, result).await;
+                        return;
                     }
                 }
-                let result = failed(&record, error.to_string());
-                self.finish_job(&wake, &mut record, result).await;
-                return;
-            }
+            },
         };
         let result = if let Some((active, progress)) = progress {
             self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
@@ -679,13 +683,13 @@ impl KernelRuntimeState {
             exec_id: exec_id.clone(),
         })?;
         record.running_at_ms = Some(crate::session::unix_epoch_ms());
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         let input = command_input(&record.request, environment, &record.job_id)?;
         let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
         remote.close_stdin(&exec_id, next).await?;
         self.job_compute_started(machine).await?;
         record.state = "running".into();
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
             .await
     }
@@ -731,6 +735,25 @@ impl KernelRuntimeState {
         let was_cancelled = *cancelled.borrow();
         self.complete_remote_job(record, output, result, was_cancelled)
             .await
+    }
+
+    /// Saves the record of a job whose worker holds its command or files. Local storage can come
+    /// back, so a failed save waits for it instead of giving the worker up; only a stop ends it.
+    async fn save_held_record(
+        &self,
+        record: &Record,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(), DaemonError> {
+        loop {
+            match save_record(self, record) {
+                Ok(()) => return Ok(()),
+                Err(error) if *cancelled.borrow() => return Err(error),
+                Err(error) => {
+                    tracing::warn!(%error, job_id = %record.job_id, "job record not saved; retrying");
+                    tokio::time::sleep(LOCAL_STORAGE_RETRY).await;
+                }
+            }
+        }
     }
 
     /// Follows the command on the worker to its end, then brings its files home.
@@ -800,10 +823,13 @@ impl KernelRuntimeState {
                 Ok(page) => {
                     if disconnected.take().is_some() {
                         record.state = "running".into();
-                        save_record(self, record)?;
+                        self.save_held_record(record, cancelled).await?;
                     }
                     cursor = page.next_cursor;
-                    output.page(self, &record.room_id, &page)?;
+                    // Lost log lines are not worth the command or its files.
+                    if let Err(error) = output.page(self, &record.room_id, &page) {
+                        tracing::warn!(%error, job_id = %record.job_id, "remote job output not kept");
+                    }
                     if let Some(outcome) = page.outcome {
                         break outcome;
                     }
@@ -817,7 +843,7 @@ impl KernelRuntimeState {
                         return Err(error);
                     }
                     record.state = "reconnecting".into();
-                    save_record(self, record)?;
+                    self.save_held_record(record, cancelled).await?;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
@@ -827,7 +853,7 @@ impl KernelRuntimeState {
         // The command's end is saved before any of its files are accepted.
         record.advance(StageEvent::End(result.outcome))?;
         record.state = "returning".into();
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         match remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
             .await
@@ -842,13 +868,18 @@ impl KernelRuntimeState {
                     "The command finished, but its files could not all be returned: {error}. {}",
                     kept_worker_notice(record)
                 );
-                output.push(self, &record.room_id, notice.as_bytes(), true)?;
+                if let Err(error) = output.push(self, &record.room_id, notice.as_bytes(), true) {
+                    tracing::warn!(%error, job_id = %record.job_id, "remote job output not kept");
+                }
                 result.outcome = JobOutcome::OutsideEnd;
             }
         }
         Ok(result)
     }
 }
+
+/// How often a held job tries its local storage again after a write failed.
+const LOCAL_STORAGE_RETRY: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 2000 });
 
 /// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.
 const WORKER_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });

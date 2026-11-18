@@ -42,6 +42,8 @@ mod summary;
 #[cfg(test)]
 mod summary_tests;
 #[cfg(test)]
+mod storage_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
