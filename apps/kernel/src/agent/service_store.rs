@@ -559,6 +559,16 @@ impl AgentServiceStore {
             .set_agent_substitution_timeout(agent_id, timeout_ms)
     }
 
+    pub fn set_worker_model_selection(
+        &self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_worker_model_selection(agent_id, model, effort)
+    }
+
     pub fn bind_remote_execution(
         &self,
         agent_id: &str,

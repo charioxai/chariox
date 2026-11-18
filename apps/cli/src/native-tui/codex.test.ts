@@ -14,15 +14,13 @@ for (const [placement, flags] of [
     let launches = 0
     let reads = 0
     let closes = 0
-    const agent = { id: "agent-1", session_id: "home-session", provider: "codex", extension_grants: [] }
+    const agent = { id: "agent-1", session_id: "home-session", provider: "codex", model: "fixture", extension_grants: [] }
     const run = { id: "owned-run", session_id: "home-session", state: "Starting", structured_endpoint: null }
     t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
       if ("CreateSession" in request) return { SessionCreated: { session: {
         id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
       }, agent } }
-      if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { fixture: { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
-      if ("MoveAgentToRemote" in request) return { AgentMovedToRemote: { agent } }
       if ("LaunchProviderRun" in request) {
         launches += 1
         assert.equal((request.LaunchProviderRun as Record<string, unknown>).native_tui, true)
@@ -45,16 +43,47 @@ for (const [placement, flags] of [
   })
 }
 
+test("Codex --machine runs the model the machine chose, with no usable Codex at home", async (t) => {
+  // The worker resolved the model on its own catalog; home serves no Codex models.
+  const agent = { id: "agent-1", session_id: "home-session", provider: "codex", model: "worker-model", extension_grants: [] }
+  const run = { id: "owned-run", session_id: "home-session", state: "Starting", structured_endpoint: null }
+  const created: Record<string, unknown>[] = []
+  const launchedModels: unknown[] = []
+  t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
+    if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: { all: [], default: {}, connected: [] } } }
+    if ("CreateSession" in request) {
+      created.push(request.CreateSession as Record<string, unknown>)
+      return { SessionCreated: { session: {
+        id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
+      }, agent } }
+    }
+    if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
+    if ("LaunchProviderRun" in request) {
+      launchedModels.push((request.LaunchProviderRun as Record<string, unknown>).model)
+      return { ProviderRunLaunchAccepted: { provider_run: run } }
+    }
+    if ("GetProviderRun" in request) return { ProviderRun: { provider_run: { ...run, state: "Ended" } } }
+    throw new Error(`unexpected kernel request: ${Object.keys(request).join(",")}`)
+  })
+  t.mock.method(LocalIpcClient.prototype, "close", async () => {})
+  await assert.rejects(runCodexNativeTui([
+    "--kernel-url", "ws://127.0.0.1:1/kernel", "--workspace", "/fixture", "--worktree", "/fixture",
+    "--server-in-kernel", "--machine", "selected-worker",
+  ]), /Codex provider run ended before attach was ready/)
+  assert.equal(created[0]!.kernel_ref, "selected-worker")
+  assert.equal((created[0]!.agent_defaults as { model: string | null }).model, null)
+  assert.deepEqual(launchedModels, ["worker-model"])
+})
+
 for (const state of ["Running", "Parked"]) {
   test(`MP-08/MP-11 Codex attaches to a ${state} kernel server before its lazy thread exists`, async (t) => {
-    const agent = { id: "agent-1", session_id: "home-session", provider: "codex", extension_grants: [] }
+    const agent = { id: "agent-1", session_id: "home-session", provider: "codex", model: "fixture", extension_grants: [] }
     const run = { id: "owned-run", session_id: "home-session", state: "Starting", structured_endpoint: null, provider_session_id: null }
     let reads = 0
     t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
       if ("CreateSession" in request) return { SessionCreated: { session: {
         id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
       }, agent } }
-      if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { fixture: { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
       if ("LaunchProviderRun" in request) return { ProviderRunLaunchAccepted: { provider_run: run } }
       if ("GetProviderRun" in request) {

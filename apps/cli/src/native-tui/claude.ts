@@ -267,7 +267,7 @@ async function runClaudeRemoteRendered(
         effort: options.effort,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attached = await attachNativeSession(client, session.id, options.clientId)
     // RR-07: hold the attachment id in a mutable ref so the pump, stdin and the event
@@ -294,7 +294,7 @@ async function runClaudeRemoteRendered(
       },
     })
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)

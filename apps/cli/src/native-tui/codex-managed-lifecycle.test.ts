@@ -81,12 +81,11 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
     managed.send(JSON.stringify({ id, method, params }))
     await received
   }
-  const agent = { id: "agent", session_id: "session", alias: "fixture" }
+  const agent = { id: "agent", session_id: "session", alias: "fixture", model: "fixture" }
   const run = { id: "run", session_id: "session", agent_instance_id: "agent", provider: "codex", structured_endpoint: endpoint, provider_session_id: null }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, Record<string, unknown>>) => {
     const [kind, payload] = Object.entries(request)[0]!
     switch (kind) {
-      case "GetProviderCatalog": return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { "fixture": { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       case "CreateSession": return { SessionCreated: { session: { id: "session", alias: "fixture", workspace_id: root, worktree_id: root, agents: [agent] }, agent } }
       case "AttachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
       case "LaunchProviderRun": return { ProviderRunLaunchAccepted: { provider_run: { ...run, state: mode === "cold" || mode === "ended" ? "Starting" : "Running" } } }

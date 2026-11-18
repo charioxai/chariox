@@ -1,5 +1,4 @@
 import { formatNativeReopenHint } from "./exit-hint.js"
-import { resolveNativeModel } from "./native-model.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import { signalNativeChild } from "./native-child-signals.js"
@@ -102,11 +101,6 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   let active = true
   let detach: (() => Promise<void>) | undefined
   try {
-    if (options.model !== "default") {
-      // Only the models that run without an account start; any other ends the
-      // provider run before attach with no reason the terminal could show.
-      await resolveNativeModel(client, "opencode", "OpenCode", options.model.replace(/^opencode\//, ""), "Add the model's provider in Provider Accounts, or pick another model.")
-    }
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
@@ -116,7 +110,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         effort: null,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? (options.sessionRef
       ? await resolveNativeSession(client, options.sessionRef, workspace)
       : (() => {
@@ -135,8 +129,10 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     detach = async () => { await client.send(detachFromSessionRequest(attachment.id)) }
 
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, options.model, undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    // The kernel chose the model on the provider that runs the agent, or refused the spawn.
+    const model = agent.model?.trim() || options.model
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     let upstreamBaseUrl: string
     let run: RuntimeProviderRun | null = null
@@ -144,7 +140,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: options.model,
+        model,
         effort: "",
         agentId: agent.id,
       })
@@ -179,7 +175,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: options.model,
+        model,
         effort: "",
         agentId: agent.id,
         native: { structuredEndpoint: proxyUrl },

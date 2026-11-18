@@ -1,4 +1,3 @@
-import { resolveNativeModel } from "./native-model.js"
 import { formatNativeReopenHint } from "./exit-hint.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
@@ -75,18 +74,18 @@ type NativeCodexOptions = {
 }
 
 export async function runCodexNativeTui(args: string[]): Promise<void> {
-  const launch = parseNativeCodexArgs(args)
+  const options = parseNativeCodexArgs(args)
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
-  const workspace = launch.workspace ?? inferredTargets.workspace
-  const worktree = launch.worktree ?? inferredTargets.worktree
-  const kernelEndpoint = launch.relayUrl ?? launch.kernelUrl ?? launch.socketPath ?? defaultKernelEndpoint(launch.kernelPort)
-  const client = new LocalIpcClient(kernelEndpoint, launch.relayUrl
+  const workspace = options.workspace ?? inferredTargets.workspace
+  const worktree = options.worktree ?? inferredTargets.worktree
+  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort)
+  const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
-      relayAuthToken: launch.relayToken,
+      relayAuthToken: options.relayToken,
       relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
-      relayAuthorizationIssuer: launch.relayTokenIssuer,
-      targetDaemonId: launch.targetDaemonId,
-      targetDaemonAlias: launch.targetDaemonAlias,
+      relayAuthorizationIssuer: options.relayTokenIssuer,
+      targetDaemonId: options.targetDaemonId,
+      targetDaemonAlias: options.targetDaemonAlias,
     }
     : undefined)
   let proxy: CodexProxyServer | null = null
@@ -96,18 +95,16 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   let detach: (() => Promise<void>) | undefined
 
   try {
-    const model = await resolveNativeModel(client, "codex", "Codex", launch.model)
-    const options = { ...launch, model }
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
         provider: "codex",
-        model: options.model,
+        model: options.model ?? null,
         effort: options.effort,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attachment = await attachNativeSession(client, session.id, options.clientId)
     const recovery = createRemoteAttachmentRecovery({
@@ -122,8 +119,11 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     detach = async () => { await client.send(detachFromSessionRequest(attachment.id)) }
 
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    // The kernel chose the model on the provider that runs the agent, or refused the spawn.
+    const model = agent.model?.trim()
+    if (!model) throw new Error(`The kernel chose no Codex model for agent ${agent.id}. Pass one with --model.`)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const bindState: CodexNativeBindingState = {
       promise: null,
@@ -136,7 +136,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       client,
       sessionId: session.id,
       agentId: agent.id,
-      model: options.model,
+      model,
       effort: options.effort,
     })
     if (!run.structured_endpoint) {
@@ -155,7 +155,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       get attachmentId() { return attachment.id },
       recovery,
       agentId: agent.id,
-      model: options.model,
+      model,
       effort: options.effort,
       bindState,
       inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
@@ -198,7 +198,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     })
     await runCodexTui({
       proxyUrl,
-      model: options.model,
+      model,
       workingDirectory: worktree,
       initialPrompt: options.initialPrompt,
     })
