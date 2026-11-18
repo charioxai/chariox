@@ -20,6 +20,8 @@ pub(crate) struct PaneFeedSources<'a> {
     pub processes: &'a [crate::runtime::process_resources::SessionProcess],
     /// The caller's Inbox; only this agent's notices are read.
     pub inbox: &'a [PersonInboxCard],
+    /// The provider accounts the caller may see; the agent's account is named by its label.
+    pub accounts: &'a [crate::account_profile::ProviderAccountProfile],
     /// The web origin of the paired Cloud, when the kernel is paired.
     pub cloud_origin: Option<&'a str>,
 }
@@ -69,7 +71,7 @@ pub(crate) fn project_pane_feed(
         },
         settings: PaneSettings {
             provider: agent.provider().to_string(),
-            account: agent.account_profile().map(str::to_owned),
+            account: account_label(sources.accounts, agent),
             model: agent.model().map(str::to_owned),
             effort: agent.effort().map(str::to_owned),
             execution_mode: config.mode,
@@ -121,6 +123,21 @@ fn running_goal(session: &RuntimeSession, agent_id: &str) -> Option<String> {
         .as_ref()
         .filter(|_| open)
         .map(|goal| goal.objective.clone())
+}
+
+/// The label the person gave the agent's account; "default" names the provider's default one.
+fn account_label(
+    accounts: &[crate::account_profile::ProviderAccountProfile],
+    agent: &AgentInstance,
+) -> Option<String> {
+    let profile = agent.account_profile().unwrap_or("default");
+    accounts
+        .iter()
+        .filter(|account| account.provider == agent.provider())
+        .find(|account| {
+            account.profile_id == profile || (profile == "default" && account.is_default)
+        })
+        .map(|account| account.label.clone())
 }
 
 fn agent_name(agent: &AgentInstance) -> String {

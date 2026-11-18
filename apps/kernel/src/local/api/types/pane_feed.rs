@@ -68,6 +68,7 @@ pub struct PaneIdentity {
 #[serde(deny_unknown_fields)]
 pub struct PaneSettings {
     pub provider: String,
+    /// The label of the agent's provider account, as the person named it.
     pub account: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,

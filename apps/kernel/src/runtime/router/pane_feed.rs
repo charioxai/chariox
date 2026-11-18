@@ -2,8 +2,9 @@
 //! exactly what that caller may see.
 use crate::error::DaemonError;
 use crate::local::{
-    GetPaneFeedRequest, GetPersonInboxRequest, GetSessionStateRequest, LocalDaemonRequest,
-    LocalDaemonResponse, ReportPaneSettingsRequest,
+    GetPaneFeedRequest, GetPersonInboxRequest, GetSessionStateRequest,
+    ListProviderAccountProfilesRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ReportPaneSettingsRequest,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::pane_feed::{project_pane_feed, PaneFeedSources};
@@ -44,6 +45,22 @@ impl CommandRouter {
         let LocalDaemonResponse::PersonInbox { cards, .. } = inbox else {
             return Err(unexpected_response());
         };
+        // A Room collaborator sees none of the owner's accounts: their feed names no account.
+        let accounts = match self
+            .session_view_component(
+                command,
+                "pane-accounts",
+                LocalDaemonRequest::ListProviderAccountProfiles(
+                    ListProviderAccountProfilesRequest { provider: None },
+                ),
+            )
+            .await
+        {
+            Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles }) => profiles,
+            Ok(_) => return Err(unexpected_response()),
+            Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
+            Err(error) => return Err(error),
+        };
         let cloud_origin = self
             .runtime_state
             .config_snapshot()
@@ -57,6 +74,7 @@ impl CommandRouter {
                 session: &session,
                 activity: &agent_activity,
                 processes: &processes,
+                accounts: &accounts,
                 inbox: &cards,
                 cloud_origin: cloud_origin.as_deref(),
             },
