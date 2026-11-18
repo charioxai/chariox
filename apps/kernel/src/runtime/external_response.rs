@@ -207,6 +207,7 @@ response_policies! {
         KernelAccessStatus,
         KernelAccessCovered,
         KernelAccessGrantsListed,
+        OwnerInteractionsListed,
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
         GatewayKernelsListed,

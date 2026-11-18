@@ -51,7 +51,7 @@ impl KernelRuntimeState {
         let owner = self.grant_owner(grant_id)?;
         let forbidden = restricted_request(request)
             || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
-                if self.interaction_requires_terminal(answer));
+                if self.interaction_person_only(answer));
         if forbidden {
             self.audit_human_only_denial(grant_id, &owner);
             return Err(Refusal::HumanOnly.error());
@@ -153,7 +153,7 @@ impl KernelRuntimeState {
         let forbidden = carries_passkey(request)
             || restricted_request(request)
             || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
-                if self.interaction_requires_terminal(answer));
+                if self.interaction_person_only(answer));
         if forbidden {
             self.audit_human_only_denial(
                 &format!("{}:{}", on_behalf_of.origin_kernel, on_behalf_of.grant_id),
@@ -250,14 +250,11 @@ impl KernelRuntimeState {
         }
     }
 
-    // MP-08/MP-11: ordinary grant holders may answer routine Room questions.
-    // Every other decision keeps the terminal boundary for every choice,
-    // including refusal, without exposing interaction metadata. A pending
-    // decision that cannot be classified is refused.
-    pub(crate) fn interaction_requires_terminal(
-        &self,
-        answer: &RespondToInteractionRequest,
-    ) -> bool {
+    // An external agent's grant answers the person's cards on their behalf. Secret entry,
+    // Vault unlock, passkeys and payments keep the terminal boundary for every choice,
+    // including refusal, without exposing interaction metadata. A pending decision that
+    // cannot be classified is refused.
+    pub(crate) fn interaction_person_only(&self, answer: &RespondToInteractionRequest) -> bool {
         let pending = self
             .owned
             .pending_interactions
@@ -279,7 +276,7 @@ impl KernelRuntimeState {
                     .find(|interaction| interaction.id() == answer.interaction_id)
                     .cloned()
             });
-        interaction.is_none_or(|interaction| pending.requires_terminal(&interaction))
+        interaction.is_none_or(|interaction| pending.person_only(&interaction).is_some())
     }
 }
 
