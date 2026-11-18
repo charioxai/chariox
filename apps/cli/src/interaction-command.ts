@@ -27,7 +27,13 @@ async function answer(argv: string[]): Promise<void> {
   await withKernel({ socket: flags.get("--socket") as string | undefined, kernel: flags.get("--kernel") as string | undefined, timeoutSeconds: REQUEST_SECONDS }, async send => {
     const card = (await ownerCards(send)).find(entry => entry.interaction_id === id)
     if (!card) throw new CommandFailure("usage", `no open card ${id}; run chariox interaction list`)
-    await send({ RespondToInteraction: { session_id: card.session_id, interaction_id: id, choice_id: choice, ...(typeof reply === "string" ? { custom_reply: reply } : {}) } })
+    // A card outside any Room has no Room to answer in: it takes its own request, and no reply.
+    if (card.session_id === undefined) {
+      if (typeof reply === "string") throw new CommandFailure("usage", `${id} takes no reply`)
+      await send({ AnswerUserDomainInteraction: { interaction_id: id, choice_id: choice } })
+    } else {
+      await send({ RespondToInteraction: { session_id: card.session_id, interaction_id: id, choice_id: choice, ...(typeof reply === "string" ? { custom_reply: reply } : {}) } })
+    }
     console.log(JSON.stringify({ interaction_id: id, choice_id: choice, status: "answered" }))
   })
 }

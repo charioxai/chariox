@@ -52,7 +52,8 @@ impl KernelRuntimeState {
                 Some((
                     interaction.requested_at_ms(),
                     OwnerInteraction {
-                        session_id: pending.session_id.clone(),
+                        session_id: (!pending.session_id.is_empty())
+                            .then(|| pending.session_id.clone()),
                         interaction_id: id,
                         title: interaction.title().map(str::to_owned),
                         message: interaction.message().to_owned(),

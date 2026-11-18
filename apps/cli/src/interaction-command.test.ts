@@ -5,7 +5,8 @@ import { runInteractionCommand } from "./interaction-command.js"
 import { replyWith, startFakeKernel } from "./fake-unix-kernel.test-support.js"
 
 const card = { session_id: "room-1", interaction_id: "task-blocked-1", title: "Allow browser access", message: "m", choices: [{ id: "cancel", label: "Cancel" }, { id: "allow_browser", label: "Allow browser" }] }
-const listed = { response: { OwnerInteractionsListed: { interactions: [card] } } }
+const detached = { interaction_id: "app_host_1", title: "Open a link from an App", message: "m", choices: [{ id: "decline", label: "Decline" }] }
+const listed = { response: { OwnerInteractionsListed: { interactions: [card, detached] } } }
 
 async function run(argv: string[]) {
   const kernel = await startFakeKernel((socket, frame) =>
@@ -30,7 +31,7 @@ async function run(argv: string[]) {
 test("interaction list prints the owner's open cards", async () => {
   const result = await run(["interaction", "list"])
   assert.deepEqual(result.requests, [{ ListOwnerInteractions: {} }])
-  assert.deepEqual(JSON.parse(result.out), [card])
+  assert.deepEqual(JSON.parse(result.out), [card, detached])
 })
 
 test("interaction answer finds the card's Room and answers it", async () => {
@@ -42,6 +43,15 @@ test("interaction answer finds the card's Room and answers it", async () => {
   assert.deepEqual(JSON.parse(result.out), { interaction_id: "task-blocked-1", choice_id: "allow_browser", status: "answered" })
   const reply = await run(["interaction", "answer", "task-blocked-1", "reply", "--reply", "go on"])
   assert.deepEqual(reply.requests[1], { RespondToInteraction: { session_id: "room-1", interaction_id: "task-blocked-1", choice_id: "reply", custom_reply: "go on" } })
+})
+
+test("interaction answer settles a card outside any Room with its own request", async () => {
+  const result = await run(["interaction", "answer", "app_host_1", "decline"])
+  assert.deepEqual(result.requests, [
+    { ListOwnerInteractions: {} },
+    { AnswerUserDomainInteraction: { interaction_id: "app_host_1", choice_id: "decline" } },
+  ])
+  assert.deepEqual(JSON.parse(result.out), { interaction_id: "app_host_1", choice_id: "decline", status: "answered" })
 })
 
 test("interaction answer names a card that is not open and sends no answer", async () => {

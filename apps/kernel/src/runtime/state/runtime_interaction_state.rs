@@ -462,7 +462,8 @@ impl KernelRuntimeState {
                 .as_deref()
                 .map(|agent| AgentDecisionAnswer::ForPerson { agent }),
         );
-        if let (Some(agent), Some(card)) = (&agent, &card) {
+        // A card outside any Room has no Room to tell; its record names the agent.
+        if let (Some(agent), Some(card), false) = (&agent, &card, session_id.is_empty()) {
             self.record_delegated_answer(session_id, agent, card, choice_id);
         }
         self.schedule_question_answer_delivery(interaction_id)

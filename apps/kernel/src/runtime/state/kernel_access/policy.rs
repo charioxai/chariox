@@ -49,9 +49,7 @@ impl KernelRuntimeState {
             return Err(Refusal::HumanOnly.error());
         }
         let owner = self.grant_owner(grant_id)?;
-        let forbidden = restricted_request(request)
-            || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
-                if self.interaction_person_only(answer));
+        let forbidden = restricted_request(request) || self.answers_a_person_only_card(request);
         if forbidden {
             self.audit_human_only_denial(grant_id, &owner);
             return Err(Refusal::HumanOnly.error());
@@ -152,8 +150,7 @@ impl KernelRuntimeState {
         refuse_forwarded_exec_place(request)?;
         let forbidden = carries_passkey(request)
             || restricted_request(request)
-            || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
-                if self.interaction_person_only(answer));
+            || self.answers_a_person_only_card(request);
         if forbidden {
             self.audit_human_only_denial(
                 &format!("{}:{}", on_behalf_of.origin_kernel, on_behalf_of.grant_id),
@@ -255,11 +252,29 @@ impl KernelRuntimeState {
     // including refusal, without exposing interaction metadata. A pending decision that
     // cannot be classified is refused.
     pub(crate) fn interaction_person_only(&self, answer: &RespondToInteractionRequest) -> bool {
+        self.card_person_only(&answer.session_id, &answer.interaction_id)
+    }
+
+    /// Whether `request` answers a card only the person answers: a Room's card, or one outside
+    /// any Room by the same rule.
+    pub(crate) fn answers_a_person_only_card(&self, request: &LocalDaemonRequest) -> bool {
+        match request {
+            LocalDaemonRequest::RespondToInteraction(answer) => {
+                self.interaction_person_only(answer)
+            }
+            LocalDaemonRequest::AnswerUserDomainInteraction(answer) => {
+                self.card_person_only("", &answer.interaction_id)
+            }
+            _ => false,
+        }
+    }
+
+    fn card_person_only(&self, session_id: &str, interaction_id: &str) -> bool {
         let pending = self
             .owned
             .pending_interactions
             .write()
-            .get(&answer.interaction_id)
+            .get(interaction_id)
             .cloned();
         let Some(pending) = pending else { return false };
         let interaction = pending
@@ -269,11 +284,11 @@ impl KernelRuntimeState {
             .or_else(|| {
                 self.owned
                     .session_store
-                    .get_session(&answer.session_id)
+                    .get_session(session_id)
                     .ok()?
                     .active_interactions()
                     .iter()
-                    .find(|interaction| interaction.id() == answer.interaction_id)
+                    .find(|interaction| interaction.id() == interaction_id)
                     .cloned()
             });
         interaction.is_none_or(|interaction| pending.person_only(&interaction).is_some())
@@ -294,7 +309,11 @@ fn protected_config(path: &str) -> bool {
 }
 
 fn carries_passkey(request: &LocalDaemonRequest) -> bool {
-    matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some())
+    match request {
+        LocalDaemonRequest::RespondToInteraction(answer) => answer.passkey.is_some(),
+        LocalDaemonRequest::AnswerUserDomainInteraction(answer) => answer.passkey.is_some(),
+        _ => false,
+    }
 }
 
 /// Request shapes a grant holder never sends, locally or through the gateway:

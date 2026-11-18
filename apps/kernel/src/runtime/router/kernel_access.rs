@@ -23,7 +23,10 @@ impl CommandRouter {
         // These public routes are human frontend channels; agents use the
         // focus-admitted MCP seam. Refuse before generic session-grant lookup
         // so expired/foreign grants cannot flatten the same admission denial.
+        // An external agent answers the person's cards outside any Room too.
         if !command.is_terminal_caller()
+            && !(matches!(request, LocalDaemonRequest::AnswerUserDomainInteraction(_))
+                && command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent))
             && matches!(
                 request,
                 LocalDaemonRequest::KernelBrowser(_)

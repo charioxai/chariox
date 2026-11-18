@@ -4107,10 +4107,13 @@ Workflow trigger and deployment direction:
   `kernel_access_human_only` and stay open; outside events carry them as pointers and every
   other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
   answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
-  `session_id`, `interaction_id`, `title`, `message`, `choices` (`id`, `label`),
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
   `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
   answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
-  owner's behalf: <choice>.`, and `interaction.answered` records `answered_for_owner_by`.
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
   CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
   (both take `--kernel NAME`).
 

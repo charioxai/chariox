@@ -688,8 +688,8 @@ fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_k
         serde_json::json!({"ListOwnerInteractions": {"session_id": "s"}})
     )
     .is_err());
-    let card = |person_only: Option<&str>| OwnerInteraction {
-        session_id: "s".into(),
+    let card = |session_id: Option<&str>, person_only: Option<&str>| OwnerInteraction {
+        session_id: session_id.map(str::to_owned),
         interaction_id: "i".into(),
         title: Some("Install App".into()),
         message: "Install this App?".into(),
@@ -701,7 +701,12 @@ fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_k
         person_only: person_only.map(str::to_owned),
     };
     let response = LocalDaemonResponse::OwnerInteractionsListed {
-        interactions: vec![card(None), card(Some("it approves a payment"))],
+        interactions: vec![
+            card(Some("s"), None),
+            card(Some("s"), Some("it approves a payment")),
+            // A card outside any Room carries no session.
+            card(None, None),
+        ],
     };
     assert_eq!(
         serde_json::to_value(&response).unwrap(),
@@ -710,6 +715,8 @@ fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_k
              "choices": [{"id": "approve", "label": "Install"}]},
             {"session_id": "s", "interaction_id": "i", "title": "Install App", "message": "Install this App?",
              "choices": [{"id": "approve", "label": "Install"}], "person_only": "it approves a payment"},
+            {"interaction_id": "i", "title": "Install App", "message": "Install this App?",
+             "choices": [{"id": "approve", "label": "Install"}]},
         ]}})
     );
     assert_eq!(

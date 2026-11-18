@@ -179,7 +179,6 @@ response_policies! {
         Notes,
         Dictation,
         VisibleRegionCaptured,
-        UserDomainInteractionAnswered,
     ],
     Public => [
         ControlPlane,
@@ -208,6 +207,7 @@ response_policies! {
         KernelAccessCovered,
         KernelAccessGrantsListed,
         OwnerInteractionsListed,
+        UserDomainInteractionAnswered,
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
         GatewayKernelsListed,

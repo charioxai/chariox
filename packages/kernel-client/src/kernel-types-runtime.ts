@@ -696,7 +696,8 @@ export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionRespon
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
 /** Protocol 1023: one open card of the owner; `person_only` says why only the person answers it. */
 export type OwnerInteraction = {
-  session_id: string
+  /** The card's Room; absent for a card outside any Room (answered with AnswerUserDomainInteraction). */
+  session_id?: string
   interaction_id: string
   title?: string
   message: string

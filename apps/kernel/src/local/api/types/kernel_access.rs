@@ -302,7 +302,10 @@ pub struct ListOwnerInteractionsRequest {}
 /// One open card of the owner, as an external agent may act on it for them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerInteraction {
-    pub session_id: String,
+    /// The card's Room, answered with `RespondToInteraction`. Absent for a card outside any Room
+    /// (an App's host offer while a user view is open), answered with `AnswerUserDomainInteraction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub interaction_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
