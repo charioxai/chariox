@@ -118,8 +118,10 @@ pub(super) fn carry_in(tx: &Transaction<'_>, from: &str, to: &str) -> Result<(),
         params![from, to],
     )
     .map_err(sql)?;
+    // The new subscriber may already hold lines restored from an earlier subscription to the
+    // same source; where both saw an occurrence, the carried line is the one kept.
     tx.execute(
-        "UPDATE notification_trace SET subscription_id=?2 WHERE subscription_id=?1",
+        "UPDATE OR REPLACE notification_trace SET subscription_id=?2 WHERE subscription_id=?1",
         params![from, to],
     )
     .map_err(sql)?;
@@ -128,7 +130,7 @@ pub(super) fn carry_in(tx: &Transaction<'_>, from: &str, to: &str) -> Result<(),
         [from],
     )
     .map_err(sql)?;
-    Ok(())
+    prune_in(tx, to)
 }
 
 /// Retired lines kept in all, for the subscriptions their owners removed and may make again.

@@ -516,12 +516,17 @@ impl KernelRuntimeState {
                     to: to.to_owned(),
                 })
         };
-        carry(&subscription.subscription_id, &to)?;
-        if let Err(error) = self
-            .end_notification_subscription(&subscription, caller)
-            .await
-        {
-            carry(&to, &subscription.subscription_id)?;
+        // A step that fails leaves the old subscription as it was and the new one removed.
+        let mut moved = carry(&subscription.subscription_id, &to).map(|_| ());
+        if moved.is_ok() {
+            moved = self
+                .end_notification_subscription(&subscription, caller)
+                .await;
+            if moved.is_err() {
+                carry(&to, &subscription.subscription_id)?;
+            }
+        }
+        if let Err(error) = moved {
             self.delete_agent_trigger(
                 DeleteAgentTriggerRequest {
                     session_id: subscription.session_id.clone(),

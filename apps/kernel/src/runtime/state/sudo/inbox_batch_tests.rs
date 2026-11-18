@@ -467,24 +467,35 @@ async fn read_then_ack_through_settles_a_pending_row() {
 }
 
 #[test]
-fn a_one_mebibyte_payload_is_bounded_at_sixteen_kibibytes() {
-    let (cut, truncated) = super::super::tool_dispatch::agent_inbox_read::bounded_payload(
-        &serde_json::json!({"message": "é".repeat(1 << 19)}),
-    );
-    assert!(truncated);
-    assert!(cut.as_str().unwrap().len() <= 16 * 1024);
+fn a_payload_is_read_in_windows_that_join_into_its_json_text() {
+    use super::super::tool_dispatch::agent_inbox_read::payload_window;
+    let payload = serde_json::json!({"message": "é".repeat(1 << 19)});
+    let mut joined = String::new();
+    let mut offset = 0;
+    loop {
+        let window = payload_window(&payload, offset).unwrap();
+        let piece = window.value.as_str().unwrap();
+        assert!(piece.len() <= 16 * 1024);
+        joined.push_str(piece);
+        match window.next_offset {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(joined, payload.to_string());
+    // The JSON text is {"message":"éé…"}: offset 12 starts the first é, 13 is inside it.
+    assert!(payload_window(&payload, 13).is_err(), "inside the first é");
 }
 
 #[tokio::test]
-async fn the_inbox_read_bounds_a_stored_payload_and_pages_with_next_after() {
+async fn an_agent_reads_a_payload_over_sixteen_kibibytes_in_full() {
     let f = fixture_with_options(None, true);
     let (room, agent) = ids(&f);
-    occur(
-        &f,
-        "big",
-        "message",
-        serde_json::json!({"message": "x".repeat(30_000)}),
-    );
+    let message = (0..200_000)
+        .map(|n| char::from(b'a' + (n % 26) as u8))
+        .collect::<String>();
+    let payload = serde_json::json!({"message": message});
+    occur(&f, "big", "notification", payload.clone());
     occur(&f, "small", "message", serde_json::json!({"message": "y"}));
     let read = f
         .state
@@ -492,10 +503,27 @@ async fn the_inbox_read_bounds_a_stored_payload_and_pages_with_next_after() {
         .unwrap();
     let big = &read["events"][0];
     assert_eq!(big["truncated"], true);
-    assert!(big["payload"].as_str().unwrap().len() <= 16 * 1024);
+    assert_eq!(big["payload_bytes"], payload.to_string().len());
     assert_eq!(read["more"], true);
     assert_eq!(read["next_after"], big["sequence"]);
-    let next = f
+    // The rest through the same tool, window by window.
+    let mut joined = big["payload"].as_str().unwrap().to_owned();
+    let mut next = big["next_offset"].clone();
+    while let Some(offset) = next.as_u64() {
+        let page = f
+            .state
+            .read_agent_inbox(
+                &room,
+                &agent,
+                &serde_json::json!({"sequence": big["sequence"], "offset": offset}),
+            )
+            .unwrap();
+        assert_eq!(page["events"][0]["payload_offset"], offset);
+        joined.push_str(page["events"][0]["payload"].as_str().unwrap());
+        next = page["events"][0]["next_offset"].clone();
+    }
+    assert_eq!(joined, payload.to_string());
+    let after = f
         .state
         .read_agent_inbox(
             &room,
@@ -503,8 +531,27 @@ async fn the_inbox_read_bounds_a_stored_payload_and_pages_with_next_after() {
             &serde_json::json!({"after": read["next_after"]}),
         )
         .unwrap();
-    assert_eq!(next["events"][0]["truncated"], false);
-    assert_eq!(next["more"], false);
+    assert_eq!(after["events"][0]["truncated"], false);
+    assert_eq!(after["more"], false);
+}
+
+#[tokio::test]
+async fn reading_an_event_by_sequence_refuses_an_offset_that_is_not_in_its_payload() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let event = occur(&f, "e", "message", serde_json::json!({"message": "é"}));
+    let beyond = f.state.read_agent_inbox(
+        &room,
+        &agent,
+        &serde_json::json!({"sequence": event.sequence, "offset": 1000}),
+    );
+    assert!(beyond.is_err());
+    let missing = f.state.read_agent_inbox(
+        &room,
+        &agent,
+        &serde_json::json!({"sequence": event.sequence + 50}),
+    );
+    assert!(missing.is_err());
 }
 
 #[tokio::test]
