@@ -7,6 +7,7 @@ async fn wait(router: &CommandRouter, after: &str, wait_ms: u32) -> Value {
         KernelBrowserCommand::StateWait {
             after: after.into(),
             wait_ms,
+            known_favicons: vec![],
         },
     )
     .await
@@ -83,6 +84,7 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
                 command: KernelBrowserCommand::StateWait {
                     after: String::new(),
                     wait_ms: 10_001,
+                    known_favicons: vec![],
                 },
             });
             assert!(router

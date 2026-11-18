@@ -5338,6 +5338,13 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
+Local 1021 (provisional): every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
+`known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
+is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
+of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
+12.5 KB on every read. `browser-favicon-cache-1021.json` pins the shape (`mp08_mp10_browser_favicon_cache_1021_shape_and_hash`).
+
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
 is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or

@@ -240,9 +240,15 @@ impl KernelRuntimeState {
         if let KernelBrowserCommand::Computer { command } = command {
             return self.kernel_computer_terminal_request(caller, command).await;
         }
-        if let KernelBrowserCommand::StateWait { after, wait_ms } = command {
+        if let KernelBrowserCommand::StateWait {
+            after,
+            wait_ms,
+            known_favicons,
+        } = command
+        {
+            let known = super::kernel_browser_favicons::known_favicons(&known_favicons)?;
             return self
-                .kernel_browser_state_wait(caller, &after, wait_ms)
+                .kernel_browser_state_wait(caller, &after, wait_ms, known)
                 .await;
         }
         if matches!(
@@ -438,6 +444,7 @@ impl KernelRuntimeState {
                         params,
                     )
                     .await?;
+                super::kernel_browser_favicons::name_favicons(&mut result, None);
                 if let Some(object) = result.as_object_mut() {
                     object.extend(
                         self.user_domain_window_projection(&user)
@@ -766,6 +773,20 @@ impl KernelRuntimeState {
                     result["chrome_window"] = window.clone();
                 }
             }
+        }
+        // A person's input is answered by the frame it causes. The Tab state the host returned has
+        // already reconciled the kernel's ledger; the reply keeps only what a client reads (the
+        // generation, and the Chrome window a band input left), so no Tab list with every favicon
+        // queues ahead of the input's frame on the viewer's link.
+        if input_at.is_some() {
+            let mut reply = serde_json::json!({ "generation": result["generation"] });
+            if let Some(window) = result
+                .get("chrome_window")
+                .filter(|window| !window.is_null())
+            {
+                reply["chrome_window"] = window.clone();
+            }
+            result = reply;
         }
         Ok(result)
     }

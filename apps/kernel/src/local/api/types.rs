@@ -567,4 +567,6 @@ pub use workspace::*;
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
+/// Provisional 1021 names each Browser Tab's icon by `favicon_hash`: a `state` read carries no icon PNG, and a
+/// `state_wait` carries one only when its `known_favicons` lacks the hash.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
