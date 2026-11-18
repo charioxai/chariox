@@ -98,70 +98,22 @@ impl KernelBrowserHost {
             .unwrap_or(DEFAULT_GRANT_LIFETIME)
             .min(MAX_GRANT_LIFETIME))
     }
-    /// MP-08/MP-11: an owner-requested turn grants and loads browser tools
-    /// without focus. Returns whether a new grant was created.
-    pub(crate) fn request_grant(
+    /// Every local agent has the kernel browser: loading grants it without a card
+    /// or focus. Returns whether a new grant was created.
+    pub(crate) fn grant_agent(
         &self,
         user: &str,
         agent: &str,
-        prompt_id: &str,
         lifetime: Duration,
-        expected_fence: Option<u64>,
-        session: &str,
-    ) -> Result<bool, String> {
-        self.grant_from_cause(
-            user,
-            agent,
-            crate::runtime::user_domain_access::GrantCause::Prompt(prompt_id.into()),
-            lifetime,
-            expected_fence,
-            session,
-        )
-    }
-    pub(crate) fn request_task_grant(
-        &self,
-        user: &str,
-        agent: &str,
-        task_id: &str,
-        revision: u64,
-        expected_fence: u64,
-        session: &str,
-    ) -> Result<bool, String> {
-        self.grant_from_cause(
-            user,
-            agent,
-            crate::runtime::user_domain_access::GrantCause::OwnerDecision {
-                task_id: task_id.into(),
-                revision,
-            },
-            Self::grant_lifetime(None)?,
-            Some(expected_fence),
-            session,
-        )
-    }
-    fn grant_from_cause(
-        &self,
-        user: &str,
-        agent: &str,
-        cause: crate::runtime::user_domain_access::GrantCause,
-        lifetime: Duration,
-        expected_fence: Option<u64>,
         session: &str,
     ) -> Result<bool, String> {
         tokio::runtime::Handle::try_current()
             .map_err(|_| "MP-11: a live runtime is required for grant expiry")?;
         let created = self.update_grant(user, Some(agent), |state| {
-            if state.stopped
-                || expected_fence
-                    .is_some_and(|fence| state.access.acquisition_fence(user, agent) != fence)
-            {
-                return Err(
-                    "MP-11: not_granted: grant state changed while acquisition was pending".into(),
-                );
+            if state.stopped {
+                return Err("MD integration: browser host is shut down".into());
             }
-            let created = state
-                .access
-                .request_with_cause(user, agent, cause, lifetime);
+            let created = state.access.request(user, agent, lifetime);
             state.access.bind(
                 user,
                 agent,
@@ -170,36 +122,10 @@ impl KernelBrowserHost {
                 (Instant::now(), crate::session::unix_epoch_ms()),
                 Self::idle_window(),
             );
-            state
-                .loaded
-                .insert((user.into(), agent.into(), KernelBrowserCapability::Browser));
             Ok(created)
         })?;
         self.arm_expiry();
-        crate::transport::mcp_server::catalog_changed();
         Ok(created)
-    }
-    pub(crate) fn revoke_task_grant(
-        &self,
-        user: &str,
-        agent: &str,
-        task_id: &str,
-        revision: u64,
-    ) -> Result<(), String> {
-        let cause = crate::runtime::user_domain_access::GrantCause::OwnerDecision {
-            task_id: task_id.into(),
-            revision,
-        };
-        self.update_grant(user, Some(agent), |state| {
-            if state
-                .access
-                .grant(user, agent)
-                .is_ok_and(|grant| grant.cause == cause)
-            {
-                state.access.revoke(user, Some(agent));
-            }
-            Ok(())
-        })
     }
     /// MP-08/MP-11: explicit subset transfer to a direct child (checked by the caller).
     pub(crate) fn transfer_grant(
@@ -400,13 +326,6 @@ impl KernelBrowserHost {
         }
         self.arm_expiry();
     }
-    pub(crate) fn acquisition_fence(&self, user: &str, agent: &str) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access
-            .acquisition_fence(user, agent)
-    }
     // MP-08 / MP-10 / MP-11: Room permissions share the Access cursor.
     pub(crate) fn access_projection_changed(&self, user: &str) {
         self.inner
@@ -508,19 +427,10 @@ impl KernelBrowserHost {
             }
         }
     }
-    pub(crate) fn is_focused(&self, user: &str, agent: &str) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access
-            .focused(user)
-            == Some(agent)
-    }
     pub(crate) fn claim_resource(
         &self,
         admission: Option<&KernelBrowserAdmission>,
         resource: UserDomainResource,
-        sensitive: bool,
     ) -> Result<(), String> {
         self.check_admission(admission)?;
         if let Some(admission) = admission {
@@ -530,9 +440,7 @@ impl KernelBrowserHost {
                     .lock()
                     .map_err(|_| "MP-11: grant lock unavailable")?;
                 Self::check_admission_epoch(&state, admission)?;
-                state
-                    .access
-                    .claim(&admission.user, agent, resource, sensitive)?;
+                state.access.claim(&admission.user, agent, resource)?;
             }
         }
         Ok(())
@@ -591,7 +499,6 @@ impl KernelBrowserHost {
     pub(super) fn scope_browser_request(
         &self,
         admission: Option<&KernelBrowserAdmission>,
-        method: &str,
         params: &Value,
     ) -> Result<(), String> {
         let Some(admission) = admission else {
@@ -605,26 +512,6 @@ impl KernelBrowserHost {
             .lock()
             .map_err(|_| "MP-11: grant lock unavailable")?;
         Self::check_admission_epoch(&state, admission)?;
-        // MP-11: Stop affects the entire owner browser, including unrelated
-        // tabs and App views. A retained resource grant cannot authorize it,
-        // even if the request supplies an owned tab_id or subscription_id.
-        if method == "host.browser" && params["op"] == "stop" {
-            require_focus(&state, &admission.user, agent)?;
-        }
-        // MP-08/MP-11 SB-02: Stop shuts down the owner's entire browser,
-        // including unrelated tabs/displays. New-tabs approval cannot grant it.
-        if params["op"] == "stop" && state.access.focused(&admission.user) != Some(agent) {
-            return Err("MD-3: not_focused_agent: browser stop requires live owner focus".into());
-        }
-        // MP-08/MP-11: a delegated subset never widens: no new tabs or lifecycle.
-        if matches!(
-            state.access.grant(&admission.user, agent)?.cause,
-            crate::runtime::user_domain_access::GrantCause::Delegated(_)
-        ) && state.access.focused(&admission.user) != Some(agent)
-            && matches!(params["op"].as_str(), Some("open" | "start" | "stop"))
-        {
-            return Err(crate::runtime::user_domain_access::NOT_REQUESTED_OPEN.into());
-        }
         if params["op"] == "open"
             && state.access.grant(&admission.user, agent)?.resources.len() >= 1024
         {
@@ -639,7 +526,6 @@ impl KernelBrowserHost {
                 &admission.user,
                 agent,
                 UserDomainResource::BrowserTab { tab_id: tab.into() },
-                false,
             )?;
         } else if !matches!(
             params["op"].as_str(),

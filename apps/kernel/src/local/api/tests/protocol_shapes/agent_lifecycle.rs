@@ -256,7 +256,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "350a372ae7e73f8382fbbb84eee0ebf68a18fb06d1347e021bc51ae40cfa5d23"
+        "f85e422cdbd7e87c53ad01c29e094be47f901d7e2b4b155671305229a46fdc2f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -264,46 +264,6 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
         let request: LocalDaemonRequest = serde_json::from_value(fixture[key].clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
     }
-}
-
-#[test]
-fn browser_owner_action_shape_is_bound_to_protocol993() {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("agent-browser-owner-action-993.json")).unwrap();
-    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
-    let task: AgentTaskExecution = serde_json::from_value(fixture["task"].clone()).unwrap();
-    assert_eq!(
-        task.owner_action,
-        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
-    );
-    assert_eq!(serde_json::to_value(task).unwrap(), fixture["task"]);
-    let card = crate::session::RuntimeInteraction::for_kernel_operation(
-        "task-blocked-browser-task-2",
-        "task-blocked-browser-task-2",
-        "Allow browser access",
-        "Allow browser access?",
-        vec![crate::session::RuntimeInteractionChoice::new(
-            "allow_browser",
-            "Allow browser",
-            "resume",
-            None,
-        )],
-    )
-    .without_timeout()
-    .with_related_agent_id("agent".into());
-    let encoded = serde_json::to_value(card).unwrap();
-    assert_eq!(
-        serde_json::json!({"related_agent_id":encoded["related_agent_id"],"timeout_sec":encoded["timeout_sec"]}),
-        fixture["decision"]
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "6469d7b4debe30818b835d999acc6d886f1f5cc4247370b5c7c27973295c02f4"
-    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: idle Stop has an explicit successful wire result.

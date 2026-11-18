@@ -49,7 +49,6 @@ fn end_registration(
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
-    let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
     let question = matches!(&op, Operation::BlockForQuestion { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
@@ -542,11 +541,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             prompt,
             reason,
         }
-        | Operation::BlockForBrowserAccess {
-            task,
-            prompt,
-            reason,
-        }
         | Operation::BlockForQuestion {
             task,
             prompt,
@@ -565,9 +559,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            let owner_action = if browser_access {
-                Some(TaskOwnerAction::BrowserAccess)
-            } else if question {
+            let owner_action = if question {
                 Some(TaskOwnerAction::Question)
             } else if t.state == ExecutionState::Blocked {
                 t.owner_action.clone()

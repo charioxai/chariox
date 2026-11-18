@@ -206,14 +206,6 @@ async fn focus_check() {
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             first_token,
-            "chariox.kernel_browser",
-            json!({"command":{"op":"stop"}})
-        )
-        .await
-        .is_err());
-    assert!(router
-        .dispatch_authenticated_runtime_tool_call(
-            first_token,
             "chariox.kernel_browser_paste_secret",
             json!({})
         )

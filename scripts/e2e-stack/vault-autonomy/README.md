@@ -202,15 +202,12 @@ its other sessions. The Vault must already be unlocked through the owner UI.
 Use product hot reload for upgrades to preserve an existing unlock. This mode
 uses the existing linked profile (`VFLAG_PROFILE_ID`, default
 `vflag-r4-drill-owdpqv4h`) and registers a new workspace owned by the real kernel
-service account. A pending browser-access request uses
-`chariox.events.blocked` with `owner_action: "browser_access"`; its owner card
-allows browser access and continues the original task in one click. Ordinary
-blocked reasons cannot create that grant decision.
+service account. Every agent has the kernel browser: no card asks the owner
+for browser access.
 
-Set `VFLAG_RECOVER_BROWSER=1` to revoke access after the first card, approve
-Allow browser in place, and require a fresh card on the same tab before the
-wrong-code/retry loop. `VFLAG_EXPECT=grant-red` records the old stuck path;
-`encoding-red` records the old accepted-but-still-waiting URLencoded path.
+Set `VFLAG_RECOVER_BROWSER=1` to revoke access after the first card and require
+the agent to load the browser again by itself, with no card, and raise a fresh
+card on the same tab before the wrong-code/retry loop. `encoding-red` records the old accepted-but-still-waiting URLencoded path.
 Green checks include plain card text, no automatic card expiry, and at least an
 hour on an active person wait. This focused drill supplements AU-03; it does not
 claim a real Vercel token was created.

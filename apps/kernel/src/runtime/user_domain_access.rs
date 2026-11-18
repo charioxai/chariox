@@ -1,5 +1,5 @@
-//! MP-08/MP-11: focus or an owner-requested prompt grants resources; task
-//! lifetime retains that exact grant until idle, expiry or revocation.
+//! MP-08/MP-11: every local agent holds a grant once it loads the kernel
+//! browser; task lifetime retains it until idle, expiry or revocation.
 use super::browser_controller_process::BrowserCancellation;
 use crate::local::{UserDomainGrant, UserDomainNotice, UserDomainResource};
 use serde::{Deserialize, Serialize};
@@ -12,12 +12,12 @@ pub(crate) const DEFAULT_GRANT_LIFETIME: Duration = Duration::from_secs(8 * 3600
 pub(crate) const MAX_GRANT_LIFETIME: Duration = Duration::from_secs(24 * 3600);
 const MAX_TRANSFER_RESOURCES: usize = 64;
 
-/// MP-08/MP-11: why a grant exists. Agents can never mint one without a cause.
+/// MP-08/MP-11: why a grant exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum GrantCause {
     Focus,
-    Prompt(String),
-    OwnerDecision { task_id: String, revision: u64 },
+    /// The agent loaded the kernel browser itself.
+    Agent,
     Delegated(String),
 }
 
@@ -94,8 +94,6 @@ pub(crate) struct UserDomainAccess {
     focus: BTreeMap<String, String>,
     grants: BTreeMap<(String, String), Grant>,
     cursors: BTreeMap<String, u64>,
-    /// MP-11: revokes per (owner, agent); agent "" counts owner-wide revokes.
-    fences: BTreeMap<(String, String), u64>,
     notices: BTreeMap<String, UserDomainNotice>,
 }
 
@@ -136,7 +134,7 @@ impl UserDomainAccess {
                 .grants
                 .entry(key)
                 .or_insert_with(|| Grant::new(GrantCause::Focus, None));
-            // MP-08/MP-11: explicit owner focus supersedes prompt/delegation
+            // MP-08/MP-11: explicit owner focus supersedes agent/delegation
             // expiry while preserving resources and the epoch.
             grant.cause = GrantCause::Focus;
             grant.expires_at = None;
@@ -190,7 +188,7 @@ impl UserDomainAccess {
             .get(&(user.into(), agent.into()))
             .filter(|grant| grant.live(Instant::now()))
             .ok_or_else(|| {
-                "MP-08: not_granted: user-domain access expired or revoked; focus this agent again"
+                "MP-08: not_granted: user-domain access expired or revoked; call chariox.load_kernel_browser again"
                     .into()
             })
     }
@@ -199,27 +197,13 @@ impl UserDomainAccess {
         user: &str,
         agent: &str,
         resource: UserDomainResource,
-        sensitive: bool,
     ) -> Result<(), String> {
         self.grant(user, agent)?;
-        let focused = self.focused(user) == Some(agent);
-        let owner_approved_tab = matches!(
-            self.grant(user, agent)?.cause,
-            GrantCause::OwnerDecision { .. }
-        ) && matches!(resource, UserDomainResource::BrowserTab { .. });
-        if sensitive && !focused {
-            return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
-        }
         let grant = self
             .grants
             .get_mut(&(user.into(), agent.into()))
             .ok_or("MP-08: not_granted: user-domain grant revoked")?;
         if !grant.resources.contains(&resource) {
-            if !focused && !owner_approved_tab {
-                return Err(
-                    "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent".into(),
-                );
-            }
             if grant.resources.len() >= 1024 {
                 return Err(
                     "MP-08: user-domain resource limit reached; revoke unused grants".into(),
@@ -230,40 +214,11 @@ impl UserDomainAccess {
         }
         Ok(())
     }
-    /// MP-08/MP-11: an owner-requested prompt grants the agent its own grant
-    /// without focus. Nothing is claimed; only tabs it opens join the grant.
-    /// An existing live grant keeps its cause, resources and expiry.
-    #[cfg(test)]
-    pub(crate) fn request(
-        &mut self,
-        user: &str,
-        agent: &str,
-        prompt_id: &str,
-        lifetime: Duration,
-    ) -> bool {
-        self.request_with_cause(user, agent, GrantCause::Prompt(prompt_id.into()), lifetime)
-    }
-    pub(crate) fn request_with_cause(
-        &mut self,
-        user: &str,
-        agent: &str,
-        cause: GrantCause,
-        lifetime: Duration,
-    ) -> bool {
+    /// The agent's own grant from loading the kernel browser. Nothing is
+    /// claimed; resources join as it uses them. An existing live grant keeps
+    /// its cause, resources and expiry.
+    pub(crate) fn request(&mut self, user: &str, agent: &str, lifetime: Duration) -> bool {
         if self.grant(user, agent).is_ok() {
-            if matches!(cause, GrantCause::OwnerDecision { .. }) {
-                let lifetime = lifetime.min(MAX_GRANT_LIFETIME);
-                let grant = self
-                    .grants
-                    .get_mut(&(user.into(), agent.into()))
-                    .expect("live grant");
-                grant.cause = cause;
-                grant.expires_at = Some(Instant::now() + lifetime);
-                grant.expires_at_ms = Some(
-                    crate::session::unix_epoch_ms().saturating_add(lifetime.as_millis() as u64),
-                );
-                self.changed(user);
-            }
             return false;
         }
         if self.grants.contains_key(&(user.into(), agent.into())) {
@@ -271,7 +226,7 @@ impl UserDomainAccess {
         }
         self.grants.insert(
             (user.into(), agent.into()),
-            Grant::new(cause, Some(lifetime)),
+            Grant::new(GrantCause::Agent, Some(lifetime)),
         );
         self.changed(user);
         true
@@ -295,16 +250,10 @@ impl UserDomainAccess {
         let expires_at = source.expires_at;
         let expires_at_ms = source.expires_at_ms;
         let session = source.session.clone();
-        let cause = GrantCause::Delegated(parent.into());
-        if let Ok(existing) = self.grant(user, child) {
-            if existing.cause != cause {
-                return Err(
-                    "MP-08: not_requested: child already holds its own user-domain grant".into(),
-                );
-            }
-        } else {
+        // A child that holds its own grant keeps it and gains the shared resources.
+        if self.grant(user, child).is_err() {
             self.revoke(user, Some(child));
-            let mut grant = Grant::new(cause, None);
+            let mut grant = Grant::new(GrantCause::Delegated(parent.into()), None);
             grant.expires_at = expires_at;
             grant.expires_at_ms = expires_at_ms;
             grant.session = session;
@@ -375,19 +324,14 @@ impl UserDomainAccess {
             .map(|(key, _)| key.clone())
             .collect()
     }
-    /// MP-08/MP-11: explicit open is an owner-authorized creation. It grants
-    /// only the resulting tab; it cannot claim unrelated existing resources.
+    /// MP-08/MP-11: an opened tab joins the opener's grant.
     pub(crate) fn opened_tab(
         &mut self,
         user: &str,
         agent: &str,
         tab_id: &str,
     ) -> Result<(), String> {
-        if matches!(self.grant(user, agent)?.cause, GrantCause::Delegated(_))
-            && self.focused(user) != Some(agent)
-        {
-            return Err(NOT_REQUESTED_OPEN.into());
-        }
+        self.grant(user, agent)?;
         let grant = self.grants.get_mut(&(user.into(), agent.into())).unwrap();
         let resource = UserDomainResource::BrowserTab {
             tab_id: tab_id.into(),
@@ -465,10 +409,6 @@ impl UserDomainAccess {
     }
     pub(crate) fn revoke(&mut self, user: &str, agent: Option<&str>) {
         let holders = self.revocation_set(user, agent);
-        let target = (user.to_string(), agent.unwrap_or_default().to_string());
-        for key in holders.iter().chain([&target]) {
-            *self.fences.entry(key.clone()).or_default() += 1;
-        }
         for key in &holders {
             if let Some(grant) = self.grants.remove(key) {
                 grant.epoch.request_cancel();
@@ -477,7 +417,6 @@ impl UserDomainAccess {
                 self.focus.remove(user);
             }
         }
-        // MP-11: even an empty explicit revoke invalidates pending acquisition.
         self.changed(user);
     }
     pub(crate) fn acted(&mut self, user: &str, agent: &str, resource: UserDomainResource) {
@@ -492,18 +431,6 @@ impl UserDomainAccess {
             );
             self.changed(user);
         }
-    }
-    /// MP-11: fences a pending acquisition for this owner and agent. Only a
-    /// revoke reaching this agent (direct, cascaded or owner-wide) moves it;
-    /// other holders' grant changes do not.
-    pub(crate) fn acquisition_fence(&self, user: &str, agent: &str) -> u64 {
-        let fence = |agent: &str| {
-            self.fences
-                .get(&(user.to_string(), agent.to_string()))
-                .copied()
-                .unwrap_or(0)
-        };
-        fence("") + fence(agent)
     }
     pub(crate) fn cursor(&self, user: &str) -> u64 {
         self.cursors.get(user).copied().unwrap_or(0)
@@ -524,18 +451,12 @@ impl UserDomainAccess {
             focused: self.focused(user) == Some(agent.as_str()),
             idle_since_ms: grant.idle_since_ms, idle_timeout_seconds: idle_window.as_secs(),
             expiry_rule: "retained during active turn or pending wake; expires after fully idle window, absolute lifetime, session/agent end or parent revocation".into(),
-            prompt_id: match &grant.cause { GrantCause::Prompt(id) => Some(id.clone()), _ => None },
             delegated_by_agent_id: match &grant.cause { GrantCause::Delegated(id) => Some(id.clone()), _ => None },
             expires_at_ms: grant.expires_at_ms,
         }).collect();
         serde_json::json!({"event":"user_domain_grants_changed","cursor":self.cursor(user),"grants":grants,"notice":self.notices.get(user)})
     }
 }
-
-pub(crate) const NOT_REQUESTED_LOAD: &str =
-    "MP-08: not_requested: user-domain access requires the user's request in this turn or focus; ask the user";
-pub(crate) const NOT_REQUESTED_OPEN: &str =
-    "MP-08: not_requested: delegated user-domain grants cannot acquire new resources";
 
 #[cfg(test)]
 mod tests {
@@ -544,49 +465,22 @@ mod tests {
         UserDomainResource::BrowserTab { tab_id: id.into() }
     }
     #[test]
-    fn owner_browser_approval_restores_existing_tabs_without_changing_focus() {
+    fn an_agent_grant_claims_any_tab_without_focus() {
         let mut access = UserDomainAccess::default();
-        let cause = GrantCause::OwnerDecision {
-            task_id: "task".into(),
-            revision: 2,
-        };
-        access.request_with_cause("owner", "agent", cause.clone(), DEFAULT_GRANT_LIFETIME);
-        access
-            .claim("owner", "agent", tab("existing"), false)
-            .unwrap();
-        assert_eq!(access.focused("owner"), None);
-        assert_eq!(access.grant("owner", "agent").unwrap().cause, cause);
-        assert!(access
-            .claim("owner", "agent", tab("sensitive"), true)
-            .is_err());
-    }
-
-    #[test]
-    fn owner_browser_approval_promotes_a_live_prompt_grant() {
-        let mut access = UserDomainAccess::default();
-        access.request("owner", "agent", "prompt", Duration::from_secs(30));
-        access.opened_tab("owner", "agent", "owned").unwrap();
-        let epoch = access.grant("owner", "agent").unwrap().epoch.clone();
-        let cause = GrantCause::OwnerDecision {
-            task_id: "task".into(),
-            revision: 2,
-        };
-        access.request_with_cause("owner", "agent", cause.clone(), DEFAULT_GRANT_LIFETIME);
-        let grant = access.grant("owner", "agent").unwrap();
+        access.focus("owner", Some("focused"));
+        assert!(access.request("owner", "agent", DEFAULT_GRANT_LIFETIME));
+        assert!(!access.request("owner", "agent", DEFAULT_GRANT_LIFETIME));
         assert_eq!(
-            grant.cause, cause,
-            "owner approval replaces the earlier prompt's authority"
+            access.grant("owner", "agent").unwrap().cause,
+            GrantCause::Agent
         );
-        assert!(
-            Arc::ptr_eq(&epoch, &grant.epoch),
-            "existing tab leases stay live"
+        access.claim("owner", "agent", tab("existing")).unwrap();
+        access.opened_tab("owner", "agent", "opened").unwrap();
+        assert_eq!(access.focused("owner"), Some("focused"));
+        assert_eq!(
+            access.grant("owner", "agent").unwrap().resources,
+            BTreeSet::from([tab("existing"), tab("opened")])
         );
-        assert!(grant.resources.contains(&tab("owned")));
-        assert!(grant.expires_at.unwrap() > Instant::now() + Duration::from_secs(3600));
-        access
-            .claim("owner", "agent", tab("restored"), false)
-            .unwrap();
-        assert_eq!(access.focused("owner"), None);
     }
 
     /// MP-08/MP-11 (#922 round 3): owner focus supersedes a timed cause
@@ -595,7 +489,7 @@ mod tests {
     fn capability_review_round3_focus_preserves_requested_and_delegated_grants() {
         for agent in ["parent", "child"] {
             let mut access = UserDomainAccess::default();
-            access.request("owner", "parent", "prompt", DEFAULT_GRANT_LIFETIME);
+            access.request("owner", "parent", DEFAULT_GRANT_LIFETIME);
             access.opened_tab("owner", "parent", "tab").unwrap();
             access
                 .transfer("owner", "parent", "child", &[tab("tab")])
@@ -642,55 +536,29 @@ mod tests {
         assert_eq!(access.focused("owner"), Some("focused"));
     }
     #[test]
-    fn mdaccess_focus_retains_only_claimed_resources_and_sensitive_requires_focus() {
+    fn mdaccess_refocus_keeps_the_previous_grant_and_its_epoch() {
         let mut access = UserDomainAccess::default();
         access.focus("owner", Some("first"));
-        access.claim("owner", "first", tab("a"), false).unwrap();
+        access.claim("owner", "first", tab("a")).unwrap();
         let epoch = access.grant("owner", "first").unwrap().epoch.clone();
         access.focus("owner", Some("second"));
         assert!(!epoch.requested());
-        assert!(access.claim("owner", "first", tab("a"), false).is_ok());
+        assert!(access.claim("owner", "first", tab("b")).is_ok());
+        assert!(access.claim("owner", "second", tab("b")).is_ok());
         assert!(matches!(
             crate::error::HostFailure::from(
-                access.claim("owner", "first", tab("b"), false).unwrap_err()
-            ),
-            crate::error::HostFailure::Refused(
-                crate::error::UserDomainRefusalReason::NotFocusedAgent
-            )
-        ));
-        assert!(matches!(
-            crate::error::HostFailure::from(
-                access.claim("owner", "first", tab("a"), true).unwrap_err()
-            ),
-            crate::error::HostFailure::Refused(
-                crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
-            )
-        ));
-        assert!(access.claim("owner", "second", tab("b"), false).is_ok());
-        assert!(matches!(
-            crate::error::HostFailure::from(
-                access
-                    .claim("stranger", "first", tab("a"), false)
-                    .unwrap_err()
+                access.claim("stranger", "first", tab("a")).unwrap_err()
             ),
             crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
         ));
     }
     #[test]
-    fn capability_prompt_grant_transfer_subset_and_cascading_revoke() {
+    fn capability_transfer_shares_held_tabs_and_follows_parent_revoke() {
         let mut access = UserDomainAccess::default();
-        assert!(access.request("owner", "parent", "prompt-1", DEFAULT_GRANT_LIFETIME));
-        assert!(!access.request("owner", "parent", "prompt-2", DEFAULT_GRANT_LIFETIME));
-        assert_eq!(
-            access.grant("owner", "parent").unwrap().cause,
-            GrantCause::Prompt("prompt-1".into())
-        );
-        assert!(access
-            .claim("owner", "parent", tab("existing"), false)
-            .is_err());
+        assert!(access.request("owner", "parent", DEFAULT_GRANT_LIFETIME));
         access.opened_tab("owner", "parent", "opened").unwrap();
         assert!(access
-            .transfer("owner", "parent", "child", &[tab("existing")])
+            .transfer("owner", "parent", "child", &[tab("unheld")])
             .is_err());
         assert!(access.transfer("owner", "parent", "child", &[]).is_err());
         access
@@ -702,23 +570,30 @@ mod tests {
             child.expires_at,
             access.grant("owner", "parent").unwrap().expires_at
         );
-        assert!(access.opened_tab("owner", "child", "widened").is_err());
+        access.opened_tab("owner", "child", "own").unwrap();
         access
             .transfer("owner", "child", "grandchild", &[tab("opened")])
             .unwrap();
-        access.focus("owner", Some("other"));
-        assert!(access.transfer("owner", "other", "child", &[]).is_err());
+        // A child with its own grant keeps it and gains the shared tab.
+        assert!(access.request("owner", "own-child", DEFAULT_GRANT_LIFETIME));
+        access
+            .transfer("owner", "parent", "own-child", &[tab("opened")])
+            .unwrap();
+        assert_eq!(
+            access.grant("owner", "own-child").unwrap().cause,
+            GrantCause::Agent
+        );
         let epoch = access.grant("owner", "grandchild").unwrap().epoch.clone();
         access.revoke("owner", Some("parent"));
         assert!(epoch.requested(), "revocation cascades to delegated grants");
         assert!(access.grant("owner", "child").is_err());
         assert!(access.grant("owner", "grandchild").is_err());
-        assert!(access.grant("owner", "other").is_ok());
+        assert!(access.grant("owner", "own-child").is_ok());
     }
     #[test]
     fn capability_replacing_expired_child_retires_its_old_scope_and_descendants() {
         let mut access = UserDomainAccess::default();
-        access.request("owner", "parent", "request", DEFAULT_GRANT_LIFETIME);
+        access.request("owner", "parent", DEFAULT_GRANT_LIFETIME);
         access.opened_tab("owner", "parent", "tab").unwrap();
         access
             .transfer("owner", "parent", "child", &[tab("tab")])
@@ -745,7 +620,7 @@ mod tests {
     #[test]
     fn capability_expired_grants_refuse_use_and_are_due() {
         let mut access = UserDomainAccess::default();
-        access.request("owner", "agent", "prompt", MAX_GRANT_LIFETIME * 2);
+        access.request("owner", "agent", MAX_GRANT_LIFETIME * 2);
         let expires = access.grant("owner", "agent").unwrap().expires_at;
         assert!(expires.is_some_and(|expires| expires <= Instant::now() + MAX_GRANT_LIFETIME));
         access
@@ -758,22 +633,15 @@ mod tests {
             access.due(Instant::now()),
             [("owner".into(), "agent".into())]
         );
-        assert!(access.request("owner", "agent", "fresh", DEFAULT_GRANT_LIFETIME));
+        assert!(access.request("owner", "agent", DEFAULT_GRANT_LIFETIME));
         assert!(access.grant("owner", "agent").is_ok());
     }
     #[test]
-    fn mdaccess_explicit_open_grants_only_its_created_tab() {
+    fn mdaccess_explicit_open_joins_the_grant_until_revoked() {
         let mut access = UserDomainAccess::default();
         access.focus("owner", Some("first"));
         access.focus("owner", Some("second"));
         access.opened_tab("owner", "first", "created").unwrap();
-        assert!(access
-            .claim("owner", "first", tab("created"), false)
-            .is_ok());
-        assert!(access
-            .claim("owner", "first", tab("unrelated"), false)
-            .unwrap_err()
-            .contains("not_focused_agent"));
         assert_eq!(access.grant("owner", "first").unwrap().resources.len(), 1);
         access.revoke("owner", Some("first"));
         assert!(access

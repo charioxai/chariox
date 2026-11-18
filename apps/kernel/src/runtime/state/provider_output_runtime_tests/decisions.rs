@@ -1001,8 +1001,7 @@ fn every_user_only_kind_is_the_users() {
             permission("ok-1", "agent-1"),
             None,
         ),
-        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold;
-        // allowing the user's browser again stays the user's.
+        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold.
         (
             "blocked task resume or cancel",
             pending(),
@@ -1018,22 +1017,6 @@ fn every_user_only_kind_is_the_users() {
             )
             .with_related_agent_id("agent-1".to_owned()),
             None,
-        ),
-        (
-            "blocked task browser access",
-            pending(),
-            RuntimeInteraction::for_kernel_operation(
-                "task-blocked-t1-4",
-                "task-blocked-t1-4",
-                "Allow browser access",
-                "c: Browser access ended",
-                vec![
-                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                    RuntimeInteractionChoice::new("allow_browser", "Allow browser", "resume", None),
-                ],
-            )
-            .with_related_agent_id("agent-1".to_owned()),
-            Some(UserOnly::UserDomain),
         ),
     ];
     for (name, pending, interaction, expected) in table {

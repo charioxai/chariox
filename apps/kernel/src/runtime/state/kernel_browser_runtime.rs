@@ -818,10 +818,10 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let loader = RuntimeToolSpec { name: LOADER.into(),
-            description: "MD-3: when the user asks about a browser window opened outside a Room, the user-domain browser tools are available to the focused local agent through this tool; load them on demand, access follows user focus. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
+            description: "Load the kernel browser tools: the user's own browser, with every tab. Every agent has it; loading needs no approval and no focus. The grant lasts lifetime_hours (default 8, max 24) and ends early on idle lapse or revocation; load again when the tools are gone. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"lifetime_hours":{"type":"integer","minimum":1,"maximum":24}},"additionalProperties":false}), };
         let Some(agent) = self.kernel_browser_agent(run) else {
-            // MP-08/MP-11: an owner-requested turn may acquire access without focus.
+            // Every local Room agent may load the browser; leased and remote runs may not.
             if self.room_agent_tools_enabled() && self.user_domain_agent_placement(run).is_ok() {
                 return vec![loader];
             }
@@ -1031,7 +1031,6 @@ impl KernelRuntimeState {
                             crate::local::UserDomainResource::AppView {
                                 view_id: view.view_id,
                             },
-                            false,
                         )
                         .map_err(host_error)?;
                     params["_app_view_tab"] = tab.clone().into();
@@ -1040,8 +1039,8 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
-    /// MP-08/MP-11: focus or the owner's running request loads browser tools;
-    /// otherwise only an already-loaded grant is retained. Agents cannot self-grant.
+    /// Every local agent has the kernel browser, like Apps: loading grants it
+    /// at once, with no card and no focus.
     async fn kernel_browser_loader(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -1058,70 +1057,34 @@ impl KernelRuntimeState {
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
         let already_loaded = host.is_loaded(&user, agent.id());
-        if !host.is_focused(&user, agent.id()) && !already_loaded {
-            let Some(prompt) = self.owner_requested_prompt(&agent) else {
-                return self.block_for_browser_access(run, &agent).await;
-            };
-            let lifetime = crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
-                arguments.lifetime_hours,
-            )
-            .map_err(host_error)?;
-            let delivery = self.app_prompt_delivery(&agent);
-            if delivery
-                .as_ref()
-                .is_none_or(|delivery| !delivery.belongs_to(run.id()))
-            {
-                return Err(super::capability_grant_runtime::refused(
-                    crate::error::UserDomainRefusalReason::NotGranted,
-                ));
-            }
-            let fence = host.acquisition_fence(&user, agent.id());
-            if self
-                .confirm_capability_request(&agent, "new tabs in your kernel browser", || {
-                    host.acquisition_fence(&user, agent.id()) == fence
-                        && self.app_prompt_delivery(&agent) == delivery
-                })
-                .await?
-                != prompt
-            {
-                return Err(super::capability_grant_runtime::refused(
-                    crate::error::UserDomainRefusalReason::NotRequested,
-                ));
-            }
-            self.authorize_current_external_command()?;
-            self.user_domain_agent_placement(run)?;
-            if host.acquisition_fence(&user, agent.id()) != fence {
-                return Err(super::capability_grant_runtime::refused(
-                    crate::error::UserDomainRefusalReason::NotGranted,
-                ));
-            }
-            let granted = host
-                .request_grant(
-                    &user,
-                    agent.id(),
-                    &prompt,
-                    lifetime,
-                    Some(fence),
-                    agent.session_id(),
-                )
-                .map_err(host_error)?;
-            return Ok(self.runtime_catalog_loader_result(
-                &agent,
-                &previous_catalog,
-                already_loaded,
-                serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
-            ));
-        }
-        if !host.is_loaded(&user, agent.id()) {
-            self.user_domain_agent_authority(run)?;
-            host.load(&user, agent.id()).map_err(host_error)?;
-        }
+        let lifetime = crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
+            arguments.lifetime_hours,
+        )
+        .map_err(host_error)?;
+        let granted = self.grant_kernel_browser(run, &agent, lifetime)?;
+        host.load(&user, agent.id()).map_err(host_error)?;
         Ok(self.runtime_catalog_loader_result(
             &agent,
             &previous_catalog,
             already_loaded,
-            serde_json::json!({"loaded": BROWSER}),
+            serde_json::json!({"loaded": BROWSER, "granted": granted}),
         ))
+    }
+    /// The agent's own kernel browser grant; an existing live grant is kept.
+    pub(super) fn grant_kernel_browser(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        agent: &crate::agent::AgentInstance,
+        lifetime: std::time::Duration,
+    ) -> Result<bool, DaemonError> {
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let granted = self
+            .owned
+            .kernel_browser_host
+            .grant_agent(&user, agent.id(), lifetime, agent.session_id())
+            .map_err(host_error)?;
+        self.user_domain_agent_authority(run)?;
+        Ok(granted)
     }
 }
 

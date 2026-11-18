@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1023,
-  "peer_protocol": 448,
+  "local_protocol": 1012,
+  "peer_protocol": 449,
   "remote_execution": {
     "worker_kernel_id": "worker-kernel",
     "worker_machine_id": "worker-machine",

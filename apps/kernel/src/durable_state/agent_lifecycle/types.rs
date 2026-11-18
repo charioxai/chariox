@@ -14,7 +14,6 @@ pub enum ExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
-    BrowserAccess,
     /// The agent itself asked the owner something and waits for the answer.
     Question,
 }
@@ -421,11 +420,6 @@ pub(crate) enum Operation {
         now: u64,
     },
     Block {
-        task: String,
-        prompt: String,
-        reason: String,
-    },
-    BlockForBrowserAccess {
         task: String,
         prompt: String,
         reason: String,

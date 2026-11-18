@@ -297,8 +297,6 @@ pub struct AppCapabilityGrant {
     pub grant_id: String,
     pub expires_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_by_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_from_grant_id: Option<String>,
