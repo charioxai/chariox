@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { gitOut } from '../lib/ratchet.mjs'
 
 // Performance budgets only tighten (docs/PERFORMANCE_BUDGETS.md). A budget file holds ceilings: perf-budgets/<side>.json maps a
@@ -24,20 +26,47 @@ export default {
     }
     if (!ctx.base) return findings
     const atBase = gitOut(ctx.root, 'ls-tree', '-r', '--name-only', ctx.base).split('\n').filter(file => BUDGET_FILE.test(file) || file === AGENT_FILE)
-    const raised = new Set([...gitOut(ctx.root, 'log', '--format=%B', `${ctx.base}..HEAD`).matchAll(RAISED)].map(match => match[1]))
+    const moved = []
     for (const file of atBase) {
       const now = ceilings.get(file) ?? new Map()
       for (const [name, before] of budgets(file, ctx.readAtBase(file)).ceilings) {
-        const id = `${budgetSide(file)}.${name}`
         const after = now.get(name)
-        if (after !== undefined && after <= before) continue
-        if (raised.has(id)) continue
-        const what = after === undefined ? `budget ${id} (${before}) is removed` : `budget ${id} is raised from ${before} to ${after}`
-        findings.push({ file, line: lineOf(ctx.read(file) ?? '', name), what: `${what} without a "budget raised: ${id}: <why>" line in a commit since the merge base` })
+        if (after === undefined || after > before) moved.push({ file, name, id: `${budgetSide(file)}.${name}`, before, after })
       }
+    }
+    if (!moved.length) return findings
+    const history = messagesSince(ctx.root, ctx.base)
+    if (history.error) return [...findings, { file: moved[0].file, line: 0, what: history.error }]
+    const raised = new Set([...history.messages.matchAll(RAISED)].map(match => match[1]))
+    for (const { file, name, id, before, after } of moved) {
+      if (raised.has(id)) continue
+      const what = after === undefined ? `budget ${id} (${before}) is removed` : `budget ${id} is raised from ${before} to ${after}`
+      findings.push({ file, line: lineOf(ctx.read(file) ?? '', name), what: `${what} without a "budget raised: ${id}: <why>" line in a commit since the merge base` })
     }
     return findings
   },
+}
+
+// The messages of the commits since the base: {messages} or {error}. CI checks a pull request out at depth 1, which leaves
+// those commits out of the clone; they are fetched from origin first, so the raise lines are read whatever the clone depth.
+function messagesSince(root, base) {
+  const head = gitOut(root, 'rev-parse', 'HEAD')
+  for (const deepen of [null, '--deepen=100', '--unshallow']) {
+    if (deepen) {
+      try { gitOut(root, 'fetch', '--quiet', '--no-tags', deepen, 'origin', head, base) } catch (error) {
+        return { error: `the commits since the merge base ${base} are not in this shallow clone and fetching them from origin failed (${String(error.stderr ?? error.message).trim().split('\n').pop()}): fetch them (git fetch --unshallow origin) so their "budget raised:" lines are read` }
+      }
+    }
+    if (!cutShort(root, base, head)) return { messages: gitOut(root, 'log', '--format=%B', `${base}..${head}`) }
+  }
+  return { error: `the commits since the merge base ${base} are still cut short after git fetch --unshallow` }
+}
+
+// Whether a shallow clone's boundary falls inside base..head, so the walk misses commits of the range.
+function cutShort(root, base, head) {
+  if (gitOut(root, 'rev-parse', '--is-shallow-repository') !== 'true') return false
+  const boundary = new Set(readFileSync(resolve(root, gitOut(root, 'rev-parse', '--git-path', 'shallow')), 'utf8').split('\n'))
+  return gitOut(root, 'rev-list', `${base}..${head}`).split('\n').some(commit => boundary.has(commit))
 }
 
 const budgetSide = file => file === AGENT_FILE ? 'agent_context_budget' : file.slice('perf-budgets/'.length, -'.json'.length)

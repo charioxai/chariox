@@ -70,3 +70,50 @@ test('a budget without its unit, gate or measurement is red', () => {
   assert.match(result.text, /perf-budgets\/kernel\.json:0: budget attach_p95_ms lacks unit, gate, measured/)
   r.dispose()
 })
+
+// CI checks a pull request out as GitHub's merge commit at depth 1, with the base fetched at depth 1: the branch commits that
+// carry the "budget raised:" lines are not in the clone. The base branch moves on after the branch starts, as it does in CI.
+const pullRequestMerge = (repo, message) => {
+  repo.git('checkout', '-q', '-b', 'pr')
+  repo.write(WEB, web({ initial_js_brotli_bytes: budget(700), reload_long_tasks: budget(0) }))
+  repo.commit(message)
+  repo.write('README.md', 'later work on the branch\n')
+  repo.commit('more work')
+  repo.git('checkout', '-q', 'main')
+  repo.write('NOTES.md', 'main moves on\n')
+  const base = repo.commit('main moves on')
+  repo.git('checkout', '-q', '-b', 'pull-merge')
+  repo.git('merge', '-q', '--no-ff', '-m', 'Merge pr into main', 'pr')
+  return repo.shallowClone('pull-merge', base)
+}
+
+test('in a depth-1 pull request checkout, a raise with its "budget raised:" line passes', () => {
+  const r = makeRepo(base())
+  const clone = pullRequestMerge(r, 'grow the bundle\n\nbudget raised: web.initial_js_brotli_bytes: the Files window ships in the first paint')
+  assert.equal(clone.git('rev-parse', '--is-shallow-repository'), 'true')
+  const result = clone.run(check.name)
+  assert.equal(result.status, 0, result.text)
+  clone.dispose()
+  r.dispose()
+})
+
+test('in a depth-1 pull request checkout, a raise without its line is still red', () => {
+  const r = makeRepo(base())
+  const clone = pullRequestMerge(r, 'grow the bundle')
+  const result = clone.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, /budget web\.initial_js_brotli_bytes is raised from 600 to 700 without a "budget raised: web\.initial_js_brotli_bytes: <why>" line/)
+  clone.dispose()
+  r.dispose()
+})
+
+test('a shallow checkout that cannot fetch the commits since the base is red and names the base', () => {
+  const r = makeRepo(base())
+  const clone = pullRequestMerge(r, 'grow the bundle\n\nbudget raised: web.initial_js_brotli_bytes: the Files window ships in the first paint')
+  clone.git('remote', 'set-url', 'origin', `file://${clone.root}/missing`)
+  const result = clone.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, /the commits since the merge base [0-9a-f]{40} are not in this shallow clone and fetching them from origin failed/)
+  clone.dispose()
+  r.dispose()
+})
