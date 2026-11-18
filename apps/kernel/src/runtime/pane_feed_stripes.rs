@@ -412,11 +412,7 @@ fn workflows(session: &RuntimeSession, agent: &AgentInstance) -> Vec<PaneStripe>
             continue;
         };
         needing_person.push(run.id());
-        let step = match &outcome {
-            WorkflowRunOutcome::Waiting { node_id, .. } => node_id.as_str(),
-            WorkflowRunOutcome::Failed { .. } => run.entry_node_id(),
-        };
-        if node_agent(session, run, step) == Some(agent_id) {
+        if step_agent(session, run, &outcome) == Some(agent_id) {
             stripes.push(stripe(
                 format!("attention:{}:{}", workflow.id(), run.id()),
                 "Workflow",
@@ -458,6 +454,34 @@ fn workflows(session: &RuntimeSession, agent: &AgentInstance) -> Vec<PaneStripe>
         }
     }
     stripes
+}
+
+/// The agent of the step that could not go on: the one the run waits on, the one whose step
+/// failed first, else the one where the run entered.
+fn step_agent<'a>(
+    session: &'a RuntimeSession,
+    run: &'a WorkflowRun,
+    outcome: &'a WorkflowRunOutcome,
+) -> Option<&'a str> {
+    match outcome {
+        WorkflowRunOutcome::Waiting { node_id, .. } => run
+            .node_runs()
+            .iter()
+            .rev()
+            .find(|node_run| node_run.node_id() == node_id)
+            .map(|node_run| node_run.agent_id())
+            .or_else(|| node_agent(session, run, node_id)),
+        WorkflowRunOutcome::Failed { .. } => run
+            .failure_events()
+            .first()
+            .and_then(|failure| {
+                run.node_runs()
+                    .iter()
+                    .find(|node_run| node_run.id() == failure.source_node_run_id())
+            })
+            .map(|node_run| node_run.agent_id())
+            .or_else(|| node_agent(session, run, run.entry_node_id())),
+    }
 }
 
 fn node_agent<'a>(

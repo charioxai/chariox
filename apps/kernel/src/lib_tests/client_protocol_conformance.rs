@@ -487,7 +487,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "docs/PROTOCOL.md",
-                            &["3.3.2.1 Agent Pane Feed (local 1031)", "text_terminal", "ReportPaneSettings"],
+                            &["3.3.2.1 Agent Pane Feed (local 1014)", "text_terminal", "ReportPaneSettings"],
                         ),
                         evidence(
                             "apps/cli/src/native-tui/pane-title.test.ts",
