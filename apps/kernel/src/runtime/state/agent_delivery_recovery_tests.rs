@@ -581,3 +581,52 @@ async fn a_queued_message_behind_a_held_wake_starts_nothing() {
     assert!(!f.child_is_running());
 }
 
+/// An urgent message steers the child's running turn, and that turn ends while the steer waits
+/// for its provider lane: the steer is skipped at the native write. The message goes back to
+/// pending and is delivered again at once, as a turn of its own, instead of waiting unseen.
+#[tokio::test]
+async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let first = f.message("starts-the-turn", true, false);
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+    assert_eq!(f.state_of(first.sequence), "accepted");
+    assert!(f.child_is_running());
+    let run = f
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&f.room, &f.child)
+        .unwrap();
+    let steer = f.message("steers-the-turn", true, false);
+    let lane = f.runtime.provider_runtime_lanes.acquire(run.id()).await;
+    let delivery = tokio::spawn({
+        let runtime = f.runtime.clone();
+        let (room, child) = (f.room.clone(), f.child.clone());
+        async move { runtime.deliver_agent_inbox(&room, &child).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The running turn ends while the steer waits for the lane.
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    f.runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &f.child)
+        .expect("the child's turn was running");
+    drop(lane);
+    delivery.await.unwrap().unwrap();
+
+    for _ in 0..50 {
+        if f.state_of(steer.sequence) == "accepted" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(f.state_of(steer.sequence), "accepted");
+    assert!(
+        f.child_is_running(),
+        "the message starts the child's next turn"
+    );
+}

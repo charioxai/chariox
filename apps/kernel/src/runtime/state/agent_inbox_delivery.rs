@@ -344,6 +344,7 @@ impl KernelRuntimeState {
                 .unwrap_or(false)
             {
                 self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
+                self.deliver_skipped_steer_again(room, agent, event.sequence, &dispatch, None);
                 return Ok(());
             }
 
@@ -380,6 +381,19 @@ impl KernelRuntimeState {
                 .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                 .await;
             self.record_agent_event_dispatch_result(&dispatch, &result)?;
+            // The shared dispatch checks the target turn again at the native write: a turn that
+            // ended in between took nothing, and the row is pending again.
+            if self.inbox_row_is_pending(room, agent, event.sequence)? {
+                let error = result.err().map(|error| error.to_string());
+                self.deliver_skipped_steer_again(
+                    room,
+                    agent,
+                    event.sequence,
+                    &dispatch,
+                    error.as_deref(),
+                );
+                return Ok(());
+            }
             result?;
         } else {
             let result = Box::pin(self.submit_prepared_prompt_with_queue_policy(
@@ -444,6 +458,47 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    fn inbox_row_is_pending(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<bool, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .agent_work_inbox(room, agent, sequence.saturating_sub(1), None)?
+            .into_iter()
+            .find(|row| row.sequence == sequence)
+            .is_some_and(|row| row.state == "pending"))
+    }
+
+    /// A steer whose target turn ended before the native write took nothing: its row is
+    /// pending again and goes to the agent's next turn, started now if the agent is idle.
+    fn deliver_skipped_steer_again(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        dispatch: &crate::app::KernelPromptDispatch,
+        error: Option<&str>,
+    ) {
+        crate::logging::warn_with_fields(
+            "runtime.agent_inbox",
+            "inbox steer skipped before native write; event is pending and delivered again",
+            serde_json::json!({
+                "session_id": room,
+                "agent_id": agent,
+                "sequence": sequence,
+                "dispatch_prompt_id": dispatch.prompt_id,
+                "target_active_prompt_id": dispatch.target_active_prompt_id,
+                "provider_run_id": dispatch.provider_run_id,
+                "error": error.map(crate::secret_redaction::redact_secrets),
+            }),
+        );
+        self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
+    }
+
     /// The caller holds the dispatch's run lane.
     async fn dispatch_agent_event_prompt(
         &self,

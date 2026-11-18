@@ -191,8 +191,12 @@ impl KernelRuntimeOwnedState {
             return Ok(matches);
         }
         Err(DaemonError::LocalTransport {
-            operation: "steer queued prompt",
-            message: "queued prompt steer dispatch no longer matches the active prompt".to_string(),
+            operation: "steer prompt",
+            message: format!(
+                "steer {} was not sent: turn {} it steers is no longer running. Send it again as a new prompt",
+                dispatch.prompt_id,
+                dispatch.target_active_prompt_id.as_deref().unwrap_or("(none)"),
+            ),
         })
     }
 }
