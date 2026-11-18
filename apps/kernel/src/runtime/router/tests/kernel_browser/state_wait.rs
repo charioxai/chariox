@@ -94,3 +94,60 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
         })
     });
 }
+
+// A person's other window learns of a takeover when it happens, not when its parked read runs out: its typing
+// meanwhile would be refused as input to a watched Tab.
+#[test]
+fn a_takeover_by_another_window_answers_the_parked_state_read_at_once() {
+    use crate::session::{EnvironmentActor, EnvironmentActorKind};
+    run_test(|| {
+        Box::pin(async {
+            let workspace = crate::test_support::TestWorktree::new("takeover-wakes-state-wait");
+            let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-state-wait-takeover-{:032x}",
+                rand::random::<u128>()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            router
+                .runtime_state()
+                .install_kernel_browser_fixture(agent.owner_user_id(), &root);
+            focus(&router, session.id(), agent.id()).await;
+
+            let first = wait(&router, "", 0).await;
+            assert_eq!(first["tabs"][0]["taken_over"], false);
+            let revision = first["revision"].as_str().unwrap().to_string();
+            let parked = {
+                let router = router.clone();
+                tokio::spawn(async move { wait(&router, &revision, 10_000).await })
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert!(!parked.is_finished(), "parked while nothing changes");
+            router
+                .runtime_state()
+                .kernel_browser_host_for_test()
+                .request_takeover(
+                    agent.owner_user_id(),
+                    EnvironmentActor::new(
+                        "terminal:other-window",
+                        EnvironmentActorKind::Human,
+                        "Human",
+                    ),
+                    "host-tab-fixture",
+                    1,
+                )
+                .unwrap();
+            let changed = tokio::time::timeout(std::time::Duration::from_millis(1500), parked)
+                .await
+                .expect("the takeover answers the parked read")
+                .unwrap();
+            assert_eq!(changed["tabs"][0]["taken_over"], true);
+            router.runtime_state().shutdown_cleanup().await.unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+        })
+    });
+}

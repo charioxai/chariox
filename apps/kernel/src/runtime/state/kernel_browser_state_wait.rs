@@ -13,6 +13,8 @@ const MAX_WAIT_MS: u32 = 10_000;
 /// A woken read repeats no sooner than this, so a busy page cannot turn the wait into a poll.
 const MIN_GAP: Duration = Duration::from_millis(100);
 const NO_SIGNAL_POLL: Duration = Duration::from_millis(250);
+/// How often a parked read looks at who holds a Tab by takeover: an in-kernel read, no host request.
+const CONTROL_POLL: Duration = Duration::from_millis(100);
 
 /// `<content digest>.<host signal>`: opaque to clients, which echo it back as `after`.
 fn revision(state: &Value, signal: Option<u64>) -> String {
@@ -56,18 +58,31 @@ impl KernelRuntimeState {
             let remaining = deadline.saturating_duration_since(started);
             match (signal, known) {
                 (Some(after_signal), _) => {
-                    let (host, user, wait) = (
-                        self.owned.kernel_browser_host.clone(),
-                        user.clone(),
-                        remaining.as_millis() as u64,
-                    );
+                    let host = self.owned.kernel_browser_host.clone();
+                    let held = host.person_held_tabs(&user).map_err(host_error)?;
+                    let (parked_host, parked_user, wait) =
+                        (host.clone(), user.clone(), remaining.as_millis() as u64);
                     // The wait holds no protection barrier: Vault insertion never waits on a parked viewer.
-                    tokio::task::spawn_blocking(move || {
-                        host.state_signal(&user, Some(after_signal), wait)
-                    })
-                    .await
-                    .map_err(|_| host_error("MP-08: state wait interrupted".into()))?
-                    .map_err(host_error)?;
+                    let mut parked = tokio::task::spawn_blocking(move || {
+                        parked_host.state_signal(&parked_user, Some(after_signal), wait)
+                    });
+                    // A takeover or its return belongs to the person's other windows too: it is no host signal,
+                    // so the wait also ends when the held Tabs differ. The host wait then runs out on its own.
+                    loop {
+                        tokio::select! {
+                            signalled = &mut parked => {
+                                signalled
+                                    .map_err(|_| host_error("MP-08: state wait interrupted".into()))?
+                                    .map_err(host_error)?;
+                                break;
+                            }
+                            _ = tokio::time::sleep(CONTROL_POLL) => {
+                                if host.person_held_tabs(&user).map_err(host_error)? != held {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
                 // A host without a signal still gets a bounded wait, never a spin.
                 (None, Some(_)) => tokio::time::sleep(remaining.min(NO_SIGNAL_POLL)).await,
