@@ -3920,9 +3920,9 @@ pub(in crate::runtime::state) mod tests {
             .ensure_prompt_dispatch_matches_active_prompt(&steering_dispatch)
             .expect_err("stale steering dispatch should fail");
         assert!(
-            error
-                .to_string()
-                .contains("no longer matches the active prompt"),
+            error.to_string().contains(
+                "steer queued-steering-prompt was not sent: turn stale-active-prompt it steers is no longer running"
+            ),
             "{error}"
         );
     }
