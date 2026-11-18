@@ -133,8 +133,13 @@ mod tests {
             160
         );
         assert_eq!(
-            error_text("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory").as_deref(),
-            Some("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory")
+            error_text(
+                "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+            )
+            .as_deref(),
+            Some(
+                "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+            )
         );
         assert_eq!(error_text("Node.js v22.22.1"), None);
         assert_eq!(error_text("at Timeout.flush (/x/a.mjs:25:33)"), None);
