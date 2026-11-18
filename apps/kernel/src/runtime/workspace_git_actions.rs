@@ -13,8 +13,8 @@ use crate::error::DaemonError;
 use crate::local::WorkspaceGitActionResult;
 use crate::runtime::workspace_git_changes::workspace_git_status_by_path;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_command_output, git_ref_exists, resolve_repo_root,
-    run_workspace_git_command,
+    detect_git_branch, git_command_output, git_query, git_ref_exists, head_commit, origin_url,
+    resolve_repo_root, run_workspace_git_command,
 };
 
 const MAX_FILES: usize = 500;
@@ -63,13 +63,16 @@ impl PushCredential {
 
 /// Commits exactly `files` (paths relative to the worktree, each one changed).
 /// Work on the default branch or a detached HEAD moves to a new
-/// `chariox/<slug>` branch first; a named `branch` is created or reused.
+/// `chariox/<slug>` branch first; a named `branch` is created or reused. The
+/// `credential` lets the default branch be asked of a private `origin` when
+/// the clone does not know it.
 pub(crate) fn commit_workspace_changes(
     workspace_id: &str,
     worktree_id: &str,
     files: &[String],
     message: &str,
     branch: Option<&str>,
+    credential: Option<&PushCredential>,
 ) -> Result<CommitOutcome, DaemonError> {
     let message = message.trim();
     if message.is_empty() {
@@ -88,7 +91,9 @@ pub(crate) fn commit_workspace_changes(
         ));
     }
     // A named rename is committed with the path it moved from; its deletion is
-    // already staged, so only the commit needs that path.
+    // already staged, so only the commit needs that path. A file recreated at
+    // that path is a different change the caller must name, never one a
+    // rename carries along.
     let mut pathspecs: Vec<&str> = Vec::with_capacity(files.len());
     for file in files {
         let Some(change) = changes.get(file) else {
@@ -98,9 +103,23 @@ pub(crate) fn commit_workspace_changes(
             ));
         };
         pathspecs.push(file);
-        pathspecs.extend(change.renamed_from.as_deref());
+        if let Some(source) = change.renamed_from.as_deref() {
+            let recreated = std::path::Path::new(worktree_path)
+                .join(source)
+                .symlink_metadata()
+                .is_ok();
+            if recreated && !files.iter().any(|named| named == source) {
+                return Err(fail(
+                    "workspace git commit",
+                    &format!(
+                        "`{file}` was renamed from `{source}`, and a new file now exists at `{source}`; name `{source}` as well to commit it, or move it away to commit the rename alone"
+                    ),
+                ));
+            }
+            pathspecs.push(source);
+        }
     }
-    let target = target_branch(worktree_path, message, branch)?;
+    let target = target_branch(worktree_path, message, branch, credential)?;
     match &target {
         Some(BranchMove::Create(name)) => run_workspace_git_command(
             worktree_path,
@@ -132,8 +151,8 @@ pub(crate) fn commit_workspace_changes(
             worktree_id: worktree_id.to_string(),
             action: "commit".to_string(),
             message: "committed workspace changes".to_string(),
-            commit_sha: git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]),
-            branch: detect_git_branch(worktree_path).ok(),
+            commit_sha: Some(head_commit(worktree_path)?),
+            branch: Some(detect_git_branch(worktree_path)?),
             generated_at_ms: current_unix_ms(),
         },
         created_branch: matches!(target, Some(BranchMove::Create(_))),
@@ -154,9 +173,10 @@ fn target_branch(
     worktree_path: &str,
     message: &str,
     requested: Option<&str>,
+    credential: Option<&PushCredential>,
 ) -> Result<Option<BranchMove>, DaemonError> {
     let current = detect_git_branch(worktree_path)?;
-    let default = default_branch(worktree_path, &[])?;
+    let default = default_branch(worktree_path, credential)?;
     let repo = std::path::Path::new(worktree_path);
     if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
         if name == default
@@ -215,34 +235,58 @@ fn branch_slug(message: &str) -> String {
 }
 
 /// The default branch of `origin`: what `origin/HEAD` points at, or, while the
-/// clone does not know it yet, what the remote answers. Never a guess from local
-/// branches: a push guard built on one would let the real default branch through.
+/// clone does not know it, the symbolic `HEAD` the remote advertises. Asking
+/// the remote needs no local ref, so a single-branch clone works, and uses the
+/// account's credential when there is one. Never a guess from local branches:
+/// a push guard built on one would let the real default branch through.
 pub(crate) fn default_branch(
     worktree_path: &str,
-    environment: &[(String, String)],
+    credential: Option<&PushCredential>,
 ) -> Result<String, DaemonError> {
     if let Some(name) = origin_head(worktree_path) {
         return Ok(name);
     }
+    let environment = credential
+        .map(PushCredential::environment)
+        .unwrap_or_default();
     let asked = crate::process_spawn::command("git")
-        .args(["remote", "set-head", "origin", "--auto"])
+        .args(["ls-remote", "--symref", "origin", "HEAD"])
         .envs(environment.iter().map(|(name, value)| (name, value)))
         .current_dir(worktree_path)
         .output_for(Work::Mutation);
     let reason = match asked {
-        Ok(output) if output.status.success() => match origin_head(worktree_path) {
-            Some(name) => return Ok(name),
-            None => "the remote reports no default branch".to_string(),
-        },
-        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        Ok(output) if output.status.success() => {
+            match advertised_default_branch(&String::from_utf8_lossy(&output.stdout)) {
+                Some(name) => return Ok(name),
+                None => "the remote reports no default branch".to_string(),
+            }
+        }
+        Ok(output) => {
+            let mut said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if let Some(credential) = credential {
+                said = said.replace(credential.0.as_str(), "[redacted]");
+            }
+            said
+        }
         Err(error) => error.to_string(),
     };
     Err(fail(
         "workspace git default branch",
         &format!(
-            "cannot determine the default branch of `origin` ({reason}); set it with `git remote set-head origin <branch>`"
+            "cannot determine the default branch of `origin` ({reason}); check that the account can reach the repository and that it has a default branch, then retry"
         ),
     ))
+}
+
+/// The branch in `git ls-remote --symref origin HEAD`'s `ref: refs/heads/<name>\tHEAD` line.
+fn advertised_default_branch(listing: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (symref, target) = line.strip_prefix("ref: ")?.split_once('\t')?;
+        (target == "HEAD")
+            .then(|| symref.strip_prefix("refs/heads/"))
+            .flatten()
+            .map(str::to_string)
+    })
 }
 
 fn origin_head(worktree_path: &str) -> Option<String> {
@@ -289,19 +333,14 @@ pub(crate) fn push_workspace_branch(
     }
     resolve_repo_root(worktree_path)?;
     checked_push_repository(worktree_path)?;
-    push_branch(
-        workspace_id,
-        worktree_id,
-        &credential.environment(),
-        &[credential.0.as_str()],
-    )
+    push_branch(workspace_id, worktree_id, credential)
 }
 
 /// `owner/repo` the push goes to: `origin` must be a GitHub HTTPS remote and
 /// every URL a push to it uses (`pushurl`, `insteadOf`, `pushInsteadOf`) the
 /// same repository, so the commits never leave the one the pull request is for.
 fn checked_push_repository(worktree_path: &str) -> Result<String, DaemonError> {
-    let fetch = git_command_output(worktree_path, &["remote", "get-url", "origin"])
+    let fetch = origin_url(worktree_path)?
         .ok_or_else(|| fail("workspace git push", "the worktree has no `origin` remote"))?;
     let repository = github_https_repository(&fetch).ok_or_else(|| {
         fail(
@@ -309,11 +348,12 @@ fn checked_push_repository(worktree_path: &str) -> Result<String, DaemonError> {
             "`origin` must be an https://github.com/<owner>/<repo> remote; set it with `git remote set-url origin`",
         )
     })?;
-    let pushes = git_command_output(
+    let pushes = git_query(
         worktree_path,
         &["remote", "get-url", "--push", "--all", "origin"],
-    )
-    .unwrap_or_default();
+        "workspace git remote",
+    )?;
+    let pushes = String::from_utf8_lossy(&pushes).trim().to_string();
     // GitHub owner and repository names are case-insensitive.
     let same = |url: &str| {
         github_https_repository(url).is_some_and(|pushed| pushed.eq_ignore_ascii_case(&repository))
@@ -332,8 +372,7 @@ fn checked_push_repository(worktree_path: &str) -> Result<String, DaemonError> {
 fn push_branch(
     workspace_id: &str,
     worktree_id: &str,
-    environment: &[(String, String)],
-    secrets: &[&str],
+    credential: &PushCredential,
 ) -> Result<WorkspaceGitActionResult, DaemonError> {
     let worktree_path = worktree_id.trim();
     let branch = detect_git_branch(worktree_path)?;
@@ -343,7 +382,7 @@ fn push_branch(
             "a detached HEAD has no branch to push; commit to a branch first",
         ));
     }
-    if branch == default_branch(worktree_path, environment)? {
+    if branch == default_branch(worktree_path, Some(credential))? {
         return Err(fail(
             "workspace git push",
             &format!("`{branch}` is the default branch; commit to a feature branch and push that"),
@@ -351,16 +390,14 @@ fn push_branch(
     }
     let output = crate::process_spawn::command("git")
         .args(["push", "--set-upstream", "origin", &branch])
-        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .envs(credential.environment())
         .current_dir(worktree_path)
         // push runs hooks and talks to the network.
         .output_for(Work::Mutation)
         .map_err(|error| fail("workspace git push", &error.to_string()))?;
     if !output.status.success() {
         let mut message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        for secret in secrets {
-            message = message.replace(secret, "[redacted]");
-        }
+        message = message.replace(credential.0.as_str(), "[redacted]");
         if message.is_empty() {
             message = format!("git push failed with status {}", output.status);
         }
@@ -371,7 +408,7 @@ fn push_branch(
         worktree_id: worktree_id.to_string(),
         action: "push".to_string(),
         message: "pushed workspace branch".to_string(),
-        commit_sha: git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]),
+        commit_sha: Some(head_commit(worktree_path)?),
         branch: Some(branch),
         generated_at_ms: current_unix_ms(),
     })

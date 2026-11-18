@@ -619,8 +619,9 @@ impl<T: Send> workspace::HostWithStore<T> for HasSelf<Host> {
         files: Vec<String>,
         message: String,
         branch: Option<String>,
+        account: String,
     ) -> Result<String, types::AppError> {
-        let params = json!({"worktree":worktree,"files":files,"message":message,"branch":branch});
+        let params = json!({"worktree":worktree,"files":files,"message":message,"branch":branch,"account":account});
         json_text(call(accessor, "workspace.commit", params).await?)
     }
     async fn push(

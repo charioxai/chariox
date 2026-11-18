@@ -11,9 +11,9 @@ const WORKTREE = '/work/room-1';
 function scenario({ remote = REPO, branch = 'main', failing } = {}) {
   const asked = [];
   const workspace = {
-    changes: async worktree => { asked.push(['changes', worktree]); return JSON.stringify({ files: [], branch, defaultBranch: 'main', remote }); },
-    commit: async (worktree, files, message, named) => {
-      asked.push(['commit', worktree, files, message, named]);
+    changes: async worktree => { asked.push(['changes', worktree]); return JSON.stringify({ files: [], branch, remote }); },
+    commit: async (worktree, files, message, named, account) => {
+      asked.push(['commit', worktree, files, message, named, account]);
       if (failing === 'commit') throw { code: 'WORKSPACE_ACTION_FAILED', message: '`a.txt` is not a changed file of this worktree' };
       return JSON.stringify({ commit: 'a'.repeat(40), branch: named ?? 'chariox/add-hello', createdBranch: true });
     },
@@ -41,7 +41,7 @@ test('shipping commits the named files, pushes as the account and opens the pull
   assert.deepEqual(shipped.steps.map(step => [step.step, step.state]), [['commit', 'done'], ['push', 'done'], ['pr', 'done']]);
   assert.deepEqual([shipped.ok, shipped.branch, shipped.steps[2].number], [true, 'chariox/add-hello', 14]);
   assert.deepEqual(asked.map(call => call[0]), ['changes', 'commit', 'push']);
-  assert.deepEqual(asked[1].slice(1), [WORKTREE, ['src/hello.txt'], 'Add hello\n\nWhy', null]);
+  assert.deepEqual(asked[1].slice(1), [WORKTREE, ['src/hello.txt'], 'Add hello\n\nWhy', null, 'github']);
   assert.equal(asked[2][2], 'github');
   assert.deepEqual(posts().map(c => c.body), [{ title: 'Add hello', head: 'chariox/add-hello', base: 'main', body: '', draft: true }]);
 });
@@ -74,7 +74,7 @@ test('shipping needs files and a message to commit, a title to open, and a GitHu
 test('a pull request shipped from a Room remembers the Room and agent that made it, and a call outside a Room links nothing', async () => {
   const double = fakeGitHub({ override: (url, init) => (init.method === 'POST' || url.pathname.endsWith('/pulls/14') ? json(init.method === 'POST' ? 201 : 200, { ...recorded('pull_2'), number: 14 }) : undefined) });
   const workspace = {
-    changes: async () => JSON.stringify({ files: [], branch: 'chariox/x', defaultBranch: 'main', remote: REPO }),
+    changes: async () => JSON.stringify({ files: [], branch: 'chariox/x', remote: REPO }),
     commit: async () => JSON.stringify({ commit: 'a'.repeat(40), branch: 'chariox/x', createdBranch: true }),
     push: async () => JSON.stringify({ commit: 'a'.repeat(40), branch: 'chariox/x' }),
   };

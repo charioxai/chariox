@@ -34,7 +34,7 @@ export function createShip({ accounts, workspace, writes, links }) {
 
       if (steps.includes('commit')) {
         await run('commit', async () => {
-          const done = JSON.parse(await workspace.commit(input.worktree, input.files, message, input.branch ?? null));
+          const done = JSON.parse(await workspace.commit(input.worktree, input.files, message, input.branch ?? null, label));
           result.branch = done.branch;
           return { commit: done.commit, branch: done.branch, createdBranch: done.createdBranch };
         });

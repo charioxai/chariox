@@ -47,7 +47,7 @@ lists each step as `done`, `failed` or `not_run` with its reason, and a failed s
 
 The kernel does the git work, through the manifest's `workspace` capability (`{"credential": "github"}`, which needs the
 `https://api.github.com` destination with the same credential label): `workspace.changes`, `workspace.commit` and
-`workspace.push` of `@chariox/app-sdk-wasm/workspace`. A commit holds exactly the files named. Work on the default branch
+`workspace.push` of `@chariox/app-sdk-wasm/workspace`. A commit holds exactly the files named; it names the account too, so the kernel can ask a private `origin` for its default branch. Work on the default branch
 or a detached HEAD moves to a new `chariox/<slug>` branch first; a named `branch` is created or reused. The push goes to
 an `https://github.com/<owner>/<repo>` `origin` on a branch that is not the default one, never forces, and gets the bound
 account's token through git's environment, never its arguments or any message. The default branch is never pushed and a

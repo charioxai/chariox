@@ -82,12 +82,13 @@ interface event-routing {
 interface workspace {
   use chariox:app/app-types@1.0.0.{json, app-error};
 
-  /// The worktree's changed files: `{files:[{path,status,additions,deletions}], branch, defaultBranch, remote}`.
+  /// The worktree's changed files: `{files:[{path,status,additions,deletions}], branch, remote}`. Local facts only: it never asks the remote.
   changes: async func(worktree: string) -> result<json, app-error>;
   /// Commits exactly `files` with `message`. On the default branch or a
   /// detached HEAD the commit moves to a new `chariox/<slug>` branch, and
-  /// `branch` names one instead. Returns `{commit, branch, createdBranch}`.
-  commit: async func(worktree: string, files: list<string>, message: string, branch: option<string>) -> result<json, app-error>;
+  /// `branch` names one instead. `account` lets the kernel ask a private
+  /// `origin` for its default branch. Returns `{commit, branch, createdBranch}`.
+  commit: async func(worktree: string, files: list<string>, message: string, branch: option<string>, account: string) -> result<json, app-error>;
   /// Pushes the current branch, never the default one and never forced, to
   /// the worktree's `origin` GitHub repository as `account`.
   push: async func(worktree: string, account: string) -> result<json, app-error>;

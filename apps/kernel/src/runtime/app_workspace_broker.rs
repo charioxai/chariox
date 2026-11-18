@@ -4,8 +4,8 @@
 //! worktree's GitHub `origin` as the owner's account bound to the declared
 //! credential; the token goes to git by environment and the App never sees it.
 //!
-//! - `workspace.changes {worktree}` -> `{files, branch, defaultBranch, remote}`
-//! - `workspace.commit {worktree, files, message, branch?}` -> `{commit, branch, createdBranch}`
+//! - `workspace.changes {worktree}` -> `{files, branch, remote}`
+//! - `workspace.commit {worktree, files, message, branch?, account}` -> `{commit, branch, createdBranch}`
 //! - `workspace.push {worktree, account}` -> `{commit, branch}`
 use super::app_approved_operations::ApprovedOperations;
 use super::app_http::KernelAccountVault;
@@ -13,11 +13,10 @@ use super::app_lifecycle::EventConfig;
 use super::app_operation_budget::AppOperationBudget;
 use super::state::Acting;
 use super::workspace_git_actions::{
-    commit_workspace_changes, default_branch, github_https_repository, push_workspace_branch,
-    PushCredential,
+    commit_workspace_changes, github_https_repository, push_workspace_branch, PushCredential,
 };
 use super::workspace_git_changes::workspace_git_file_changes;
-use super::workspace_git_common::{detect_git_branch, git_command_output, resolve_repo_root};
+use super::workspace_git_common::{detect_git_branch, origin_url, resolve_repo_root};
 use crate::durable_state::DurableKernelStateStore;
 use chariox_app_package::{RouteSafety, WorkspaceAccess, WORKSPACE_ACCOUNT_ORIGIN};
 use chariox_app_runtime::{wire::RemoteError, worker_peer::BrokerRequest};
@@ -39,6 +38,7 @@ struct Commit {
     files: Vec<String>,
     message: String,
     branch: Option<String>,
+    account: String,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +109,7 @@ impl AppWorkspaceBroker {
                 .map_err(|_| error("APP_OPERATION_STOPPED", false))?;
             match request.method.as_str() {
                 "workspace.changes" => changes(input(request.params)?),
-                "workspace.commit" => commit(input(request.params)?),
+                "workspace.commit" => service.commit(&declared, input(request.params)?),
                 "workspace.push" => service.push(&declared, input(request.params)?),
                 _ => Err(error("METHOD_UNAVAILABLE", false)),
             }
@@ -118,10 +118,16 @@ impl AppWorkspaceBroker {
         .map_err(|_| error("APP_WORKSPACE_OUTCOME_UNCERTAIN", false))?
     }
 
-    fn push(&self, declared: &WorkspaceAccess, push: Push) -> Result<Value, RemoteError> {
+    /// The credential of a bound account of the declared kind that may write.
+    /// It goes to git by environment; the App never sees it.
+    fn credential(
+        &self,
+        declared: &WorkspaceAccess,
+        account: &str,
+    ) -> Result<PushCredential, RemoteError> {
         let binding = self
             .store
-            .app_account(&self.owner, &self.installation, &push.account)
+            .app_account(&self.owner, &self.installation, account)
             .map_err(|_| error("STORAGE_UNAVAILABLE", true))?
             .filter(|binding| binding.credential == declared.credential)
             .ok_or_else(|| error("ACCOUNT_UNKNOWN", false))?;
@@ -131,12 +137,31 @@ impl AppWorkspaceBroker {
         let token = KernelAccountVault(self.config.clone())
             .token(&binding.vault_credential_id, WORKSPACE_ACCOUNT_ORIGIN)
             .map_err(|_| error("ACCOUNT_UNAVAILABLE", true))?;
-        let result = push_workspace_branch(
-            &push.worktree,
-            &push.worktree,
-            &PushCredential::from_token(&token),
+        Ok(PushCredential::from_token(&token))
+    }
+
+    fn commit(&self, declared: &WorkspaceAccess, input: Commit) -> Result<Value, RemoteError> {
+        let credential = self.credential(declared, &input.account)?;
+        let outcome = commit_workspace_changes(
+            &input.worktree,
+            &input.worktree,
+            &input.files,
+            &input.message,
+            input.branch.as_deref(),
+            Some(&credential),
         )
         .map_err(failed)?;
+        Ok(json!({
+            "commit": outcome.result.commit_sha,
+            "branch": outcome.result.branch,
+            "createdBranch": outcome.created_branch,
+        }))
+    }
+
+    fn push(&self, declared: &WorkspaceAccess, push: Push) -> Result<Value, RemoteError> {
+        let credential = self.credential(declared, &push.account)?;
+        let result =
+            push_workspace_branch(&push.worktree, &push.worktree, &credential).map_err(failed)?;
         Ok(json!({"commit": result.commit_sha, "branch": result.branch}))
     }
 }
@@ -150,11 +175,13 @@ fn authorize(callers: &[Value], approved: &ApprovedOperations) -> Result<(), Rem
     }
 }
 
+/// Local facts only: nothing here asks the remote, so it needs no account.
 fn changes(input: Changes) -> Result<Value, RemoteError> {
     let worktree = input.worktree.trim();
     resolve_repo_root(worktree).map_err(failed)?;
     let files = workspace_git_file_changes(worktree, "HEAD").map_err(failed)?;
-    let remote = git_command_output(worktree, &["remote", "get-url", "origin"])
+    let remote = origin_url(worktree)
+        .map_err(failed)?
         .and_then(|url| github_https_repository(&url));
     Ok(json!({
         "files": files.iter().map(|file| json!({
@@ -164,24 +191,7 @@ fn changes(input: Changes) -> Result<Value, RemoteError> {
             "deletions": file.deletions,
         })).collect::<Vec<_>>(),
         "branch": detect_git_branch(worktree).map_err(failed)?,
-        "defaultBranch": default_branch(worktree, &[]).map_err(failed)?,
         "remote": remote,
-    }))
-}
-
-fn commit(input: Commit) -> Result<Value, RemoteError> {
-    let outcome = commit_workspace_changes(
-        &input.worktree,
-        &input.worktree,
-        &input.files,
-        &input.message,
-        input.branch.as_deref(),
-    )
-    .map_err(failed)?;
-    Ok(json!({
-        "commit": outcome.result.commit_sha,
-        "branch": outcome.result.branch,
-        "createdBranch": outcome.created_branch,
     }))
 }
 
@@ -295,6 +305,53 @@ mod tests {
         assert_eq!(
             refused(&[person, agent("op-2")], &approved),
             "APPROVAL_REQUIRED"
+        );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let output = crate::process_spawn::command("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {}", args.join(" "));
+    }
+
+    #[test]
+    fn changes_are_local_facts_and_a_git_failure_is_the_error() {
+        let dir = TestTempDir::new("workspace-broker-changes");
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.email", "tests@example.invalid"]);
+        git(&dir, &["config", "user.name", "Chariox Tests"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "seed"]);
+        // A GitHub `origin` the clone knows no default branch of: nothing here
+        // may ask it, because no account is named yet.
+        git(
+            &dir,
+            &["remote", "add", "origin", "https://github.com/o/r.git"],
+        );
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        let worktree = dir.display().to_string();
+
+        let state = changes(Changes {
+            worktree: worktree.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(state["remote"], "o/r");
+        assert_eq!(state["branch"], "main");
+        assert_eq!(state["files"][0]["path"], "b.txt");
+        assert!(state.get("defaultBranch").is_none());
+
+        std::fs::write(dir.join(".git/index"), "not an index").unwrap();
+        let failure = changes(Changes { worktree }).unwrap_err();
+        assert_eq!(failure.code, "WORKSPACE_ACTION_FAILED");
+        assert!(
+            failure.message.contains("git status"),
+            "{}",
+            failure.message
         );
     }
 

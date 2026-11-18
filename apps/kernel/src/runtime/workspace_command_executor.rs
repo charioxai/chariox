@@ -198,6 +198,7 @@ pub(crate) fn execute_commit_workspace_changes_request(
         &request.files,
         &request.message,
         request.branch.as_deref(),
+        None,
     )?
     .result;
     Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })

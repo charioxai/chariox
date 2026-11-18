@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 use crate::local::WorkspaceGitFileChange;
+use crate::runtime::workspace_git_common::{git_query, workspace_repository_state};
 
 /// What `git status` says about one changed path.
 pub(crate) struct StatusEntry {
@@ -17,7 +18,12 @@ pub(crate) fn workspace_git_file_changes(
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
     let status_by_path = workspace_git_status_by_path(worktree_path)?;
-    let mut files = workspace_git_numstat(worktree_path, compare_ref).unwrap_or_default();
+    // Nothing to compare against before the first commit: every path is new.
+    let mut files = if workspace_repository_state(worktree_path) == "unborn" {
+        Vec::new()
+    } else {
+        workspace_git_numstat(worktree_path, compare_ref)?
+    };
     for file in &mut files {
         if let Some(entry) = status_by_path.get(&file.path) {
             file.status = entry.status.clone();
@@ -84,18 +90,12 @@ pub(crate) fn workspace_git_diff_text(
 pub(crate) fn workspace_git_status_by_path(
     worktree_path: &str,
 ) -> Result<HashMap<String, StatusEntry>, DaemonError> {
-    let output = crate::process_spawn::command("git")
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(worktree_path)
-        .bounded_output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace git status",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Ok(HashMap::new());
-    }
-    Ok(parse_status_records(&output.stdout))
+    let stdout = git_query(
+        worktree_path,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        "workspace git status",
+    )?;
+    Ok(parse_status_records(&stdout))
 }
 
 /// `-z` records are `XY path`, and a rename adds the source path as the next
@@ -130,25 +130,19 @@ fn workspace_git_numstat(
     worktree_path: &str,
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
-    let output = crate::process_spawn::command("git")
-        .args([
+    let stdout = git_query(
+        worktree_path,
+        &[
             "diff",
             "--numstat",
             "-z",
             "--find-renames",
             compare_ref,
             "--",
-        ])
-        .current_dir(worktree_path)
-        .bounded_output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace git diff",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-    Ok(parse_numstat_records(&output.stdout))
+        ],
+        "workspace git diff",
+    )?;
+    Ok(parse_numstat_records(&stdout))
 }
 
 /// `-z` records are `added<TAB>deleted<TAB>path`; a rename leaves the path
