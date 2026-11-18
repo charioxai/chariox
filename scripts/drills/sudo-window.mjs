@@ -11,7 +11,7 @@ import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
 import { respondToInteractionRequest } from "../../packages/kernel-client/dist/ipc-terminal-runtime-requests.js"
-import { drillFlags, startDrillKernel, until } from "./own-kernel.mjs"
+import { answerWhilePending, drillFlags, startDrillKernel, until } from "./own-kernel.mjs"
 
 const { flags, need } = drillFlags(process.argv)
 const evidence = need("--evidence-dir")
@@ -34,20 +34,28 @@ try {
   const probeFor = n => (all => all.filter(turn => JSON.stringify(turn).includes(`PROBE-${n} `) && !`${turn.user_prompt?.entry?.text ?? ""}`.startsWith("/sudo")))
   const windows = async () => (await k.session(R)).sudo_windows ?? []
   const work = `/sudo You are probing a privileged kernel request over two hours. Probe n means: call the chariox kernel_request tool with request {"GetSessionState":{"session_id":"${other.R}"}} and reply with one line "PROBE-n OK" followed by that Room's alias, or "PROBE-n DENIED" followed by the exact reason if the call is refused. Do probe 1 now. After each probe arm a chariox events_timer of ${probeMinutes} minutes (delay_ms ${probeMinutes * 60000}) labelled PROBE-<next n>, call events_yield on it and end your turn; on its wake do the next probe. Stop after probe 5 and reply SUDO_DRILL_DONE.`
-  await k.rpc(submitPromptRequest(R, attached, agent, work, []))
-  const card = await until(async () => (await k.session(R)).active_interactions?.find(x => x.choices?.some(c => c.requires_passkey) && !x.id.startsWith("vault-")), "sudo passkey card", 120000)
-  k.note("sudo-card", { id: card.id, title: card.title })
-  const approved = Date.now()
-  await k.rpc(respondToInteractionRequest(R, card.id, "approve", null, { passkey }))
+  // The kernel returns the /sudo request once its passkey card is answered, so the card is answered while it is pending.
+  let approved
+  await answerWhilePending({
+    request: k.rpc(submitPromptRequest(R, attached, agent, work, [])),
+    findCard: () => until(async () => (await k.session(R)).active_interactions?.find(x => x.choices?.some(c => c.requires_passkey) && !x.id.startsWith("vault-")), "sudo passkey card", 120000),
+    answer: async card => {
+      k.note("sudo-card", { id: card.id, title: card.title })
+      approved = Date.now()
+      await k.rpc(respondToInteractionRequest(R, card.id, "approve", null, { passkey }))
+    },
+  })
   const first = (await until(async () => (await windows())[0], "window", 60000))
   k.note("window-open", { entry: first.entry_id, revision: first.revision, minutes: first.duration_minutes, expires_at_ms: first.expires_at_ms })
   expect("window-is-60-minutes", first.duration_minutes === 60)
   await until(async () => probeFor(1)(await answers()).length > 0, "probe 1", 240000)
   const warned = await until(async () => (await windows()).find(w => w.warning_sent), "10-minute warning", 55 * 60000)
   k.note("warning", { entry: warned.entry_id, revision: warned.revision, left_s: Math.round((warned.expires_at_ms - Date.now()) / 1000) })
-  await k.rpc({ ExtendKernelSudo: { session_id: R, attachment_id: attached, entry_id: warned.entry_id, revision: warned.revision } }).catch(e => k.note("extend-request-ended", { message: String(e.message).slice(0, 200) }))
-  const extendCard = await until(async () => (await k.session(R)).active_interactions?.find(x => /Extend sudo window/.test(x.title ?? "")), "extend card", 120000)
-  await k.rpc(respondToInteractionRequest(R, extendCard.id, "approve", null, { passkey }))
+  await answerWhilePending({
+    request: k.rpc({ ExtendKernelSudo: { session_id: R, attachment_id: attached, entry_id: warned.entry_id, revision: warned.revision } }),
+    findCard: () => until(async () => (await k.session(R)).active_interactions?.find(x => /Extend sudo window/.test(x.title ?? "")), "extend card", 120000),
+    answer: card => k.rpc(respondToInteractionRequest(R, card.id, "approve", null, { passkey })),
+  })
   const extended = await until(async () => (await windows()).find(w => w.revision > warned.revision), "extended revision", 60000)
   k.note("extended", { revision: extended.revision, expires_at_ms: extended.expires_at_ms, warning_sent: extended.warning_sent, minutes_from_now: Math.round((extended.expires_at_ms - Date.now()) / 60000) })
   expect("extend-resets-warning", extended.warning_sent === false)

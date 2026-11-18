@@ -3,16 +3,17 @@
 // delivery kind under test, so the write commits and its caller is told it failed. The retry or the sweep must
 // reconcile it: the wake reaches the agent once, and the person sees the outcome.
 // usage: node scripts/drills/ack-drop.mjs --kernel-binary <path> --state-root /root/.chariox/dev/<lane>/... \
-//   --evidence-dir <dir> --claude-profile-path <product-linked Claude profile directory> --kinds wake_occurrence,delivery_receipt
+//   --evidence-dir <dir> --claude-profile-path <product-linked Claude profile directory> --kinds wake_intent,delivery_receipt
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
+import { DEFAULT_KINDS, wakeTurns, wokeReply } from "./ack-drop-support.mjs"
 import { drillFlags, startDrillKernel, until } from "./own-kernel.mjs"
 
 const { flags, need } = drillFlags(process.argv)
 const evidence = need("--evidence-dir")
-const kinds = (flags.get("--kinds") ?? "wake_occurrence,delivery_receipt").split(",")
+const kinds = flags.has("--kinds") ? flags.get("--kinds").split(",") : DEFAULT_KINDS
 const model = flags.get("--model") ?? "claude-haiku-5-5"
 const stateRoot = need("--state-root")
 const faults = join(stateRoot, "faults")
@@ -28,6 +29,7 @@ try {
     const label = `ACKDROP-${kind.toUpperCase().replace(/_/g, "")}`
     const dropLog = join(faults, "drop-ack.log")
     const before = lines(dropLog)
+    const earlierWakes = wakeTurns(await turns()).length
     writeFileSync(join(faults, "drop-ack"), `${kind}\n`)
     k.note("armed", { kind, label })
     const ask = `Call the chariox events_timer tool with delay_ms 60000 and label "${label}". Then call chariox events_yield on that registration and end your turn. When the timer wake arrives reply with exactly ${label}_WOKE and nothing else.`
@@ -36,11 +38,11 @@ try {
     k.note("dropped", { kind, dropped })
     await delay(Number(flags.get("--settle-seconds") ?? 150) * 1000)
     const all = await turns()
-    const wakePrompts = all.filter(turn => `${turn.user_prompt?.entry?.text ?? ""}`.includes(label) && !`${turn.user_prompt?.entry?.text ?? ""}`.includes("Call the chariox events_timer"))
+    const wakePrompts = wakeTurns(all).slice(earlierWakes)
     const s = await k.session(R)
-    k.note("result", { kind, dropped, wakePrompts: wakePrompts.length, origins: wakePrompts.map(turn => turn.prompt_origin), lifecycles: wakePrompts.map(turn => turn.lifecycle), notices: JSON.stringify(s.notices ?? null).slice(0, 400) })
+    k.note("result", { kind, dropped, wakePrompts: wakePrompts.length, replied: wokeReply(wakePrompts, `${label}_WOKE`), origins: wakePrompts.map(turn => turn.prompt_origin), lifecycles: wakePrompts.map(turn => turn.lifecycle), notices: JSON.stringify(s.notices ?? null).slice(0, 400) })
     writeFileSync(join(evidence, `turns-${kind}.json`), JSON.stringify(all, null, 1), { mode: 0o600 })
-    if (!dropped || wakePrompts.length !== 1) exitCode = 1
+    if (!dropped || wakePrompts.length !== 1 || !wokeReply(wakePrompts, `${label}_WOKE`)) exitCode = 1
   }
 } catch (error) {
   k.note("error", { message: String(error.message ?? error).slice(0, 300) })

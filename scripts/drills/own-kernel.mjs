@@ -33,7 +33,7 @@ async function freePort() {
 }
 
 /** `label` names the drill in notes; `extraEnv` is added to the kernel's environment. */
-export async function startDrillKernel({ label, binary, stateRoot, evidence, profilePath, extraEnv = {} }) {
+export async function startDrillKernel({ label, binary, stateRoot, evidence, profilePath, extraEnv = {}, readyTimeoutMs = 60000 }) {
   if (!stateRoot.startsWith("/root/.chariox/dev/")) throw new Error("state must be lane-owned")
   mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
   mkdirSync(evidence, { recursive: true })
@@ -59,31 +59,48 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
   const child = spawn(binary, [], { env, stdio: ["ignore", log, log] })
   if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("bad pid")
   note("kernel-start", { pid: child.pid })
-  const client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
-  const rpc = async request => {
-    const result = await client.send(request)
-    if (result.Error) throw new Error(`refused ${Object.keys(request)[0]}: ${result.Error.code} ${result.Error.message ?? ""}`)
-    return result
-  }
-  await until(async () => { try { return !!(await rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel ready", 60000)
-  const profile = (await rpc({ LinkProviderAccountProfile: { provider: "claude", label, path: profilePath } })).ProviderAccountProfile.profile.profile_id
-  const session = async id => (await rpc({ GetSessionState: { session_id: id } })).SessionState.session
-  /** A Room with one launched Claude agent and an attached owner client. */
-  async function room(alias, model) {
-    const work = join(dir, "work", alias)
-    mkdirSync(work, { recursive: true })
-    const made = (await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias, agent_defaults: { provider: "claude", account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
-    const R = made.session.id, agent = made.agent.id
-    const attached = (await rpc({ AttachToSession: { session_id: R, client_id: `${label}-owner`, capability_level: "FullTerminal" } })).SessionAttached.attachment.id
-    await client.subscribeToKernelEvents(R, attached)
-    await rpc({ LaunchProviderRun: { session_id: R, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: profile, model, variant: "low", native_tui: false } })
-    return { R, agent, attached, work }
-  }
+  let client
   async function stop() {
-    await client.close().catch(() => {})
+    await client?.close().catch(() => {})
     child.kill("SIGTERM")
     await until(() => child.exitCode !== null || child.signalCode !== null, "kernel exits", 30000).catch(() => child.kill("SIGKILL"))
     note("kernel-exit", { code: child.exitCode, signal: child.signalCode })
   }
-  return { dir, env, note, rpc, client, session, room, stop, profile }
+  // The caller's try/finally starts only after this returns, so a failed start stops the kernel here.
+  try {
+    return await initialize()
+  } catch (error) {
+    await stop()
+    throw error
+  }
+  async function initialize() {
+    client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
+    const rpc = async request => {
+      const result = await client.send(request)
+      if (result.Error) throw new Error(`refused ${Object.keys(request)[0]}: ${result.Error.code} ${result.Error.message ?? ""}`)
+      return result
+    }
+    await until(async () => { try { return !!(await rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel ready", readyTimeoutMs)
+    const profile = (await rpc({ LinkProviderAccountProfile: { provider: "claude", label, path: profilePath } })).ProviderAccountProfile.profile.profile_id
+    const session = async id => (await rpc({ GetSessionState: { session_id: id } })).SessionState.session
+    /** A Room with one launched Claude agent and an attached owner client. */
+    async function room(alias, model) {
+      const work = join(dir, "work", alias)
+      mkdirSync(work, { recursive: true })
+      const made = (await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias, agent_defaults: { provider: "claude", account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
+      const R = made.session.id, agent = made.agent.id
+      const attached = (await rpc({ AttachToSession: { session_id: R, client_id: `${label}-owner`, capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+      await client.subscribeToKernelEvents(R, attached)
+      await rpc({ LaunchProviderRun: { session_id: R, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: profile, model, variant: "low", native_tui: false } })
+      return { R, agent, attached, work }
+    }
+    return { dir, env, note, rpc, client, session, room, stop, profile }
+  }
+}
+
+/** A request that waits for an interaction (a sudo passkey card) stays pending while its card is found and answered, then is awaited. */
+export async function answerWhilePending({ request, findCard, answer }) {
+  request.catch(() => {})
+  await answer(await findCard())
+  return request
 }

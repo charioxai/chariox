@@ -1,0 +1,11 @@
+// What the ack-drop drill selects and reads back: the lifecycle kinds it arms and how it finds the wake in history.
+// An events_timer fires through Operation::FireWakes, whose delivery kind is wake_intent (agent_lifecycle/faults.rs).
+export const DEFAULT_KINDS = ["wake_intent", "delivery_receipt"]
+
+const promptText = turn => `${turn.user_prompt?.entry?.text ?? ""}`
+
+/** The turns the kernel started on its own for a wake. Their prompt carries event counts and kinds, never the timer's label. */
+export const wakeTurns = turns => turns.filter(turn => turn.system_prompt === true && promptText(turn).startsWith("Inbox:"))
+
+/** The agent's answer to the wake: provider output that is exactly the requested reply. */
+export const wokeReply = (turns, reply) => turns.some(turn => (turn.entries ?? []).some(({ entry }) => entry?.kind === "provider_output" && entry.text.trim() === reply))
