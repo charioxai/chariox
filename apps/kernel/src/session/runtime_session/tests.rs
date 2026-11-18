@@ -215,8 +215,15 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
 #[test]
 fn queued_agent_messages_follow_agent_trace_visibility() {
     use crate::agent::{AgentInstance, GridPosition};
-    let mut session =
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
     session.set_agents(vec![AgentInstance::new(
         "agent",
         "agent",

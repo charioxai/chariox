@@ -18,6 +18,7 @@ fn queued_agent_messages_protocol_1033_shape_and_hash() {
     }]);
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
