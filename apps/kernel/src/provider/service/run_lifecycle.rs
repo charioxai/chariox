@@ -450,6 +450,20 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    /// The run an agent's tool calls speak for: its live run, else the run a hot reload handed
+    /// over whose process still calls the kernel's tools before a recovered prompt claims it.
+    /// Only tool authority takes the second: restart recovery must not see a live run in it.
+    pub fn get_tool_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        let run = self.get_run_for_agent(session_id, agent_id);
+        #[cfg(unix)]
+        let run = run.or_else(|| crate::hot_reload::unclaimed_run_for_agent(session_id, agent_id));
+        run
+    }
+
     pub fn get_latest_run_for_agent(
         &self,
         session_id: &str,
@@ -491,14 +505,21 @@ impl ProviderProcessService {
     }
 
     pub fn get_runs_by_runtime_mcp_auth_token(&self, auth_token: &str) -> Vec<RuntimeProviderRun> {
-        self.runs
+        let runs: Vec<_> = self
+            .runs
             .values()
             .filter(|run| {
                 run.runtime_mcp_auth_token() == Some(auth_token)
                     && run.state() != ProviderRunState::Ended
             })
             .cloned()
-            .collect()
+            .collect();
+        // A hot reload kept the run's process; its tool token works before a prompt claims it.
+        #[cfg(unix)]
+        if runs.is_empty() {
+            return crate::hot_reload::unclaimed_runs_for_token(auth_token);
+        }
+        runs
     }
 
     pub(crate) fn terminate_session_runs_provider_only(

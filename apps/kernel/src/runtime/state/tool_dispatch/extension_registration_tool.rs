@@ -398,7 +398,7 @@ impl KernelRuntimeState {
                 let root = self
                     .owned
                     .provider_store
-                    .get_run_for_agent(session.id(), agent.id())
+                    .get_tool_run_for_agent(session.id(), agent.id())
                     .and_then(|run| run.working_directory().cloned())
                     .unwrap_or_else(|| session.worktree_id().into());
                 if let (Ok(source), Ok(root)) = (source.canonicalize(), root.canonicalize()) {
