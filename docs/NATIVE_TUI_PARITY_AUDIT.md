@@ -349,6 +349,19 @@ Each has a recommended default.
 | Q8 | One `/chariox <command>` or the 39 Room commands as separate slash commands? | One command. Separate commands would collide with the providers' own (`/model`, `/status`, `/permissions`). (P3) |
 | Q9 | Should a native launch default to `required` or `yolo`? Today Claude differs from Codex and OpenCode. | The Room's default, as in the web client. (P3) |
 
+### 10.1 Answers from the owner (2026-11-18)
+
+| # | Answer |
+| --- | --- |
+| Q1 | Yes: keep the `chariox` binary as the launcher and command line. |
+| Q2 | Yes: rely on the hook-and-dialog race, with a pinned-version drill. |
+| Q4 | Yes: no deadline while a terminal is attached to the pane. |
+| Q6 | Yes, limited to the models that run without an account in plain `opencode`. |
+| Q8 | Yes: one `/chariox <command>`. |
+| Q3, Q5, Q7, Q9 | Open. |
+
+Also still open with the owner: the 12 validation cells (section 9) and the three repairs of section 1. No implementation starts until they are answered.
+
 ## 11. Known parked items this touches
 
 From the lane ledger; none is changed by this audit.
