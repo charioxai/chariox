@@ -103,6 +103,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             false,
         ),
+        // A refusal Cloud named (budget, no capacity, denied) is retryable only when Cloud says it is transient.
+        DaemonError::LocalTransport { .. }
+            if crate::runtime::cloud_api_client::cloud_error_code(error).is_some() =>
+        {
+            relay_error(
+                "transport_error",
+                &error.to_string(),
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(error),
+            )
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -264,6 +274,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         _ => "other",
     }
 }
+
+#[cfg(test)]
+mod cloud_refusal_tests;
 
 #[cfg(test)]
 mod tests {

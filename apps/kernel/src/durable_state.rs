@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod acquire_choices;
 mod agent_deletion_provenance;
 pub(crate) mod agent_lifecycle;
 pub(crate) mod agent_subtree_deletion;
@@ -262,6 +263,7 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
@@ -502,6 +504,10 @@ impl DurableKernelStateStore {
         })?;
         trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.trigger_firings",
+            message: error.to_string(),
+        })?;
+        acquire_choices::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.acquire_choices",
             message: error.to_string(),
         })?;
         let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
@@ -1936,6 +1942,9 @@ fn commit_durable_write_batch(
                 records,
                 sequence,
             } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            DurableWriteOperation::AcquireChoice(transition) => {
+                acquire_choices::apply(&transaction, transition)
+            }
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }

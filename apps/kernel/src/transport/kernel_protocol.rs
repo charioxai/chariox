@@ -1345,6 +1345,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             operation: "project.get",
             ..
         } => kernel_error("local_transport_error", error, false),
+        // A refusal Cloud named (budget, no capacity, denied) is retryable only when Cloud says it is transient.
+        DaemonError::LocalTransport { .. }
+            if crate::runtime::cloud_api_client::cloud_error_code(error).is_some() =>
+        {
+            kernel_error(
+                "local_transport_error",
+                error,
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(error),
+            )
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::TooManyOpenFiles => kernel_error("too_many_open_files", error, true),
