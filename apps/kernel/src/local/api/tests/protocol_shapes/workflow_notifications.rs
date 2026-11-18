@@ -178,6 +178,7 @@ fn agent_notification_trigger_shape_carries_source_availability() {
         "wf_subscription".into(),
         "Release pipeline-2".into(),
         "Triage".into(),
+        crate::session::AgentTriggerBusyPolicy::Queue,
         1_000,
     );
     assert!(trigger.set_notification_source_available(false));
