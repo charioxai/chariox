@@ -73,11 +73,16 @@ pub(crate) fn retain_remembered_machines(
     host_machine_id: &str,
     projection: &RemoteRelayInventoryProjectionStore,
 ) -> Result<(), DaemonError> {
-    let remembered = DaemonConfig::update_machine_registry(|registry| {
-        machine_presence::reconcile(registry, Vec::new(), host_machine_id, unix_epoch_ms())
-    })?;
-    projection.retain_remembered(remembered);
-    Ok(())
+    // The projection is written while the registry is held, so a Remove that lands between the
+    // registry read and the projection write cannot be undone by this pass.
+    DaemonConfig::update_machine_registry(|registry| {
+        projection.retain_remembered(machine_presence::reconcile(
+            registry,
+            Vec::new(),
+            host_machine_id,
+            unix_epoch_ms(),
+        ));
+    })
 }
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
@@ -211,16 +216,15 @@ pub(crate) async fn refresh_remote_inventory_projection(
         &runtime_config.host_machine_id,
         visible_kernel_ids.is_some(),
     );
-    let inventory = DaemonConfig::update_machine_registry(|registry| {
-        machine_presence::reconcile(
+    DaemonConfig::update_machine_registry(|registry| {
+        let inventory = machine_presence::reconcile(
             registry,
             listed,
             &runtime_config.host_machine_id,
             unix_epoch_ms(),
-        )
-    })?;
-    projection.update(inventory, remote_kernels);
-    Ok(())
+        );
+        projection.update(inventory, remote_kernels);
+    })
 }
 
 /// A machine is listed for the kernels a client can reach on it. This kernel is "local" to its

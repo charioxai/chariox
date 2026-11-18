@@ -411,3 +411,57 @@ async fn a_private_relay_that_drops_leaves_the_primary_inventory_alone() {
     let _ = shutdown_tx.send(true);
     connector_task.await.expect("connector task should join");
 }
+
+// Presence state table, row "Remove during a disconnected pass": a Remove that lands after a pass
+// read the registry and before it wrote the projection is not undone by that pass. The test stops
+// the pass at its projection write and lets the Remove go as far as it can meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remove_during_a_disconnected_pass_is_not_undone() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    remember_two_machines();
+    let projection = crate::runtime::projection::RemoteRelayInventoryProjectionStore::default();
+    let mut held = projection.hold();
+    let pass = {
+        let projection = projection.clone();
+        std::thread::spawn(move || {
+            super::super::remote_inventory::retain_remembered_machines("host-machine", &projection)
+        })
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = removed_tx.send(DaemonConfig::forget_remote_machine("machine-old").map(|_| ()));
+    });
+    match removed_rx.recv_timeout(Duration::from_millis(300)) {
+        Ok(removed) => {
+            removed.expect("Remove should persist");
+            held.remove_machine("machine-old");
+            drop(held);
+            pass.join()
+                .expect("pass thread")
+                .expect("pass should project");
+        }
+        Err(_) => {
+            drop(held);
+            pass.join()
+                .expect("pass thread")
+                .expect("pass should project");
+            removed_rx
+                .recv()
+                .expect("Remove thread")
+                .expect("Remove should persist");
+            projection.remove_machine("machine-old");
+        }
+    }
+    let offline: Vec<String> = projection
+        .inventory()
+        .offline_machines
+        .into_iter()
+        .map(|machine| machine.machine_id)
+        .collect();
+    assert!(
+        offline.is_empty(),
+        "a removed machine came back from a pass that started before the Remove: {offline:?}"
+    );
+}

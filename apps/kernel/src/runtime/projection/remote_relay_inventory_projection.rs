@@ -195,19 +195,20 @@ impl RemoteRelayInventoryProjectionStore {
     }
 
     pub(crate) fn remove_machine(&self, machine_id: &str) {
-        let mut state = self
-            .state
+        self.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .remote_machines
-            .retain(|machine| machine.machine_id != machine_id);
-        state
-            .offline_machines
-            .retain(|machine| machine.machine_id != machine_id);
-        state
-            .remote_kernels
-            .retain(|kernel| kernel.machine_id != machine_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_machine(machine_id);
+    }
+
+    /// Holds the projection so a test can stop a writer just before its write.
+    #[cfg(test)]
+    pub(crate) fn hold(&self) -> HeldRemoteRelayInventoryProjection<'_> {
+        HeldRemoteRelayInventoryProjection(
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// The relay is unreachable: no kernel is live and the projection holds only what the kernel
@@ -223,6 +224,29 @@ impl RemoteRelayInventoryProjectionStore {
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
         state.directory_reads.clear();
+    }
+}
+
+impl RemoteRelayInventoryProjectionState {
+    fn remove_machine(&mut self, machine_id: &str) {
+        self.remote_machines
+            .retain(|machine| machine.machine_id != machine_id);
+        self.offline_machines
+            .retain(|machine| machine.machine_id != machine_id);
+        self.remote_kernels
+            .retain(|kernel| kernel.machine_id != machine_id);
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct HeldRemoteRelayInventoryProjection<'a>(
+    std::sync::MutexGuard<'a, RemoteRelayInventoryProjectionState>,
+);
+
+#[cfg(test)]
+impl HeldRemoteRelayInventoryProjection<'_> {
+    pub(crate) fn remove_machine(&mut self, machine_id: &str) {
+        self.0.remove_machine(machine_id);
     }
 }
 
