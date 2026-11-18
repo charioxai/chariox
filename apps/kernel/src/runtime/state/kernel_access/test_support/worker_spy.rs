@@ -11,7 +11,7 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 use tokio::time::timeout;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 type DeadlineRequests = Arc<std::sync::Mutex<Vec<(String, Option<u64>)>>>;
 
@@ -74,7 +74,7 @@ impl WorkerSpy {
                     tokio::select! {
                         _ = &mut stopped => break,
                         _ = async {
-                    let mut socket = accept_async(stream).await.unwrap();
+                    let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream).await.unwrap();
                     match receive(&mut socket).await {
                         RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
                             if pause_discovery && first_discovery && (!worker_native_recovery.load(Ordering::SeqCst) || counter.load(Ordering::SeqCst) > 0) {
@@ -88,7 +88,7 @@ impl WorkerSpy {
                             })).unwrap();
                             send(&mut socket, RelayEnvelope::ClientMetadataResponse { request_id, machines: None, kernels: Some(vec![presence.clone()]), kernel: Some(presence), error: None }).await;
                         }
-                        RelayEnvelope::DaemonRegister { registration } => {
+                        RelayEnvelope::DaemonRegister { registration, .. } => {
                             let RelayEnvelope::DaemonPeerRequest { request_id, encrypted_request, .. } = receive(&mut socket).await else { panic!("expected peer request") };
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
                             let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();

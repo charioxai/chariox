@@ -385,7 +385,7 @@ async fn accept_claim_test_prompt(
             .await
             .unwrap_or_else(|_| panic!("{stage}: relay did not accept peer socket"))
             .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
-    let mut peer = accept_async(stream)
+    let mut peer = crate::transport::relay_socket_connect::accept_as_relay(stream)
         .await
         .unwrap_or_else(|error| panic!("{stage}: relay peer upgrade failed: {error}"));
     let registration = receive_claim_test_envelope_with_diagnostics(
@@ -400,7 +400,7 @@ async fn accept_claim_test_prompt(
     )
     .await;
     match registration {
-        RelayEnvelope::DaemonRegister { registration } => {
+        RelayEnvelope::DaemonRegister { registration, .. } => {
             assert_eq!(
                 registration.auth_token, home_relay_token,
                 "{stage}: temporary peer registration should use the configured relay token"
@@ -529,7 +529,7 @@ async fn assert_no_duplicate_claim_submission(
         let Ok(Ok((stream, _))) = tokio::time::timeout(remaining, listener.accept()).await else {
             return;
         };
-        let mut socket = accept_async(stream)
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
             .await
             .expect("temporary relay should upgrade observation connection");
         match receive_claim_test_envelope(&mut socket, "post-success observation frame").await {
@@ -692,7 +692,7 @@ async fn receive_fake_worker_peer_request(
         .await
         .expect("fake relay should accept temporary peer connection")
         .expect("fake relay peer listener should accept");
-    let mut socket = accept_async(stream)
+    let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
         .await
         .expect("fake relay should upgrade peer connection");
     assert!(matches!(

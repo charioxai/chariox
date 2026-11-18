@@ -29,25 +29,23 @@ async fn duplicate_daemon_aliases_do_not_bind_clients_arbitrarily() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect");
     let mut registration_a = test_registration("daemon-a", "machine-1", "Linux", 10);
     registration_a.daemon_alias = Some("shared-alias".to_string());
-    registration_a.public_key = "public-key-a".to_string();
     let mut registration_b = test_registration("daemon-b", "machine-2", "Linux", 20);
     registration_b.daemon_alias = Some("shared-alias".to_string());
-    registration_b.public_key = "public-key-b".to_string();
-    for (socket, registration) in [
-        (&mut daemon_a, registration_a),
-        (&mut daemon_b, registration_b),
+    for (socket, handshake, registration) in [
+        (&mut daemon_a, &daemon_a_handshake, registration_a),
+        (&mut daemon_b, &daemon_b_handshake, registration_b),
     ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                serde_json::to_string(&signed_register(&url, handshake, registration))
                     .expect("register should serialize")
                     .into(),
             ))
@@ -118,7 +116,7 @@ async fn duplicate_daemon_aliases_do_not_bind_clients_arbitrarily() {
         {
             RelayEnvelope::ClientConnected {
                 daemon_public_key, ..
-            } => assert_eq!(daemon_public_key, "public-key-a"),
+            } => assert_eq!(daemon_public_key, test_public_key("daemon-a")),
             other => panic!("unexpected exact connect envelope: {other:?}"),
         },
         other => panic!("unexpected exact connect response: {other:?}"),
@@ -194,20 +192,16 @@ async fn scoped_client_tokens_gate_packet_routing() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "daemon-1",
-                    "machine-1",
-                    "Linux",
-                    10,
-                    "daemon-token",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration_with_token("daemon-1", "machine-1", "Linux", 10, "daemon-token"),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -326,18 +320,23 @@ async fn daemon_responses_must_match_pending_request_owner() {
                 url.as_str().into_client_request().unwrap()
             }
         };
-        let (mut daemon_a, _) = tokio_tungstenite::connect_async(daemon_request())
+        let (mut daemon_a, daemon_a_handshake) = tokio_tungstenite::connect_async(daemon_request())
             .await
             .expect("daemon A should connect");
-        let (mut daemon_b, _) = tokio_tungstenite::connect_async(daemon_request())
+        let (mut daemon_b, daemon_b_handshake) = tokio_tungstenite::connect_async(daemon_request())
             .await
             .expect("daemon B should connect");
-        for (socket, daemon_id) in [(&mut daemon_a, "daemon-a"), (&mut daemon_b, "daemon-b")] {
+        for (socket, handshake, daemon_id) in [
+            (&mut daemon_a, &daemon_a_handshake, "daemon-a"),
+            (&mut daemon_b, &daemon_b_handshake, "daemon-b"),
+        ] {
             socket
                 .send(Message::Text(
-                    serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                        registration: test_registration(daemon_id, "machine-1", "Linux", 10),
-                    })
+                    serde_json::to_string(&signed_register(
+                        &url,
+                        handshake,
+                        test_registration(daemon_id, "machine-1", "Linux", 10),
+                    ))
                     .expect("register should serialize")
                     .into(),
                 ))
@@ -517,18 +516,23 @@ async fn daemon_events_must_match_subscription_owner() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect");
-    for (socket, daemon_id) in [(&mut daemon_a, "daemon-a"), (&mut daemon_b, "daemon-b")] {
+    for (socket, handshake, daemon_id) in [
+        (&mut daemon_a, &daemon_a_handshake, "daemon-a"),
+        (&mut daemon_b, &daemon_b_handshake, "daemon-b"),
+    ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: test_registration(daemon_id, "machine-1", "Linux", 10),
-                })
+                serde_json::to_string(&signed_register(
+                    &url,
+                    handshake,
+                    test_registration(daemon_id, "machine-1", "Linux", 10),
+                ))
                 .expect("register should serialize")
                 .into(),
             ))

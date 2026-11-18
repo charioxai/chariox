@@ -84,15 +84,17 @@ async fn relay_counts_bytes_per_realm_and_stream_scope() {
         sent: 0,
         received: 0,
     };
-    let (mut daemon, _) = connect_async_with_retry(&url)
+    let (mut daemon, daemon_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     send(
         &mut daemon,
         &mut daemon_tally,
-        &RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-        },
+        &signed_register(
+            &url,
+            &daemon_handshake,
+            test_registration("daemon-1", "machine-1", "Linux", 10),
+        ),
     )
     .await;
     sleep(Duration::from_millis(50)).await;
@@ -235,15 +237,18 @@ async fn a_binary_daemon_reply_is_counted_once_at_its_wire_size() {
         sent: 0,
         received: 0,
     };
-    let (mut daemon, _) = connect_async(crate::binary_event::connection_request(&url).unwrap())
-        .await
-        .expect("binary daemon should connect");
+    let (mut daemon, daemon_handshake) =
+        connect_async(crate::binary_event::connection_request(&url).unwrap())
+            .await
+            .expect("binary daemon should connect");
     send(
         &mut daemon,
         &mut daemon_tally,
-        &RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-        },
+        &signed_register(
+            &url,
+            &daemon_handshake,
+            test_registration("daemon-1", "machine-1", "Linux", 10),
+        ),
     )
     .await;
     sleep(Duration::from_millis(50)).await;
@@ -337,7 +342,7 @@ async fn two_realms_on_one_relay_are_counted_apart() {
     let mut sent = BTreeMap::new();
     let mut sockets = Vec::new();
     for (realm, heartbeats) in [("realm-a", 3), ("realm-b", 1)] {
-        let public_key = format!("{realm}-public-key");
+        let public_key = test_public_key(&format!("{realm}-kernel"));
         let mut claims = scoped_claim(
             &format!("{realm}-token"),
             &format!("{realm}-kernel"),
@@ -366,13 +371,13 @@ async fn two_realms_on_one_relay_are_counted_apart() {
             sent: 0,
             received: 0,
         };
-        let (mut socket, _) = connect_async_with_retry(&url)
+        let (mut socket, socket_handshake) = connect_async_with_retry(&url)
             .await
             .expect("daemon connects");
         send(
             &mut socket,
             &mut tally,
-            &RelayEnvelope::DaemonRegister { registration },
+            &signed_register(&url, &socket_handshake, registration),
         )
         .await;
         for _ in 0..heartbeats {
@@ -632,15 +637,20 @@ async fn a_connection_bound_to_one_realm_cannot_register_a_daemon_of_another() {
         sent: 0,
         received: 0,
     };
-    let register = |realm: &str| RelayEnvelope::DaemonRegister {
-        registration: test_registration_with_token(
-            &format!("kernel-{realm}"),
-            "machine",
-            "Linux",
-            10,
-            &format!("kernel-{realm}-token"),
-        ),
-    };
+    let register =
+        |realm: &str, handshake: &tokio_tungstenite::tungstenite::handshake::client::Response| {
+            signed_register(
+                &url,
+                handshake,
+                test_registration_with_token(
+                    &format!("kernel-{realm}"),
+                    "machine",
+                    "Linux",
+                    10,
+                    &format!("kernel-{realm}-token"),
+                ),
+            )
+        };
     let metadata = |realm: &str| RelayEnvelope::ClientMetadataRequest {
         request_id: format!("machines-{realm}"),
         auth_token: format!("client-{realm}-token"),
@@ -648,14 +658,26 @@ async fn a_connection_bound_to_one_realm_cannot_register_a_daemon_of_another() {
     };
 
     // Realm B's kernel is live on its own connection, and realm A has one for a ClientConnect.
-    let (mut kernel_b, _) = connect_async_with_retry(&url).await.expect("kernel B");
-    send(&mut kernel_b, &mut tally, &register("realm-b")).await;
-    let (mut kernel_a, _) = connect_async_with_retry(&url).await.expect("kernel A");
-    send(&mut kernel_a, &mut tally, &register("realm-a")).await;
+    let (mut kernel_b, kernel_b_handshake) =
+        connect_async_with_retry(&url).await.expect("kernel B");
+    send(
+        &mut kernel_b,
+        &mut tally,
+        &register("realm-b", &kernel_b_handshake),
+    )
+    .await;
+    let (mut kernel_a, kernel_a_handshake) =
+        connect_async_with_retry(&url).await.expect("kernel A");
+    send(
+        &mut kernel_a,
+        &mut tally,
+        &register("realm-a", &kernel_a_handshake),
+    )
+    .await;
     sleep(Duration::from_millis(200)).await;
 
     for first_name in ["metadata", "connect"] {
-        let (mut socket, _) = connect_async_with_retry(&url).await.expect("socket");
+        let (mut socket, handshake) = connect_async_with_retry(&url).await.expect("socket");
         if first_name == "metadata" {
             send(&mut socket, &mut tally, &metadata("realm-a")).await;
             let (answer, _) = receive(&mut socket, &mut tally).await;
@@ -682,7 +704,7 @@ async fn a_connection_bound_to_one_realm_cannot_register_a_daemon_of_another() {
                 "realm A's connect is admitted: {answer:?}"
             );
         }
-        send(&mut socket, &mut tally, &register("realm-b")).await;
+        send(&mut socket, &mut tally, &register("realm-b", &handshake)).await;
         let (refusal, _) = receive(&mut socket, &mut tally).await;
         match refusal {
             RelayEnvelope::Close { reason, .. } => assert!(

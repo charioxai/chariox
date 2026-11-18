@@ -33,7 +33,9 @@ fn an_idle_kernel_sends_a_bare_heartbeat_once_per_six_ticks() {
             .await
             .expect("the kernel should connect")
             .unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+            .await
+            .unwrap();
         let mut heartbeats = 0;
         let deadline = tokio::time::Instant::now() + OBSERVED;
         while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {

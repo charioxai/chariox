@@ -580,7 +580,7 @@ fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
     runtime.spawn(async move {
         while let Ok((stream, _)) = relay.accept().await {
             tokio::spawn(async move {
-                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                if let Ok(mut socket) = accept_as_relay(stream).await {
                     while let Some(Ok(_)) = socket.next().await {}
                 }
             });
@@ -660,7 +660,7 @@ fn a_hot_reload_tells_the_relay_it_is_a_reload() {
         while let Ok((stream, _)) = relay.accept().await {
             let recorded = recorded.clone();
             tokio::spawn(async move {
-                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                let Ok(mut socket) = accept_as_relay(stream).await else {
                     return;
                 };
                 let index = {
@@ -2373,4 +2373,27 @@ async fn note_shown_parts(
     if parts > 0 && shown.last().is_none_or(|(_, last)| parts > *last) {
         shown.push((started.elapsed(), parts));
     }
+}
+
+/// A stand-in relay's handshake: it offers a registration challenge as the relay does.
+// tungstenite's upgrade callback fixes the large `ErrorResponse` error type.
+#[allow(clippy::result_large_err)]
+async fn accept_as_relay(
+    stream: tokio::net::TcpStream,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    tokio_tungstenite::accept_hdr_async(
+        stream,
+        |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            response.headers_mut().insert(
+                chariox_relay::registration_proof::CHALLENGE_HEADER,
+                "stand-in-relay-challenge".parse().unwrap(),
+            );
+            Ok(response)
+        },
+    )
+    .await
 }
