@@ -1,9 +1,10 @@
 //! A new Room's setup: the kernel runs the steps the person asked for in the background and
 //! every client sees their progress in the Room's projection. Prompts wait for the steps that
 //! prepare the folder (see `RoomSetupStore`).
+use super::room_setup_git::init_with_first_commit;
 use super::room_setup_publish::short_reason;
 use super::*;
-use crate::runtime::workspace_git_common::{git_command_output, run_git};
+use crate::runtime::workspace_git_common::git_command_output;
 use crate::runtime::workspace_worktrees::create_waiting_room_worktree;
 use crate::session::{RoomSetupRequest, RoomSetupStepId};
 
@@ -123,7 +124,7 @@ impl KernelRuntimeState {
                         .to_string(),
                 );
             }
-            run_git(std::path::Path::new(&folder), &["init"]).map_err(|error| {
+            init_with_first_commit(std::path::Path::new(&folder)).map_err(|error| {
                 format!(
                     "git init failed: {}; initialize Git in the folder yourself, then dismiss",
                     setup_reason(&error)
