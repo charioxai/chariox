@@ -7,6 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 struct Service {
     api_url: String,
     acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    /// The options the service lists; a test changes them to change the stock.
+    offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
 }
 
 /// A connected service that lists `offers` and refuses to rent any class named in `sold_out`.
@@ -15,14 +17,8 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = acquires.clone();
-    let capability = MachineAllocationCapability {
-        revision: "v1".into(),
-        actions: vec!["acquire".into()],
-        offer: None,
-        offers,
-        job_offers: vec![],
-        job_default_class_id: None,
-    };
+    let offers = Arc::new(std::sync::Mutex::new(offers));
+    let listed = offers.clone();
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -55,10 +51,20 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                 serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
             let request = &body["request"];
             let (status, response) = match request["action"].as_str().unwrap() {
-                "capabilities" => (
-                    "200 OK",
-                    serde_json::json!({"kind":"capabilities","machine_allocation":capability}),
-                ),
+                "capabilities" => {
+                    let capability = MachineAllocationCapability {
+                        revision: "v1".into(),
+                        actions: vec!["acquire".into()],
+                        offer: None,
+                        offers: listed.lock().unwrap().clone(),
+                        job_offers: vec![],
+                        job_default_class_id: None,
+                    };
+                    (
+                        "200 OK",
+                        serde_json::json!({"kind":"capabilities","machine_allocation":capability}),
+                    )
+                }
                 "acquire" => {
                     seen.lock().unwrap().push(request.clone());
                     match request["class_id"].as_str() {
@@ -89,7 +95,11 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                 .unwrap();
         }
     });
-    Service { api_url, acquires }
+    Service {
+        api_url,
+        acquires,
+        offers,
+    }
 }
 
 /// A kernel whose owner allows automatic allocation, one running agent, and its tool token.
@@ -227,8 +237,87 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("big is out of stock"), "{error}");
-    assert!(error.contains("small in south"), "{error}");
-    assert!(!error.contains("big in north"), "{error}");
+    assert!(error.contains("big in north is out of stock"), "{error}");
+    assert!(error.contains("In stock now: small in south."), "{error}");
     assert!(error.contains("class_id and region"), "{error}");
+}
+
+#[tokio::test]
+async fn a_refused_class_leaves_the_same_class_in_other_regions_in_stock() {
+    let service = service(
+        vec![
+            option("small", "north", true),
+            option("small", "south", true),
+        ],
+        &["small"],
+    )
+    .await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let error = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"class_id":"small","region":"north"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("small in north is out of stock"), "{error}");
+    assert!(error.contains("In stock now: small in south"), "{error}");
+}
+
+#[tokio::test]
+async fn a_retry_keeps_the_option_its_request_took_after_the_stock_changed() {
+    let service = service(
+        vec![option("small", "north", true), option("big", "south", true)],
+        &[],
+    )
+    .await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"r1"}),
+        )
+    };
+    acquire().await.unwrap();
+    // The response was lost and the option sold out meanwhile: nothing is in stock any more.
+    for offer in service.offers.lock().unwrap().iter_mut() {
+        offer.available = false;
+    }
+    let retried = acquire().await.unwrap();
+    assert_eq!(
+        retried.payload["allocation"]["allocation_ref"],
+        "allocation-1"
+    );
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires.len(), 2);
+    assert_eq!(acquires[1]["class_id"], "small");
+    assert_eq!(acquires[1]["region"], "north");
+    assert_eq!(acquires[1]["request_id"], "r1");
+}
+
+#[tokio::test]
+async fn a_retry_after_a_refusal_chooses_again() {
+    let service = service(
+        vec![option("big", "north", true), option("small", "south", true)],
+        &["big"],
+    )
+    .await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"r1"}),
+        )
+    };
+    // The listing still shows "big" in stock, but the service has sold it.
+    assert!(acquire().await.is_err());
+    service.offers.lock().unwrap()[0].available = false;
+    acquire().await.unwrap();
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires[1]["class_id"], "small");
+    assert_eq!(acquires[1]["region"], "south");
 }

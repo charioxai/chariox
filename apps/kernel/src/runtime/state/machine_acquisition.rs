@@ -218,69 +218,12 @@ pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     }
 }
 
-/// The option an acquire asks for: the one the agent named, else the first option the service
-/// lists in stock. A service that lists no options is asked for its own default.
-fn acquire_choice(
-    capability: &MachineAllocationCapability,
-    class_id: Option<String>,
-    region: Option<String>,
-) -> Result<(Option<String>, Option<String>), DaemonError> {
-    if class_id.is_some() || capability.offers.is_empty() {
-        if class_id.is_none() && region.is_some() {
-            return Err(acquisition_error(
-                "invalid_request",
-                "Pass class_id with region, from chariox.machines.options",
-            ));
-        }
-        return Ok((class_id, region));
-    }
-    match capability.offers.iter().find(|option| {
-        option.available && region.as_ref().is_none_or(|region| &option.region == region)
-    }) {
-        Some(option) => Ok((Some(option.class_id.clone()), Some(option.region.clone()))),
-        None => Err(acquisition_error(
-            "capacity_unavailable",
-            "No machine option is in stock right now; nothing was allocated or charged. Try again later: chariox.machines.options shows the options and their stock",
-        )),
-    }
-}
-
-/// A refused acquire names what is in stock and how to choose it, so the agent can pick again.
-fn out_of_stock_refusal(
-    error: DaemonError,
-    capability: &MachineAllocationCapability,
-    chosen: Option<&str>,
-) -> DaemonError {
-    if crate::runtime::cloud_api_client::cloud_error_code(&error) != Some("capacity_exceeded") {
-        return error;
-    }
-    let in_stock: Vec<String> = capability
-        .offers
-        .iter()
-        .filter(|option| option.available && Some(option.class_id.as_str()) != chosen)
-        .map(|option| format!("{} in {}", option.class_id, option.region))
-        .collect();
-    let subject = chosen.map_or_else(
-        || "The default option".to_owned(),
-        |chosen| chosen.to_owned(),
-    );
-    let message = if in_stock.is_empty() {
-        format!("{subject} is out of stock and no other option is in stock; nothing was allocated or charged. Try again later")
-    } else {
-        format!(
-            "{subject} is out of stock; nothing was allocated or charged. In stock now: {}. Choose one by passing its class_id and region to chariox.machines.acquire, or pass neither to take the first in stock",
-            in_stock.join(", ")
-        )
-    };
-    acquisition_error("capacity_unavailable", &message)
-}
-
 pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
     use crate::transport::runtime_tools::RuntimeToolSpec;
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry: it keeps the option the first try chose.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read a allocation's state and its verified target kernel. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -348,10 +291,44 @@ impl KernelRuntimeState {
             "chariox.machines.acquire" => {
                 let request_id = args
                     .request_id
+                    .clone()
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
-                let (class_id, region) =
-                    acquire_choice(&capability, args.class_id.clone(), args.region.clone())?;
-                let result = self
+                // A retry keeps the option its request_id first took, so the service can replay the
+                // allocation it accepted even after the stock changed.
+                let subject = args
+                    .request_id
+                    .is_some()
+                    .then(|| choice::choice_subject(&reach.agent_id, &request_id));
+                let remembered = match (&subject, &args.class_id) {
+                    (Some(subject), None) => {
+                        self.remembered_acquire_choice(subject)?
+                            .filter(|(_, region)| {
+                                args.region.is_none() || args.region.as_ref() == region.as_ref()
+                            })
+                    }
+                    _ => None,
+                };
+                let (class_id, region) = match remembered {
+                    Some(choice) => choice,
+                    None => {
+                        let choice = choice::acquire_choice(
+                            &capability,
+                            args.class_id.clone(),
+                            args.region.clone(),
+                        )?;
+                        if let (Some(subject), None, Some(class_id)) =
+                            (&subject, &args.class_id, &choice.0)
+                        {
+                            self.remember_acquire_choice(
+                                subject,
+                                Some(class_id),
+                                choice.1.as_deref(),
+                            )?;
+                        }
+                        choice
+                    }
+                };
+                let result = match self
                     .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Acquire {
@@ -363,9 +340,22 @@ impl KernelRuntimeState {
                         &format!("machine:{request_id}:acquire"),
                     )
                     .await
-                    .map_err(|error| {
-                        out_of_stock_refusal(error, &capability, class_id.as_deref())
-                    })?;
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let Some(subject) = subject.as_ref().filter(|_| {
+                            crate::runtime::cloud_api_client::cloud_error_code(&error).is_some()
+                        }) {
+                            self.forget_acquire_choice(subject)?;
+                        }
+                        return Err(choice::out_of_stock_refusal(
+                            error,
+                            &capability,
+                            class_id.as_deref(),
+                            region.as_deref(),
+                        ));
+                    }
+                };
                 // The service decides whether the choice can be acquired, and replays a retry of one it accepted.
                 match class_id {
                     Some(class_id) => {
@@ -444,6 +434,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod choice;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
