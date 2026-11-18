@@ -331,7 +331,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             target.relay_token.clone().unwrap(),
         ));
         wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
-        wait_for_copy_peer(registry, &target.daemon_id).await;
+        wait_for_copy_peer(registry.clone(), &target.daemon_id).await;
         let source_vault = PathBuf::from(&source.user_config.credential_vault.path);
         let target_vault = PathBuf::from(&target.user_config.credential_vault.path);
         crate::secret::unlock_chariox_encrypted_vault(
@@ -350,27 +350,131 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         let profile = source_profiles
             .create_managed("local", "claude", "Source")
             .unwrap();
-        crate::provider::store_provider_account_credential(
-            &source,
-            "local",
-            "claude",
-            &profile.profile_id,
-            canary,
-            false,
-        )
-        .unwrap();
-        source_profiles
-            .update_observation(
+        if scenario == CopyScenario::Recipient {
+            // A native Claude login has no Vault credential. The remote-spawn
+            // refusal tells the owner what to do about it; every step it names
+            // must work here: refused first, then offered and copied.
+            let native_login = std::path::PathBuf::from(
+                &source_profiles
+                    .resolve_environment("local", "claude", &profile.profile_id)
+                    .unwrap()["CLAUDE_CONFIG_DIR"],
+            )
+            .join(".credentials.json");
+            std::fs::write(
+                &native_login,
+                r#"{"claudeAiOauth":{"accessToken":"native-login"}}"#,
+            )
+            .unwrap();
+            source_profiles
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let published_copyable = |registry: Arc<
+                RwLock<chariox_relay::server::RelayRegistry>,
+            >| {
+                let daemon_id = source.daemon_id.clone();
+                let account_profile = profile.profile_id.clone();
+                async move {
+                    registry
+                        .read()
+                        .await
+                        .daemon_in_realm("copy-realm", &daemon_id)
+                        .and_then(|registration| {
+                            registration
+                                .provider_accounts
+                                .iter()
+                                .find(|account| {
+                                    account.account_id.as_deref() == Some(account_profile.as_str())
+                                })
+                                .map(|account| account.copyable)
+                        })
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while published_copyable(registry.clone()).await.is_none() {
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("the native login must reach the relay registration");
+            assert_eq!(published_copyable(registry.clone()).await, Some(false));
+            assert_code(
+                source_request(
+                    &source_router,
+                    serde_json::json!({"CopyProviderAccountToKernel":{
+                        "provider":"claude", "account_profile":profile.profile_id, "operation_id":"native-only",
+                        "target_kernel_id":target.daemon_id,
+                        "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),
+                        "replace":false
+                    }}),
+                )
+                .await,
+                "provider_account_copy_profile",
+                canary,
+            );
+            assert_code(
+                source_request(
+                    &target_router,
+                    serde_json::json!({"CopyProviderAccountFromKernel":{
+                        "provider":"claude", "account_profile":profile.profile_id, "operation_id":"native-only-pull",
+                        "source_kernel_id":source.daemon_id,
+                        "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+                        "replace":false
+                    }}),
+                )
+                .await,
+                "provider_account_copy_profile",
+                canary,
+            );
+            // The advised step: create the setup-token login for that profile.
+            source_request(
+                &source_router,
+                serde_json::json!({"SetProviderAccountCredential":{
+                    "provider":"claude", "account_profile":profile.profile_id, "value":canary, "overwrite":false
+                }}),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while published_copyable(registry.clone()).await != Some(true) {
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("the setup-token login must be offered as copyable");
+            // The drill's later checks assert that a copy leaves no native token file.
+            std::fs::remove_file(native_login).unwrap();
+        } else {
+            crate::provider::store_provider_account_credential(
+                &source,
                 "local",
                 "claude",
                 &profile.profile_id,
-                crate::account_profile::ProviderAccountAuthState::Authenticated,
-                None,
-                None,
-                None,
-                None,
+                canary,
+                false,
             )
             .unwrap();
+            source_profiles
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
         let second = source_profiles
             .create_managed("local", "claude", "Second")
             .unwrap();
