@@ -94,10 +94,21 @@ pub(super) fn commit_container_bounded(
         Err(DaemonError::LocalTransport {
             operation,
             message: format!(
-                "docker commit `{container}` to `{image_ref}` failed with status {status}"
+                "docker commit `{container}` to `{image_ref}` failed with status {status}{}",
+                stderr_detail(&output.stderr)
             ),
         })
     }
+}
+
+/// What the tool said on stderr, so a failed capture says why and not only its exit status.
+fn stderr_detail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(": {}", text.chars().take(500).collect::<String>())
 }
 
 fn flatten_container_into_image(
@@ -138,7 +149,8 @@ fn flatten_container_into_image(
         Err(DaemonError::LocalTransport {
             operation,
             message: format!(
-                "flattening slice container `{container}` to `{image_ref}` failed with status {status}"
+                "flattening slice container `{container}` to `{image_ref}` failed with status {status}{}",
+                stderr_detail(&output.stderr)
             ),
         })
     }
@@ -188,6 +200,39 @@ mod tests {
     #[test]
     fn direct_snapshot_flatten_survives_the_generic_command_deadline() {
         slow_capture(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_snapshot_commit_reports_what_docker_said() {
+        crate::test_support::isolated_env_test!();
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::TestWorktree::new("commit-failure-detail");
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let docker = bin.join("docker");
+        std::fs::write(
+            &docker,
+            "#!/bin/sh\nif [ \"$1\" = commit ]; then echo 'Error response from daemon: no space left on device' >&2; exit 125; fi\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+        let error = commit_container_bounded(
+            "chariox-slice-dev",
+            "chariox-slice-state:failed",
+            "slice.state.save",
+        )
+        .expect_err("a failing docker commit must fail the capture");
+        assert!(
+            error
+                .to_string()
+                .contains("failed with status exit status: 125: Error response from daemon: no space left on device"),
+            "{error}"
+        );
     }
 
     #[cfg(target_os = "linux")]
