@@ -876,6 +876,18 @@ function managedHomeArchiveCoordinates(path) {
   return { candidate, relative }
 }
 
+// Unreadable metadata files stay ordinary failures (the caller reads them first); text that is not
+// the captured shape is corruption.
+function parseManagedHomeArchiveMetadata(text) {
+  try {
+    const metadata = JSON.parse(text)
+    exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
+    return metadata
+  } catch (error) {
+    throw new HomeArchiveCorruption(`managed saved home archive metadata is invalid: ${error.message}`)
+  }
+}
+
 async function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
@@ -889,8 +901,7 @@ async function inspectManagedHomeArchive(path) {
     const metadataPath = join(dirname(candidate), "metadata.json")
     const metadataFile = pinnedSharedPath(metadataPath, "managed saved home archive metadata", "file")
     try {
-      const metadata = JSON.parse(readFileSync(metadataFile.path, "utf8"))
-      exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
+      const metadata = parseManagedHomeArchiveMetadata(readFileSync(metadataFile.path, "utf8"))
       const expectedScope = relative[0] === "states" ? "state" : "backup"
       const archiveMetadata = fstatSync(archive.fd)
       if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
