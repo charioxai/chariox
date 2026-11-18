@@ -152,6 +152,7 @@ pub(crate) fn notify_person(
             priority: notice.priority,
             created_at_ms,
             read: false,
+            folded: 0,
         })?;
     runtime_state.record_person_inbox_change();
     Ok(stored.card_id)
@@ -279,6 +280,7 @@ impl OwnedInbox {
                 .iter()
                 .find(|session| session.id() == notice.session_id)
                 .and_then(|session| session.agent_display_name(&notice.agent_id));
+            let title = folded_title(notice, agent_name.as_deref());
             PersonInboxCard {
                 card_id: notice.card_id.clone(),
                 session_id: notice.session_id.clone(),
@@ -286,12 +288,13 @@ impl OwnedInbox {
                 body: PersonInboxCardBody::Notice(PersonInboxNotice {
                     agent_id: notice.agent_id.clone(),
                     agent_name,
-                    title: notice.title.clone(),
-                    body: notice.body.clone(),
+                    title,
+                    body: folded_body(notice),
                     link: notice.link.clone(),
                     priority: notice.priority,
                     created_at_ms: notice.created_at_ms,
                     read: notice.read,
+                    folded: notice.folded,
                 }),
             }
         }));
@@ -332,6 +335,26 @@ impl OwnedInbox {
             mutes: self.state.mutes,
         }
     }
+}
+
+/// A folded card names the origin and the count; a single notice keeps its own title.
+fn folded_title(notice: &StoredNotice, agent_name: Option<&str>) -> String {
+    if notice.folded == 0 {
+        return notice.title.clone();
+    }
+    format!(
+        "{} sent {} more notifications",
+        agent_name.unwrap_or("An agent"),
+        notice.folded
+    )
+}
+
+/// The latest notice of a folded card is what its body shows.
+fn folded_body(notice: &StoredNotice) -> Option<String> {
+    if notice.folded == 0 {
+        return notice.body.clone();
+    }
+    Some(format!("Latest: {}", notice.title))
 }
 
 fn sort_key(card: &PersonInboxCard) -> (bool, u64) {

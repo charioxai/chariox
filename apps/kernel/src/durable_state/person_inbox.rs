@@ -16,6 +16,10 @@ const MUTE: &str = "person_inbox.mute";
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 /// Per owner; past it the oldest read notice goes first, then the oldest.
 const NOTICES_PER_OWNER: i64 = 1_024;
+/// An origin may send this many notices in `NOTICE_WINDOW_MS`; the further ones fold into one
+/// card flagged Noisy (plan 5.1, 7.6).
+pub(crate) const NOTICE_RATE_LIMIT: usize = 5;
+pub(crate) const NOTICE_WINDOW_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredNotice {
@@ -29,6 +33,9 @@ pub(crate) struct StoredNotice {
     pub(crate) priority: PersonInboxPriority,
     pub(crate) created_at_ms: u64,
     pub(crate) read: bool,
+    /// 0 for one notice; n when this card stands for n notices sent past the rate limit, the
+    /// latest one in `title`/`body`/`link`.
+    pub(crate) folded: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +67,8 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS person_inbox_notices (
             card_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, session_id TEXT NOT NULL,
             agent_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT,
-            priority TEXT NOT NULL, created_at_ms INTEGER NOT NULL, read INTEGER NOT NULL
+            priority TEXT NOT NULL, created_at_ms INTEGER NOT NULL, read INTEGER NOT NULL,
+            folded INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS person_inbox_notices_owner
             ON person_inbox_notices (owner_user_id, created_at_ms);
@@ -87,10 +95,31 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     match kind {
         NOTICE => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
+            if notice.folded > 0 {
+                let updated = tx.execute(
+                    "UPDATE person_inbox_notices SET folded = folded + ?2, title = ?3, body = ?4,
+                        link = ?5, created_at_ms = ?6, read = ?7,
+                        priority = CASE WHEN priority = 'high' OR ?8 = 'high' THEN 'high' ELSE 'normal' END
+                    WHERE card_id = ?1",
+                    params![
+                        notice.card_id,
+                        notice.folded,
+                        notice.title,
+                        notice.body,
+                        notice.link,
+                        notice.created_at_ms as i64,
+                        notice.read,
+                        priority_text(notice.priority)
+                    ],
+                )?;
+                if updated != 0 {
+                    return prune(tx, &notice.owner_user_id, notice.created_at_ms);
+                }
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO person_inbox_notices (card_id, owner_user_id, session_id,
-                    agent_id, title, body, link, priority, created_at_ms, read)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    agent_id, title, body, link, priority, created_at_ms, read, folded)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     notice.card_id,
                     notice.owner_user_id,
@@ -101,7 +130,8 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                     notice.link,
                     priority_text(notice.priority),
                     notice.created_at_ms as i64,
-                    notice.read
+                    notice.read,
+                    notice.folded
                 ],
             )?;
             prune(tx, &notice.owner_user_id, notice.created_at_ms)
@@ -181,7 +211,8 @@ fn priority_text(priority: PersonInboxPriority) -> &'static str {
 }
 
 impl DurableKernelStateStore {
-    /// Stores a notice; a muted origin's notice arrives read.
+    /// Stores a notice; a muted origin's notice arrives read. Past the origin's rate limit the
+    /// notice folds into the origin's Noisy card, and the returned notice carries that card's id.
     pub(crate) fn record_person_notice(
         &self,
         mut notice: StoredNotice,
@@ -190,10 +221,20 @@ impl DurableKernelStateStore {
             session_id: notice.session_id.clone(),
             agent_id: notice.agent_id.clone(),
         };
-        notice.read = self
-            .person_inbox_state(&notice.owner_user_id, notice.created_at_ms)?
-            .mutes
-            .contains(&origin);
+        let state = self.person_inbox_state(&notice.owner_user_id, notice.created_at_ms)?;
+        notice.read = state.mutes.contains(&origin);
+        let window_start = notice.created_at_ms.saturating_sub(NOTICE_WINDOW_MS);
+        let mut recent = state.notices.iter().filter(|stored| {
+            stored.session_id == notice.session_id
+                && stored.agent_id == notice.agent_id
+                && stored.created_at_ms > window_start
+        });
+        if recent.clone().filter(|stored| stored.folded == 0).count() >= NOTICE_RATE_LIMIT {
+            if let Some(noisy) = recent.find(|stored| stored.folded > 0) {
+                notice.card_id = noisy.card_id.clone();
+            }
+            notice.folded = 1;
+        }
         self.append_event(NOTICE, Some(notice.card_id.clone()), to_payload(&notice)?)?;
         Ok(notice)
     }
@@ -239,7 +280,8 @@ impl DurableKernelStateStore {
         let connection = self.lock_connection("person_inbox.read")?;
         let read = || -> rusqlite::Result<PersonInboxState> {
             let mut notices = connection.prepare(
-                "SELECT card_id, session_id, agent_id, title, body, link, priority, created_at_ms, read
+                "SELECT card_id, session_id, agent_id, title, body, link, priority, created_at_ms, read,
+                    folded
                 FROM person_inbox_notices WHERE owner_user_id = ?1 AND created_at_ms >= ?2
                 ORDER BY created_at_ms DESC, card_id ASC",
             )?;
@@ -262,6 +304,7 @@ impl DurableKernelStateStore {
                             },
                             created_at_ms: row.get::<_, i64>(7)? as u64,
                             read: row.get(8)?,
+                            folded: row.get(9)?,
                         })
                     },
                 )?
@@ -324,6 +367,7 @@ mod tests {
             priority: PersonInboxPriority::Normal,
             created_at_ms,
             read: false,
+            folded: 0,
         }
     }
 
@@ -411,12 +455,13 @@ mod tests {
             )
             .unwrap();
         for index in 0..NOTICES_PER_OWNER - 1 {
-            store
-                .record_person_notice(notice(
-                    &format!("n{index:04}"),
-                    start + RETENTION_MS + 2 + index as u64,
-                ))
-                .unwrap();
+            // One agent each, so the rate limit leaves every notice its own card.
+            let mut sent = notice(
+                &format!("n{index:04}"),
+                start + RETENTION_MS + 2 + index as u64,
+            );
+            sent.agent_id = format!("agent-{index}");
+            store.record_person_notice(sent).unwrap();
         }
         let state = store
             .person_inbox_state("owner", start + RETENTION_MS + 2_000)
