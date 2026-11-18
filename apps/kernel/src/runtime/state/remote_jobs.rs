@@ -51,8 +51,8 @@ impl Policies {
         let source = match scope {
             PolicyScope::Agent(_) if agent_policy.is_some() => "agent",
             PolicyScope::Agent(_) | PolicyScope::Session if room_policy.is_some() => "session",
-            _ if project_policy.is_some() => "project",
-            _ => "default",
+            // Unset everywhere is the project's default: clients show it as "As project".
+            _ => "project",
         };
         RemoteJobPolicy {
             inherited_policy: inherited.unwrap_or_default(),
@@ -174,7 +174,7 @@ mod tests {
             |policies: &Policies| policies.get("room", "project", PolicyScope::Agent("agent"));
         let mut policies = Policies::load(&path).unwrap();
         assert_eq!(get(&policies).effective_policy, OffloadPolicy::Off);
-        assert_eq!(get(&policies).source, "default");
+        assert_eq!(get(&policies).source, "project");
         policies
             .projects
             .insert("project".into(), OffloadPolicy::AlwaysHeavy);
