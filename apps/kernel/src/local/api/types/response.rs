@@ -330,6 +330,9 @@ pub enum LocalDaemonResponse {
         tab_id: Option<String>,
         watchers: Vec<OwnerViewWatcher>,
     },
+    PaneFeed {
+        feed: PaneFeed,
+    },
     PersonInbox {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,
