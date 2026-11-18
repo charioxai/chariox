@@ -34,7 +34,9 @@ for (const kind of ["access_grant", "access_extension"] as const) {
             requests.push(request)
             return sessionId === "kernel-access"
               ? { KernelAccessDecisionResponded: { interaction_id: "access-test" } }
-              : { InteractionResponded: { interaction_id: "access-test", session: { id: sessionId, agents: [] } } }
+              : "GetSessionState" in request
+                ? { SessionState: { session: { id: sessionId, agents: [] }, processes: [] } }
+                : { InteractionResponded: { interaction_id: "access-test", choice_id: request.RespondToInteraction.choice_id, outcome: "answered" } }
           },
         }
         let dispose!: () => void

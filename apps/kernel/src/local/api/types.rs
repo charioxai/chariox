@@ -566,5 +566,7 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// the reply to `RespondToInteraction` is a small acknowledgement (`InteractionResponded` carries `interaction_id`,
+/// `choice_id` and `outcome`, no longer the Room `session`; clients read the Room from its events).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1034;

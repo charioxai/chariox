@@ -580,7 +580,7 @@ import Testing
     #expect(session.activeInteractions.first?.choices.first?.style == "primary")
 }
 
-@Test func interactionRespondedResponseDecodesSession() throws {
+@Test func interactionRespondedResponseDecodesTheAcknowledgement() throws {
     let json = """
     {
       "type": "response",
@@ -588,18 +588,8 @@ import Testing
       "response": {
         "InteractionResponded": {
           "interaction_id": "interaction-1",
-          "session": {
-            "id": "session-1",
-            "alias": null,
-            "workspace_id": "/repo",
-            "worktree_id": "/repo",
-            "status": "Active",
-            "focused_agent_id": null,
-            "active_interactions": [],
-            "created_at_ms": 1777111200000,
-            "last_used_at_ms": 1777111201000,
-            "agents": []
-          }
+          "choice_id": "allow",
+          "outcome": "answered"
         }
       },
       "error": null
@@ -607,13 +597,13 @@ import Testing
     """
 
     let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
-    guard case let .interactionResponded(interactionID, session) = frame.response else {
+    guard case let .interactionResponded(interactionID, choiceID) = frame.response else {
         Issue.record("Expected InteractionResponded response")
         return
     }
 
     #expect(interactionID == "interaction-1")
-    #expect(session.activeInteractions.isEmpty)
+    #expect(choiceID == "allow")
 }
 
 @Test func eventFrameDecodesSessionSnapshot() throws {
