@@ -64,7 +64,7 @@ async fn contended_input(outcome: WaitingInput) {
             .set_status("desktop", SliceStatus::Running, 1)
             .unwrap();
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(room, "desktop"))
             .await
             .unwrap();
         let started = dispatch_json(
@@ -326,7 +326,7 @@ async fn unicode_text_then_click() {
         fixture.create_slice().await;
         fixture.home.app.lock().await.slices().set_status("desktop", SliceStatus::Running, 1).unwrap();
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop")).await.unwrap();
+        dispatch_bind_room(&fixture.home, bind(room, "desktop")).await.unwrap();
         let started = dispatch_json(&fixture.home, json!({"StartRoomEnvironment": {
             "session_id":room,"viewport": {"css_width":1280,"css_height":800,"device_scale_factor":1,
                 "desktop_pixel_width":1280,"desktop_pixel_height":800}

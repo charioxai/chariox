@@ -364,13 +364,7 @@ async fn room_app_agent_request(
             crate::session::unix_epoch_ms(),
         )
         .unwrap();
-    app.slices()
-        .set_status(
-            &slice.id,
-            SliceStatus::Running,
-            crate::session::unix_epoch_ms(),
-        )
-        .unwrap();
+    let slices = app.slices().clone();
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         2,
@@ -380,9 +374,17 @@ async fn room_app_agent_request(
         .bind_room_environment_slice(
             crate::local::BindRoomEnvironmentSliceRequest {
                 session_id: room.id().into(),
-                slice_ref: slice.id,
+                slice_ref: slice.id.clone(),
             },
             room.owner_user_id(),
+        )
+        .unwrap();
+    // The Room binds while the slice is stopped; the worker is up once it starts.
+    slices
+        .set_status(
+            &slice.id,
+            SliceStatus::Running,
+            crate::session::unix_epoch_ms(),
         )
         .unwrap();
     let result = state

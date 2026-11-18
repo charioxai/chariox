@@ -25,7 +25,7 @@ async fn recovery_activation_preserves_focus() {
             .set_status("desktop", SliceStatus::Running, 1)
             .unwrap();
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(room, "desktop"))
             .await
             .unwrap();
         dispatch_json(
@@ -183,7 +183,7 @@ async fn capture_failure_recovers() {
             .set_status("desktop", SliceStatus::Running, 1)
             .unwrap();
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(room, "desktop"))
             .await
             .unwrap();
         dispatch_json(
@@ -264,7 +264,7 @@ async fn start_admission_timeout_recovers() {
             .set_status("desktop", SliceStatus::Running, 1)
             .unwrap();
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(room, "desktop"))
             .await
             .unwrap();
         dispatch_json(
