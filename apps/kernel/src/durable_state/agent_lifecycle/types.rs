@@ -279,6 +279,11 @@ pub(crate) enum Operation {
     BeatDeadlineClock {
         now: u64,
     },
+    /// The worker that enforces this agent's deadline holds the shifted value.
+    DeadlineRearmed {
+        room: String,
+        agent: String,
+    },
     /// A kernel start gives back the time since the last beat.
     ResumeDeadlines {
         now: u64,

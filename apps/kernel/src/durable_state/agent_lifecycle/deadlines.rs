@@ -98,6 +98,8 @@ fn set_effective(
     agent: &str,
     deadline: Option<u64>,
 ) -> Result<Outcome, DaemonError> {
+    // An edit reaches the worker before it commits, so the worker holds this value.
+    deadline_clock::rearmed(db, room, agent)?;
     if let Some(mut old) = get(db, room, agent)? {
         // A parent's edit cannot revive a child whose own deadline already ended its work.
         if old.state == AgentDeadlineState::Reached {
@@ -226,6 +228,12 @@ impl DurableKernelStateStore {
             now: crate::session::unix_epoch_ms(),
         })
         .map(|_| ())
+    }
+    pub(crate) fn agent_deadlines_awaiting_rearm(
+        &self,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        deadline_clock::awaiting_rearm(&db)
     }
     pub(crate) fn agent_deadlines(&self) -> Result<Vec<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;

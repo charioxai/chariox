@@ -273,6 +273,12 @@ impl KernelRuntimeState {
         if let Err(error) = self.tick_agent_deadlines(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
         }
+        // Bounded: an unreachable worker must not hold the sweep; its entry stays for the next one.
+        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
+            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
+        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
