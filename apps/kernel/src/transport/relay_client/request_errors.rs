@@ -103,6 +103,20 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             false,
         ),
+        DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message,
+        } if crate::runtime::browser_controller_process::controller_failure_code(message)
+            .is_some() =>
+        {
+            relay_error(
+                crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE,
+                message,
+                crate::runtime::browser_controller_process::controller_failure_is_transient(
+                    message,
+                ),
+            )
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -299,6 +313,33 @@ mod tests {
             retryable: false,
         }
         .is_no_active_prompt());
+    }
+
+    const STALE_ELEMENT: &str =
+        "browser controller `browser.action` failed with stale_element_reference: the element is stale";
+
+    #[test]
+    fn controller_refusal_crosses_the_relay_as_its_own_sentence_not_a_retryable_transport_error() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: STALE_ELEMENT.to_string(),
+        });
+        assert_eq!(mapped.code, "browser_controller_failed");
+        assert_eq!(mapped.message, STALE_ELEMENT);
+        assert!(!mapped.retryable);
+        let transient = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller `browser.action` failed with browser_cdp_timeout: slow"
+                .to_string(),
+        });
+        assert_eq!(transient.code, "browser_controller_failed");
+        assert!(transient.retryable);
+        let lost = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller exited during `browser.action`".to_string(),
+        });
+        assert_eq!(lost.code, "transport_error");
+        assert!(lost.retryable);
     }
 
     #[test]
