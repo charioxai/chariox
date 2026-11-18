@@ -364,10 +364,7 @@ impl AttachmentService {
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
         self.attachments
             .values()
-            .filter(|attachment| {
-                terminal_attachment_requires_heartbeat(attachment)
-                    || self.watched.contains(attachment.id())
-            })
+            .filter(|attachment| self.watched.contains(attachment.id()))
             .filter(|attachment| {
                 self.last_heartbeat_at_ms
                     .get(attachment.id())
@@ -384,13 +381,6 @@ impl AttachmentService {
         // service must never assign one of those IDs to another client.
         format!("attachment-{:032x}", rand::random::<u128>())
     }
-}
-
-fn terminal_attachment_requires_heartbeat(attachment: &RuntimeAttachment) -> bool {
-    matches!(
-        attachment.capability_level(),
-        ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
-    )
 }
 
 #[cfg(test)]
@@ -524,10 +514,10 @@ mod tests {
             .expect("automation attachment should attach");
 
         attachments
-            .record_heartbeat(&session_id, stale.id(), 1_000)
+            .record_subscription_heartbeat(&session_id, stale.id(), 1_000)
             .expect("stale heartbeat should record");
         attachments
-            .record_heartbeat(&session_id, fresh.id(), 25_000)
+            .record_subscription_heartbeat(&session_id, fresh.id(), 25_000)
             .expect("fresh heartbeat should record");
         attachments
             .record_heartbeat(&session_id, automation.id(), 1_000)
@@ -580,6 +570,47 @@ mod tests {
         assert!(attachments
             .stale_terminal_attachment_ids(31_000, 30_000)
             .is_empty());
+    }
+
+    // A driver on the local IPC socket sends commands and never subscribes to terminal output, so
+    // nothing refreshes a heartbeat for it; it stays attached until it detaches.
+    #[test]
+    fn a_terminal_level_driver_that_never_subscribed_is_not_swept() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+        let attach = |attachments: &mut AttachmentService,
+                      sessions: &mut SessionService,
+                      client: &str,
+                      level: ClientCapabilityLevel| {
+            attachments
+                .attach(sessions, AttachRequest::new(&session_id, client, level))
+                .expect("attachment should attach")
+        };
+        let driver = attach(
+            &mut attachments,
+            &mut sessions,
+            "ipc-driver",
+            ClientCapabilityLevel::FullTerminal,
+        );
+        let terminal = attach(
+            &mut attachments,
+            &mut sessions,
+            "terminal",
+            ClientCapabilityLevel::InteractiveStructured,
+        );
+        attachments
+            .record_heartbeat(&session_id, driver.id(), 1_000)
+            .expect("command heartbeat should record");
+        attachments
+            .record_subscription_heartbeat(&session_id, terminal.id(), 1_000)
+            .expect("subscription heartbeat should record");
+
+        assert_eq!(
+            attachments.stale_terminal_attachment_ids(60_000, 30_000),
+            vec![terminal.id().to_string()],
+            "only the attachment that subscribed to terminal output goes stale"
+        );
     }
 
     #[test]
