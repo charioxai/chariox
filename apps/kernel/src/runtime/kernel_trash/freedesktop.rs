@@ -30,6 +30,23 @@ pub(super) struct Trash {
     device_of: DeviceOf,
 }
 
+/// The trash folder a path lies in, read from the path's shape.
+enum Root<'a> {
+    /// The home trash.
+    Home(&'a Path),
+    /// `$topdir/.Trash-$uid`.
+    Own { root: &'a Path, topdir: &'a Path },
+    /// `$topdir/.Trash/$uid`.
+    Shared { root: &'a Path, topdir: &'a Path },
+}
+
+/// An item in a trash folder: the entry of `files/` that has the record, and the path inside that entry.
+struct Located<'a> {
+    root: Root<'a>,
+    entry: &'a OsStr,
+    inside: Vec<&'a OsStr>,
+}
+
 /// One trash folder, opened and checked, and the mount point its `Path=` lines are relative to.
 struct Folder {
     dir: Dir,
@@ -72,13 +89,94 @@ impl Trash {
         }
     }
 
-    /// Whether `path` lies in one of the trash folders this machine keeps.
+    /// Whether `path` lies in one of the trash folders this machine keeps: the home trash, or a `.Trash`
+    /// or `.Trash-$uid` right at the top of a filesystem. A user's own folder with such a name elsewhere
+    /// is not a trash.
     pub(super) fn holds(&self, path: &Path) -> bool {
         path.starts_with(&self.home_trash)
-            || path.components().any(|part| {
-                let name = part.as_os_str().as_bytes();
-                name == b".Trash" || name == format!(".Trash-{}", self.uid).as_bytes()
+            || path.ancestors().any(|at| {
+                let is_trash_name = at.file_name().is_some_and(|name| {
+                    name == ".Trash" || name.as_bytes() == self.own_name().as_bytes()
+                });
+                is_trash_name && at.parent().is_some_and(|topdir| self.is_top(topdir))
             })
+    }
+
+    fn own_name(&self) -> OsString {
+        OsString::from(format!(".Trash-{}", self.uid))
+    }
+
+    /// Whether `dir` is the top of its filesystem, the folder its trash lies in.
+    fn is_top(&self, dir: &Path) -> bool {
+        match dir.parent() {
+            None => true,
+            Some(above) => match ((self.device_of)(dir), (self.device_of)(above)) {
+                (Ok(here), Ok(there)) => here != there,
+                _ => false,
+            },
+        }
+    }
+
+    /// Where `path` lies in a trash of this user, from the path's shape alone: the home trash when the
+    /// path is in it, else the outermost `.Trash-$uid` or `.Trash/$uid` at the top of a filesystem; then
+    /// `files/`, the entry, and the path inside the entry. Names below the trash folder are never
+    /// matched, so the items in it may have any names (`files`, `info`, `.Trash-$uid`, ...).
+    fn locate<'a>(&self, path: &'a Path) -> Option<Located<'a>> {
+        let root = match path.ancestors().find(|at| *at == self.home_trash) {
+            Some(home) => Root::Home(home),
+            None => {
+                let mut outer_first: Vec<&Path> = path.ancestors().collect();
+                outer_first.reverse();
+                outer_first.into_iter().find_map(|at| self.trash_root(at))?
+            }
+        };
+        let root_path = match root {
+            Root::Home(root) | Root::Own { root, .. } | Root::Shared { root, .. } => root,
+        };
+        let mut parts = path
+            .strip_prefix(root_path)
+            .ok()?
+            .components()
+            .map(|part| match part {
+                Component::Normal(name) => Some(name),
+                _ => None,
+            });
+        if parts.next()?? != "files" {
+            return None;
+        }
+        let entry = parts.next()??;
+        let inside = parts.collect::<Option<Vec<_>>>()?;
+        Some(Located {
+            root,
+            entry,
+            inside,
+        })
+    }
+
+    /// `at` as a trash folder of this user at the top of a filesystem, when it is one by its place.
+    fn trash_root<'a>(&self, at: &'a Path) -> Option<Root<'a>> {
+        let (name, parent) = (at.file_name()?, at.parent()?);
+        let root = if name.as_bytes() == self.own_name().as_bytes() {
+            Root::Own {
+                root: at,
+                topdir: parent,
+            }
+        } else if name.as_bytes() == self.uid.to_string().as_bytes()
+            && parent.file_name() == Some(".Trash".as_ref())
+        {
+            Root::Shared {
+                root: at,
+                topdir: parent.parent()?,
+            }
+        } else {
+            return None;
+        };
+        match root {
+            Root::Own { topdir, .. } | Root::Shared { topdir, .. } if self.is_top(topdir) => {
+                Some(root)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn move_to(&self, path: &Path) -> Result<PathBuf, DaemonError> {
@@ -221,7 +319,7 @@ impl Trash {
 
     /// `$topdir/.Trash-$uid`, made if needed.
     fn own_folder(&self, top: &Dir, topdir: &Path) -> Result<Folder, String> {
-        let name = OsString::from(format!(".Trash-{}", self.uid));
+        let name = self.own_name();
         let path = topdir.join(&name);
         let problem = |what: &str| format!("{} {what}", path.display());
         top.make_at(&name, 0o700)
@@ -329,30 +427,17 @@ impl Trash {
                 format!("{} {what}.", trash_path.display()),
             )
         };
-        if trash_path
-            .components()
-            .any(|part| part == Component::ParentDir)
-        {
-            return Err(not_trash("is not an item in the Trash"));
-        }
-        // The item is a folder entry of `files/`, or something inside one: the record belongs to the
-        // entry of `files/`, and the path inside it is added to the recorded place.
-        let mut inside = Vec::new();
-        let mut entry = trash_path;
-        while entry.parent().and_then(Path::file_name) != Some("files".as_ref()) {
-            let (Some(name), Some(parent)) = (entry.file_name(), entry.parent()) else {
-                return Err(not_trash("is not an item in the Trash"));
-            };
-            inside.push(name);
-            entry = parent;
-        }
-        inside.reverse();
-        let (Some(name), Some(root)) = (entry.file_name(), entry.parent().and_then(Path::parent))
-        else {
-            return Err(not_trash("is not an item in the Trash"));
-        };
+        // The item is an entry of `files/`, or something inside one: the record belongs to the entry,
+        // and the path inside it is added to the recorded place.
+        let Located {
+            root,
+            entry: name,
+            inside,
+        } = self
+            .locate(trash_path)
+            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
         let (folder, topdir) = self
-            .open_root(root)
+            .open_root(&root)
             .ok_or_else(|| not_trash("is not an item in a Trash folder that only you can use"))?;
         let (files, info) = match (
             folder.open_at("files".as_ref()),
@@ -440,39 +525,29 @@ impl Trash {
         Ok(wanted.to_path_buf())
     }
 
-    /// The trash folder at `root`, opened and checked as a trash of this user, and its mount point;
-    /// `None` when `root` is not one or fails a check.
-    fn open_root(&self, root: &Path) -> Option<(Dir, Option<PathBuf>)> {
-        let own = |parent: &Path, name: &OsStr| -> Option<Dir> {
-            let parent = Dir::open(&std::fs::canonicalize(parent).ok()?).ok()?;
-            let dir = parent.open_at(name).ok()?;
-            dir.is_private_to(self.uid).ok()?.then_some(dir)
-        };
-        let name = root.file_name()?;
-        if root == self.home_trash {
-            return own(root.parent()?, name).map(|dir| (dir, None));
-        }
-        if name.as_bytes() == format!(".Trash-{}", self.uid).as_bytes() {
-            let topdir = root.parent()?;
-            return own(topdir, name).map(|dir| (dir, Some(topdir.to_path_buf())));
-        }
-        let shared = root.parent()?;
-        if name.as_bytes() == self.uid.to_string().as_bytes()
-            && shared.file_name() == Some(".Trash".as_ref())
-        {
-            let topdir = shared.parent()?;
-            let top = Dir::open(&std::fs::canonicalize(topdir).ok()?).ok()?;
-            let shared_dir = top.open_at(".Trash".as_ref()).ok()?;
-            if shared_dir.stat().ok()?.st_mode & STICKY == 0 {
-                return None;
+    /// The trash folder `root`, opened and checked as a trash of this user, and its mount point;
+    /// `None` when it fails a check.
+    fn open_root(&self, root: &Root) -> Option<(Dir, Option<PathBuf>)> {
+        let private = |dir: Dir| dir.is_private_to(self.uid).ok()?.then_some(dir);
+        let open = |path: &Path| Dir::open(&std::fs::canonicalize(path).ok()?).ok();
+        match *root {
+            Root::Home(path) => {
+                let dir = open(path.parent()?)?.open_at(path.file_name()?).ok()?;
+                private(dir).map(|dir| (dir, None))
             }
-            let dir = shared_dir.open_at(name).ok()?;
-            return dir
-                .is_private_to(self.uid)
-                .ok()?
-                .then_some((dir, Some(topdir.to_path_buf())));
+            Root::Own { root, topdir } => {
+                let dir = open(topdir)?.open_at(root.file_name()?).ok()?;
+                private(dir).map(|dir| (dir, Some(topdir.to_path_buf())))
+            }
+            Root::Shared { root, topdir } => {
+                let shared = open(topdir)?.open_at(".Trash".as_ref()).ok()?;
+                if shared.stat().ok()?.st_mode & STICKY == 0 {
+                    return None;
+                }
+                let dir = shared.open_at(root.file_name()?).ok()?;
+                private(dir).map(|dir| (dir, Some(topdir.to_path_buf())))
+            }
         }
-        None
     }
 }
 
@@ -485,9 +560,14 @@ fn trash_name(name: &OsStr, attempt: u32) -> OsString {
         String::new()
     };
     let room = NAME_MAX - RECORD_SUFFIX.len() - suffix.len();
-    let mut bytes = name.as_bytes()[..name.len().min(room)].to_vec();
-    bytes.extend_from_slice(suffix.as_bytes());
-    OsString::from_vec(bytes)
+    let mut cut = match name.to_str() {
+        // Cut between characters, so the name stays text and the path reported for it names it exactly.
+        Some(text) => OsString::from(&text[..text.floor_char_boundary(room)]),
+        // Not text to begin with: any bytes but `/` and NUL are a name here.
+        None => OsStr::from_bytes(&name.as_bytes()[..name.len().min(room)]).to_os_string(),
+    };
+    cut.push(suffix);
+    cut
 }
 
 /// Whether two paths name the same place: the same name in the same folder, links above it resolved.

@@ -56,17 +56,27 @@ impl Trash {
         }
     }
 
-    /// Whether `path` lies in the user's trash or the trash of another volume.
+    /// Whether `path` is the user's trash, the trash of a volume, or in one.
     pub(super) fn holds(&self, path: &Path) -> bool {
-        path.starts_with(self.home.join(".Trash")) || self.volume_trash(path)
+        self.trash_folder_of(path).is_some()
     }
 
-    fn volume_trash(&self, path: &Path) -> bool {
-        let uid = self.uid.to_string();
-        let parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
-        parts
-            .windows(2)
-            .any(|pair| pair[0] == ".Trashes" && pair[1] == uid.as_str())
+    /// The trash folder `path` is or lies in: `~/.Trash`, or `.Trashes/$uid` at the top of the startup
+    /// volume or of a volume mounted in `/Volumes`. Read from the position, so a folder of the user's
+    /// own named `.Trashes` elsewhere is not a trash.
+    fn trash_folder_of(&self, path: &Path) -> Option<PathBuf> {
+        let volume = path
+            .strip_prefix("/Volumes")
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .map(|name| Path::new("/Volumes").join(name));
+        let volume_trashes = [Some(PathBuf::from("/")), volume]
+            .into_iter()
+            .flatten()
+            .map(|top| top.join(".Trashes").join(self.uid.to_string()));
+        std::iter::once(self.home.join(".Trash"))
+            .chain(volume_trashes)
+            .find(|folder| path.starts_with(folder))
     }
 
     pub(super) fn move_to(&self, path: &Path) -> Result<PathBuf, DaemonError> {
@@ -95,7 +105,10 @@ impl Trash {
 
     /// The system keeps no record Chariox can read, so the item goes back where the client says it was.
     pub(super) fn restore(&self, trash_path: &Path, wanted: &Path) -> Result<PathBuf, DaemonError> {
-        if !self.holds(trash_path) {
+        if self
+            .trash_folder_of(trash_path)
+            .is_none_or(|folder| folder == trash_path)
+        {
             return Err(fail(
                 "file_not_in_trash",
                 format!("{} is not an item in the Trash.", trash_path.display()),
@@ -234,10 +247,24 @@ mod tests {
         assert!(trash.holds(&home.join(".Trash/a.txt")));
         assert!(trash.holds(Path::new("/Volumes/Data/.Trashes/501/a.txt")));
         assert!(!trash.holds(Path::new("/Volumes/Data/.Trashes/502/a.txt")));
+        assert!(trash.holds(Path::new("/.Trashes/501/a.txt")));
         assert!(!trash.holds(&home.join("Documents/a.txt")));
-        let outside = trash.restore(&home.join("Documents/a.txt"), &home.join("a.txt"));
-        assert!(
-            matches!(outside, Err(DaemonError::MachineRequest { code, .. }) if code == "file_not_in_trash")
-        );
+        // A folder of the user's own named like a trash, below the top of a volume, is not one.
+        assert!(!trash.holds(&home.join("work/.Trashes/501/a.txt")));
+        assert!(!trash.holds(Path::new("/Volumes/Data/work/.Trashes/501/a.txt")));
+        // Only an item in a trash folder is put back, never the folder itself.
+        for not_an_item in [
+            home.join("Documents/a.txt"),
+            home.join("work/.Trashes/501/a.txt"),
+            home.join(".Trash"),
+            PathBuf::from("/Volumes/Data/.Trashes/501"),
+        ] {
+            let outside = trash.restore(&not_an_item, &home.join("a.txt"));
+            assert!(
+                matches!(outside, Err(DaemonError::MachineRequest { ref code, .. }) if code == "file_not_in_trash"),
+                "{}: {outside:?}",
+                not_an_item.display()
+            );
+        }
     }
 }

@@ -770,3 +770,225 @@ fn a_restore_through_a_swapped_trash_folder_or_record_moves_nothing() {
     assert_eq!(say(put_back(&trashed)).0, "file_not_in_trash");
     assert!(!file.exists());
 }
+
+fn write_at(path: &Path, text: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// The path table of the home trash: the trash folder, `files/`, `info/`, a top-level entry, and items
+/// inside an entry with any names. A place is read from its position under the trash folder, never by
+/// looking for a folder named `files`.
+#[test]
+fn every_item_inside_a_moved_folder_restores_alone_whatever_its_folders_are_named() {
+    let m = machine("path-table");
+    let work = m.home.join("work");
+    let root = m.home.join(".local/share/Trash");
+    let own_trash = format!(".Trash-{}", euid());
+    // (moved folder, item inside it): the item restores on its own while the folder stays in the Trash.
+    let rows = [
+        ("project", "files/a.txt".to_string()),
+        ("project", "info/b.txt".to_string()),
+        ("project", "files/files/c.txt".to_string()),
+        ("project", ".local/share/Trash/files/d.txt".to_string()),
+        ("project", format!("{own_trash}/files/e.txt")),
+        ("files", "f.txt".to_string()),
+        ("info", "g.txt".to_string()),
+        ("ação", "日本語/ü.txt".to_string()),
+    ];
+    let mut named: Vec<PathBuf> = Vec::new();
+    for (folder, inner) in &rows {
+        let item = work.join(folder).join(inner);
+        write_at(&item, inner.as_bytes());
+        if !named.contains(&work.join(folder)) {
+            named.push(work.join(folder));
+        }
+        named.push(item);
+    }
+    let refs: Vec<&Path> = named.iter().map(PathBuf::as_path).collect();
+    let (trashed, failed) = move_to_trash(&refs).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(trashed.len(), named.len());
+
+    for (folder, inner) in &rows {
+        let item = work.join(folder).join(inner);
+        let reported = moved(&trashed, &item);
+        assert_eq!(
+            reported.trash_path,
+            root.join("files")
+                .join(folder)
+                .join(inner)
+                .display()
+                .to_string()
+        );
+        let (restored, failed) = put_back(std::slice::from_ref(reported)).unwrap();
+        assert!(failed.is_empty(), "{inner}: {failed:?}");
+        assert_eq!(restored, [item.display().to_string()]);
+        assert_eq!(std::fs::read(&item).unwrap(), inner.as_bytes(), "{inner}");
+        assert!(
+            root.join("info")
+                .join(format!("{folder}.trashinfo"))
+                .exists(),
+            "{inner}: the folder's record stays until the folder itself comes back"
+        );
+    }
+
+    // A `.` in the reported path names the same item.
+    let project = work.join("project");
+    write_at(&project.join("files/a.txt"), b"again");
+    let (again, _) = move_to_trash(&[&project.join("files/a.txt")]).unwrap();
+    let dotted = TrashedKernelFile {
+        path: again[0].path.clone(),
+        trash_path: again[0].trash_path.replace("/files/", "/files/./"),
+    };
+    assert_ne!(dotted.trash_path, again[0].trash_path);
+    put_back(&[dotted]).unwrap();
+    assert_eq!(
+        std::fs::read(project.join("files/a.txt")).unwrap(),
+        b"again"
+    );
+
+    // The trash folder, `files/`, `info/`, a record and a path with `..` are not items.
+    let entry = Path::new(&moved(&trashed, &project).trash_path).to_path_buf();
+    for not_an_item in [
+        root.clone(),
+        root.join("files"),
+        root.join("info"),
+        root.join("info/project.trashinfo"),
+        entry.join("files/../files/b.txt"),
+    ] {
+        let item = TrashedKernelFile {
+            path: work.join("x.txt").display().to_string(),
+            trash_path: not_an_item.display().to_string(),
+        };
+        let (code, _) = say(put_back(&[item]));
+        assert_eq!(code, "file_not_in_trash", "{}", not_an_item.display());
+    }
+}
+
+/// Names that are not text are kept as bytes: an item with such a name inside a moved folder restores
+/// on its own through the platform trash.
+#[test]
+fn an_item_whose_name_is_not_text_restores_alone() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let m = machine("bytes");
+    let trash = super::platform::Trash::new(m.home.join(".local/share/Trash"), euid());
+    let folder = m.home.join("work/raw");
+    let inner = Path::new(OsStr::from_bytes(b"caf\xe9")).join("files/h.txt");
+    write_at(&folder.join(&inner), b"h");
+
+    let trash_path = trash.move_to(&folder).unwrap();
+    let back = trash
+        .restore(&trash_path.join(&inner), &folder.join(&inner))
+        .unwrap();
+
+    assert_eq!(back, folder.join(&inner));
+    assert_eq!(std::fs::read(&back).unwrap(), b"h");
+    assert!(trash_path.join(OsStr::from_bytes(b"caf\xe9")).is_dir());
+}
+
+/// The same table on another filesystem's `.Trash-$uid`: a folder named like a trash inside a moved
+/// folder is part of the item, and only the trash folder at the top of the filesystem counts.
+#[test]
+fn inside_a_filesystems_own_trash_items_are_read_by_position_too() {
+    let v = volume("table");
+    let trash = on_volume(&v, euid());
+    let own_trash = format!(".Trash-{}", euid());
+    let folder = v.top.join("sub/project");
+    let inners = [
+        format!("{own_trash}/files/x.txt"),
+        "files/y.txt".to_string(),
+        ".Trash/0/files/z.txt".to_string(),
+    ];
+    for inner in &inners {
+        write_at(&folder.join(inner), inner.as_bytes());
+    }
+    let item = trash_on(&trash, &folder).unwrap();
+    for inner in &inners {
+        let nested = TrashedKernelFile {
+            path: folder.join(inner).display().to_string(),
+            trash_path: Path::new(&item.trash_path)
+                .join(inner)
+                .display()
+                .to_string(),
+        };
+        restore_on(&trash, &nested).unwrap();
+        assert_eq!(std::fs::read(folder.join(inner)).unwrap(), inner.as_bytes());
+    }
+
+    // A folder of the user's own named `.Trash` or `.Trash-$uid` below the top is not a trash.
+    let lookalike = v.top.join(format!("sub/{own_trash}/notes.txt"));
+    write_at(&lookalike, b"n");
+    let shared_lookalike = v.top.join("sub/.Trash/notes.txt");
+    write_at(&shared_lookalike, b"s");
+    for path in [&lookalike, &shared_lookalike] {
+        let item = trash_on(&trash, path).unwrap();
+        assert!(!path.exists());
+        restore_on(&trash, &item).unwrap();
+        assert!(path.exists());
+    }
+    let at_top = v.top.join(&own_trash);
+    let (_, message) = say(trash_on(&trash, &at_top));
+    assert!(message.contains("in the Trash already"), "{message}");
+}
+
+/// A long name cut for `files/` stays text: the reported path names the item exactly, Undo finds it,
+/// and the record keeps the full name.
+#[test]
+fn a_long_name_with_characters_of_several_bytes_comes_back_exactly() {
+    let m = machine("long-utf8");
+    let work = m.home.join("work");
+    let names = [
+        "é".repeat(127),
+        "日".repeat(85),
+        format!("{}本", "日".repeat(84)),
+        format!("a{}", "€".repeat(84)),
+    ];
+    for name in &names {
+        std::fs::write(work.join(name), name.as_bytes()).unwrap();
+    }
+    let paths: Vec<PathBuf> = names.iter().map(|name| work.join(name)).collect();
+    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+
+    let (trashed, failed) = move_to_trash(&refs).unwrap();
+
+    assert!(failed.is_empty(), "{failed:?}");
+    for item in &trashed {
+        let in_trash = Path::new(&item.trash_path);
+        assert!(!item.trash_path.contains('\u{FFFD}'), "{}", item.trash_path);
+        assert!(
+            std::fs::symlink_metadata(in_trash).is_ok(),
+            "{}",
+            item.trash_path
+        );
+        let mut record = in_trash.file_name().unwrap().to_os_string();
+        record.push(".trashinfo");
+        let info =
+            std::fs::read_to_string(m.home.join(".local/share/Trash/info").join(record)).unwrap();
+        assert!(info.contains("Path=/"), "{info}");
+    }
+    let (restored, failed) = put_back(&trashed).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored.len(), names.len());
+    for (name, path) in names.iter().zip(&paths) {
+        assert_eq!(std::fs::read(path).unwrap(), name.as_bytes());
+    }
+}
+
+/// A long name that is not text is cut by bytes, and still a name the filesystem takes and gives back.
+#[test]
+fn a_long_name_that_is_not_text_comes_back_exactly() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let m = machine("long-bytes");
+    let trash = super::platform::Trash::new(m.home.join(".local/share/Trash"), euid());
+    let path = m.home.join("work").join(OsStr::from_bytes(&[0xff; 255]));
+    std::fs::write(&path, b"raw").unwrap();
+
+    let trash_path = trash.move_to(&path).unwrap();
+    assert_eq!(trash_path.file_name().unwrap().len(), 245);
+    trash.restore(&trash_path, &path).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), b"raw");
+}

@@ -228,5 +228,18 @@ fn restore_one(
     guard: &StateGuard,
 ) -> Result<PathBuf, DaemonError> {
     let wanted = plain(&item.path, guard)?;
-    trash.restore(Path::new(&item.trash_path), &wanted)
+    // The platform reads where an item is from the position of its path in a trash folder, so a path
+    // that is not plain could name something else than it reads as.
+    let trash_path = Path::new(&item.trash_path);
+    if !trash_path.is_absolute()
+        || trash_path
+            .components()
+            .any(|part| part == Component::ParentDir)
+    {
+        return Err(fail(
+            "file_not_in_trash",
+            format!("{} is not an item in the Trash.", item.trash_path),
+        ));
+    }
+    trash.restore(trash_path, &wanted)
 }

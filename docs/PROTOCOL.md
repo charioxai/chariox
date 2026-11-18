@@ -7668,11 +7668,17 @@ anything already in the trash are refused.
 and fails with `file_restore_conflict` ("... is taken, so the item stays in the Trash"); an item that is not in a trash
 folder, is gone from it, or whose record names another path fails with `file_not_in_trash`. An item reported inside a moved
 folder restores on its own: its place is the folder's recorded place plus the path inside it (Linux; macOS renames it from
-its trash path).
+its trash path). The kernel reads where an item is from its position, never from folder names below the trash folder:
+the trash folder (the home trash, or `.Trash-$uid` / `.Trash/$uid` at the top of a filesystem; on macOS `~/.Trash` or
+`.Trashes/$uid` at the top of a volume), then `files/`, the entry with the record, and the path inside it, whose folders may
+have any names (`files`, `info`, `.Trash-$uid`). A `trash_path` that is not absolute or has a `..` part, and the trash folder
+itself, fail with `file_not_in_trash`; a folder of the user's own named `.Trash` or `.Trash-$uid` below the top of a
+filesystem is not a trash.
 
 Linux follows the freedesktop.org Trash specification: `$XDG_DATA_HOME/Trash` (`~/.local/share/Trash`) with `files/` and
 `info/<name>.trashinfo` (`Path=` percent-encoded, `DeletionDate=`); a name that is taken gets `.1`, `.2`, ...; a name too
-long for its record is cut in `files/` and keeps its full name in `Path=`. An item on
+long for its record is cut in `files/` between characters (so `trash_path` names it exactly; a name that is not UTF-8
+is cut by bytes) and keeps its full name in `Path=`. An item on
 another filesystem than the home trash goes to that filesystem's `$topdir/.Trash/$uid` when the administrator made it
 (sticky, not a link), else `$topdir/.Trash-$uid`, with `Path=` relative to `$topdir`; where neither can be made the move
 fails with `file_trash_failed` and nothing moves. macOS moves the item with `NSFileManager trashItemAtURL` (run through
