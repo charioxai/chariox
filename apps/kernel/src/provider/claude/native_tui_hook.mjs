@@ -340,7 +340,7 @@ if (eventName === "UserPromptSubmit") {
     : null
   if (responseFile) {
     // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-    const deadline = Date.now() + 330000
+    const deadline = Date.now() + 83160000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
