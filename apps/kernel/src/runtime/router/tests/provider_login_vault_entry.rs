@@ -26,6 +26,27 @@ printf '%s' "$key" > "$(dirname "$0")/received"
 printf 'Login successful\n'
 "#;
 
+/// A login that echoes the key in three fragments and waits between them for
+/// the test to say go, so a status poll lands while only part of it is out.
+const FRAGMENTED_OPENCODE: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 1.19.0; exit 0; fi
+if [ "$1" = auth ] && [ "$2" = list ]; then exit 0; fi
+[ "$1" = auth ] && [ "$2" = login ] || exit 90
+dir=$(dirname "$0")
+stty -echo 2>/dev/null
+printf 'Enter your API key\n'
+IFS= read -r key
+printf 'echo: %s' "$(printf '%s' "$key" | cut -c1-10)"
+: > "$dir/sent1"
+n=0; while [ ! -e "$dir/go2" ]; do n=$((n+1)); [ $n -lt 400 ] || exit 91; sleep 0.05; done
+printf '%s' "$(printf '%s' "$key" | cut -c11-17)"
+: > "$dir/sent2"
+n=0; while [ ! -e "$dir/go3" ]; do n=$((n+1)); [ $n -lt 400 ] || exit 91; sleep 0.05; done
+[ -e "$dir/truncate" ] && exit 0
+printf '%s\n' "$(printf '%s' "$key" | cut -c18-)"
+printf 'Login successful\n'
+"#;
+
 struct Fixture {
     router: CommandRouter,
     root: std::path::PathBuf,
@@ -47,6 +68,10 @@ impl Drop for Fixture {
 
 impl Fixture {
     fn new(backend: crate::config::CredentialVaultBackend) -> Self {
+        Self::with_program(backend, FAKE_OPENCODE)
+    }
+
+    fn with_program(backend: crate::config::CredentialVaultBackend, program: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-ocvault-{}-{}",
             std::process::id(),
@@ -69,7 +94,7 @@ impl Fixture {
         std::env::set_var("CHARIOX_LOG_DIR", root.join("logs"));
         std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
         let binary = root.join("opencode");
-        std::fs::write(&binary, FAKE_OPENCODE).unwrap();
+        std::fs::write(&binary, program).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::env::set_var("CHARIOX_OPENCODE_BIN", &binary);
         let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
@@ -210,6 +235,34 @@ impl Fixture {
         .expect("the login should finish")
     }
 
+    /// Lets the fragmenting login program go on once the kernel has had time
+    /// to read what it printed.
+    async fn release(&self, wait_for: &str, go: &str) {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while !self.root.join(wait_for).exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the login program should print its fragment");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if !go.is_empty() {
+            std::fs::write(self.root.join(go), "").unwrap();
+        }
+    }
+
+    /// Polls the login a few times and fails if any answer shows the start of the key.
+    async fn assert_no_key_start_shown(&self, login_id: &str) {
+        for _ in 0..3 {
+            let shown = screen(&self.status(login_id).await);
+            assert!(
+                !shown.contains(&KEY[..4]),
+                "a poll showed the start of the key: {shown:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// What the fake login program was typed, kept beside it by the program itself.
     fn received(&self) -> Option<String> {
         std::fs::read_to_string(self.root.join("received")).ok()
@@ -345,4 +398,51 @@ async fn a_locked_vault_is_refused_as_locked_before_the_login_is_touched() {
         ))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_key_echoed_in_fragments_never_shows_its_start_between_polls() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::with_program(
+        crate::config::CredentialVaultBackend::ProcessMemory,
+        FRAGMENTED_OPENCODE,
+    );
+    let entry = fixture.owner_entry(OPENCODE_SITE).await;
+    let login_id = fixture.start("opencode_go_api_key").await;
+    fixture.vault_entry(&login_id, &entry).await.unwrap();
+    fixture.release("sent1", "go2").await;
+    fixture.assert_no_key_start_shown(&login_id).await;
+    fixture.release("sent2", "go3").await;
+    fixture.assert_no_key_start_shown(&login_id).await;
+    let status = fixture.until_finished(&login_id).await;
+    let shown = screen(&status);
+    assert!(
+        !shown.contains(&KEY[..4]) && !shown.contains(KEY),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains("echo: "),
+        "the rest of the screen stays: {shown:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_echo_cut_short_by_the_login_ending_is_masked_at_the_end() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::with_program(
+        crate::config::CredentialVaultBackend::ProcessMemory,
+        FRAGMENTED_OPENCODE,
+    );
+    std::fs::write(fixture.root.join("truncate"), "").unwrap();
+    let entry = fixture.owner_entry(OPENCODE_SITE).await;
+    let login_id = fixture.start("opencode_go_api_key").await;
+    fixture.vault_entry(&login_id, &entry).await.unwrap();
+    fixture.release("sent1", "go2").await;
+    fixture.release("sent2", "go3").await;
+    let status = fixture.until_finished(&login_id).await;
+    let shown = screen(&status);
+    assert!(!shown.contains(&KEY[..4]), "{shown:?}");
+    assert!(shown.contains("echo: **********"), "{shown:?}");
 }
