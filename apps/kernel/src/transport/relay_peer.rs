@@ -223,7 +223,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
 /// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
+/// 450 has the relay admit a kernel registration only with the kernel identity key's signature over the
+/// connection's challenge (`DaemonRegister.proof`); 449 is taken by another lane.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
