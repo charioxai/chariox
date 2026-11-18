@@ -1942,6 +1942,26 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::CaptureForHomeVault { context, capture } => {
+            match router
+                .handle_forwarded_home_vault_capture(context, capture)
+                .await
+            {
+                Ok(crate::runtime::state::HomeVaultCaptureAnswer::Prepared { committed }) => {
+                    RelayPeerResponse::HomeVaultCapturePrepared { committed }
+                }
+                Ok(crate::runtime::state::HomeVaultCaptureAnswer::Stored { result }) => {
+                    RelayPeerResponse::HomeCredentialToolHandled { result }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change } => {
             let applied = router
                 .relay_apply_workspace_live_sync_change(context, change)
@@ -2791,6 +2811,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarded_vault_capture_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("vault-capture").await;
+    }
+
+    #[tokio::test]
     async fn mp11_forwarded_meta_rejects_unrelated_verified_peer() {
         mp11_unrelated_forwarded_peer("meta").await;
     }
@@ -2837,6 +2862,29 @@ mod tests {
                     worker_provider_run_id: "victim-run".into(),
                 },
                 epoch: "epoch".into(),
+            }
+        } else if kind == "vault-capture" {
+            RelayPeerRequest::CaptureForHomeVault {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: home.daemon_id.clone(),
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    leased_agent_id: "victim-leased-agent".into(),
+                    worker_kernel_id: Some("victim-worker".into()),
+                    worker_machine_id: Some("victim-machine".into()),
+                    worker_provider_run_id: "victim-run".into(),
+                },
+                capture: crate::transport::relay_peer::HomeVaultCapture::Prepare {
+                    request_id: "victim-capture".into(),
+                    host: "example.com".into(),
+                    use_binding: crate::config::VaultUseBinding {
+                        target: crate::config::VaultUseTarget::CommandEnvironment {
+                            name: "TOKEN".into(),
+                            origin: "https://example.com".into(),
+                        },
+                        value_kind: crate::config::VaultValueKind::Secret,
+                    },
+                },
             }
         } else if kind == "credential" {
             RelayPeerRequest::ResolveHomeCredentialSecret {

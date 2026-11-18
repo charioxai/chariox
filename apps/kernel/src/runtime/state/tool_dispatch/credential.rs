@@ -694,6 +694,12 @@ impl KernelRuntimeState {
                 operation: "home credential proxy",
                 message: "request_popup is not a credential vault operation".to_string(),
             }),
+            crate::runtime::state::vault_generate::VAULT_GENERATE
+            | crate::runtime::state::vault_command::VAULT_REMOVE_CAPTURE
+            | crate::runtime::state::vault_command::VAULT_COPY_FOR_USE => {
+                self.dispatch_forwarded_home_vault_tool_call(context, tool_name, arguments)
+                    .await
+            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "home credential proxy",
                 message: format!("unknown credential runtime tool `{tool_name}`"),
@@ -957,7 +963,7 @@ impl KernelRuntimeState {
         })
     }
 
-    fn authorize_home_credential_context(
+    pub(in crate::runtime::state) fn authorize_home_credential_context(
         &self,
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {

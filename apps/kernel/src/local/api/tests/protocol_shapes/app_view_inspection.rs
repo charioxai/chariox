@@ -67,7 +67,7 @@ fn app_view_inspection_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "2bcffa55fa4ea07de892f183f386a70c727cd5ada4cdd02d1c843f23b5a5573c"
+        "bb0f27ffed8b2a7fd5afd6ab132335bfb0476588eb4ff40f28e9b34de0eea7e0"
     );
     let command = crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Inspect {
         target_id: "controller-target".into(),

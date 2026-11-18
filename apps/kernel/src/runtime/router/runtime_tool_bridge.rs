@@ -484,6 +484,16 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn handle_forwarded_home_vault_capture(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        capture: crate::transport::relay_peer::HomeVaultCapture,
+    ) -> Result<crate::runtime::state::HomeVaultCaptureAnswer, DaemonError> {
+        self.runtime_state
+            .handle_forwarded_home_vault_capture(context, capture)
+            .await
+    }
+
     pub(crate) async fn resolve_forwarded_home_credential_secret(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,

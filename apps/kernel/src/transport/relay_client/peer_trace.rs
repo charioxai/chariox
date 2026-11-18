@@ -192,6 +192,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         }
         RelayPeerRequest::InvokeHomeCredentialTool { .. } => "invoke_home_credential_tool",
         RelayPeerRequest::ResolveHomeCredentialSecret { .. } => "resolve_home_credential_secret",
+        RelayPeerRequest::CaptureForHomeVault { .. } => "capture_for_home_vault",
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { .. } => "apply_workspace_live_sync_change",
         RelayPeerRequest::ForwardNativeTurnInteraction { .. } => "forward_native_turn_interaction",
         RelayPeerRequest::UpdateNativeInteraction { .. } => "update_native_interaction",

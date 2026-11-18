@@ -224,7 +224,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
 /// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
 /// 449 lets a slice agent resolve a Vault value for its own workspace (`workspace` injection) from the home Vault.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// 450 lets a slice agent capture into, generate in, copy within and remove from the home Vault
+/// (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of `InvokeHomeCredentialTool`).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -549,6 +551,27 @@ pub enum RemoteCredentialSecretInjection {
     /// A value for a file or a command in the leased worker's workspace.
     Workspace {
         target: crate::config::VaultUseTarget,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HomeVaultCapture {
+    /// Before the worker runs its command or reads its file: the home answers a retry with the
+    /// committed entry, otherwise unlocks its Vault and keeps it so until the value arrives.
+    Prepare {
+        request_id: String,
+        host: String,
+        use_binding: crate::config::VaultUseBinding,
+    },
+    /// The value the worker captured, for the home to store in its Vault.
+    Store {
+        request_id: String,
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        use_binding: crate::config::VaultUseBinding,
+        secret: RemoteCredentialSecretInput,
     },
 }
 
@@ -1359,6 +1382,12 @@ pub enum RelayPeerRequest {
         credential_id: String,
         injection: RemoteCredentialSecretInjection,
     },
+    /// A Vault capture on a leased worker: the worker runs the command or reads the file in its
+    /// workspace and the home kernel unlocks the Vault before and stores the value after.
+    CaptureForHomeVault {
+        context: RemoteExtensionInvocationContext,
+        capture: HomeVaultCapture,
+    },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
@@ -1786,6 +1815,10 @@ pub enum RelayPeerResponse {
     HomeCredentialSecretResolved {
         credential_id: String,
         secret_input: RemoteCredentialSecretInput,
+    },
+    /// The home's answer to the first half of a capture: the entry a retry already committed.
+    HomeVaultCapturePrepared {
+        committed: Option<crate::transport::runtime_tools::RuntimeToolResult>,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

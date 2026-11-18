@@ -49,7 +49,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_workspace_context(token).await?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
