@@ -1068,6 +1068,10 @@ impl KernelBrowserHost {
                 }
             }
             ledger.project_tabs(payload);
+            // The same lock hold as the projection: the digest and the `taken_over` marks are one snapshot.
+            if request_params["state_wait"] == true {
+                payload["_control"] = ledger.person_control().into();
+            }
             if method == "host.browser"
                 && matches!(
                     request_params["op"].as_str(),
@@ -1199,14 +1203,11 @@ impl KernelBrowserHost {
             })
             .clone())
     }
-    /// The Tabs the person of `user` holds by takeover, by controller Tab id.
-    pub(crate) fn person_held_tabs(
-        &self,
-        user: &str,
-    ) -> Result<std::collections::BTreeSet<String>, String> {
+    /// Who holds which Tabs of `user`'s person by takeover, as the digest a state read carries.
+    pub(crate) fn person_control(&self, user: &str) -> Result<String, String> {
         let model = self.actor_model(user)?;
         let model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-        Ok(model.person_held_tabs())
+        Ok(model.person_control())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from
     /// the one taken at `after` (the host's signal count). `None`: no browser is running, nothing to wait for.

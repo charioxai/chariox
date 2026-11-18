@@ -6,7 +6,6 @@ use crate::error::DaemonError;
 use crate::runtime::command::KernelCommand;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// An idle viewer parks this long, so a shown Browser costs one request per wait, not one every two seconds.
@@ -18,19 +17,12 @@ const NO_SIGNAL_POLL: Duration = Duration::from_millis(250);
 const CONTROL_POLL: Duration = Duration::from_millis(100);
 
 /// `<content digest>.<host signal>.<control digest>`: opaque to clients, which echo it back as `after`.
-/// The control digest names who holds which Tab by takeover when the state was read, so a takeover or its
-/// return between two reads is seen by the next wait before it parks, not only while it is parked.
+/// The control digest comes from the same snapshot as the state's `taken_over` marks (the host adds it under
+/// the actor lock), so a takeover or its return between two reads differs from it at the next wait, before it
+/// parks and while it is parked.
 fn revision(state: &Value, signal: Option<u64>, control: &str) -> String {
     let digest = Sha256::digest(state.to_string().as_bytes());
     format!("{}.{}.{control}", hex_prefix(&digest), signal.unwrap_or(0))
-}
-fn control_digest(held: &BTreeSet<String>) -> String {
-    let mut hasher = Sha256::new();
-    for tab in held {
-        hasher.update((tab.len() as u64).to_be_bytes());
-        hasher.update(tab.as_bytes());
-    }
-    hex_prefix(&hasher.finalize())
 }
 /// A wait that ended without a change: the caller keeps the state it read last.
 fn unchanged(revision: String) -> Value {
@@ -78,11 +70,10 @@ impl KernelRuntimeState {
         loop {
             let started = Instant::now();
             let remaining = deadline.saturating_duration_since(started);
-            // Sampled before the state read: a change after this point differs from the revision issued below.
-            let mut control = control_digest(&host.person_held_tabs(&user).map_err(host_error)?);
             match (signal, &known) {
                 // The viewer's state is already behind: read it now instead of parking on a quiet page.
-                (Some(_), Some(known)) if known.control != control => {}
+                (Some(_), Some(known))
+                    if host.person_control(&user).map_err(host_error)? != known.control => {}
                 (Some(after_signal), _) => {
                     let (parked_host, parked_user, wait) =
                         (host.clone(), user.clone(), remaining.as_millis() as u64);
@@ -101,8 +92,9 @@ impl KernelRuntimeState {
                                 break;
                             }
                             _ = tokio::time::sleep(CONTROL_POLL) => {
-                                control = control_digest(&host.person_held_tabs(&user).map_err(host_error)?);
-                                if known.as_ref().is_some_and(|known| known.control != control) {
+                                if known.as_ref().is_some_and(|known| {
+                                    host.person_control(&user).is_ok_and(|control| control != known.control)
+                                }) {
                                     break;
                                 }
                             }
@@ -130,6 +122,11 @@ impl KernelRuntimeState {
                 .as_object_mut()
                 .and_then(|object| object.remove("_state_signal"))
                 .and_then(|value| value.as_u64());
+            let control = state
+                .as_object_mut()
+                .and_then(|object| object.remove("_control"))
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| host_error("MP-08: state read carries no control digest".into()))?;
             if let Some(object) = state.as_object_mut() {
                 object.extend(
                     self.user_domain_window_projection(&user)
@@ -183,21 +180,6 @@ mod tests {
             "a retitled Tab is a new revision"
         );
         assert_eq!(parse(&revision(&state, None, NONE_HELD)).unwrap().signal, 0);
-    }
-
-    #[test]
-    fn control_digest_names_the_held_tabs() {
-        let held = |tabs: &[&str]| tabs.iter().map(|tab| tab.to_string()).collect();
-        assert_eq!(control_digest(&held(&[])).len(), 16);
-        assert_ne!(control_digest(&held(&[])), control_digest(&held(&["a"])));
-        assert_ne!(
-            control_digest(&held(&["a", "b"])),
-            control_digest(&held(&["ab"]))
-        );
-        assert_eq!(
-            control_digest(&held(&["a", "b"])),
-            control_digest(&held(&["b", "a"]))
-        );
     }
 
     #[test]

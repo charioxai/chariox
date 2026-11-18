@@ -886,6 +886,20 @@ impl KernelBrowserActors {
             })
             .collect()
     }
+    /// Names who holds which Tabs by takeover (the same set `project_tabs` marks `taken_over`), so a viewer can
+    /// tell from its own revision that control changed since its read.
+    pub(crate) fn person_control(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for tab in self.person_held_tabs() {
+            hasher.update((tab.len() as u64).to_be_bytes());
+            hasher.update(tab.as_bytes());
+        }
+        hasher.finalize()[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
     pub(crate) fn snapshot(&self) -> Value {
         let translate = |target: &mut InputTarget| {
             if let InputTarget::BrowserTab(tab) = target {
@@ -1035,6 +1049,19 @@ mod tests {
         assert_eq!(held(&mut model), json!(false));
         let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
         model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_person_control_names_the_held_tabs() {
+        let mut model = ready();
+        let none = model.person_control();
+        assert_eq!(none.len(), 16);
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        let held = model.person_control();
+        assert_ne!(none, held);
+        model.release("terminal:old", "host-tab-a", 1).unwrap();
+        assert_eq!(model.person_control(), none);
     }
     #[test]
     fn mp10_orphaned_takeover_ends_by_return_control_or_when_the_person_goes_idle() {

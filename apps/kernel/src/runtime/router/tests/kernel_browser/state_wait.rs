@@ -260,3 +260,82 @@ fn an_idle_reclaim_between_a_windows_read_and_its_next_wait_ends_that_wait_at_on
         ))
     });
 }
+
+// The revision's control digest and the `taken_over` marks of the state it names come from one snapshot: a
+// takeover that lands while a read is in flight is both in the state and in the digest, so its return afterwards
+// differs from the revision and the next wait answers at once.
+#[test]
+fn a_takeover_landing_during_a_read_and_returned_after_it_is_news_to_the_next_wait() {
+    use crate::session::{EnvironmentActor, EnvironmentActorKind};
+    run_test(|| {
+        Box::pin(async {
+            let workspace = crate::test_support::TestWorktree::new("takeover-during-read");
+            let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-state-wait-during-read-{:032x}",
+                rand::random::<u128>()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            router
+                .runtime_state()
+                .install_kernel_browser_fixture(agent.owner_user_id(), &root);
+            focus(&router, session.id(), agent.id()).await;
+            let state = router.runtime_state();
+            let host = state.kernel_browser_host_for_test();
+
+            // A read is in flight in the browser host while another window takes the Tab over.
+            std::fs::write(root.join("hold"), "1").unwrap();
+            let reading = {
+                let router = router.clone();
+                tokio::spawn(async move { wait(&router, "", 0).await })
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert!(!reading.is_finished(), "the read is held in the host");
+            let owner = agent.owner_user_id().to_string();
+            let takeover = {
+                let host = host.clone();
+                std::thread::spawn(move || {
+                    host.request_takeover(
+                        &owner,
+                        EnvironmentActor::new(
+                            "terminal:other-window",
+                            EnvironmentActorKind::Human,
+                            "Human",
+                        ),
+                        "host-tab-fixture",
+                        1,
+                    )
+                    .unwrap();
+                })
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            std::fs::remove_file(root.join("hold")).unwrap();
+            takeover.join().unwrap();
+            let read = reading.await.unwrap();
+            assert_eq!(read["tabs"][0]["taken_over"], true);
+            let revision = read["revision"].as_str().unwrap().to_string();
+
+            // The person returns control before this window waits again.
+            host.release_input(
+                agent.owner_user_id(),
+                "terminal:other-window",
+                "host-tab-fixture",
+                1,
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let next = wait(&router, &revision, 10_000).await;
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(1500),
+                "the wait answers at once, not after its ten seconds"
+            );
+            assert_eq!(next["tabs"][0]["taken_over"], false);
+            router.runtime_state().shutdown_cleanup().await.unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+        })
+    });
+}
