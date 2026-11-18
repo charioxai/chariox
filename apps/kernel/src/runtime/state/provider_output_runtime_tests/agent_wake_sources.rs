@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
 mod assessment_inbox;
+#[cfg(unix)]
 mod handed_over_run;
 
 const KIND: &str = "test-source";

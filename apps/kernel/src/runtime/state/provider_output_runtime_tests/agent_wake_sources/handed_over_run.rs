@@ -35,7 +35,9 @@ async fn surviving_run(f: &Fixture) -> Surviving {
         .provider_store
         .get_runs_by_runtime_mcp_auth_token(&surviving.token)
         .is_empty());
-    crate::hot_reload::hold_unclaimed_run_for_tests(run.handover_identity());
+    crate::hot_reload::hold_unclaimed_run_for_tests(
+        crate::hot_reload::run_after_handover_for_tests(&run),
+    );
     surviving
 }
 
@@ -111,4 +113,113 @@ async fn a_token_nobody_holds_is_still_refused() {
     assert!(refused
         .to_string()
         .contains("invalid runtime MCP auth token"));
+}
+
+/// A run workflows can discover before the reload is still discoverable after it: the next
+/// program reads the run through the serialized handover, which must carry the runtime-only
+/// `workflow_tools_enabled` the run's own serialization leaves out.
+#[tokio::test]
+async fn a_run_workflows_can_discover_is_still_discoverable_after_the_handover() {
+    let f = fixture("handed-over-workflow-discovery", true).await;
+    f.app
+        .lock()
+        .await
+        .providers
+        .enable_workflow_tools(&f.run)
+        .unwrap();
+    let names = |token: &str| -> std::collections::BTreeSet<String> {
+        f.runtime
+            .runtime_tool_specs_for_auth_token(token)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect()
+    };
+    let live = names(&runtime_token(&f).await);
+    let workflow_only = crate::transport::runtime_tools::workflow_runtime_tool_specs();
+    assert!(
+        workflow_only.iter().all(|spec| live.contains(&spec.name)),
+        "the live run discovers the workflow actions"
+    );
+    let surviving = surviving_run(&f).await;
+    let after = names(&surviving.token);
+    assert_eq!(
+        after,
+        live,
+        "the handed-over run discovers what the live run did; differing: {:?}",
+        live.symmetric_difference(&after).collect::<Vec<_>>()
+    );
+}
+
+/// Every field tool calls read from a run is as the live run held it after the handover. The
+/// fields the handover leaves behind (launch environment, arguments, program, launch config,
+/// resume state, external import, resolved account, utility-run markers, substitute, settings
+/// staleness, sync roots, project environment revision, native checkpoint, last output time)
+/// are read at launch, prompt dispatch, settlement and reload: the claiming run does those.
+#[tokio::test]
+async fn a_handed_over_run_holds_every_field_tool_calls_read_as_the_live_run_did() {
+    let f = fixture("handed-over-field-parity", true).await;
+    let mut live = {
+        let app = f.app.lock().await;
+        let mut run = app.providers.get_run(&f.run).unwrap();
+        run.set_mcp_servers_for_tests(vec![crate::mcp::CharioxMcpServerConfig::stdio(
+            "docs",
+            "docs-server",
+            Vec::new(),
+        )]);
+        run.enable_workflow_tools();
+        run.mark_workflow_fresh_context("workflow-node-run-1");
+        run.set_remote_extension_manifest(crate::extension::RemoteExtensionManifest {
+            tools: Vec::new(),
+            room_browser_available: true,
+        });
+        run.set_control_capabilities(vec![crate::provider::ControlCapability::new(
+            crate::provider::ControlOperation::AckWorkflowTurn,
+            crate::provider::ControlCapabilityMode::Mcp,
+        )]);
+        run
+    };
+    live.mark_running();
+    let after = crate::hot_reload::run_after_handover_for_tests(&live);
+    let read = |run: &crate::provider::RuntimeProviderRun| -> Vec<String> {
+        vec![
+            format!("{:?}", run.id()),
+            format!("{:?}", run.session_id()),
+            format!("{:?}", run.agent_instance_id()),
+            format!("{:?}", run.owner_user_id()),
+            format!("{:?}", run.adapter_key()),
+            format!("{:?}", run.provider()),
+            format!("{:?}", run.account_profile()),
+            format!("{:?}", run.model()),
+            format!("{:?}", run.variant()),
+            format!("{:?}", run.execution_mode()),
+            format!("{:?}", run.permission_level()),
+            format!("{:?}", run.write_access_mode()),
+            format!("{:?}", run.control_capabilities()),
+            format!("{:?}", run.endpoint_mode()),
+            format!("{:?}", run.client_interface()),
+            format!("{:?}", run.working_directory()),
+            format!("{:?}", run.runtime_mcp_server_url()),
+            format!("{:?}", run.runtime_mcp_auth_token()),
+            format!(
+                "{:?}",
+                run.mcp_servers()
+                    .iter()
+                    .map(|server| server.name.clone())
+                    .collect::<Vec<_>>()
+            ),
+            format!(
+                "{:?}",
+                run.remote_extension_manifest().room_browser_available
+            ),
+            format!("{:?}", run.workflow_tools_enabled()),
+            format!("{:?}", run.workflow_fresh_context_node_run_id()),
+            format!("{:?}", run.state()),
+        ]
+    };
+    assert_eq!(read(&after), read(&live));
+    assert!(after.workflow_tools_enabled());
+    assert_eq!(
+        after.workflow_fresh_context_node_run_id(),
+        Some("workflow-node-run-1")
+    );
 }

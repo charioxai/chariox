@@ -108,7 +108,7 @@ pub(crate) struct ProviderHandover {
     // surviving process keeps calling its tools with the token it has (Vault, timers, events).
     // A program older than this field hands none over, and its runs authenticate at the claim.
     #[serde(default)]
-    identity: Option<crate::provider::RuntimeProviderRun>,
+    identity: Option<RunIdentity>,
     process: HandedOverProcess,
 }
 
@@ -156,6 +156,44 @@ impl ProviderHandover {
             HandedOverProcess::Claude(claude) => claude.pid(),
             HandedOverProcess::Codex { pty, .. } => pty.pid,
         }
+    }
+}
+
+/// A handed-over run as its tool calls read it. The run's own serialization leaves out what is
+/// kept in memory only; the runtime state tool calls read is carried beside it: whether workflow
+/// actions are offered (`workflow_tools_enabled`) and the workflow node whose fresh context the run
+/// holds. The other runtime-only fields (resolved account, discovery and substitute markers,
+/// settings staleness, sync roots, project environment revision, native checkpoint, last output
+/// time) are read at launch, prompt dispatch, settlement and reload, which the claiming run does.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RunIdentity {
+    run: crate::provider::RuntimeProviderRun,
+    #[serde(default)]
+    workflow_tools_enabled: bool,
+    #[serde(default)]
+    workflow_fresh_context_node_run_id: Option<String>,
+}
+
+impl RunIdentity {
+    pub(crate) fn of(run: &crate::provider::RuntimeProviderRun) -> Self {
+        Self {
+            run: run.handover_identity(),
+            workflow_tools_enabled: run.workflow_tools_enabled(),
+            workflow_fresh_context_node_run_id: run
+                .workflow_fresh_context_node_run_id()
+                .map(str::to_string),
+        }
+    }
+
+    pub(crate) fn into_run(self) -> crate::provider::RuntimeProviderRun {
+        let mut run = self.run;
+        if self.workflow_tools_enabled {
+            run.enable_workflow_tools();
+        }
+        if let Some(node) = self.workflow_fresh_context_node_run_id {
+            run.mark_workflow_fresh_context(node);
+        }
+        run
     }
 }
 
@@ -272,7 +310,11 @@ pub fn receive() {
     *lock(&UNCLAIMED_RUNS) = handover
         .providers
         .iter_mut()
-        .filter_map(|p| p.identity.take().map(|run| (p.run_id.clone(), run)))
+        .filter_map(|p| {
+            p.identity
+                .take()
+                .map(|identity| (p.run_id.clone(), identity.into_run()))
+        })
         .collect();
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
@@ -569,6 +611,17 @@ pub(crate) fn unclaimed_run_for_agent(
         .cloned()
 }
 
+/// The run as the next program reads it from the handover: through the serialized form.
+#[cfg(test)]
+pub(crate) fn run_after_handover_for_tests(
+    run: &crate::provider::RuntimeProviderRun,
+) -> crate::provider::RuntimeProviderRun {
+    let body = serde_json::to_vec(&RunIdentity::of(run)).unwrap();
+    serde_json::from_slice::<RunIdentity>(&body)
+        .unwrap()
+        .into_run()
+}
+
 #[cfg(test)]
 pub(crate) fn hold_unclaimed_run_for_tests(run: crate::provider::RuntimeProviderRun) {
     lock(&UNCLAIMED_RUNS).insert(run.id().to_string(), run);
@@ -823,7 +876,7 @@ fn provider_handover(
         agent_id: run.agent_instance_id().map(str::to_string),
         run_id: run.id().to_string(),
         runtime_mcp_auth_token: run.runtime_mcp_auth_token().map(str::to_string),
-        identity: Some(run.handover_identity()),
+        identity: Some(RunIdentity::of(run)),
         process,
     }
 }

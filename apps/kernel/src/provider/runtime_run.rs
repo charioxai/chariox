@@ -773,8 +773,9 @@ impl RuntimeProviderRun {
     }
 
     /// What a hot reload hands to the next program so that a surviving run authenticates its
-    /// tool calls before a recovered prompt claims it: who the run is for and its tool token,
-    /// nothing a launch carried (environment, arguments, extra tool servers, config).
+    /// tool calls before a recovered prompt claims it: the run as its tool calls read it (who it
+    /// is for, its token, its tool servers and capabilities), nothing about its process: not the
+    /// launch environment, arguments, launch config or resume state.
     #[cfg(unix)]
     pub(crate) fn handover_identity(&self) -> Self {
         let mut identity = self.clone();
@@ -784,12 +785,15 @@ impl RuntimeProviderRun {
         identity.pty_args.clear();
         identity.pty_program = None;
         identity.pty_target = None;
-        identity.mcp_servers.clear();
         identity.provider_config_overrides.clear();
-        identity.remote_extension_manifest = Default::default();
         identity.external_provider_import = None;
         identity.resume_state = Default::default();
         identity
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mcp_servers_for_tests(&mut self, servers: Vec<CharioxMcpServerConfig>) {
+        self.mcp_servers = servers;
     }
 
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {
