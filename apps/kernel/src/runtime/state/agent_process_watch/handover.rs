@@ -297,9 +297,8 @@ mod tests {
 
     impl Drop for KillOnDrop {
         fn drop(&mut self) {
-            if super::super::super::agent_process_group::birth(self.0).is_ok_and(|b| b == self.1) {
-                unsafe { libc::kill(-(self.0 as i32), libc::SIGKILL) };
-            }
+            // Signals only the session members whose birth still matches, so a reused pid is never hit.
+            super::super::super::agent_process_group::signal_session(self.0, self.1, libc::SIGKILL);
         }
     }
 
