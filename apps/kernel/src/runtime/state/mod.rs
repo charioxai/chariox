@@ -1731,11 +1731,11 @@ mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
+mod agent_queued_messages;
 mod agent_run;
 #[cfg(test)]
 mod agent_run_test_support;
 mod agent_run_waiters;
-mod agent_queued_messages;
 mod agent_subtree_cascade;
 pub(crate) use agent_run::WorkerCaller;
 pub(crate) use agent_run_waiters::WorkerEnd;
