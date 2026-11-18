@@ -17,6 +17,14 @@
 //! | refused P       | accepted P, ref             | refused P           | refused P           | refused P                       | refused P |
 //! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref     | accepted P, ref                 | accepted P, ref |
 //!
+//! Every try counts as unanswered from the moment before it is sent until the row records its
+//! answer (accepted or refused). A lost response, a timeout, a restart or any other failure never
+//! answers it, so the count stays. A request is known to hold nothing only when it is refused and
+//! no try of it is unanswered: a refusal judged before an overlapping try commits says nothing
+//! about that try. Only then does a refusal say that nothing was allocated or charged and suggest
+//! another request_id; in every other case it tells the caller to retry the same request_id, which
+//! returns the allocation the service accepted, if there is one.
+//!
 //! - Definitive refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
 //!   (`AcquireFailure::Refused`) answering the acquire itself. Tries of one request can overlap:
 //!   the service can refuse one before another commits, and that refusal can arrive after the
@@ -71,18 +79,21 @@ pub(super) fn acquire_choice(
         }),
         None => Err(acquisition_error(
             "capacity_unavailable",
-            "No machine option is in stock right now; nothing was allocated or charged. Try again later: chariox.machines.options shows the options and their stock",
+            "No machine option is in stock right now; no request was sent, so nothing was allocated or charged. Try again later: chariox.machines.options shows the options and their stock",
         )),
     }
 }
 
-/// A refused acquire names what is in stock and how to choose it under a new request_id, so the
-/// agent can pick again.
+/// A refused acquire. When the request is known to hold nothing it names what is in stock and how
+/// to choose it under a new request_id; otherwise it sends the caller back to the same request_id,
+/// which returns an allocation the service may have accepted.
 /// Only the refused option is left out: the same class in another region may be in stock.
 pub(super) fn out_of_stock_refusal(
     error: DaemonError,
     capability: &MachineAllocationCapability,
     option: &AcquireOption,
+    request_id: &str,
+    request: &AcquireChoice,
 ) -> DaemonError {
     if acquire_failure(&error) != (AcquireFailure::Refused { out_of_stock: true }) {
         return error;
@@ -102,11 +113,13 @@ pub(super) fn out_of_stock_refusal(
         AcquireOption::Named { .. } => option_name(option),
         AcquireOption::ServiceDefault => "The default option".to_owned(),
     };
-    let message = if in_stock.is_empty() {
-        format!("{subject} is out of stock and no other option is in stock; nothing was allocated or charged. Try again later")
+    let message = if !request.holds_nothing() {
+        format!("{subject} is out of stock for this try, but request_id {request_id} may still hold an allocation: another try of it was not answered or was accepted. Retry chariox.machines.acquire with the same request_id and no other option: it returns the allocation if one was accepted, and is refused out of stock again if none was")
+    } else if in_stock.is_empty() {
+        format!("{subject} is out of stock and no other option is in stock; every try of request_id {request_id} was answered and none was accepted, so nothing was allocated or charged. Try again later")
     } else {
         format!(
-            "{subject} is out of stock; nothing was allocated or charged. In stock now: {}. Choose one by passing a new request_id with its class_id and region to chariox.machines.acquire, or a new request_id alone to take the first in stock",
+            "{subject} is out of stock; every try of request_id {request_id} was answered and none was accepted, so nothing was allocated or charged. In stock now: {}. Choose one by passing a new request_id with its class_id and region to chariox.machines.acquire, or a new request_id alone to take the first in stock",
             in_stock.join(", ")
         )
     };
@@ -135,15 +148,21 @@ impl KernelRuntimeState {
         let store = &self.owned.durable_state_store;
         loop {
             match store.acquire_choice(agent_id, request_id)? {
-                Some(AcquireChoice { option, .. }) => {
+                Some(choice) => {
+                    let option = choice.option.clone();
                     let differs = |named: &Option<String>, kept: Option<&str>| {
                         named.is_some() && named.as_deref() != kept
                     };
                     if differs(&class_id, option.class_id()) || differs(&region, option.region()) {
+                        let other = if choice.holds_nothing() {
+                            ", or pass a new request_id to choose another option"
+                        } else {
+                            " (the service may hold an allocation under it, so another option waits until a refusal says it holds nothing)"
+                        };
                         return Err(acquisition_error(
                             "invalid_request",
                             &format!(
-                                "request_id {request_id} already asked for {}; retry it without class_id and region, or pass a new request_id to choose another option",
+                                "request_id {request_id} already asked for {}; retry it without class_id and region{other}",
                                 option_name(&option)
                             ),
                         ));
@@ -166,14 +185,32 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Records what the service said about the option this try sent.
+    /// Records that a try sending `option` is about to leave, before it does.
+    pub(super) fn begin_acquire_try(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        option: &AcquireOption,
+    ) -> Result<(), DaemonError> {
+        self.owned.durable_state_store.write_acquire_choice(
+            agent_id,
+            request_id,
+            AcquireChoiceWrite::Send {
+                option: option.clone(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Records what the service said about the option this try sent, and returns the request's
+    /// row as it stands after that answer.
     pub(super) fn settle_acquire_option(
         &self,
         agent_id: &str,
         request_id: &str,
         option: &AcquireOption,
         outcome: Result<&str, &DaemonError>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<AcquireChoice, DaemonError> {
         let write = match outcome {
             Ok(allocation_ref) => AcquireChoiceWrite::Accept {
                 option: option.clone(),
@@ -183,7 +220,7 @@ impl KernelRuntimeState {
                 AcquireFailure::Refused { .. } => AcquireChoiceWrite::Refuse {
                     option: option.clone(),
                 },
-                AcquireFailure::Ambiguous => return Ok(()),
+                AcquireFailure::Ambiguous => return self.request_row(agent_id, request_id),
             },
         };
         let accepted = matches!(write, AcquireChoiceWrite::Accept { .. });
@@ -198,7 +235,19 @@ impl KernelRuntimeState {
                 &format!("The service returned another allocation for request_id {request_id} than it accepted before; check chariox.machines.status for both"),
             ));
         }
-        Ok(())
+        self.request_row(agent_id, request_id)
+    }
+
+    fn request_row(&self, agent_id: &str, request_id: &str) -> Result<AcquireChoice, DaemonError> {
+        self.owned
+            .durable_state_store
+            .acquire_choice(agent_id, request_id)?
+            .ok_or_else(|| {
+                acquisition_error(
+                    "invalid_response",
+                    &format!("request_id {request_id} lost its saved option"),
+                )
+            })
     }
 }
 

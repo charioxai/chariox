@@ -323,6 +323,12 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
     assert!(error.contains("big in north is out of stock"), "{error}");
     assert!(error.contains("In stock now: small in south."), "{error}");
     assert!(error.contains("class_id and region"), "{error}");
+    // The one try was answered and nothing accepted it: the request holds nothing.
+    assert!(error.contains("none was accepted"), "{error}");
+    assert!(
+        error.contains("nothing was allocated or charged"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -408,6 +414,23 @@ async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again
         pairs,
         [("big", "north"), ("big", "north"), ("small", "south")]
             .map(|(class, region)| (class.into(), region.into()))
+    );
+}
+
+/// A refusal of a request that may hold an allocation sends the caller back to that request_id:
+/// it never says nothing was charged and never offers another request_id.
+fn assert_retry_the_same_request(error: &str, request_id: &str) {
+    assert!(!error.contains("nothing was allocated"), "{error}");
+    assert!(!error.contains("new request_id"), "{error}");
+    assert!(
+        error.contains("Retry chariox.machines.acquire with the same request_id"),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!(
+            "request_id {request_id} may still hold an allocation"
+        )),
+        "{error}"
     );
 }
 
@@ -516,7 +539,10 @@ async fn a_refusal_after_a_lost_response_keeps_the_option_and_the_retry_recovers
             .unwrap()
             .extend([Answer::LoseResponse, Answer::Refuse(status, code)]);
         assert!(acquire().await.is_err());
-        assert!(acquire().await.is_err());
+        let refused = acquire().await.unwrap_err().to_string();
+        if code == "capacity_exceeded" {
+            assert_retry_the_same_request(&refused, &request_id);
+        }
         let row = state
             .owned
             .durable_state_store
@@ -546,7 +572,10 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
         (
             "429 Too Many Requests",
             "capacity_exceeded",
-            vec![option("big", "north", false)],
+            vec![
+                option("big", "north", false),
+                option("small", "south", true),
+            ],
         ),
         (
             "400 Bad Request",
@@ -580,6 +609,10 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
             .expect("both tries of r1 end");
         let first = first.unwrap_err().to_string();
         assert!(second.is_err(), "{code}");
+        if code == "capacity_exceeded" {
+            assert_retry_the_same_request(&first, "r1");
+            assert!(!first.contains("In stock now"), "{first}");
+        }
         let recovered = acquire()
             .await
             .unwrap_or_else(|error| panic!("{code} after {first}: {error}"));
@@ -622,7 +655,8 @@ async fn an_accepted_request_keeps_its_option_after_a_later_refusal() {
         .unwrap()
         .push_back(Answer::Refuse("429 Too Many Requests", "capacity_exceeded"));
     service.offers.lock().unwrap()[0].available = false;
-    assert!(acquire().await.is_err());
+    let refused = acquire().await.unwrap_err().to_string();
+    assert_retry_the_same_request(&refused, "r1");
     let retried = acquire().await.unwrap();
     assert_eq!(
         retried.payload["allocation"]["allocation_ref"],
@@ -702,6 +736,7 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
         error.contains("request_id r1 already asked for small in north"),
         "{error}"
     );
+    assert!(!error.contains("new request_id"), "{error}");
     assert_eq!(service.acquires.lock().unwrap().len(), 1);
     let named_same = state
         .machine_tool(

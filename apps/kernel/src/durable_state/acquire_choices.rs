@@ -50,6 +50,17 @@ pub(crate) enum AcquireChoiceState {
 pub(crate) struct AcquireChoice {
     pub(crate) option: AcquireOption,
     pub(crate) state: AcquireChoiceState,
+    /// Tries sent under the request whose answer never arrived. An overlapping try that was never
+    /// answered may hold the allocation, so only a request with none left is known to hold nothing.
+    pub(crate) unanswered: u32,
+}
+
+impl AcquireChoice {
+    /// Whether a refusal just recorded establishes that the service holds nothing under the
+    /// request: nothing accepted it and no other try is still unanswered.
+    pub(crate) fn holds_nothing(&self) -> bool {
+        self.state == AcquireChoiceState::Refused && self.unanswered == 0
+    }
 }
 
 /// One compare-and-set on the row of `agent_id` and `request_id`.
@@ -62,7 +73,11 @@ pub(crate) enum AcquireChoiceWrite {
         option: AcquireOption,
         allocation_ref: String,
     },
-    /// A pending row with `option` becomes refused.
+    /// A try of a row with `option` is about to be sent: its answer is awaited until the row
+    /// records it.
+    Send { option: AcquireOption },
+    /// A try of a row with `option` was refused: a pending row becomes refused, and the try is
+    /// answered either way.
     Refuse { option: AcquireOption },
 }
 
@@ -80,6 +95,7 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             class_id TEXT, region TEXT CHECK (class_id IS NOT NULL OR region IS NULL),
             state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'refused')),
             allocation_ref TEXT CHECK ((state = 'accepted') = (allocation_ref IS NOT NULL)),
+            unanswered INTEGER NOT NULL DEFAULT 0 CHECK (unanswered >= 0),
             PRIMARY KEY (agent_id, request_id)
         );",
     )
@@ -93,7 +109,7 @@ impl DurableKernelStateStore {
     ) -> Result<Option<AcquireChoice>, DaemonError> {
         self.lock_connection("acquire_choices.read")?
             .query_row(
-                "SELECT class_id, region, state, allocation_ref FROM durable_acquire_choices
+                "SELECT class_id, region, state, allocation_ref, unanswered FROM durable_acquire_choices
                 WHERE agent_id = ?1 AND request_id = ?2",
                 params![agent_id, request_id],
                 |row| {
@@ -110,7 +126,11 @@ impl DurableKernelStateStore {
                         (None, None) => AcquireOption::ServiceDefault,
                         (None, Some(_)) => return Err(rusqlite::Error::InvalidQuery),
                     };
-                    Ok(AcquireChoice { option, state })
+                    Ok(AcquireChoice {
+                        option,
+                        state,
+                        unanswered: row.get(4)?,
+                    })
                 },
             )
             .optional()
@@ -168,9 +188,16 @@ pub(super) fn apply(
                 allocation_ref
             ],
         )?,
+        AcquireChoiceWrite::Send { option } => transaction.execute(
+            "UPDATE durable_acquire_choices SET unanswered = unanswered + 1
+            WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4",
+            params![agent_id, request_id, option.class_id(), option.region()],
+        )?,
         AcquireChoiceWrite::Refuse { option } => transaction.execute(
-            "UPDATE durable_acquire_choices SET state = 'refused'
-            WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'
+            "UPDATE durable_acquire_choices
+            SET state = CASE state WHEN 'pending' THEN 'refused' ELSE state END,
+                unanswered = MAX(unanswered - 1, 0)
+            WHERE agent_id = ?1 AND request_id = ?2 AND state != 'accepted'
                 AND class_id IS ?3 AND region IS ?4",
             params![agent_id, request_id, option.class_id(), option.region()],
         )?,
@@ -299,6 +326,69 @@ mod tests {
     }
 
     #[test]
+    fn a_request_holds_nothing_only_when_it_is_refused_and_no_try_is_unanswered() {
+        let directory = crate::test_support::TestTempDir::new("acquire-unanswered");
+        let path = directory.path().join("kernel.db");
+        let send = || AcquireChoiceWrite::Send {
+            option: option("small"),
+        };
+        let row =
+            |store: &DurableKernelStateStore| store.acquire_choice("agent", "r1").unwrap().unwrap();
+        let store = DurableKernelStateStore::open(path.clone()).unwrap();
+        assert!(store
+            .write_acquire_choice("agent", "r1", choose("small"))
+            .unwrap());
+        // Two overlapping tries; one is answered with a refusal, the other never answers.
+        assert!(store.write_acquire_choice("agent", "r1", send()).unwrap());
+        assert!(store.write_acquire_choice("agent", "r1", send()).unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r1", refuse("small"))
+            .unwrap());
+        assert_eq!(row(&store).unanswered, 1);
+        assert!(!row(&store).holds_nothing());
+        drop(store);
+        // The unanswered try survives a restart and later refusals never clear it.
+        let store = DurableKernelStateStore::open(path).unwrap();
+        assert!(store.write_acquire_choice("agent", "r1", send()).unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r1", refuse("small"))
+            .unwrap());
+        assert_eq!(row(&store).unanswered, 1);
+        assert!(!row(&store).holds_nothing());
+        // Another request whose every try was answered holds nothing; a Send for another option counts nowhere.
+        assert!(store
+            .write_acquire_choice("agent", "r2", choose("small"))
+            .unwrap());
+        assert!(!store
+            .write_acquire_choice(
+                "agent",
+                "r2",
+                AcquireChoiceWrite::Send {
+                    option: option("big")
+                }
+            )
+            .unwrap());
+        assert!(store.write_acquire_choice("agent", "r2", send()).unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r2", refuse("small"))
+            .unwrap());
+        assert!(store
+            .acquire_choice("agent", "r2")
+            .unwrap()
+            .unwrap()
+            .holds_nothing());
+        // An accepted request never holds nothing.
+        assert!(store
+            .write_acquire_choice("agent", "r2", accept("small", "a1"))
+            .unwrap());
+        assert!(!store
+            .acquire_choice("agent", "r2")
+            .unwrap()
+            .unwrap()
+            .holds_nothing());
+    }
+
+    #[test]
     fn the_service_default_is_a_choice_of_its_own_and_survives_a_restart() {
         let directory = crate::test_support::TestTempDir::new("acquire-default-choice");
         let path = directory.path().join("kernel.db");
@@ -323,7 +413,8 @@ mod tests {
             store.acquire_choice("agent", "r1").unwrap(),
             Some(AcquireChoice {
                 option: AcquireOption::ServiceDefault,
-                state: AcquireChoiceState::Pending
+                state: AcquireChoiceState::Pending,
+                unanswered: 0
             })
         );
         assert!(store
