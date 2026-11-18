@@ -264,7 +264,6 @@ fn committed(
         || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(turn.agent_id.as_str())
         || metadata.and_then(|m| m.session_id.as_deref()) != Some(turn.session_id.as_str())
         || metadata.and_then(|m| m.use_binding.as_ref()) != Some(binding)
-        || metadata.and_then(|m| m.copied_from.as_deref()) != Some(from)
     {
         return Err(error(
             "request_id already names a different credential; use a new request_id",

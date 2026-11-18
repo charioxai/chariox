@@ -1049,7 +1049,11 @@ async fn a_copy_request_replayed_with_another_source_is_refused() {
     let of_first = copy(&first).await.unwrap();
     // The same request naming another entry is refused: it is not the copy the request already made.
     let refused = copy(&second).await.unwrap_err().to_string();
-    assert!(refused.contains("use a new request_id"), "{refused}");
+    assert!(
+        refused
+            .contains("request_id already made a copy of a different entry; use a new request_id"),
+        "{refused}"
+    );
     // Nor is an entry that does not exist answered with the first copy.
     assert!(copy("nope").await.is_err());
     // The same source still gets its copy back, holding the first entry's value.
