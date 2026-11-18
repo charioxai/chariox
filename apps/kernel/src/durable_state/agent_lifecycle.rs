@@ -1455,7 +1455,13 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
         return Ok(p);
     }
     let job: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND room_id=?2 AND json_extract(payload,'$.kind')='job')", params![e.source_id, e.room_id], |row| row.get(0)).map_err(sql)?;
-    if encode(&e.payload)?.len() > if job { 256 * 1024 } else { 32_768 } {
+    if encode(&e.payload)?.len()
+        > if job || e.kind == "notification" {
+            256 * 1024
+        } else {
+            32_768
+        }
+    {
         return Err(error("event payload limit"));
     }
     age_delivered_events(tx, &e.room_id, &e.agent_id)?;

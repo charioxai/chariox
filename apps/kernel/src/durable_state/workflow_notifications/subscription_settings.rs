@@ -118,23 +118,72 @@ pub(super) fn carry_in(tx: &Transaction<'_>, from: &str, to: &str) -> Result<(),
         params![from, to],
     )
     .map_err(sql)?;
+    // The new subscriber may already hold lines restored from an earlier subscription to the
+    // same source; where both saw an occurrence, the carried line is the one kept.
     tx.execute(
-        "UPDATE notification_trace SET subscription_id=?2 WHERE subscription_id=?1",
+        "UPDATE OR REPLACE notification_trace SET subscription_id=?2 WHERE subscription_id=?1",
         params![from, to],
     )
     .map_err(sql)?;
-    forget_in(tx, from)
+    tx.execute(
+        "DELETE FROM notification_subscription_settings WHERE subscription_id=?1",
+        [from],
+    )
+    .map_err(sql)?;
+    prune_in(tx, to)
 }
 
-pub(super) fn forget_in(tx: &Transaction<'_>, subscription_id: &str) -> Result<(), DaemonError> {
-    for table in ["notification_subscription_settings", "notification_trace"] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE subscription_id=?1"),
-            [subscription_id],
-        )
-        .map_err(sql)?;
-    }
+/// Retired lines kept in all, for the subscriptions their owners removed and may make again.
+const RETIRED_LINES: i64 = 500;
+
+/// Where a removed subscription's lines wait for the one its owner makes again: the same
+/// source and target, whatever the new subscription's id.
+fn retired_key(sub: &WorkflowNotificationSubscription) -> String {
+    format!(
+        "retired:{}:{}:{:?}:{}:{}",
+        sub.owner_user_id, sub.source_id, sub.target_kind, sub.endpoint_id, sub.workflow_id
+    )
+}
+
+/// A removed subscription forgets its settings and counters; its trace waits under its source
+/// and target for a new subscription to the same pair.
+pub(super) fn retire_in(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+) -> Result<(), DaemonError> {
+    let key = retired_key(sub);
+    tx.execute(
+        "UPDATE OR REPLACE notification_trace SET subscription_id=?2 WHERE subscription_id=?1",
+        params![sub.subscription_id, key],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "DELETE FROM notification_subscription_settings WHERE subscription_id=?1",
+        [&sub.subscription_id],
+    )
+    .map_err(sql)?;
+    prune_in(tx, &key)?;
+    tx.execute(
+        "DELETE FROM notification_trace WHERE subscription_id LIKE 'retired:%' AND rowid NOT IN
+         (SELECT rowid FROM notification_trace WHERE subscription_id LIKE 'retired:%'
+          ORDER BY at_ms DESC, rowid DESC LIMIT ?1)",
+        [RETIRED_LINES],
+    )
+    .map_err(sql)?;
     Ok(())
+}
+
+/// A subscription made again for a source and target that had one gets that one's lines back.
+pub(super) fn restore_in(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+) -> Result<(), DaemonError> {
+    tx.execute(
+        "UPDATE OR REPLACE notification_trace SET subscription_id=?1 WHERE subscription_id=?2",
+        params![sub.subscription_id, retired_key(sub)],
+    )
+    .map_err(sql)?;
+    prune_in(tx, &sub.subscription_id)
 }
 
 pub(super) fn set_paused_in(
@@ -467,6 +516,10 @@ fn line_in(
         ],
     )
     .map_err(sql)?;
+    prune_in(tx, subscription_id)
+}
+
+fn prune_in(tx: &Transaction<'_>, subscription_id: &str) -> Result<(), DaemonError> {
     tx.execute(
         "DELETE FROM notification_trace WHERE subscription_id=?1 AND rowid NOT IN
          (SELECT rowid FROM notification_trace WHERE subscription_id=?1 ORDER BY at_ms DESC, rowid DESC LIMIT ?2)",

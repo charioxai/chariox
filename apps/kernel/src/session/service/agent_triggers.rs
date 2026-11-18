@@ -134,6 +134,7 @@ impl SessionService {
         subscription_id: String,
         display_name: String,
         prompt: Option<String>,
+        busy_policy: AgentTriggerBusyPolicy,
     ) -> Result<AgentTrigger, DaemonError> {
         self.get_session(session_id)?;
         let prompt = prompt
@@ -152,6 +153,7 @@ impl SessionService {
             subscription_id,
             display_name,
             prompt,
+            busy_policy,
             unix_epoch_ms(),
         );
         Ok(self
@@ -185,6 +187,7 @@ impl SessionService {
             subscription_id,
             display_name,
             Some(prompt),
+            AgentTriggerBusyPolicy::Queue,
         )?;
         let stored = self
             .agent_trigger_session_mut(session_id)?
@@ -250,17 +253,6 @@ impl SessionService {
             .iter_mut()
             .find(|trigger| trigger.id() == trigger_id)
             .ok_or_else(|| agent_trigger_not_found(session_id, trigger_id))?;
-        if busy_policy.is_some()
-            && matches!(
-                trigger.source(),
-                crate::session::AgentTriggerSource::Notification { .. }
-            )
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent trigger update",
-                message: "a notification trigger always queues; it has no busy policy".to_string(),
-            });
-        }
         trigger.update(busy_policy, prompt, enabled, unix_epoch_ms());
         Ok(trigger.clone())
     }

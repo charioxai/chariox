@@ -46,6 +46,18 @@ pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> 
     )
 }
 
+/// The one line a notification's prompt carries: what happened and where to read it. The
+/// occurrence itself stays in the inbox row `sequence`, behind the tool that marks it untrusted.
+pub(super) fn notification_notice(title: &str, source: &str, sequence: u64) -> String {
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "Notification: {} (from {}). Read it with chariox.events.inbox after {}, then chariox.events.ack it.",
+        one_line(title),
+        one_line(source),
+        sequence.saturating_sub(1)
+    )
+}
+
 /// The prompt of a sub-agent whose parent sent it a message: the parent's text,
 /// labelled with who sent it and which inbox row carries it. The parent speaks
 /// for the sub-agent's own chain of command, so the text is the task.

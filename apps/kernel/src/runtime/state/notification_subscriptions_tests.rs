@@ -308,6 +308,166 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
 }
 
 #[tokio::test]
+async fn a_subscription_made_again_for_the_same_source_and_agent_keeps_the_earlier_history() {
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    let options = serde_json::json!([{"name": "pr", "value": 976}]);
+    subscribe(&rig, &source, options.clone(), false)
+        .await
+        .unwrap();
+    let first = rig.rows().remove(0).subscription.subscription_id;
+    review_requested(&rig, "pr-976", 976);
+    rig.pass().await;
+    rig.runtime
+        .remove_notification_subscription(&first, "local")
+        .await
+        .unwrap();
+
+    subscribe(&rig, &source, options, false).await.unwrap();
+    let row = rig.rows().remove(0);
+    let second = row.subscription.subscription_id;
+    assert_ne!(first, second, "a new subscription has its own id");
+    assert_eq!(row.fired, 0, "its counters start again");
+    review_requested(&rig, "pr-976-again", 976);
+    rig.pass().await;
+    let history: Vec<_> = rig
+        .trace(&second)
+        .into_iter()
+        .map(|line| (line.occurrence_id, line.outcome))
+        .collect();
+    assert_eq!(
+        history,
+        vec![
+            ("pr-976-again".into(), NotificationTraceOutcome::Delivered),
+            ("pr-976".into(), NotificationTraceOutcome::Delivered),
+        ],
+        "the source's and agent's earlier lines stay with the new subscription"
+    );
+}
+
+/// The new subscriber's earlier history (restored from a subscription it removed) and the
+/// carried history both hold the occurrence: the transfer still ends with one subscription.
+#[tokio::test]
+async fn a_subscriber_change_over_overlapping_history_ends_with_one_subscription() {
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    let options = serde_json::json!([{"name": "pr", "value": 976}]);
+    let reviewer = rig
+        .runtime
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&rig.session_id, "dev-stub")
+                .with_alias("reviewer"),
+        )
+        .await
+        .unwrap();
+    subscribe(&rig, &source, options.clone(), false)
+        .await
+        .unwrap();
+    let first = rig.rows().remove(0).subscription.subscription_id;
+    rig.change(
+        &first,
+        NotificationSubscriptionChange::Subscriber {
+            agent_id: reviewer.id().into(),
+        },
+    )
+    .await;
+    // The first agent subscribes again; one occurrence reaches both subscriptions.
+    subscribe(&rig, &source, options, false).await.unwrap();
+    review_requested(&rig, "pr-976", 976);
+    rig.pass().await;
+    let rows = rig.rows();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let reviewers = rows
+        .iter()
+        .find(|row| row.subscription.agent_id.as_deref() == Some(reviewer.id()))
+        .unwrap()
+        .subscription
+        .subscription_id
+        .clone();
+    let first_agents = rows
+        .iter()
+        .find(|row| row.subscription.agent_id.as_deref() == Some(rig.agent_id.as_str()))
+        .unwrap()
+        .subscription
+        .subscription_id
+        .clone();
+    // The reviewer's subscription goes away, and its line waits for it.
+    rig.runtime
+        .remove_notification_subscription(&reviewers, "local")
+        .await
+        .unwrap();
+    rig.change(
+        &first_agents,
+        NotificationSubscriptionChange::Subscriber {
+            agent_id: reviewer.id().into(),
+        },
+    )
+    .await;
+    let rows = rig.rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].subscription.agent_id.as_deref(),
+        Some(reviewer.id())
+    );
+    let triggers = rig
+        .runtime
+        .owned
+        .session_snapshot(&rig.session_id)
+        .unwrap()
+        .agent_triggers()
+        .iter()
+        .map(|trigger| trigger.agent_id().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(triggers, vec![reviewer.id().to_owned()]);
+    let history = rig.trace(&rows[0].subscription.subscription_id);
+    assert_eq!(history.len(), 1, "{history:?}");
+}
+
+/// Queue is the default; the Subscriptions row changes it and a new subscriber keeps it.
+#[tokio::test]
+async fn a_subscription_mode_defaults_to_queue_changes_and_follows_a_new_subscriber() {
+    use crate::session::AgentTriggerBusyPolicy::{Queue, Steer};
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    subscribe(&rig, &source, serde_json::json!([]), false)
+        .await
+        .unwrap();
+    let id = rig.rows()[0].subscription.subscription_id.clone();
+    assert_eq!(rig.rows()[0].mode, Some(Queue));
+
+    rig.change(&id, NotificationSubscriptionChange::Mode { mode: Steer })
+        .await;
+    assert_eq!(rig.rows()[0].mode, Some(Steer));
+
+    let reviewer = rig
+        .runtime
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&rig.session_id, "dev-stub")
+                .with_alias("reviewer"),
+        )
+        .await
+        .unwrap();
+    rig.change(
+        &id,
+        NotificationSubscriptionChange::Subscriber {
+            agent_id: reviewer.id().into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        rig.rows()[0].mode,
+        Some(Steer),
+        "the mode moves with the subscription"
+    );
+    rig.change(
+        &rig.rows()[0].subscription.subscription_id,
+        NotificationSubscriptionChange::Mode { mode: Queue },
+    )
+    .await;
+    assert_eq!(rig.rows()[0].mode, Some(Queue));
+}
+
+#[tokio::test]
 async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters() {
     let rig = rig().await;
     let source = app_event_source(&rig);

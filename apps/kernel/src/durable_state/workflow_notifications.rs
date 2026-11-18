@@ -903,9 +903,15 @@ fn apply(
             owner,
             kernel,
         } => {
+            let removed:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel],|r|r.get(0)).optional().map_err(sql)?;
             let detached = tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
             let generation = if detached != 0 {
-                subscription_settings::forget_in(tx, &subscription_id)?;
+                if let Some(removed) = removed {
+                    subscription_settings::retire_in(
+                        tx,
+                        &decode::<WorkflowNotificationSubscription>(&removed)?,
+                    )?;
+                }
                 Some(remote_install::supersede_in(tx, &owner, &subscription_id)?)
             } else {
                 None
@@ -1085,7 +1091,7 @@ fn save_subscription(
         params![sub.owner_user_id, sub.subscription_id],
     )
     .map_err(sql)?;
-    Ok(())
+    subscription_settings::restore_in(tx, sub)
 }
 pub(super) fn insert_receipt(
     tx: &Transaction<'_>,

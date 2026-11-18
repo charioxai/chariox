@@ -2,6 +2,7 @@
 //! row per subscription whose subscriber lives here, with what it picked, its counters and its
 //! health, and the requests that pause, move, test, trace and remove it.
 use super::*;
+use crate::session::AgentTriggerBusyPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListNotificationSubscriptionsRequest;
@@ -20,6 +21,8 @@ pub enum NotificationSubscriptionChange {
     Paused { paused: bool },
     /// Another agent of the same Room takes the subscription over, with its prompt and options.
     Subscriber { agent_id: String },
+    /// Whether an occurrence waits for the agent's running turn to end or joins it.
+    Mode { mode: AgentTriggerBusyPolicy },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +52,8 @@ pub struct NotificationSubscriptionRow {
     pub subscriber_name: Option<String>,
     /// What an agent was asked to do when the notification arrives.
     pub prompt: Option<String>,
+    /// How an occurrence reaches an agent subscriber; none for a workflow subscriber.
+    pub mode: Option<AgentTriggerBusyPolicy>,
     pub options: Vec<NotificationOptionValue>,
     pub once: bool,
     pub paused: bool,

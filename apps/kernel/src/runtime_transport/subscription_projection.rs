@@ -518,6 +518,7 @@ mod tests {
             "subscription".into(),
             "source display".into(),
             "review source".into(),
+            crate::session::AgentTriggerBusyPolicy::Queue,
             1,
         );
         before.session.add_agent_trigger(trigger);

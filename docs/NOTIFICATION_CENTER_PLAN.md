@@ -24,7 +24,7 @@ Every decision this plan proposes names the principle behind it:
 
 ```
 source ──fires──▶ occurrence ──route (subscription)──▶ subscriber
-                                                         ├─ agent     the kernel queues a prompt and wakes it
+                                                         ├─ agent     the kernel puts the occurrence in the agent's inbox and wakes it with a one-line prompt
                                                          ├─ workflow  the kernel starts a run at an entry point
                                                          └─ person    the kernel adds a card to the Inbox
 ```
@@ -170,6 +170,16 @@ One row per subscription, from every kernel the person owns:
 Row actions: **Pause / Resume**, **Test**, **Change subscriber**, **Remove**. Selecting a row opens its detail: why it exists, the picked options and the recent events.
 
 Each kernel answers `ListNotificationSubscriptions` for the subscriptions whose subscriber lives on it; the client merges, as for the Inbox. The row data is the existing subscription (`source_available`, `source_kernel_id`, `created_by_user_id`, `target_kernel_id`) plus the trigger prompt, the picked options, the pause state and the counters. The Room's own list of workflow notifications becomes this table filtered to the Room, so there is one list and one implementation.
+
+### 6.1a Delivery to an agent: the inbox and the mode
+
+*(Owner, 2026-11-18; supersedes the 2026-11-03 rule that a notification always queues.)*
+
+**One path for every source.** A GitHub or other App event, a workflow exit and an agent event reach an agent the same way. The kernel writes the whole occurrence into the agent's inbox (kind `notification`, state `accepted`, the occurrence's payload up to 256 KiB, once per subscription and occurrence id) and then prompts the agent with the subscription's own text followed by one line: `Notification: <title> (from <source>). Read it with chariox.events.inbox after <sequence-1>, then chariox.events.ack it.` The title is the first line of the occurrence (an App event: the event's title). The occurrence's text, payload and output never enter the prompt: the `<chariox-trigger-input kind="notification">` block is deleted, and there is no second delivery path. The agent reads the payload with `chariox.events.inbox` and acknowledges it. The prompt is the wake; the inbox is the data.
+
+**Mode.** Every agent subscription has a `mode`, `queue` (default) or `steer`; it is the trigger's `busy_policy`. In `queue` the one-line prompt waits in the agent's prompt queue behind the running turn, and its row keeps the **Steer** button; the person or the agent can send it now or cancel it. In `steer` the prompt is steered into the running turn at once, as a queued-prompt steer is, and a refused steer leaves it queued. An idle agent starts a turn in both modes. The agent sets the mode when it subscribes (`chariox.notification.subscribe {mode?}`); the person changes it in the Subscriptions table (`UpdateNotificationSubscription {mode}`), and **Change subscriber** keeps it.
+
+**Protocol (local 1012).** `NotificationSubscriptionRow.mode` (`queue|steer`, absent for a workflow or person subscriber), `NotificationSubscriptionChange::Mode {mode}`, `CreateAgentTrigger.busy_policy` and `UpdateAgentTrigger.busy_policy` accepted for notification triggers, `ReplacedListener.busy_policy`. The peer protocol is unchanged: the mode is the subscriber's own, and no peer carries it.
 
 ### 6.2 Source-declared options
 
@@ -386,7 +396,7 @@ Design level: names follow the existing requests, and the exact shapes are set i
 | `SetInboxMute {origin, muted}` | New | Mute one agent, workflow or source |
 | `SubscribePerson {source, options?, once?}` | New | The person as subscriber |
 | `ListNotificationSubscriptions` | New | Kernel-wide rows with prompt, picked options, counters, health, flags. `ListWorkflowNotifications {session_id}` is deleted in the same change. |
-| `UpdateNotificationSubscription {paused?, subscriber?}` | New | Pause, resume, change subscriber. The row and its history stay. |
+| `UpdateNotificationSubscription {paused?, subscriber?, mode?}` | New | Pause, resume, change subscriber, change queue or steer (section 6.1a). The row and its history stay. |
 | `RemoveNotificationSubscription` | New | One removal for every subscriber kind |
 | `TestNotificationSubscription` | New | Dry run, sends nothing |
 | `ReadNotificationTrace {subscription_id}` | New | Section 6.4 |
@@ -402,7 +412,7 @@ Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotifica
 | --- | --- |
 | `chariox.notify_person {title, body?, link?, priority?}` | New |
 | `chariox.notification.sources` | Exists; lists watchers too, and each source's declared options with their types |
-| `chariox.notification.subscribe {source, prompt, options?, once?, subscriber?}` | Exists; `prompt` required, the rest new; an undeclared option or a value of the wrong type is refused with the source's options. `subscriber` is the calling agent or `"person"`. |
+| `chariox.notification.subscribe {source, prompt, options?, once?, subscriber?, mode?}` | Exists; `prompt` required, the rest new; `mode` is `queue` (default) or `steer` (section 6.1a); an undeclared option or a value of the wrong type is refused with the source's options. `subscriber` is the calling agent or `"person"`. |
 | `chariox.notification.unsubscribe {trigger_id}` | Exists |
 | `chariox.watcher.create`, `.dry_run`, `.activate`, `.status`, `.remove` | New |
 | `chariox.request_popup` | Exists; its cards now also appear in the Inbox |
@@ -494,6 +504,13 @@ Each milestone ships a usable part: after M1 the person already answers everythi
 | 4 | Guests: do cards from someone else's Room appear in your center? | No, in v1 and onward, until the owner decides again. A card in someone else's Room stays in that Room. *(P1.)* |
 | 5 | How does a third party's webhook reach a kernel? | Only through a public source, as GitHub does. The push mode serves a local address, as the agent HTTP trigger does, so it covers senders on the machine or its network; this plan opens no new way into a kernel. *(Runtime rule 4: Cloud and the relay carry no runtime traffic in the clear.)* **Business note, recorded only:** a private source is free; a public source that anyone can subscribe to needs a paid subscription. The business model comes later; this plan designs and builds nothing for billing. |
 | 6 | Can Test really fire? | No, a dry run only. A real firing is "Check now" on the source. *(P1.)* |
+
+### Decided by the owner (2026-11-18)
+
+| # | Question | Decision |
+| --- | --- | --- |
+| 8 | Queue or steer? | Per subscription, default queue, set by the agent when it subscribes and changeable from Subscriptions. The 2026-11-03 "always queue" rule is gone. A queued row keeps its Steer button. *(Section 6.1a.)* |
+| 9 | Where does the payload go? | In the agent's inbox, for every source. The prompt carries one line: title, source and the inbox position. One path; the payload-in-prompt block is deleted. *(Section 6.1a.)* |
 
 ### Technical defaults the plan assumes
 
