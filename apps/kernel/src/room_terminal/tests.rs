@@ -1902,6 +1902,33 @@ fn the_shell_keeps_the_users_ssh_agent_but_not_kernel_tokens() {
     std::env::remove_var("CHARIOX_RELAY_TOKEN");
 }
 
+// A Room terminal is the person's own shell: a kernel that crashes must not end what runs in
+// it, so it never carries the pid a restarted kernel uses to find a dead kernel's provider tools.
+#[test]
+fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = TempDir::new();
+            let service = service(root.path());
+            let id = open(&service, root.path()).terminal_id;
+            type_as(
+                &service,
+                &id,
+                &TerminalActor::User,
+                "echo OWNER=${CHARIOX_PROVIDER_OWNER_PID:-none}\r",
+            )
+            .await;
+            until("the environment", || async {
+                screen_has(&service, &id, "OWNER=none").await
+            })
+            .await;
+            service.end_session("room-1");
+        });
+}
+
 /// Types `line` and waits for the shell to report it finished, without any
 /// sleep in the command: the finish must not depend on sampling.
 async fn finish_of(
