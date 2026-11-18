@@ -11,6 +11,8 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// browser-mirror2.ts CREDIT_WINDOW: a held local focus or range outlasts every packet in flight at its reply.
+const CREDIT_WINDOW = 8;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tools = process.env.MIRROR_LAB_NODE_MODULES;
@@ -384,7 +386,7 @@ test('MP-08: protocol 492 a viewer focus change reaches the kernel as `focus`, a
     assert.deepEqual(first[0], { kind: 'focus', node_id: 'n5' }, 'MP-08: the viewer\'s focus moved to the second control');
     // The kernel's focus goes back to the first control (after the packets in flight at the focus reply,
     // which could predate it); the same drag repeats the same (cached) range.
-    for (let sequence = 2; sequence <= 7; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
+    for (let sequence = 2; sequence <= 2 + CREDIT_WINDOW; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
     assert.deepEqual(await sent(), []);
     await drag(); await page.keyboard.type('x'); await frames();
     const second = await sent();
@@ -999,7 +1001,7 @@ test('MP-10: a selection echo cannot move an in-progress pointer range',async()=
   await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));
   await apply(page,delta(3,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','released endpoint survives stale in-flight prefixes');
-  for(let sequence=4;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  for(let sequence=4;sequence<=2+CREDIT_WINDOW;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after the bounded credit window another actor’s selection still projects');
  }finally{await page.close()}
 });
@@ -1015,7 +1017,7 @@ test('MP-10: a cancelled or externally released drag cannot keep later kernel se
    if(release==='navigation')await apply(page,{...snapshot(nodes),document_id:'replacement',selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}});
    else{
     await page.evaluate(release=>{if(release==='cancel')window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointercancel',{bubbles:true}));else if(release==='outside')document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));else window.dispatchEvent(new Event('blur'))},release);
-    for(let sequence=2;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+    for(let sequence=2;sequence<=2+CREDIT_WINDOW;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
    }
    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The',release);
   }finally{await page.close()}

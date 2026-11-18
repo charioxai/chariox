@@ -376,9 +376,22 @@ impl BrowserControllerProcessStdioBackend {
         );
         // L3: native workers this controller spawns hand whole frames straight to the pump.
         let direct_frames = match &display_packets {
-            // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
-            Some(packets) => display_frames::DirectFrames::listen(packets.clone()).ok(),
-            None => None,
+            // Linux only (admission reads the peer's credentials). Without a channel Node
+            // publishes every frame, slower; the log says why.
+            Some(packets) if cfg!(target_os = "linux") => {
+                match display_frames::DirectFrames::listen(packets.clone()) {
+                    Ok(frames) => Some(frames),
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.browser_controller",
+                            "native frame channel unavailable; Node publishes every frame",
+                            serde_json::json!({ "error": error }),
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
         };
         if let Some(frames) = &direct_frames {
             command.env("CHARIOX_BROWSER_DISPLAY_FRAMES", frames.path());
@@ -3155,7 +3168,10 @@ done
                         && record.contains(&format!("\"process_id\":{process_id}"))
                 })
                 .expect("the exit is logged");
-            assert!(expected.iter().all(|field| exited.contains(field)), "{exited}");
+            assert!(
+                expected.iter().all(|field| exited.contains(field)),
+                "{exited}"
+            );
         }
     }
 
