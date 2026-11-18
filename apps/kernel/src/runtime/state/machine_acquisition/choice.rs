@@ -16,17 +16,20 @@
 //! | pending P       | accepted P, ref             | pending P           | pending P |
 //! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref |
 //!
-//! Nothing the kernel or the service says today proves that a request holds nothing: tries of one
-//! request overlap, a try may still wait for its capability call or the owner's decision when
-//! another is refused, and the service may refuse one try before another commits. So a refusal
-//! never frees the option, never says nothing was allocated or charged and never sends the caller
-//! to another request_id on its own. It says what the service refused and that retrying the same
-//! request_id is safe, because the service never allocates twice under it and returns the
-//! allocation it accepted, if there is one. Changing the option needs a new request_id, and the
-//! refusal warns that a try of the old one may still be in flight.
+//! Tries of one request overlap: a try may still wait for its capability call or the owner's
+//! decision when another is refused. So only the service can say that a request holds nothing:
+//! a refusal that closes the request (`details.request_id` is `"closed"`). The service closes a
+//! request under the same account lock its allocations take, only when no allocation holds it,
+//! and refuses every later try of it as closed, so a try still in flight never allocates under a
+//! closed request. Only that refusal says nothing was allocated or charged and sends the caller to
+//! a new request_id. Every other refusal never frees the option and sends the caller back to the
+//! same request_id, which is safe to retry: the service never allocates twice under it, returns
+//! the allocation it accepted and, when it refuses again, closes it. No other answer, and no list
+//! of machines, proves that a try still in flight will not allocate.
 //!
-//! - Refusals are `capacity_exceeded`, `budget_exceeded` and `invalid_request`
-//!   (`AcquireFailure::Refused`) answering the acquire itself; the refusal names them. Every other
+//! - Refusals are a closed request (`AcquireFailure::Closed`), and `capacity_exceeded`,
+//!   `budget_exceeded` and `invalid_request` (`AcquireFailure::Refused`) answering the acquire
+//!   itself; the refusal names them. Every other
 //!   failure passes on as it is. The connected-service boundary passes the capability call's
 //!   failure before the acquire on without its Cloud code (`control_plane_offer_unavailable`), so
 //!   no code it carries is read as a refusal of the acquire.
@@ -79,16 +82,19 @@ pub(super) fn acquire_choice(
     }
 }
 
-/// A refused acquire names what the service refused and sends the caller back to the same
-/// request_id, which is safe to retry; another try of it may still be in flight.
+/// A refused acquire names what the service refused. A closed request says nothing was allocated
+/// under it and sends the caller to a new request_id; any other refusal sends the caller back to
+/// the same request_id, which is safe to retry, because another try of it may still be in flight.
 pub(super) fn acquire_refusal(
     error: DaemonError,
     capability: &MachineAllocationCapability,
     option: &AcquireOption,
     request_id: &str,
 ) -> DaemonError {
-    let AcquireFailure::Refused { out_of_stock } = acquire_failure(&error) else {
-        return error;
+    let (out_of_stock, closed) = match acquire_failure(&error) {
+        AcquireFailure::Closed { out_of_stock } => (out_of_stock, true),
+        AcquireFailure::Refused { out_of_stock } => (out_of_stock, false),
+        AcquireFailure::Ambiguous => return error,
     };
     let subject = match option {
         AcquireOption::Named { .. } => option_name(option),
@@ -111,6 +117,14 @@ pub(super) fn acquire_refusal(
             ),
         )
     };
+    if !closed {
+        return acquisition_error(
+            &code,
+            &format!(
+                "{refused}. Retrying chariox.machines.acquire with request_id {request_id} is safe: it keeps this option, the service never allocates twice under it and returns the machine if a try of it was accepted. Keep this request_id until the service accepts it or closes it."
+            ),
+        );
+    }
     // Only the refused option is left out: the same class in another region may be in stock.
     let (chosen, chosen_region) = (option.class_id(), option.region());
     let in_stock: Vec<String> = capability
@@ -132,15 +146,9 @@ pub(super) fn acquire_refusal(
     acquisition_error(
         &code,
         &format!(
-            "{refused}. Retrying chariox.machines.acquire with request_id {request_id} is safe: it keeps this option, the service never allocates twice under it and returns the machine if a try of it was accepted.{in_stock} {}.",
-            another_option(request_id)
+            "{refused}. The service closed request_id {request_id}: nothing was allocated or charged under it, and no try of it ever will be. Use a new request_id for this option or another.{in_stock}"
         ),
     )
-}
-
-/// What changing a request's option means: no answer proves the old request_id holds nothing.
-fn another_option(request_id: &str) -> String {
-    format!("Another option needs a new request_id, but a try of request_id {request_id} may still be in flight and allocate a machine: check the machines list before you send one")
 }
 
 /// The service's request id: request_ids are the agent's own, so they are scoped to this kernel
@@ -174,9 +182,8 @@ impl KernelRuntimeState {
                         return Err(acquisition_error(
                             "invalid_request",
                             &format!(
-                                "request_id {request_id} already asked for {}; retry it without class_id and region. {}.",
+                                "request_id {request_id} already asked for {}; retry it without class_id and region. Use a new request_id only when the service closes this one.",
                                 option_name(&option),
-                                another_option(request_id)
                             ),
                         ));
                     }
