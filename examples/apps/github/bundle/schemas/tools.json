@@ -1998,6 +1998,102 @@
       }
     },
     {
+      "name": "ship_changes",
+      "description": "Take the changed files of a Room worktree to a pull request in steps (commit, push, pr; all three when none are named). The commit holds exactly the files named; work on the default branch moves to a new branch first. Never pushes the default branch or forces. A step that fails stops the rest and says why: run it again with only the steps left.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "worktree": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The worktree path."
+          },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Commit to this branch instead of a new one."
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "commit",
+                "push",
+                "pr"
+              ]
+            }
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          }
+        },
+        "required": [
+          "worktree"
+        ]
+      }
+    },
+    {
+      "name": "link_pull_request",
+      "description": "Record that this Room made a pull request, so the pull request shows which Room and agent it came from.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
       "name": "mark_ready_for_review",
       "description": "Mark a draft pull request ready for review.",
       "inputSchema": {

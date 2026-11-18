@@ -17,7 +17,8 @@
     "ui-actions",
     "directed-events",
     "credentialed-http",
-    "event-routing"
+    "event-routing",
+    "workspace"
   ],
   "runtime": {
     "engine": "wasm",
@@ -274,6 +275,9 @@
         "workflow_run_completed"
       ],
       "maxRoutes": 200
+    },
+    "workspace": {
+      "credential": "github"
     }
   },
   "events": "schemas/events.json",
