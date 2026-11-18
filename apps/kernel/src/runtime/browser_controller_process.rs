@@ -839,6 +839,37 @@ pub(crate) fn controller_error_marker(code: &str) -> String {
     format!("failed with {code}:")
 }
 
+/// Relay error code of a controller that answered `ok: false`: the worker
+/// reached the controller and the controller refused, so there is no transport
+/// fault to retry and no lost answer to recover.
+pub(crate) const BROWSER_CONTROLLER_FAILED_CODE: &str = "browser_controller_failed";
+
+/// Controller failures of a browser that is still starting; the same call
+/// succeeds once it is up.
+pub(crate) const TRANSIENT_CONTROLLER_CODES: [&str; 5] = [
+    "browser_cdp_timeout",
+    "browser_debugger_unavailable",
+    "browser_cdp_disconnected",
+    "browser_cdp_socket_error",
+    "viewport_apply_failed",
+];
+
+/// Reads back the code of a controller failure from the text
+/// `BrowserControllerRpcResponse::into_result` wrote; `None` for any other
+/// failure, which stays a transport fault.
+pub(crate) fn controller_failure_code(message: &str) -> Option<&str> {
+    let rest = message
+        .strip_prefix("browser controller `")?
+        .split_once("` failed with ")?
+        .1;
+    rest.split_once(':').map(|(code, _)| code)
+}
+
+/// Whether the controller failure `message` is one the caller may repeat.
+pub(crate) fn controller_failure_is_transient(message: &str) -> bool {
+    controller_failure_code(message).is_some_and(|code| TRANSIENT_CONTROLLER_CODES.contains(&code))
+}
+
 impl BrowserControllerRpcResponse {
     pub(crate) fn into_host_result(
         self,

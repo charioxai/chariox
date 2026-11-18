@@ -12,6 +12,22 @@ pub(super) fn message(error: &DaemonError) -> String {
         {
             message.clone()
         }
+        // A browser controller refused in its own sentence; the transport wrapper
+        // around it, here or on the worker, is not for the agent.
+        DaemonError::RelayTransport { code, message, .. }
+            if code
+                == crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE =>
+        {
+            message.clone()
+        }
+        DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message,
+        } if crate::runtime::browser_controller_process::controller_failure_code(message)
+            .is_some() =>
+        {
+            message.clone()
+        }
         _ => error.to_string(),
     }
 }
@@ -44,5 +60,31 @@ mod tests {
             };
             assert_eq!(message(&forwarded), sentence);
         }
+    }
+
+    const STALE_ELEMENT: &str =
+        "browser controller `browser.action` failed with stale_element_reference: the element is stale";
+
+    #[test]
+    fn controller_refusal_reaches_the_agent_as_one_bare_sentence() {
+        let received = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "browser_controller_failed".to_string(),
+            message: STALE_ELEMENT.to_string(),
+            retryable: false,
+        };
+        assert_eq!(message(&received), STALE_ELEMENT);
+        let local = DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: STALE_ELEMENT.to_string(),
+        };
+        assert_eq!(message(&local), STALE_ELEMENT);
+        let wrapped = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "transport_error".to_string(),
+            message: STALE_ELEMENT.to_string(),
+            retryable: true,
+        };
+        assert_ne!(message(&wrapped), STALE_ELEMENT);
     }
 }

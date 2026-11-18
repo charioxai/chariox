@@ -30,6 +30,7 @@ mod controller_navigation_queue;
 mod controller_observations;
 mod controller_recovery;
 mod controller_response_loss;
+mod controller_stale_element;
 mod controller_start_admission;
 mod controller_upload_cancellation;
 mod controller_upload_recovery;

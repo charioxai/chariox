@@ -609,6 +609,19 @@ impl DaemonError {
         )
     }
 
+    /// The worker's browser controller answered `ok: false`: a final answer to
+    /// the action, so no receipt recovery has anything to find.
+    pub(crate) fn is_browser_controller_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::RelayTransport {
+                operation: "read relay peer response",
+                code,
+                ..
+            } if code == crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE
+        )
+    }
+
     /// The relay handed the request to the other kernel and no answer came back: that kernel
     /// dropped off, or the wait for its answer ran out. What it did is unknown.
     pub(crate) fn is_peer_answer_lost(&self) -> bool {
