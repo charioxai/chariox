@@ -1152,6 +1152,9 @@ export class KernelBrowserHost {
       stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
       return {generation:this.generation,parked:Boolean(stream.parked)};
     }
+    // A Tab display is a crop of the browser's own display. A browser without one would answer with a CDP display at the
+    // viewer's layout size, which no viewer accepts as a Tab display: it says once that it never can.
+    if(command.op==='display_subscribe'&&command.tab_display===true&&!this.chromium.desktop?.binding?.())throw Error('MP-08: region video needs the browser\'s own display');
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     // The visible-page adapter attests H.264; an offer without it (no decoder, VP8/VP9 only) takes the CDP display below.
     if(command.op==='display_subscribe'&&!command.target&&command.codecs?.includes?.('avc1.420033')&&this.chromium.desktop?.binding?.()){

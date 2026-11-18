@@ -1842,6 +1842,16 @@ test("MP-08: a browser with no display of its own refuses a region display with 
     assert(refused, "MP-08: no region display without a display");
     assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
+// size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
+test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(
+  "<p>page</p>",
+  async ({ host, next, generation, tab_id }) => {
+    await next();
+    const refused = await host.request({ op: "display_subscribe", tab_id, generation, tab_display: true, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
+    assert(refused, "MP-08: no Tab display without a display");
+    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(
   '<style>body{margin:0}iframe{width:100px;height:80px;border:0}</style><iframe src="http://localhost:PORT/child"></iframe>',
   async({host,next,subscription_id,generation})=>{
