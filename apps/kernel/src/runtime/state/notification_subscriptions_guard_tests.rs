@@ -355,3 +355,25 @@ async fn a_filtered_occurrence_moves_the_inbox_revision() {
         "an open trace reads the filtered line without polling"
     );
 }
+
+#[tokio::test]
+async fn a_delivered_occurrence_moves_the_inbox_revision_with_its_fired_count() {
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    subscribe(&rig, &source, serde_json::json!([]), false)
+        .await
+        .unwrap();
+    let id = rig.rows()[0].subscription.subscription_id.clone();
+    let before = rig.runtime.person_inbox_change_sequence();
+    review_requested(&rig, "pr-976", 976);
+    rig.pass().await;
+    assert_eq!(rig.rows()[0].fired, 1);
+    assert_eq!(
+        rig.trace(&id)[0].outcome,
+        NotificationTraceOutcome::Delivered
+    );
+    assert!(
+        rig.runtime.person_inbox_change_sequence() > before,
+        "another client reads the new fired count without polling"
+    );
+}
