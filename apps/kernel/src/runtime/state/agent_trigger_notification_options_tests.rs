@@ -10,7 +10,7 @@ use chariox_app_runtime::app_inbox::InboxRoute;
 /// `repo` (text). Returns its source id.
 pub(super) fn app_event_source(rig: &Rig) -> String {
     let store = &rig.runtime.owned.durable_state_store;
-    crate::durable_state::app_state::fixture_inbox_installation(store, "local");
+    crate::durable_state::app_state::fixture_staged_inbox_installation(store, "local");
     store
         .app_inbox(AppInboxOperation::CreateRoute {
             route: InboxRoute {

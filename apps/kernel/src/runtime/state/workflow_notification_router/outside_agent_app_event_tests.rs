@@ -71,7 +71,7 @@ async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text(
     let router = router(&mut f);
     let kernel = router.runtime_state();
     let store = kernel.owned.durable_state_store.clone();
-    crate::durable_state::app_state::fixture_inbox_installation(&store, "local");
+    crate::durable_state::app_state::fixture_staged_inbox_installation(&store, "local");
     let grant = kernel.insert_access_grant_for_test(&f.session);
     // An installed App with no route has no event to follow.
     assert!(listed(&router, &grant)
@@ -157,7 +157,7 @@ async fn an_app_events_declared_options_are_listed_and_each_occurrence_carries_t
     let router = router(&mut f);
     let kernel = router.runtime_state();
     let store = kernel.owned.durable_state_store.clone();
-    crate::durable_state::app_state::fixture_inbox_installation(&store, "local");
+    crate::durable_state::app_state::fixture_staged_inbox_installation(&store, "local");
     let grant = kernel.insert_access_grant_for_test(&f.session);
     create_route(&store);
     let source = listed(&router, &grant)

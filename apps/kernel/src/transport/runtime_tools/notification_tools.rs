@@ -4,6 +4,11 @@ pub const NOTIFICATION_SUBSCRIBE: &str = "chariox.notification_subscribe";
 pub const NOTIFICATION_UNSUBSCRIBE: &str = "chariox.notification_unsubscribe";
 pub const NOTIFY_PERSON: &str = "chariox.notify_person";
 
+/// The Room's notification tools: they keep their own descriptions and come with the room tools.
+pub fn is_notification_tool(name: &str) -> bool {
+    name.starts_with("chariox.notification_") || name == NOTIFY_PERSON
+}
+
 pub fn notification_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec { name: NOTIFICATION_SOURCES.into(), description: "List this Room's workflow exit notifications and installed Apps' outgoing events, and for the Room owner's own agents the owner's workflow sources on its other kernels. Source identities grant no App capability or access to other Rooms.".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) },

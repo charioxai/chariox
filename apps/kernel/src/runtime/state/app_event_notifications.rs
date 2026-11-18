@@ -113,7 +113,12 @@ impl KernelRuntimeOwnedState {
             let (_, catalog) = self
                 .durable_state_store
                 .active_app_incoming_catalog(owner, &route.installation_id)
-                .map_err(|error| invalid(format!("{error:?}")))?;
+                .map_err(|error| {
+                    crate::durable_state::workflow_notifications::error(format!(
+                        "App event {} cannot list its options: the App's active release could not be read ({error:?}). Update or reinstall the App.",
+                        route.event_name
+                    ))
+                })?;
             catalogs.insert(route.installation_id.clone(), catalog);
         }
         Ok(catalogs[&route.installation_id]

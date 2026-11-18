@@ -201,12 +201,14 @@ impl KernelRuntimeState {
                 }) else {
                     continue;
                 };
+                // The session store's Room carries no agents; the agent store names them.
                 let subscriber_name = match subscription.target_kind {
                     WorkflowNotificationTargetKind::Agent => self
                         .owned
                         .agent_notification_target_live(room, &subscription)
-                        .then(|| room.agent_display_name(&subscription.endpoint_id))
-                        .flatten(),
+                        .then(|| self.owned.agent_store.get_agent(&subscription.endpoint_id))
+                        .and_then(Result::ok)
+                        .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned()),
                     WorkflowNotificationTargetKind::WorkflowEndpoint => sessions
                         .resolve_workflow_ref(room.id(), &subscription.workflow_id)
                         .ok()
