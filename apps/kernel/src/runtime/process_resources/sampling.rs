@@ -464,8 +464,12 @@ impl ProcessTree {
                 Ok(_) => {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
-                // Another user's process: it never becomes readable.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Another user's process never becomes readable, and a kernel
+                // thread (or a process that is ending) has no environment.
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(libc::ESRCH) =>
+                {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
                 // Exited, or not readable yet: ask again at the next sample.
@@ -1333,6 +1337,27 @@ mod marker_cache_tests {
         let _ = job.wait();
         assert!(kept_skipping, "a process already read was read again");
         assert!(adopted, "a marked process on a reused PID was skipped");
+    }
+
+    /// Linux answers ESRCH for the environment of its own threads (about 450
+    /// on a busy host); asking again at every tick of every watch cost more
+    /// CPU than the process table itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_kernel_thread_is_read_once() {
+        let kthreadd = read_process_rows()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.pid == 2)
+            .expect("kthreadd is listed as process 2");
+        let mut tree = ProcessTree::new(std::process::id());
+        tree.set_marker(&new_marker());
+        tree.adopt_marked(std::slice::from_ref(&kthreadd));
+        assert_eq!(
+            tree.unmarked.get(&2),
+            Some(&kthreadd.birth),
+            "a kernel thread is read again at the next sample"
+        );
     }
 }
 
