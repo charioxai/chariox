@@ -145,10 +145,24 @@ impl VaultKind {
             )
         } else {
             format!(
-                "credential `{id}` is saved as {saved} ({effect}) and was not made in the Vault window, so its Kind cannot change; copy it with chariox.vault.copy_for_use into a new {} entry for {word}",
-                wanted.label(),
+                "credential `{id}` is saved as {saved} ({effect}) and was not made in the Vault window, so its Kind cannot change; {}",
+                wanted.new_entry_guidance(word),
             )
         })
+    }
+
+    /// How to get an entry that serves `word` when the existing one cannot change Kind. A copy
+    /// can only make an HTTP, command or file entry; a Password for browser fill is new.
+    fn new_entry_guidance(self, word: &str) -> String {
+        match self {
+            Self::Password => format!(
+                "browser fill needs a new Password entry for the site: the owner saves one in the Vault window, or chariox.vault.generate makes one for a new login ({word})"
+            ),
+            _ => format!(
+                "copy it with chariox.vault.copy_for_use into a new {} entry for {word}",
+                self.label()
+            ),
+        }
     }
 
     /// Only an entry the owner made in the Vault window can change its Kind and Use in place.
