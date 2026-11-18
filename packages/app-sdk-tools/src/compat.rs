@@ -164,6 +164,6 @@ pub fn prepare_component(bytes: &[u8]) -> Result<Vec<u8>> {
             validate: true,
         })?
     };
-    chariox_app_wit::check_component(&result, chariox_app_wit::APP_WORLD)?;
+    chariox_app_wit::check_component(&result, chariox_app_wit::app_world_of(&result))?;
     Ok(result)
 }

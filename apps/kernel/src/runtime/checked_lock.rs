@@ -9,7 +9,7 @@ use super::stall_watchdog::{self, Watch};
 
 #[cfg(test)]
 pub(crate) const LOCK_ORDER: &[(&str, u16)] = &[
-    ("waiting_room_launch_target", 5),
+    ("room_list_launch_target", 5),
     ("provider_managed_admission", 10),
     ("provider_move_admission", 20),
     ("provider_service", 30),

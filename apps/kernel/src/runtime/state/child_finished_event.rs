@@ -16,7 +16,7 @@ impl KernelRuntimeState {
         public_answer: Option<&serde_json::Value>,
     ) -> Result<(), DaemonError> {
         // The agent no longer holds decisions: they move up before anyone is told it finished.
-        self.move_decisions_up(&task.room_id, &task.agent_id)
+        self.move_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
             .await?;
         let child = self.owned.agent_store.get_agent(&task.agent_id)?;
         let Some(parent_id) = child.parent_agent_id() else {
@@ -45,6 +45,10 @@ impl KernelRuntimeState {
                 "success": task.state == ExecutionState::Done,
                 "outcome": outcome,
                 "deadline_reached": deadline_reached,
+                "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {
+                    crate::agent::UsageLimitStopState::Armed { at_ms } => Some(at_ms),
+                    _ => None,
+                }),
                 "public_answer": public_answer,
             }),
         );

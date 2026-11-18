@@ -135,7 +135,7 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
-  gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
+  gitCredentials?: import("@chariox/kernel-client").RoomListGitCredentialSummary[]
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

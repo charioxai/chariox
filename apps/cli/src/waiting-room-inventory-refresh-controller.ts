@@ -1,5 +1,5 @@
 import type { MachineAllocationCapability } from "./machine-allocation-api.js"
-import { waitingRoomSessionRecencyMs } from "@chariox/kernel-client/waiting-room-activity"
+import { roomListSessionRecencyMs } from "@chariox/kernel-client/room-list-activity"
 import { createWaitingRoomRetainedRows } from "./waiting-room-retained-rows.js"
 import {
   externalProviderSessionPageSessions,
@@ -7,7 +7,7 @@ import {
 } from "@chariox/kernel-client/external-provider-sessions"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { ExternalProviderSessionRecord, ProviderAccountProfile, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, ProviderAccountProfile, SliceRecord, RoomListSessionSummary } from "./cli-types.js"
 import type { LocalKernelPresence } from "./local-kernel-presence.js"
 import { waitingRoomRemoteKernelCanDelete } from "./waiting-room-remote-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -27,7 +27,7 @@ type WaitingRoomRowsChangedPatch = {
   inventoryVersion: string
   structuralVersion: string
   activityRevision: string
-  sessions: WaitingRoomPublicSessionSummary[]
+  sessions: RoomListSessionSummary[]
   removedSessionIds: string[]
   sessionsTotal?: number
   sessionsNextCursor?: string | null
@@ -42,7 +42,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
   getWaitingRoomState: () => WaitingRoomState
   getInventory: () => Promise<WaitingRoomInventory>
-  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
+  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: RoomListSessionSummary[]; next_cursor: string | null }>
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
@@ -327,7 +327,7 @@ export function createWaitingRoomInventoryRefreshController(
         const baseline = inventoriesByKernel.get(kernelId)!
         let cursor: string | null = null
         const cursors = new Set<string>()
-        const sessions = new Map<string, WaitingRoomPublicSessionSummary>()
+        const sessions = new Map<string, RoomListSessionSummary>()
         try {
           do {
             const page = await options.getSessionPage(cursor, baseline.inventoryVersion)
@@ -337,7 +337,7 @@ export function createWaitingRoomInventoryRefreshController(
               throw new Error("The kernel connection changed. Reopen the session list.")
             }
             if (inventory?.inventoryVersion !== baseline.inventoryVersion) {
-              throw new LocalIpcError("list sessions", "Session activity changed during listing", "waiting_room_inventory_changed")
+              throw new LocalIpcError("list sessions", "Session activity changed during listing", "room_list_changed")
             }
             for (const row of page.sessions) sessions.set(row.id, { ...row, kernel_id: inventory.kernelId, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null })
             cursor = page.next_cursor
@@ -350,7 +350,7 @@ export function createWaitingRoomInventoryRefreshController(
           options.reconcileWaitingRoom(options.getWaitingRoomState())
           return
         } catch (error) {
-          if (!(error instanceof LocalIpcError) || error.code !== "waiting_room_inventory_changed" || attempt === 2) throw error
+          if (!(error instanceof LocalIpcError) || error.code !== "room_list_changed" || attempt === 2) throw error
           await refreshNow()
         }
       }
@@ -501,7 +501,7 @@ function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): Sess
   return Array.from(inventories)
     .flatMap((inventory) => inventory.sessions)
     .sort((left, right) => (
-      waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left)
+      roomListSessionRecencyMs(right) - roomListSessionRecencyMs(left)
       || (left.created_at_ms ?? 0) - (right.created_at_ms ?? 0) || left.id.localeCompare(right.id)
     ))
 }

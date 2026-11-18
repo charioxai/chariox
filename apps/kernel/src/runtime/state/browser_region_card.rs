@@ -76,6 +76,9 @@ impl KernelRuntimeState {
             params["verification"] = serde_json::to_value(verification)
                 .map_err(|_| region_error("invalid verification condition"))?;
         }
+        if let Some(done_text) = &target.done_text {
+            params["done_text"] = done_text.clone().into();
+        }
         if let Some(previous) = previous {
             params["generation"] = previous.generation.into();
             params["document_id"] = previous.document_id.clone().into();
@@ -233,6 +236,7 @@ impl KernelRuntimeState {
                 tab_id: previous.tab_id.clone(),
                 reference: previous.reference.clone(),
                 verification: previous.verification.clone(),
+                done_text: previous.done_text.clone(),
             };
             let result = self
                 .observe_card_region(room, agent, id, &target, Some(previous), app_confirmation)

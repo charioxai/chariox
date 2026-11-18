@@ -589,6 +589,8 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::DeliverWorkflowNotification { .. }
         | RelayPeerRequest::PeerAgentMessage { .. }
         | RelayPeerRequest::PeerAgentCancel { .. }
+        | RelayPeerRequest::SetWorkflowResponsible { .. }
+        | RelayPeerRequest::ApplyWorkflowResponsible { .. }
         | RelayPeerRequest::SubscribePeerAgent { .. }
         | RelayPeerRequest::UnsubscribePeerAgent { .. }
         | RelayPeerRequest::SpawnRoomPeer { .. }
@@ -2649,6 +2651,8 @@ fn peer_agent_request(request: &RelayPeerRequest) -> bool {
         request,
         RelayPeerRequest::PeerAgentMessage { .. }
             | RelayPeerRequest::PeerAgentCancel { .. }
+            | RelayPeerRequest::SetWorkflowResponsible { .. }
+            | RelayPeerRequest::ApplyWorkflowResponsible { .. }
             | RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }
             | RelayPeerRequest::SpawnRoomPeer { .. }
@@ -2663,8 +2667,10 @@ fn peer_agent_stamp_matches(request: &RelayPeerRequest, from_daemon_id: &str) ->
         RelayPeerRequest::PeerAgentMessage { sender, .. }
         | RelayPeerRequest::PeerAgentCancel { sender, .. }
         | RelayPeerRequest::SubscribePeerAgent { sender, .. }
+        | RelayPeerRequest::SetWorkflowResponsible { sender, .. }
         | RelayPeerRequest::SpawnRoomPeer { sender, .. }
         | RelayPeerRequest::DeleteRoomPeer { sender, .. } => sender.kernel_id.as_str(),
+        RelayPeerRequest::ApplyWorkflowResponsible { workflow, .. } => workflow.kernel_id.as_str(),
         RelayPeerRequest::DeliverPeerAgentOutcome {
             outcome:
                 crate::transport::relay_peer::PeerAgentOutcome::Event { source, .. }

@@ -40,6 +40,14 @@ impl KernelRuntimeOwnedState {
             .and_then(|fingerprint| fingerprint.strip_prefix("task:"))
             .and_then(|value| value.rsplit_once(':'))
             .map(|(task, _)| task.to_string());
+        // An answer or wake that arrives while the task's own turn still runs queues behind that turn.
+        // Admitting it now would move the task off the running turn, whose end then finds no task to
+        // settle; the dispatch that promotes the continuation admits it (`bind_agent_task_run`).
+        if let Some(task) = &continuation_task {
+            if self.task_turn_is_running(&prepared.session_id, task, prompt)? {
+                return Ok(false);
+            }
+        }
         let operation = if let Some(task) = continuation_task {
             Operation::BeginContinuation {
                 task,
@@ -112,6 +120,25 @@ impl KernelRuntimeOwnedState {
         }
         Ok(())
     }
+    /// Whether `task` still has its own turn running while it holds `continuation` as its next prompt.
+    fn task_turn_is_running(
+        &self,
+        room: &str,
+        task: &str,
+        continuation: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(task) = self.durable_state_store.agent_task(task)? else {
+            return Ok(false);
+        };
+        if task.pending_prompt_id.as_deref() != Some(continuation) {
+            return Ok(false);
+        }
+        let session = self.session_store.get_session(room)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &task.agent_id)
+            .is_some_and(|active| active.id() == task.prompt_id))
+    }
     /// Binds the provider run that carries a dispatched prompt to its task. A prompt that waited in
     /// the queue is admitted without a run, so every dispatch path (including queue promotion)
     /// binds it here; the completion check keys its private result on that run.
@@ -165,6 +192,10 @@ impl KernelRuntimeOwnedState {
                 let notices = serde_json::to_string(&cancellations)
                     .map_err(|_| ledger::error("task cancellation context encoding failed"))?;
                 context.push_str(&format!("\n<chariox-owner-cancellations>The tasks below were cancelled. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
+            }
+            if let Some(queued) = self.queued_messages_notice(room, agent)? {
+                context.push('\n');
+                context.push_str(&queued);
             }
         }
         if let Some(goal_context) = self.goal_continuation_context(&task)? {
@@ -484,15 +515,12 @@ impl KernelRuntimeOwnedState {
 static SWEEP_COMMIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl KernelRuntimeState {
-    pub(in crate::runtime::state) async fn send_durable_agent_message(
+    /// The provider run that speaks for `sender` is the current one: a stale credential sends nothing.
+    pub(in crate::runtime::state) fn require_message_authority(
         &self,
         session: &crate::session::RuntimeSession,
         sender: &crate::agent::AgentInstance,
-        args: crate::transport::runtime_tools::SendAgentMessageArgs,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if args.message.trim().is_empty() && args.attachments.is_empty() {
-            return Err(ledger::error("message is empty"));
-        }
+    ) -> Result<(), DaemonError> {
         let (actor, origin_run) = self.room_provider_origin.as_ref().ok_or_else(|| {
             ledger::error("durable messages require authenticated provider origin")
         })?;
@@ -515,6 +543,18 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("stale provider message authority"));
         }
+        Ok(())
+    }
+    pub(in crate::runtime::state) async fn send_durable_agent_message(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        args: crate::transport::runtime_tools::SendAgentMessageArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if args.message.trim().is_empty() && args.attachments.is_empty() {
+            return Err(ledger::error("message is empty"));
+        }
+        self.require_message_authority(session, sender)?;
         let current = self
             .owned
             .prompt_state_owner
@@ -557,17 +597,40 @@ impl KernelRuntimeState {
             return Err(error);
         }
         // Admission precedes resource lookup; another room reveals only its ordinary agents.
+        // A key the sender chose names the message across turns, so it can promote the message by
+        // sending it again; a key the kernel chose belongs to this turn.
+        let named = args.idempotency_key.is_some();
         let id = args
             .idempotency_key
             .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
         if id.trim().is_empty() || id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
+        let occurrence = if named {
+            id.clone()
+        } else {
+            format!("{}:{id}", current.id())
+        };
+        if let Some(first) = self
+            .owned
+            .durable_state_store
+            .agent_inbox_occurrence(target_room, target.id(), &occurrence)?
+            .into_iter()
+            .find(|first| first.source_id == sender.id())
+        {
+            return self
+                .answer_resent_agent_message(
+                    &first,
+                    args.urgent,
+                    target.alias().unwrap_or(target.agent_ref()),
+                )
+                .await;
+        }
         let mut event = ledger::occurrence(
             target_room,
             target.id(),
             sender.id(),
-            &format!("{}:{id}", current.id()),
+            &occurrence,
             "message",
             serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
@@ -627,6 +690,14 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
+        // Only an urgent message acts on its recipient's turn; any other waits for the next one.
+        if !event.urgent {
+            self.publish_task_change(target_room);
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))}),
+            });
+        }
         if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
             self.owned.record_notice_for_agent(
                 target_room,
@@ -644,7 +715,7 @@ impl KernelRuntimeState {
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
+            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested}),
         })
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
@@ -678,12 +749,16 @@ impl KernelRuntimeState {
                     urgent: args.urgent,
                     reply_requested: args.reply_requested,
                 },
-                request_id,
+                request_id.clone(),
             )
             .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
+            payload: if args.urgent {
+                serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
+            } else {
+                serde_json::json!({"status":if duplicate {"duplicate"} else {"queued"},"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":false,"reply_requested":args.reply_requested,"note":super::agent_queued_messages::queued_note(&args.agent)})
+            },
         })
     }
     /// Native TUI turns end at the provider Stop event, which completes the prompt without the
@@ -807,13 +882,40 @@ impl KernelRuntimeState {
         self.finish_agent_task_settlement(settlement, &source).await
     }
     /// The provider's turn about an ended background call is the last part of the work of a child
-    /// held for it: the parent hears of the finish now.
+    /// held for it: the parent hears of the finish now. A leased child's worker reports the turn's
+    /// end to its home, which holds the task.
     pub(super) async fn release_tasks_held_for_notification(
         &self,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
+        // A worker holds no task: its home does, and hears of this turn's end as a completion.
+        if self
+            .owned
+            .provider_run_projection
+            .is_leased_provider_run(provider_run_id)
+        {
+            let now = crate::session::unix_epoch_ms();
+            crate::logging::debug_with_fields(
+                "daemon.agent_lifecycle",
+                "a worker reports the end of the provider's own turn to its home",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id}),
+            );
+            self.owned.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!(
+                    "{}{provider_run_id}:{now}",
+                    crate::transport::relay_peer::LEASED_NOTIFICATION_COMPLETION_PREFIX
+                ),
+                now,
+            );
+            return Ok(());
+        }
         for task in
             self.owned
                 .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
@@ -844,12 +946,12 @@ impl KernelRuntimeState {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
             ExecutionState::Done | ExecutionState::Cancelled | ExecutionState::Blocked => {
-                self.move_decisions_up(&task.room_id, &task.agent_id)
+                self.move_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
                     .await?;
             }
             ExecutionState::Waiting => {
                 self.owned.record_wait_started(&task);
-                self.move_seen_decisions_up(&task.room_id, &task.agent_id)
+                self.move_seen_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
                     .await?;
             }
             ExecutionState::Working => {}
@@ -966,9 +1068,27 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
-    /// Every transition is a notice so attached clients refresh the projection.
+    /// A task that needs its owner or stopped is said in a notice; any other change only refreshes the projection,
+    /// so a client redraws the task's state without a status line about it.
     fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
         for task in tasks {
+            let notice = match task.state {
+                ExecutionState::Blocked => format!(
+                    "{}: Needs your help. {}",
+                    self.agent_notice_name(&task.agent_id),
+                    task.reason
+                ),
+                ExecutionState::Cancelled => format!(
+                    "{}: Stopped. Its provider turn ended without an answer.",
+                    self.agent_notice_name(&task.agent_id)
+                ),
+                _ => {
+                    self.owned
+                        .terminal_stream
+                        .notify_terminal_projection_change(&task.room_id);
+                    continue;
+                }
+            };
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,
@@ -976,23 +1096,7 @@ impl KernelRuntimeState {
                 self.owned
                     .attachment_store
                     .list_session_attachment_ids(&task.room_id),
-                if task.state == ExecutionState::Blocked {
-                    format!(
-                        "{}: Needs your help. {}",
-                        self.agent_notice_name(&task.agent_id),
-                        task.reason
-                    )
-                } else if task.state == ExecutionState::Cancelled {
-                    format!(
-                        "{}: Stopped. Its provider turn ended without an answer.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                } else {
-                    format!(
-                        "{}: Waiting for 15 minutes without progress.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                },
+                notice,
             );
         }
     }
@@ -1304,6 +1408,11 @@ impl KernelRuntimeState {
                 );
             }
             if task.state != ExecutionState::Working {
+                // Stop's own cleanup may not have read the held run yet: the stop the worker
+                // is owed is stored before the record that names the run goes.
+                if task.state == ExecutionState::Cancelled {
+                    self.owe_held_run_a_stop(&task)?;
+                }
                 self.owned.background_holds.release(&task.task_id);
             } else if self.owned.is_held_for_background_calls(&task.task_id) {
                 if self.owned.held_task_due(&task, now)? {
@@ -1339,12 +1448,14 @@ impl KernelRuntimeState {
                                 .find(|t| &t.task_id == id),
                             None => None,
                         };
-                        // Provider failure is not settlement of resources still
-                        // owned by the exact cancelled child task.
+                        // Neither a provider failure nor a finished turn settles resources
+                        // still owned by the exact child task: Stop must still reach them.
                         match child_task {
                             Some(ref child)
-                                if child.state == ExecutionState::Cancelled
-                                    && self.owned.agent_task_resources_unsettled(child)? =>
+                                if matches!(
+                                    child.state,
+                                    ExecutionState::Done | ExecutionState::Cancelled
+                                ) && self.owned.agent_task_resources_unsettled(child)? =>
                             {
                                 None
                             }

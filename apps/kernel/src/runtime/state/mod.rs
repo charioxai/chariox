@@ -51,15 +51,27 @@ mod agent_move_transport;
 mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
+use crate::local::SettingsApplies;
+use agent_self_settings_gate as agent_self_settings;
+pub(crate) use agent_settings_change::SettingsContext;
+use agent_settings_change::SettingsOrigin;
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
-mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_account_runtime;
+mod app_automation_owned_state;
 mod app_connection_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_control_requests;
 mod app_dev_runtime;
 mod app_event_delivery_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_routing_runtime;
+mod app_standing_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) use app_event_routing_runtime::{
+    Acting, ConnectionView, RouteSpec, RouteView, RoutingError, RoutingScope, TargetView,
+};
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -257,6 +269,8 @@ pub(crate) struct KernelRuntimeState {
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    /// Parents holding a finished child's wake for the siblings still working.
+    sibling_windows: child_finish_window::SiblingWindows,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
@@ -419,6 +433,14 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
+    pending_settings_notices: agent_settings_change::PendingSettingsNotices,
+    leased_launch_credentials: std::sync::Arc<leased_launch_credentials::LeasedLaunchCredentials>,
+    /// When the kernel last sent a usage-limit resume, to stagger the next one.
+    usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
+    /// The agents whose claimed resume this kernel is still sending.
+    usage_limit_sends: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// The agents whose last resume failed, so the pane says why once.
+    usage_limit_resume_failures: Arc<std::sync::Mutex<BTreeSet<String>>>,
     pending_mcp_continuations: PendingMcpContinuationStore,
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
@@ -545,6 +567,9 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_self_settings_gate;
+mod agent_settings_change;
+mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
@@ -559,6 +584,9 @@ mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
+mod usage_limit_interactions;
+mod usage_limit_runtime;
+mod usage_limit_stop_transitions;
 mod wake_driver;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
@@ -635,6 +663,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
+mod leased_launch_credentials;
 mod leased_profile_transition_runtime;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -718,6 +747,8 @@ mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
 #[cfg(test)]
+mod leased_mid_turn_settings_tests;
+#[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
@@ -751,6 +782,9 @@ mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
+mod workflow_responsible_prompt;
+mod workflow_responsible_state;
+mod workflow_run_help;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 mod outside_agent_notification;
@@ -1155,6 +1189,7 @@ impl KernelRuntimeState {
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            sibling_windows: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
             unpaired_peer_follow_settlements: Default::default(),
@@ -1299,6 +1334,11 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
+                pending_settings_notices: Default::default(),
+                leased_launch_credentials: Default::default(),
+                usage_limit_resumes: Default::default(),
+                usage_limit_sends: Default::default(),
+                usage_limit_resume_failures: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 background_holds: Default::default(),
                 private_assessment_results: Default::default(),
@@ -1688,10 +1728,12 @@ mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
+mod agent_queued_messages;
 mod agent_subtree_cascade;
 mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;
+mod child_finish_window;
 mod child_finished_event;
 
 #[cfg(test)]
@@ -1725,6 +1767,7 @@ mod agent_workflow_tasks;
 mod agent_workspace_loss;
 mod card_action_state;
 mod interaction_wake;
+mod leased_background_hold;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;

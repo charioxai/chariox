@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
@@ -25,7 +26,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
-    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
+    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.binary ?? route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -2059,6 +2060,20 @@ test("MP-08/MP-10 CPU: a first paint prunes a large sheet without a document que
     assert(queries < 50, `${queries} document queries for 1500 rules`);
   }, { "/n.css": { type: "text/css", body: narrowCss } }));
 
+// transport5: normalizing a cross-origin sheet parses its source once for the serializer and the rule count together
+// (a 460 KB sheet took three parses, most of the 1 s the sheets of a cold GitHub page cost before the first paint).
+test("MIRROR-P2: a cross-origin sheet's source is parsed once for its normalized text and its rule count", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/p.css"><p class="used">text</p>', async ({ next, evaluate, host, subscription_id }) => {
+    await next();
+    const world = host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, "(()=>{const replace=CSSStyleSheet.prototype.replaceSync;globalThis.parses=0;CSSStyleSheet.prototype.replaceSync=function(...args){globalThis.parses++;return replace.apply(this,args)};return true})()");
+    host.mirror.v2.parsedSheets.bodies.clear();
+    await evaluate("document.body.append(document.createElement('i'));true"); await next(300);
+    assert(JSON.stringify(await next(0, true)).includes("rgb(1, 2, 3)"), "the sheet reaches the reset");
+    const parses = await host.mirror.v2.evaluate(world, "globalThis.parses");
+    assert.equal(parses, 2, `${parses} parses of a small sheet`);
+  }, { "/p.css": { type: "text/css", body: "p.used{color:rgb(1, 2, 3)}" } }));
+
 // Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
 test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
   '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {
@@ -2418,6 +2433,25 @@ const visitB = async evaluate => {
   await evaluate("document.getElementById('b').click(), true"); await at("/b");
   await evaluate("history.back(), true"); await at("/");
 };
+test("MIRROR-P3-EARLY-PAINT: the viewport records are complete once the document is parsed, not when its slowest subresource has loaded", () => mirrored(
+  '<h1 id="t">Title</h1><p>text</p><img src="/slow.png" width="10" height="10">',
+  async ({ subscribe, evaluate }) => {
+    const first = await (await subscribe({ viewport_first: true })).next();
+    assert.equal(await evaluate("document.readyState"), "interactive", "the slow image still holds the load event");
+    assert.equal(first.snapshot_viewport_complete, true, "the viewer can hand over: the page's DOM is all here");
+  }, { "/slow.png": { type: "image/png", body: "x", delay_ms: 20000 } }));
+
+test("MIRROR-P3-NAV-REATTACH: a link followed while a credit waits answers that credit with the new document's reset, on the same subscription", () => mirrored(visitedPage, async ({ next, evaluate }) => {
+  const first = await next(0, true);
+  const waiting = next(4000);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await evaluate("document.getElementById('b').click(), true");
+  const moved = await waiting;
+  assert.equal(moved.reset, true, "the credit went on with the new document instead of failing as stale");
+  assert.notEqual(moved.document_id, first.document_id);
+  assert.equal(moved.base_sequence ?? null, null);
+}, visitedRoutes));
+
 test("MP-08/MP-10 protocol 629: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
   await visitB(evaluate);
   const first = await (await subscribe({ visited_links: true })).next();
@@ -2599,3 +2633,29 @@ for (const viewportFirst of [false, true]) test(`MP-08/MP-10 verification ancest
     }
     assert(rejection, 'the visible site rejection travels without losing the live form');
   }, {}, viewportFirst ? { viewport_first: true } : {}));
+
+// MIRROR-P2-FONTS-SUBSET: a face over 32 KiB travels as the glyphs the document shows; text that arrives later brings the glyphs it needs.
+const liberation = readFileSync(new URL("../../../../examples/apps/excalidraw/assets/LiberationSans-Regular.woff2", import.meta.url));
+test("MIRROR-P2-FONTS-SUBSET: a subset font is sent again, under its key, when the document gains characters it lacks, and lays the new text out as the source does", () => mirrored(
+  '<style>@font-face{font-family:T;src:url(/lib.woff2) format("woff2")}p{margin:0;font:24px T,monospace;white-space:pre}</style><p id="t">Hello world</p>', async ({ next, evaluate }) => {
+    const fonts = [], collect = packet => fonts.push(...packet.resources.filter(r => r.mime_type === "font/woff2" && r.data_base64));
+    collect(await next());
+    for (let i = 0; i < 8 && !fonts.length; i++) collect(await next(500));
+    assert.equal(fonts.length, 1, "MIRROR-P2-FONTS-SUBSET: the first delivery is the subset");
+    assert(Buffer.from(fonts[0].data_base64, "base64").length < liberation.length / 3);
+    const text = "Привет мир ąęłś";
+    await evaluate(`document.querySelector('#t').textContent = ${JSON.stringify(text)}`);
+    for (let i = 0; i < 12 && fonts.length < 2; i++) collect(await next(500));
+    assert.equal(fonts.length, 2, "MIRROR-P2-FONTS-SUBSET: the characters the document gained travel with a new subset");
+    assert.equal(fonts[1].key, fonts[0].key, "under the key the viewer already styles");
+    assert.notEqual(fonts[1].resource_id, fonts[0].resource_id);
+    const width = bytes => evaluate(`(async () => {
+      const face = new FontFace('Probe', Uint8Array.from(atob(${JSON.stringify(bytes.toString("base64"))}), c => c.charCodeAt(0)).buffer); await face.load(); document.fonts.add(face);
+      const probe = document.createElement('span'); probe.style.cssText = 'font:24px Probe,monospace;white-space:pre;position:absolute;left:-9999px'; probe.textContent = ${JSON.stringify(text)}; document.body.append(probe);
+      const subset = probe.getBoundingClientRect().width; probe.style.fontFamily = 'T,monospace'; const source = probe.getBoundingClientRect().width; probe.remove();
+      return { subset, source };
+    })()`);
+    const before = await width(Buffer.from(fonts[0].data_base64, "base64")), after = await width(Buffer.from(fonts[1].data_base64, "base64"));
+    assert.notEqual(before.subset, before.source, "MIRROR-P2-FONTS-SUBSET: the first subset cannot show the new text as the source does");
+    assert.equal(after.subset, after.source, "MIRROR-P2-FONTS-SUBSET: the new subset lays the new text out as the source face does");
+  }, { "/lib.woff2": { type: "font/woff2", binary: liberation } }));

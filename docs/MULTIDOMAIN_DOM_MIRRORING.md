@@ -101,8 +101,12 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   kernel reports undefined (no viewer registry definition outlives its source
   document). Both markers are denied page attributes.
 - **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
-  by the next page change; the client keeps four credits outstanding, packets
-  apply strictly in sequence (`base_sequence`). The kernel keeps its last 16
+  by the next page change; one credit answers one packet, so the client keeps
+  up to eight credits outstanding (a page that changes every frame needs the
+  credits to cover its round trip: 8 credits over 130 ms are 60 packets a
+  second) and four once recent packets are big (above 12 KB on the wire), so an
+  input echo never queues behind many of them. Packets apply strictly in
+  sequence (`base_sequence`). The kernel keeps its last 16
   packets (at most 8 MB) with their original bytes. A gap (a reply lost with a
   dropped socket, or one overtaken by milliseconds) sends one
   `mirror_next {resend: true}` at once (501): the kernel ends earlier long polls

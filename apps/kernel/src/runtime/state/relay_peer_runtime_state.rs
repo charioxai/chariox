@@ -260,12 +260,62 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.destroy_leased_agent(&leased_agent_id)
-        })
-        .await
+        let backing_agent_id = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                let backing_agent_id = runtime.backing_agent_id(&leased_agent_id);
+                runtime.destroy_leased_agent(&leased_agent_id)?;
+                Ok(backing_agent_id)
+            })
+            .await?;
+        if let Some(backing_agent_id) = backing_agent_id {
+            self.owned
+                .leased_launch_credentials
+                .forget(&backing_agent_id);
+        }
+        Ok(())
+    }
+
+    /// The backing agent's settings before a change that arrives while its turn runs: the worker
+    /// settles that change like a local one, so the process is marked for the step-boundary swap.
+    async fn settings_before_leased_turn_change(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<Option<agent_settings_change::AgentSettingsView>, DaemonError> {
+        let id = leased_agent_id.to_string();
+        let running = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).backing_agent_running_turn(&id)
+            })
+            .await?;
+        running
+            .map(|agent_id| {
+                let agent = self.owned.agent_store.get_agent(&agent_id)?;
+                self.owned.agent_settings_view(&agent)
+            })
+            .transpose()
+    }
+
+    fn settle_leased_turn_settings(
+        &self,
+        before: Option<agent_settings_change::AgentSettingsView>,
+        leased_agent: &LeasedAgent,
+    ) -> Result<(), DaemonError> {
+        let Some(before) = before else {
+            return Ok(());
+        };
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(&leased_agent.backing_agent_id)?;
+        self.settle_settings_change(
+            &before,
+            &agent,
+            &agent_settings_change::SettingsContext::person(),
+            true,
+        )?;
+        Ok(())
     }
 
     pub(crate) async fn update_relay_leased_agent_config(
@@ -274,6 +324,9 @@ impl KernelRuntimeState {
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
     ) -> Result<LeasedAgent, DaemonError> {
+        let before = self
+            .settings_before_leased_turn_change(leased_agent_id)
+            .await?;
         let leased_agent_id = leased_agent_id.to_string();
         let leased_agent = self
             .with_app_side_effect(move |app| {
@@ -289,6 +342,7 @@ impl KernelRuntimeState {
         self.claude_session_grants
             .forget(&leased_agent.backing_agent_id);
         self.forget_agent_grants(&leased_agent.backing_agent_id);
+        self.settle_leased_turn_settings(before, &leased_agent)?;
         Ok(leased_agent)
     }
 
@@ -306,16 +360,23 @@ impl KernelRuntimeState {
             RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&id)
         })
         .await?;
-        self.apply_leased_profile_transition(
-            leased_agent_id,
-            crate::transport::relay_peer::RelayAgentExecutionProfile {
-                provider,
-                account_profile,
-                model,
-                effort,
-            },
-        )
-        .await
+        let before = self
+            .settings_before_leased_turn_change(leased_agent_id)
+            .await?;
+        let leased_agent = self
+            .apply_leased_profile_transition(
+                leased_agent_id,
+                crate::transport::relay_peer::RelayAgentExecutionProfile {
+                    provider,
+                    account_profile,
+                    model,
+                    effort,
+                },
+                before.is_some(),
+            )
+            .await?;
+        self.settle_leased_turn_settings(before, &leased_agent)?;
+        Ok(leased_agent)
     }
 
     pub(crate) async fn update_relay_leased_agent_meta_mode(
@@ -689,7 +750,7 @@ impl KernelRuntimeState {
         }
 
         let profile_update = self
-            .apply_leased_profile_transition(&leased_agent_id, expected_profile.clone())
+            .apply_leased_profile_transition(&leased_agent_id, expected_profile.clone(), false)
             .await;
         let replay_leased_agent_id = leased_agent_id.clone();
         let replay_git_context = git_context.clone();
@@ -1389,6 +1450,9 @@ impl KernelRuntimeState {
         });
         let session_id = home_session_id.clone();
         let agent_id = home_agent_id.clone();
+        let worked = output_chunks
+            .iter()
+            .any(|chunk| crate::app::is_work_of_a_turn(&chunk.kind, &chunk.bytes));
         let outcome = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).project_remote_runtime_projection(authority, event)
@@ -1396,6 +1460,28 @@ impl KernelRuntimeState {
             .await?;
         if !outcome.accepted {
             return Ok(());
+        }
+        if let Some(leased_agent_id) = self
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()))
+        {
+            self.settle_held_tasks_after_projection(
+                &session_id,
+                &agent_id,
+                &crate::provider::projected_leased_provider_run_id(
+                    &leased_agent_id,
+                    &worker_provider_run_id,
+                ),
+                super::leased_background_hold::HeldProjection {
+                    worked,
+                    notification_ended: outcome.notification_ended,
+                    run_ended: outcome.held_run_ended,
+                },
+            )
+            .await?;
         }
         if let Some(harvest) = outcome.completion_harvest {
             self.harvest_remote_completion_observations(harvest).await;

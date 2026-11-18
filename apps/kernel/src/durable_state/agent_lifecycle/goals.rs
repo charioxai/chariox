@@ -409,7 +409,7 @@ pub(super) fn evaluate(
                 t.wait = Some(AgentWait {
                     registration_ids, deadline_ms: Some(deadline), started_at_ms: prior.as_ref().map_or(now, |w| w.started_at_ms),
                     inbox_cursor: prior.as_ref().map_or(0, |w| w.inbox_cursor),
-                    long_wait_notified: prior.as_ref().is_some_and(|w| w.long_wait_notified), last_checked_at_ms: now,
+                    last_checked_at_ms: now,
                 });
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;

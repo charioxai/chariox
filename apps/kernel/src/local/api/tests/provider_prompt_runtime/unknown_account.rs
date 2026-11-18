@@ -169,6 +169,7 @@ done
                     model: Some("claude-haiku-5-5".into()),
                     effort: None,
                     clear_effort: false,
+                    reason: None,
                 },
             ))
             .unwrap();

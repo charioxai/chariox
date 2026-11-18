@@ -310,6 +310,19 @@ impl AppControlService {
             .clone()
     }
 
+    /// The shown prompts of operations whose ids start with `prefix`, with the session that shows each.
+    pub(crate) fn shown_validation_prompts(&self, prefix: &str) -> Vec<(String, String)> {
+        self.validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(operation_id, _)| operation_id.starts_with(prefix))
+            .filter_map(|(operation_id, (_, session))| {
+                Some((operation_id.clone(), session.clone()?))
+            })
+            .collect()
+    }
+
     pub(crate) fn end_validation_prompt(&self, operation_id: &str) {
         self.validation_prompts
             .lock()

@@ -110,7 +110,28 @@ pub struct Capabilities {
     /// manifests and their capability summaries stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionAccess>,
+    /// Inbox routes the App may manage for itself inside one connection its
+    /// owner grants (kernel protocol 1011). Only the App world 1.1.0 has the
+    /// import that uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_routing: Option<EventRouting>,
 }
+
+/// One event generator (for example `dev.chariox.github`) whose events the App
+/// routes to its own declared incoming events. The owner still chooses the
+/// connection; the kernel keeps the App inside it and inside `max_routes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EventRouting {
+    pub generator: String,
+    /// The App's incoming events a route may deliver to.
+    pub incoming: Vec<String>,
+    pub max_routes: u32,
+}
+
+/// Routes one installation may hold, whatever its manifest asks for.
+pub const MAX_EVENT_ROUTES: u32 = 200;
+const MAX_ROUTED_EVENTS: usize = 32;
 
 /// One event generator (for example `dev.chariox.slack`) and the actions of
 /// its reviewed allow-list the App may ask for. The owner still chooses which
@@ -124,12 +145,44 @@ pub struct ConnectionAccess {
 
 /// Destinations are exact HTTP(S) origins. Paths, redirects, connected IPs and
 /// credential authority are enforced by the kernel broker at request time.
+///
+/// A destination with a `credential` is reached only through its `routes`: the
+/// owner binds an account to the credential label, and the kernel adds that
+/// account's Vault value to the request. The App never holds the value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkDestination {
     pub origin: String,
     pub methods: Vec<HttpMethod>,
+    /// The label the owner's account binding answers to (for example `github`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<CredentialRoute>,
 }
+
+/// One REST call a credentialed destination allows: the method, a path
+/// template (`{name}` stands for one path segment) and how much authority it
+/// needs. An owner binding that allows less than `safety` refuses the call.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRoute {
+    pub method: HttpMethod,
+    pub path: String,
+    pub safety: RouteSafety,
+}
+
+/// Ordered: a binding that allows `Write` also allows `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteSafety {
+    Read,
+    Write,
+    Destructive,
+}
+
+/// Routes one destination may declare.
+const MAX_CREDENTIAL_ROUTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -242,6 +295,9 @@ impl Capabilities {
             }
             unique(&connection.actions)?;
         }
+        if let Some(routing) = &self.event_routing {
+            routing.validate()?;
+        }
         if self.network.len() > 64 {
             return Err(invalid_manifest("too many network destinations"));
         }
@@ -254,6 +310,7 @@ impl Capabilities {
                 ));
             }
             unique(&destination.methods)?;
+            destination.validate_credential()?;
         }
         Ok(())
     }
@@ -289,6 +346,99 @@ impl Migrations {
         }
         Ok(())
     }
+}
+
+impl EventRouting {
+    fn validate(&self) -> Result<()> {
+        let generator = !self.generator.is_empty()
+            && self.generator.len() <= 128
+            && self.generator.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.')
+            });
+        if !generator
+            || self.incoming.is_empty()
+            || self.incoming.len() > MAX_ROUTED_EVENTS
+            || !self.incoming.iter().all(|name| valid_function_name(name))
+            || !(1..=MAX_EVENT_ROUTES).contains(&self.max_routes)
+        {
+            return Err(invalid_manifest(
+                "eventRouting needs a generator, its incoming events and 1 to 200 routes",
+            ));
+        }
+        unique(&self.incoming)
+    }
+}
+
+impl NetworkDestination {
+    fn validate_credential(&self) -> Result<()> {
+        let Some(credential) = &self.credential else {
+            return if self.routes.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid_manifest("routes need a credential label"))
+            };
+        };
+        let label = !credential.is_empty()
+            && credential.len() <= 64
+            && credential
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !label
+            || !self.origin.starts_with("https://")
+            || self.routes.is_empty()
+            || self.routes.len() > MAX_CREDENTIAL_ROUTES
+        {
+            return Err(invalid_manifest(
+                "a credential needs a label, an https origin and bounded routes",
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for route in &self.routes {
+            if !route_path(&route.path) || !seen.insert((route.method, &route.path)) {
+                return Err(invalid_manifest(
+                    "credential routes must be unique, exact path templates",
+                ));
+            }
+        }
+        let methods: BTreeSet<_> = self.routes.iter().map(|route| route.method).collect();
+        if methods != self.methods.iter().copied().collect() {
+            return Err(invalid_manifest(
+                "a credentialed destination's methods must be the methods of its routes",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `/a/{b}/c`: segments are literal or one `{name}`; no query, fragment,
+/// encoding, empty or dot segments, so a route names exactly one path shape.
+fn route_path(path: &str) -> bool {
+    path.len() <= 256
+        && path.starts_with('/')
+        && path[1..].split('/').all(|segment| {
+            let literal = |text: &str| {
+                !text.is_empty()
+                    && text != "."
+                    && text != ".."
+                    && text
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+            };
+            segment
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+                .map_or_else(
+                    || literal(segment),
+                    |inner| {
+                        !inner.is_empty()
+                            && inner
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    },
+                )
+        })
 }
 
 fn invalid_manifest(message: &'static str) -> PackageError {
@@ -340,6 +490,9 @@ impl Manifest {
             }
         }
         self.capabilities.validate()?;
+        if self.capabilities.event_routing.is_some() {
+            return Err(invalid("eventRouting needs a v2 App"));
+        }
         if let Some(migrations) = &self.migrations {
             migrations.validate(limits, javascript_path)?;
         }
@@ -421,4 +574,154 @@ fn unique<T: Ord>(values: &[T]) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn destination(routes: &[(HttpMethod, &str, RouteSafety)]) -> NetworkDestination {
+        NetworkDestination {
+            origin: "https://api.github.com".into(),
+            methods: routes
+                .iter()
+                .map(|route| route.0)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            credential: Some("github".into()),
+            routes: routes
+                .iter()
+                .map(|(method, path, safety)| CredentialRoute {
+                    method: *method,
+                    path: (*path).into(),
+                    safety: *safety,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_credentialed_destination_is_a_bounded_set_of_exact_routes() {
+        let read = (
+            HttpMethod::Get,
+            "/repos/{owner}/{repo}/pulls/{number}",
+            RouteSafety::Read,
+        );
+        let merge = (
+            HttpMethod::Put,
+            "/repos/{owner}/{repo}/pulls/{number}/merge",
+            RouteSafety::Destructive,
+        );
+        destination(&[read, merge]).validate_credential().unwrap();
+        assert!(
+            RouteSafety::Read < RouteSafety::Write && RouteSafety::Write < RouteSafety::Destructive
+        );
+
+        let refused = [
+            // Routes without a credential label.
+            NetworkDestination {
+                credential: None,
+                ..destination(&[read])
+            },
+            // A bearer token over plain HTTP.
+            NetworkDestination {
+                origin: "http://api.github.com".into(),
+                ..destination(&[read])
+            },
+            // Methods that no route uses.
+            NetworkDestination {
+                methods: vec![HttpMethod::Get, HttpMethod::Delete],
+                ..destination(&[read])
+            },
+            // A credential with no route at all.
+            NetworkDestination {
+                routes: Vec::new(),
+                ..destination(&[read])
+            },
+            destination(&[read, read]),
+            destination(&[(HttpMethod::Get, "/repos/%2e%2e", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos/../x", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos?x=1", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos/{}", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos//x", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "repos", RouteSafety::Read)]),
+        ];
+        for destination in refused {
+            assert!(
+                destination.validate_credential().is_err(),
+                "{destination:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_routing_tests {
+    use super::*;
+
+    fn routing() -> EventRouting {
+        EventRouting {
+            generator: "dev.chariox.github".into(),
+            incoming: vec!["pull_request".into(), "check_run".into()],
+            max_routes: 200,
+        }
+    }
+
+    fn capabilities(routing: EventRouting) -> Capabilities {
+        Capabilities {
+            event_routing: Some(routing),
+            ..Capabilities::default()
+        }
+    }
+
+    #[test]
+    fn event_routing_names_one_generator_its_incoming_events_and_a_bounded_route_count() {
+        capabilities(routing()).validate().unwrap();
+        let refused = [
+            EventRouting {
+                generator: "Dev GitHub".into(),
+                ..routing()
+            },
+            EventRouting {
+                incoming: Vec::new(),
+                ..routing()
+            },
+            EventRouting {
+                incoming: vec!["pull_request".into(), "pull_request".into()],
+                ..routing()
+            },
+            EventRouting {
+                incoming: vec!["Pull Request".into()],
+                ..routing()
+            },
+            EventRouting {
+                incoming: (0..33).map(|n| format!("event_{n}")).collect(),
+                ..routing()
+            },
+            EventRouting {
+                max_routes: 0,
+                ..routing()
+            },
+            EventRouting {
+                max_routes: MAX_EVENT_ROUTES + 1,
+                ..routing()
+            },
+        ];
+        for routing in refused {
+            assert!(
+                capabilities(routing.clone()).validate().is_err(),
+                "{routing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_app_without_event_routing_keeps_its_manifest_bytes() {
+        let json = serde_json::to_string(&Capabilities::default()).unwrap();
+        assert!(!json.contains("eventRouting"), "{json}");
+        let routed = serde_json::to_value(capabilities(routing())).unwrap();
+        assert_eq!(routed["eventRouting"]["maxRoutes"], 200);
+        assert_eq!(routed["eventRouting"]["generator"], "dev.chariox.github");
+    }
 }

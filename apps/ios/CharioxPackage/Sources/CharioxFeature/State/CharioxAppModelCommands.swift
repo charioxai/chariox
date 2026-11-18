@@ -17,7 +17,7 @@ extension CharioxAppModel {
         await detachActiveSession()
         clearCommandDraftOnSuccess()
       } else {
-        appendCommandNotice("Waiting room is visible.")
+        appendCommandNotice("Room list is visible.")
         promptDraft = ""
       }
     case "/session":

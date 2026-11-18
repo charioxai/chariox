@@ -225,6 +225,7 @@ impl KernelRuntimeState {
             specs.extend(super::visual::visual_tool_specs());
             specs.extend(super::environment_tools::environment_tool_specs());
             specs.push(super::vault_command::capture_command_spec());
+            specs.push(super::vault_command::copy_for_use_spec());
             specs.push(super::vault_command::use_env_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
@@ -393,7 +394,10 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if matches!(
             tool_name,
-            "chariox.machines.acquire" | "chariox.machines.status" | "chariox.machines.release"
+            "chariox.machines.options"
+                | "chariox.machines.acquire"
+                | "chariox.machines.status"
+                | "chariox.machines.release"
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
         }
@@ -474,6 +478,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_CAPTURE_COMMAND {
             return Box::pin(self.vault_capture_command(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_COPY_FOR_USE {
+            return Box::pin(self.vault_copy_for_use(auth_token, arguments)).await;
         }
         if tool_name == super::vault_command::VAULT_USE_ENV {
             return Box::pin(self.vault_use_env(auth_token, arguments)).await;
@@ -680,6 +687,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::PEEK_AGENT_TOOL
                     | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                     | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                    | crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
@@ -1038,6 +1046,7 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::PEEK_AGENT_TOOL
             | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
             | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+            | crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL

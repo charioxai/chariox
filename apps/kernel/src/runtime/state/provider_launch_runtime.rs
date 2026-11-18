@@ -45,6 +45,7 @@ impl KernelRuntimeState {
                     ),
                 });
             }
+            let held_credential = provider_launch_credential.clone();
             let launch_request = apply_remote_provider_launch_credential(
                 launch_request,
                 provider_launch_credential,
@@ -67,6 +68,11 @@ impl KernelRuntimeState {
             );
             let started = owned.start_provider_launch(launch_request)?;
             let run = started.run.clone();
+            if let (Some(credential), Some(agent_id)) = (held_credential, run.agent_instance_id()) {
+                owned
+                    .leased_launch_credentials
+                    .keep(agent_id, run.id(), credential);
+            }
             // Lease identity must be visible before the provider's first MCP
             // request, which can arrive immediately after the PTY is spawned.
             owned

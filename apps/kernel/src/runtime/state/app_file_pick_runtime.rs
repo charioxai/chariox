@@ -62,6 +62,7 @@ impl KernelRuntimeState {
             return;
         };
         after_read.await;
+        self.close_ended_pick_prompts().await;
         for pick in pending {
             if !self
                 .app_control()
@@ -136,6 +137,22 @@ impl KernelRuntimeState {
                     .app_control()
                     .end_validation_prompt(&pick.operation_id);
             });
+        }
+    }
+
+    /// A prompt closes as soon as its request ends without the owner's answer: the owner revoked it, or the call
+    /// that waited for the choice went away (a closed window), not when the prompt times out.
+    async fn close_ended_pick_prompts(&self) {
+        for (operation_id, session) in self.app_control().shown_validation_prompts("file-pick-") {
+            let store = self.owned.durable_state_store.clone();
+            let id = operation_id.clone();
+            let pending =
+                tokio::task::spawn_blocking(move || store.app_file_pick_pending(&id)).await;
+            if matches!(pending, Ok(Ok(false))) {
+                let _ = self
+                    .timeout_runtime_interaction(&session, &interaction_id(&operation_id))
+                    .await;
+            }
         }
     }
 

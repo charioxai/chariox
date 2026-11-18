@@ -1174,7 +1174,79 @@ impl KernelRuntimeState {
         worktree_id: Option<Option<String>>,
         max_context_tokens: Option<Option<u64>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.update_agent_config_as(
+            session_id,
+            agent_id,
+            caller_user_id,
+            execution_mode_override,
+            permission_level_override,
+            workspace_id,
+            worktree_id,
+            max_context_tokens,
+            None,
+            SettingsContext::person(),
+        )
+        .await
+        .map(|(agent, _)| agent)
+    }
+
+    /// Changes an agent's mode, permission level and directory for `context.origin`. A mode or
+    /// level the provider takes in place applies to the running turn's next tool call; the rest
+    /// follows the profile's path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
+    )]
+    pub(crate) async fn update_agent_config_as(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
+        permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+        workspace_id: Option<Option<String>>,
+        worktree_id: Option<Option<String>>,
+        max_context_tokens: Option<Option<u64>>,
+        self_settings: Option<crate::agent::AgentSelfSettings>,
+        context: SettingsContext,
+    ) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
         self.authorize_current_external_command()?;
+        let before_agent = self.owned.agent_store.get_agent(agent_id)?;
+        if matches!(context.origin, SettingsOrigin::Agent(_)) {
+            if self_settings.is_some() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "update agent config",
+                    message: "only the person changes what an agent may change about itself"
+                        .to_string(),
+                });
+            }
+            self.owned
+                .ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
+            self.gate_agent_settings_change(
+                &before_agent,
+                &context,
+                &agent_self_settings::RequestedSettings {
+                    mode: execution_mode_override.flatten(),
+                    permission_level: permission_level_override.flatten(),
+                    directory: worktree_id.clone().flatten(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        if let Some(self_settings) = self_settings {
+            self.owned
+                .ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
+            self.owned
+                .agent_store
+                .set_agent_self_settings(agent_id, self_settings)?;
+        }
+        let before = self.owned.agent_settings_view(&before_agent)?;
+        let active_turn = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
+            .is_some();
         let update = self.owned.update_agent_config(
             session_id,
             agent_id,
@@ -1245,7 +1317,8 @@ impl KernelRuntimeState {
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
-        Ok(agent)
+        let applies = self.settle_settings_change(&before, &agent, &context, active_turn)?;
+        Ok((agent, applies))
     }
 
     #[allow(
@@ -1262,19 +1335,82 @@ impl KernelRuntimeState {
         model: Option<String>,
         effort: Option<Option<String>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.update_agent_profile_as(
+            session_id,
+            agent_id,
+            caller_user_id,
+            provider,
+            account_profile,
+            model,
+            effort,
+            SettingsContext::person(),
+        )
+        .await
+        .map(|(agent, _)| agent)
+    }
+
+    /// Changes an agent's profile for `context.origin`. A running turn takes the change at its
+    /// next finished step, in a new provider process, or when it ends if the provider cannot go
+    /// on in one; an idle agent takes it at once.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_profile operation signature and explicit context arguments"
+    )]
+    pub(crate) async fn update_agent_profile_as(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        provider: Option<String>,
+        account_profile: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+        context: SettingsContext,
+    ) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
         let original =
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
         if original.remote_execution().is_some() {
             self.ensure_remote_agent_binding_current(agent_id).await?;
         }
-        let profile_transition = self
+        if matches!(context.origin, SettingsOrigin::Agent(_)) {
+            let resolved = self.owned.validate_agent_profile_update(
+                session_id,
+                agent_id,
+                caller_user_id,
+                agent_profile_selections(&provider, &account_profile, &model, &effort),
+            )?;
+            self.gate_agent_settings_change(
+                &original,
+                &context,
+                &agent_self_settings::RequestedSettings {
+                    provider: provider.is_some().then(|| resolved.provider.clone()),
+                    account_profile: account_profile
+                        .is_some()
+                        .then(|| resolved.account_profile.clone()),
+                    model: model.is_some().then(|| resolved.model.clone()).flatten(),
+                    effort: effort.as_ref().map(|_| resolved.effort.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let active_turn = self
             .owned
             .prompt_state_owner
-            .claim_idle_agent_profile_transition(
-                &self.owned.session_store.get_session(session_id)?,
-                agent_id,
-            )?;
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some();
+        let before = self.owned.agent_settings_view(&original)?;
+        let profile_transition = if active_turn {
+            None
+        } else {
+            Some(
+                self.owned
+                    .prompt_state_owner
+                    .claim_idle_agent_profile_transition(&session, agent_id)?,
+            )
+        };
         let selections = super::agent_profile_owned_state::AgentProfileSelections {
             provider,
             account_profile,
@@ -1295,7 +1431,7 @@ impl KernelRuntimeState {
             } else {
                 selections
             };
-            if original.remote_execution().is_none() {
+            if original.remote_execution().is_none() && !active_turn {
                 self.compact_before_window_downshift(
                     session_id,
                     &target.agent,
@@ -1344,20 +1480,30 @@ impl KernelRuntimeState {
             Ok(agent)
         }
         .await;
-        if original.remote_execution().is_some() {
-            let finish = self
-                .finish_remote_agent_profile_transition(session_id, agent_id, profile_transition)
-                .await;
-            if result.is_ok() {
-                finish?;
+        match profile_transition {
+            Some(profile_transition) if original.remote_execution().is_some() => {
+                let finish = self
+                    .finish_remote_agent_profile_transition(
+                        session_id,
+                        agent_id,
+                        profile_transition,
+                    )
+                    .await;
+                if result.is_ok() {
+                    finish?;
+                }
             }
-        } else {
-            // The profile is committed (or rejected) before admission resumes.
-            // Reuse the normal Project/provider activation and queue dispatch path.
-            drop(profile_transition);
-            self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id)?;
+            Some(profile_transition) => {
+                // The profile is committed (or rejected) before admission resumes.
+                // Reuse the normal Project/provider activation and queue dispatch path.
+                drop(profile_transition);
+                self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id)?;
+            }
+            None => {}
         }
-        result
+        let agent = result?;
+        let applies = self.settle_settings_change(&before, &agent, &context, active_turn)?;
+        Ok((agent, applies))
     }
 
     pub(super) fn invalidate_workflow_copies_after_source_agent_change(
@@ -1477,4 +1623,18 @@ fn is_home_extension_audit_event(event: &crate::durable_state::DurableStateEvent
         || event.kind.starts_with("agent.mcp_")
         || event.kind.starts_with("agent.skill_")
         || event.kind.starts_with("extension.registration.")
+}
+
+fn agent_profile_selections(
+    provider: &Option<String>,
+    account_profile: &Option<String>,
+    model: &Option<String>,
+    effort: &Option<Option<String>>,
+) -> super::agent_profile_owned_state::AgentProfileSelections {
+    super::agent_profile_owned_state::AgentProfileSelections {
+        provider: provider.clone(),
+        account_profile: account_profile.clone(),
+        model: model.clone(),
+        effort: effort.clone(),
+    }
 }

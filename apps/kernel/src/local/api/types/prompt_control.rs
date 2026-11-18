@@ -88,7 +88,8 @@ pub struct CancelAgentTaskRequest {
     pub revision: u64,
 }
 
-/// Cancel one retained timer without cancelling its owning task.
+/// End one event a waiting task holds (a wake, or the follow of another agent) without cancelling its
+/// owning task. `wake_id` is the `cancel_wake_id` of the wait event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelAgentWakeRequest {
     pub session_id: String,

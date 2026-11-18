@@ -10,12 +10,8 @@ export function listRemoteMachineKernelsRequest(machineRef: string) {
   }
 }
 
-export function getWaitingRoomInventoryRequest() {
-  return { GetWaitingRoomInventory: null }
-}
-
-export function getWaitingRoomPublicSnapshotRequest() {
-  return { GetWaitingRoomPublicSnapshot: null }
+export function getRoomListSnapshotRequest() {
+  return { GetRoomListSnapshot: null }
 }
 
 export function approveRemoteMachineRequest(machineRef: string) {

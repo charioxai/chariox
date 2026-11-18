@@ -212,7 +212,7 @@ try {
     const consoleErrors = currentConsoleErrors = []
     page.on('pageerror', error => consoleErrors.push(String(error)))
     page.on('console', event => { if (event.type() === 'error') consoleErrors.push(event.text()) })
-    await page.goto(origin + '/waiting-room?ui=os')
+    await page.goto(origin + '/terminal')
     await page.locator('.terminal-os').waitFor({ timeout: 60000 })
     assert.equal(await page.locator('html').getAttribute('data-terminal-ui'), 'os')
     await openRoom(alias)

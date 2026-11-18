@@ -42,6 +42,8 @@ cd "$oss_root"
 step install-excalidraw corepack pnpm --dir examples/apps/excalidraw install --ignore-workspace --frozen-lockfile --ignore-scripts
 step install-univer corepack pnpm --dir examples/apps/univer install --ignore-workspace --frozen-lockfile --ignore-scripts --config.auto-install-peers=false
 step verifier node --test --test-concurrency=1 packages/app-view-host/test/*.test.mjs
+# The installs skip lifecycle scripts, but the Univer licence inventory hashes esbuild with its native binary in place.
+step install-univer-esbuild sh -c 'cd examples/apps/univer && node "$(node -p "require.resolve(\"esbuild/install.js\")")"'
 step build-excalidraw node examples/apps/excalidraw/scripts/build-view.mjs "$scratch/builds/excalidraw" --client-view
 step build-univer node examples/apps/univer/scripts/build-view.mjs "$scratch/builds/univer" --client-view
 cd "$cloud_root"

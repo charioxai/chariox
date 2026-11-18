@@ -1,7 +1,7 @@
 use crate::{
     attribution::Attribution,
     bindings::{
-        chariox::app::app_types::{Actor, ActorKind, InvocationContext, Wake},
+        chariox::app1_0_0::app_types::{Actor, ActorKind, InvocationContext, Wake},
         Worker,
     },
     host::{json as app_json, remote_error, Host},
@@ -207,7 +207,7 @@ async fn invoke(
     };
     attribution.starting(scope.clone());
     let call = async {
-        let handlers = worker.chariox_app_handlers();
+        let handlers = worker.chariox_app1_0_0_handlers();
         let result = match request.operation {
             Operation::LiveEvent { .. } => unreachable!("live event already dispatched"),
             Operation::Tool { name, input } => handlers

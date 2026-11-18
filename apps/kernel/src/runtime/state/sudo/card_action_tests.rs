@@ -95,6 +95,27 @@ async fn action_card_refuses_a_browser_view_instead_of_ignoring_it() {
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
 
+// A read of the Room asks nothing of the person: the agent gets the answer at once.
+#[tokio::test]
+async fn a_read_only_request_runs_without_a_card() {
+    let f = fixture_with_options(None, true);
+    let reads = [
+        serde_json::json!({"ListSessions": null}),
+        serde_json::json!({"ListAgents": {"session_id": f.request.session_id}}),
+    ];
+    for read in reads {
+        let result = tokio::time::timeout(Duration::from_secs(5), raise(&f, "Look around", read))
+            .await
+            .expect("a read-only request waited for the person")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ran"], true, "{result}");
+        assert_eq!(result["status"], "answered", "{result}");
+        assert!(result.get("response").is_some(), "{result}");
+    }
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
 #[tokio::test]
 async fn an_action_card_describes_the_request_in_the_kernels_words_and_cancel_runs_nothing() {
     let f = fixture_with_options(None, true);

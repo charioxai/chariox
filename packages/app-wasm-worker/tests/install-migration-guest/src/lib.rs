@@ -1,10 +1,10 @@
 //! Signed migration that mutates real structured state before success/failure.
-wit_bindgen::generate!({path: "../../../app-wit/wit",world: "chariox:app/migration",generate_all});
-use chariox::app::{
+wit_bindgen::generate!({path: "../../../app-wit/wit",world: "chariox:app/migration@1.0.0",generate_all});
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext},
     state,
 };
-use exports::chariox::app::migration_handlers::Guest;
+use exports::chariox::app1_0_0::migration_handlers::Guest;
 use wit_bindgen::FutureReader;
 struct App;
 export!(App);

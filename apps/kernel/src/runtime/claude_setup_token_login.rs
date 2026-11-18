@@ -394,7 +394,7 @@ pub(super) async fn record_verified_token(
     runtime_state
         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
         .await;
-    runtime_state.record_waiting_room_change();
+    runtime_state.record_room_list_change();
 }
 
 async fn store_token(

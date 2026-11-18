@@ -34,12 +34,12 @@ type ProviderSelectionState = {
 type SessionLifecycleDeps = {
   cliOptions: CliOptions
   connectedStatus: string
-  waitingRoomState: () => WaitingRoomState
+  startState: () => WaitingRoomState
   attachmentState: () => RuntimeAttachment | null
   sessionState: () => RuntimeSession
   deriveDetachedCliTransitionState: (options: {
     cliOptions: CliOptions
-    waitingRoomState: WaitingRoomState
+    startState: WaitingRoomState
     message: string
   }) => DetachedCliTransitionState
   deriveAttachedCliTransitionState: (options: {
@@ -191,7 +191,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     retained = null
     const nextDetachedState = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
-      waitingRoomState: deps.waitingRoomState(),
+      startState: deps.startState(),
       message,
     })
     deps.setAttachmentState(null)
@@ -227,7 +227,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.clearPromptInput()
     deps.syncPromptTextSnapshot()
     deps.blurPromptInput()
-    deps.reconcileWaitingRoom(nextDetachedState.waitingRoomState)
+    deps.reconcileWaitingRoom(nextDetachedState.startState)
     await deps.refreshWaitingRoomData()
     deps.requestRender()
   }
@@ -338,7 +338,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     const label = `Loading session ${session.alias?.trim() || session.id}…`
     const pending = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
-      waitingRoomState: deps.waitingRoomState(),
+      startState: deps.startState(),
       message: label,
     })
     deps.setAttachmentState(null)
@@ -586,7 +586,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
 
     if (!current()) return
-    deps.reconcileWaitingRoom(deps.waitingRoomState())
+    deps.reconcileWaitingRoom(deps.startState())
 
     let hydratedSession = attachedSession
     try {

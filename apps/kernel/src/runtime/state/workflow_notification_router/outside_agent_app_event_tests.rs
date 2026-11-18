@@ -64,6 +64,8 @@ async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text(
                 source_event_type: "dev.chariox.dummy/dummy.test".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
+                app_managed: false,
                 source: None,
             },
             now_ms: 1,

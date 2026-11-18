@@ -81,6 +81,18 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
 }
 
 #[test]
+fn an_account_binding_is_never_answered_from_the_cache() {
+    // A cached answer could outlive a revoked binding.
+    for request in [
+        serde_json::json!({"GrantAppAccount":{"installation_id":"github","account":"work","credential":"github","vault_credential_id":"cpy-1","allow":"read"}}),
+        serde_json::json!({"RevokeAppAccount":{"installation_id":"github","account":"work"}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
+}
+
+#[test]
 fn command_cache_stores_shared_serialized_byte_arrays() {
     let byte_count = 64 * 1024;
     let value = serde_json::to_value(vec![7_u8; byte_count]).expect("bytes should serialize");

@@ -83,6 +83,16 @@ impl AuthoritySet {
             for method in &destination.methods {
                 atoms.insert(format!("network:{} {}", destination.origin, word(method)));
             }
+            for route in &destination.routes {
+                atoms.insert(format!(
+                    "credential-route:{} {} {} {} {}",
+                    destination.origin,
+                    destination.credential.as_deref().unwrap_or_default(),
+                    word(&route.method),
+                    route.path,
+                    word(&route.safety)
+                ));
+            }
         }
         let clipboard = |access: &ClipboardAccess| format!("clipboard:{}", word(access));
         let files = |access: &ExternalFileAccess| format!("files:{}", word(access));
@@ -94,6 +104,15 @@ impl AuthoritySet {
         for connection in &capabilities.connections {
             for action in &connection.actions {
                 atoms.insert(format!("connection:{}:{action}", connection.generator));
+            }
+        }
+        if let Some(routing) = &capabilities.event_routing {
+            atoms.insert(format!(
+                "event-routing-routes:{} {}",
+                routing.generator, routing.max_routes
+            ));
+            for event in &routing.incoming {
+                atoms.insert(format!("event-routing:{}:{event}", routing.generator));
             }
         }
         for action in actions {

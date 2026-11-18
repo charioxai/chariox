@@ -147,8 +147,8 @@ mod tests {
 
     #[test]
     fn stores_transfer_artifact_under_session_artifact_root() {
-        let root = std::env::temp_dir().join("chariox-transfer-capability-test");
-        let _ = fs::remove_dir_all(&root);
+        let _tmp = crate::test_support::TestTempDir::new("transfer-capability-test");
+        let root = _tmp.join("chariox-transfer-capability-test");
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
         fs::write(&source, "artifact").expect("source should exist");
@@ -158,8 +158,7 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
-                std::env::temp_dir()
-                    .join("chariox-session-artifacts")
+                _tmp.join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),
@@ -181,8 +180,8 @@ mod tests {
 
     #[test]
     fn sanitizes_display_name_for_storage_path() {
-        let root = std::env::temp_dir().join("chariox-transfer-display-name-test");
-        let _ = fs::remove_dir_all(&root);
+        let _tmp = crate::test_support::TestTempDir::new("transfer-display-name-test");
+        let root = _tmp.join("chariox-transfer-display-name-test");
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
         fs::write(&source, "artifact").expect("source should exist");
@@ -192,8 +191,7 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
-                std::env::temp_dir()
-                    .join("chariox-session-artifacts")
+                _tmp.join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),
@@ -209,8 +207,8 @@ mod tests {
 
     #[test]
     fn rejects_empty_sanitized_display_name() {
-        let root = std::env::temp_dir().join("chariox-transfer-invalid-name-test");
-        let _ = fs::remove_dir_all(&root);
+        let _tmp = crate::test_support::TestTempDir::new("transfer-invalid-name-test");
+        let root = _tmp.join("chariox-transfer-invalid-name-test");
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
         fs::write(&source, "artifact").expect("source should exist");
@@ -220,8 +218,7 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
-                std::env::temp_dir()
-                    .join("chariox-session-artifacts")
+                _tmp.join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),

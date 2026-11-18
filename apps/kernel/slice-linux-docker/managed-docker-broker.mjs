@@ -1903,7 +1903,7 @@ async function execute(request) {
           ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
             CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
             CHARIOX_SLICE_BUILD_IMAGE: "never",
-            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
+            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {CHARIOX_SLICE_BROKER_PREPARED_PUBLICATION_ACCESS: "1"}),
           ...(VERIFIED_BUILD_CONTEXT_DIGEST
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST,
               ...(protectedLayouts.trusted ? {CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot} : {}) }

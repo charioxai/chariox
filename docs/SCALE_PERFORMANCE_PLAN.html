@@ -440,7 +440,7 @@ git -C /Users/miguel/chariox-cloud worktree add \
             <article class="finding"><b>Serialized session reads</b><p>Session lists and projections still deep-clone state behind exclusive mutexes. Prior measurements reached roughly 1.1 ms per session for a read-only list.</p></article>
             <article class="finding"><b>Global output sweep</b><p>The transport pump still scans all sessions and enters the global <code>DaemonApp</code> lock to find work that is already identifiable by provider-run readiness.</p></article>
             <article class="finding"><b>Shared storage locks</b><p>Terminal output, durable state, and operational history serialize through process-wide mutexes and synchronous SQLite work.</p></article>
-            <article class="finding"><b>Repeated inventory work</b><p>Each local or relay inventory subscriber can rebuild and compare the same waiting-room snapshot independently.</p></article>
+            <article class="finding"><b>Repeated inventory work</b><p>Each local or relay inventory subscriber can rebuild and compare the same Room list snapshot independently.</p></article>
             <article class="finding"><b>Sequential browser hydration</b><p>Initial history hydration is configured as one agent per request and renders each agent repeatedly, which turns a 500-agent reload into a request/render train.</p></article>
             <article class="finding"><b>Coarse relay registry</b><p>Routes, presence, pending requests, and subscriptions share one relay registry lock even though they have different write patterns.</p></article>
           </div>
@@ -463,7 +463,7 @@ git -C /Users/miguel/chariox-cloud worktree add \
               <tbody>
                 <tr><td>Prompt/control latency</td><td>p95 ≤100 ms, p99 ≤250 ms</td><td>Interactive work waits behind history, discovery, or output fanout</td></tr>
                 <tr><td>Visible output latency</td><td>p95 ≤250 ms, p99 ≤500 ms</td><td>Mounted panes fall behind background agents</td></tr>
-                <tr><td>Waiting-room delta</td><td>Visible ≤500 ms</td><td>Full inventory rebuilds or repeated subscriber projections dominate</td></tr>
+                <tr><td>Room list delta</td><td>Visible ≤500 ms</td><td>Full inventory rebuilds or repeated subscriber projections dominate</td></tr>
                 <tr><td>Reconnect/recovery</td><td>Visible state ≤2 s</td><td>Broad history recovery or watchdog loops occur</td></tr>
                 <tr><td>Home kernel</td><td>Idle CPU ≤10%; active p95 ≤150%; RSS ≤1 GB</td><td>Measured on an 8-vCPU reference host, excluding provider children</td></tr>
                 <tr><td>Correctness</td><td>Zero drops, overflows, reconnect loops, incomplete batches</td><td>Any loss, reordering, projection drift, or sustained saturated lane</td></tr>
@@ -479,10 +479,10 @@ git -C /Users/miguel/chariox-cloud worktree add \
             <h3>Make reads immutable and constant-cost</h3>
             <ul>
               <li>Replace the global session-service mutex with a small create/delete/index registry plus actor-owned mutable state per session.</li>
-              <li>Publish versioned <code>Arc</code> session snapshots, lightweight session-directory summaries, and a shared waiting-room projection after canonical mutations.</li>
-              <li>Serve <code>ListSessions</code>, <code>GetSessionState</code>, waiting-room reads, and every subscriber from those immutable projections. Readers clone handles, not full runtime graphs.</li>
-              <li>Build waiting-room state once per coalesced revision. Local and relay subscribers use the same projection and existing row-delta contract.</li>
-              <li>Add an architecture test forbidding owner-store reads, full session-list cloning, or <code>DaemonApp</code> locking in hot transport, output, waiting-room, and subscription modules.</li>
+              <li>Publish versioned <code>Arc</code> session snapshots, lightweight session-directory summaries, and a shared Room list projection after canonical mutations.</li>
+              <li>Serve <code>ListSessions</code>, <code>GetSessionState</code>, Room list reads, and every subscriber from those immutable projections. Readers clone handles, not full runtime graphs.</li>
+              <li>Build Room list state once per coalesced revision. Local and relay subscribers use the same projection and existing row-delta contract.</li>
+              <li>Add an architecture test forbidding owner-store reads, full session-list cloning, or <code>DaemonApp</code> locking in hot transport, output, Room list, and subscription modules.</li>
             </ul>
           </div>
           <div class="phase">
@@ -545,7 +545,7 @@ git -C /Users/miguel/chariox-cloud worktree add \
         <section id="compatibility">
           <h2><span class="phase-number">07</span><span>Interfaces and compatibility</span></h2>
           <ul>
-            <li>Reuse waiting-room row deltas, history cursors, <code>SpawnAgents</code>, <code>LaunchProviderRuns</code>, <code>SubmitPrompts</code>, and batched terminal output.</li>
+            <li>Reuse Room list row deltas, history cursors, <code>SpawnAgents</code>, <code>LaunchProviderRuns</code>, <code>SubmitPrompts</code>, and batched terminal output.</li>
             <li>Increment the shared daemon protocol version only if serialized health fields or another wire shape changes. Update protocol hashes, minimum client version, and the focused protocol drill in the same commit.</li>
             <li>Keep the Cloud inventory-cache request shape unchanged. Change only write coalescing, idempotence, selected fields, pagination, and indexes.</li>
             <li>Preserve prompt ordering, durable history, permissions, workspace claims, reconnect behavior, and source-gated external-provider observation.</li>

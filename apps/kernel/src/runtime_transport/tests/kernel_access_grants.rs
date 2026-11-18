@@ -625,6 +625,8 @@ impl Kernel {
         // State follows TMPDIR; the socket uses the same bounded parent as real kernels.
         let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
+        // The kernel process is killed at the end, so its test state lives under `root`.
+        std::fs::create_dir(root.join("tmp")).unwrap();
         crate::config::validate_local_socket_path(&kernel_access_socket(&root))
             .expect("the test kernel socket path is bounded independently of TMPDIR");
         let mut starting = StartingKernel {
@@ -639,6 +641,7 @@ impl Kernel {
                         if credential_session { "1" } else { "0" },
                     )
                     .env("CHARIOX_HOME", root.join("state"))
+                    .env("TMPDIR", root.join("tmp"))
                     .env("HOME", root.join("home"))
                     .env(crate::runtime::owned_process_signals::CLAIM_VARIABLE, &root)
                     .envs(extra_env.iter().copied())
@@ -664,7 +667,7 @@ impl Kernel {
         popups
             .send(Message::Text(
                 serde_json::json!({"type":"subscribe", "request_id":"popups",
-            "session_id":"", "attachment_id":"", "subscription_scope":"waiting_room_inventory"})
+            "session_id":"", "attachment_id":"", "subscription_scope":"room_list"})
                 .to_string()
                 .into(),
             ))

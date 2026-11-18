@@ -630,6 +630,18 @@ async fn real_worker_file_pick_terminal_states() {
                 json!({"operationId":"pick","state":state,"grantIds":["grant"]}),
             )
             .await;
+        // A state the kernel never sends fails the call with no request id to hand back: the request ends.
+        if state == "cancelled" {
+            let Message::Request {
+                id, method, params, ..
+            } = worker.next().await
+            else {
+                panic!("the request ends with the failed call")
+            };
+            assert_eq!(method, "host.pick_file_cancel");
+            assert_eq!(params["operationId"], "pick");
+            worker.answer(id, json!({})).await;
+        }
         let outcome = worker.response(state).await;
         if expected == "OK" {
             assert!(
@@ -639,4 +651,85 @@ async fn real_worker_file_pick_terminal_states() {
             assert_eq!(code(outcome), expected, "terminal file pick state {state}");
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
+async fn real_worker_a_file_request_ends_with_the_call_that_waited_for_it() {
+    let mut worker = Worker::start(vec![]).await;
+    worker
+        .call_input("ask", "echo", json!({"portable":"ask"}), 5000)
+        .await;
+    let Message::Request { id, method, .. } = worker.next().await else {
+        panic!("file request expected")
+    };
+    assert_eq!(method, "host.pick_file");
+    worker
+        .answer(
+            id,
+            json!({"operationId":"pick","state":"pending","grantIds":[]}),
+        )
+        .await;
+    let Message::Request { id, method, .. } = worker.next().await else {
+        panic!("file poll expected")
+    };
+    assert_eq!(method, "host.pick_file_status");
+    worker
+        .answer(
+            id,
+            json!({"operationId":"pick","state":"pending","grantIds":[]}),
+        )
+        .await;
+    // The window that asked is closed while the person has not chosen.
+    worker.cancel("ask").await;
+    let (mut ended, mut cancelled) = (false, false);
+    while !ended || !cancelled {
+        match worker.next().await {
+            Message::Request {
+                id, method, params, ..
+            } if method == "host.pick_file_status" => {
+                let _ = (id, params);
+            }
+            Message::Request {
+                id, method, params, ..
+            } => {
+                assert_eq!(method, "host.pick_file_cancel");
+                assert_eq!(params["operationId"], "pick");
+                ended = true;
+                worker.answer(id, json!({})).await;
+            }
+            Message::Cancel { .. } => {}
+            Message::Response { id, outcome, .. } => {
+                assert_eq!(id, "ask");
+                assert_eq!(code(outcome), "CANCELLED");
+                cancelled = true;
+            }
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
+async fn real_worker_a_file_request_returned_to_its_caller_stays_open() {
+    let mut worker = Worker::start(vec![]).await;
+    worker
+        .call_input("ask", "echo", json!({"portable":"ask","waitMs":0}), 5000)
+        .await;
+    let Message::Request { id, method, .. } = worker.next().await else {
+        panic!("file request expected")
+    };
+    assert_eq!(method, "host.pick_file");
+    let pending = json!({"operationId":"pick","state":"pending","grantIds":[]});
+    worker.answer(id, pending.clone()).await;
+    let Message::Request { id, method, .. } = worker.next().await else {
+        panic!("file poll expected")
+    };
+    assert_eq!(method, "host.pick_file_status");
+    worker.answer(id, pending).await;
+    // The call ends with the request's id for the caller to ask again; nothing ends the request.
+    assert!(
+        matches!(worker.response("ask").await, Outcome::Success(success) if success.result == json!({"pending":"pick"}))
+    );
+    worker.echo("after-ask").await;
 }

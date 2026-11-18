@@ -29,6 +29,26 @@ pub(crate) fn parse_card_action(
     Ok(request)
 }
 
+/// A request that only reads what the asking agent's Room already shows it. It asks nothing
+/// of the person: a card is for work that changes something. Everything else, including a read
+/// that is not listed here, still waits for the person.
+pub(crate) fn is_read_only(request: &LocalDaemonRequest) -> bool {
+    matches!(
+        request,
+        LocalDaemonRequest::ListSessions(_)
+            | LocalDaemonRequest::ResolveSession(_)
+            | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::ListSessionMembers(_)
+            | LocalDaemonRequest::ListAgents(_)
+            | LocalDaemonRequest::ListDescendants(_)
+            | LocalDaemonRequest::GetAgentDeadline(_)
+            | LocalDaemonRequest::ListWorkflows(_)
+            | LocalDaemonRequest::ListWorkflowRuns(_)
+            | LocalDaemonRequest::GetWorkflowRun(_)
+            | LocalDaemonRequest::GetDaemonHealth(_)
+    )
+}
+
 fn shorten(text: &str, limit: usize) -> String {
     let mut shown: String = text.chars().take(limit).collect();
     if text.chars().count() > limit {

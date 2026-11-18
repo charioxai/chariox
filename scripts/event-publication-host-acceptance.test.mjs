@@ -21,7 +21,7 @@ const options = {
   aedsSshKey: "",
   aegsSshKey: "",
   aedsUrl: "https://aeds.example",
-  aegsUrl: "https://github-events.example",
+  aegsUrl: "https://aegs-github.example",
   evidenceDir: "/tmp/evidence",
   executeRestarts: false,
 }

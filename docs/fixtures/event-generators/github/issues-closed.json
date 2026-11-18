@@ -1,0 +1,27 @@
+{
+  "action": "closed",
+  "repository": {
+    "full_name": "charioxai/chariox-github-app-drill",
+    "html_url": "https://github.com/charioxai/chariox-github-app-drill",
+    "default_branch": "main",
+    "owner": {
+      "login": "charioxai"
+    }
+  },
+  "sender": {
+    "login": "octo-author"
+  },
+  "issue": {
+    "number": 9,
+    "title": "Uploads fail",
+    "state": "closed",
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "body": "closed by @octo-author",
+    "updated_at": "2026-11-15T10:45:00Z"
+  }
+}

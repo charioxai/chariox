@@ -122,6 +122,23 @@ impl Kernel {
         }
     }
 
+    async fn promote(&self, message_id: &str) -> Result<serde_json::Value, String> {
+        match self
+            .router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &self.token,
+                crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL,
+                serde_json::json!({ "message_id": message_id }),
+            )
+            .await
+        {
+            Ok(result) if result.ok => Ok(result.payload),
+            Ok(result) => Err(result.payload.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     async fn command(&self, command: String) -> Result<serde_json::Value, String> {
         self.command_as(&self.token, command).await
     }
@@ -266,7 +283,7 @@ fn a_retried_message_to_a_peer_on_another_kernel_is_reported_duplicate_and_lands
             .send(message())
             .await
             .expect("the first send is delivered");
-        assert_eq!(first["status"], "delivered");
+        assert_eq!(first["status"], "queued");
         let again = a.send(message()).await.expect("the retry is answered");
         assert_eq!(again["status"], "duplicate", "{again:?}");
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
@@ -305,7 +322,7 @@ fn a_reply_request_to_another_kernel_is_refused_before_anything_is_sent() {
             .send(message(false))
             .await
             .expect("a plain message is sent");
-        assert_eq!(sent["status"], "delivered", "{sent:?}");
+        assert_eq!(sent["status"], "queued", "{sent:?}");
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
         unlink(&[&a, &b]);
     });
@@ -881,6 +898,73 @@ fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed
             no_room_for_kernel.contains("usage:"),
             "{no_room_for_kernel}"
         );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_message_to_a_peer_on_another_kernel_queues_there_and_its_sender_promotes_it() {
+    run_peer_test("peer-kernel-promote", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-promote",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let queued = a
+            .send(serde_json::json!({
+                "agent": "worker",
+                "room": b.room,
+                "kernel": b.name,
+                "message": "parser.rs is mine for the next hour",
+                "idempotency_key": "queued-1",
+            }))
+            .await
+            .expect("a message reaches a peer on another kernel");
+        assert_eq!(queued["status"], "queued");
+        let id = queued["message_id"]
+            .as_str()
+            .expect("the queued send names its message");
+        let inbox = b.messages(b.agent.id()).await;
+        assert_eq!(inbox.len(), 1);
+        assert!(!inbox[0].urgent, "it waits for the peer's next turn");
+        assert_eq!(inbox[0].state, "pending");
+
+        let promoted = a
+            .promote(id)
+            .await
+            .expect("its sender promotes it on the other kernel");
+        assert_eq!(promoted["status"], "promotion_sent");
+        let inbox = b.messages(b.agent.id()).await;
+        assert_eq!(inbox.len(), 1, "the same message, never a second one");
+        assert!(inbox[0].urgent);
+        assert_ne!(inbox[0].state, "pending", "the steer was taken at once");
+
+        // Sending the same key again as urgent is the same promotion.
+        let again = a
+            .send(serde_json::json!({
+                "agent": "worker",
+                "room": b.room,
+                "kernel": b.name,
+                "message": "parser.rs is mine for the next hour",
+                "idempotency_key": "queued-1",
+                "urgent": true,
+            }))
+            .await
+            .expect("the resend is answered");
+        assert_eq!(again["status"], "duplicate");
+        assert_eq!(b.messages(b.agent.id()).await.len(), 1);
+
+        // A promotion of what the other kernel never held is refused there, not sent as a message.
+        let unknown = a
+            .promote(&format!(
+                "peer:{}:{}:{}:never-sent",
+                b.id,
+                b.room,
+                b.agent.id()
+            ))
+            .await;
+        assert!(unknown.is_err(), "{unknown:?}");
+        assert_eq!(b.messages(b.agent.id()).await.len(), 1);
         unlink(&[&a, &b]);
     });
 }

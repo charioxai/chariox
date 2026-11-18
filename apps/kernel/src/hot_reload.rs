@@ -1083,12 +1083,9 @@ mod tests {
         assert!(lock(&LISTENERS).get("test_exact").is_none());
     }
 
-    fn unlocked_vault() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-hot-reload-vault-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+    fn unlocked_vault() -> (crate::test_support::TestTempDir, PathBuf) {
+        let owner = crate::test_support::TestTempDir::new("hot-reload-vault");
+        let path = owner.join("vault");
         create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
         unlock_existing_chariox_encrypted_vault(
             &path,
@@ -1097,7 +1094,7 @@ mod tests {
         )
         .unwrap()
         .expect("the passphrase opens the test Vault");
-        path
+        (owner, path)
     }
 
     fn is_open(fd: i32) -> bool {
@@ -1107,7 +1104,7 @@ mod tests {
     #[test]
     fn unlocked_vault_survives_the_swap_and_its_descriptor_is_read_once() {
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
-        let path = unlocked_vault();
+        let (_owner, path) = unlocked_vault();
         let before = chariox_encrypted_vault_status(&path).unwrap();
         let fd = send_vault_unlocks()
             .unwrap()
@@ -1130,7 +1127,7 @@ mod tests {
 
     #[test]
     fn restart_without_a_handover_starts_locked() {
-        let path = unlocked_vault();
+        let (_owner, path) = unlocked_vault();
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
         std::env::remove_var(HANDOVER_ENV);
         receive();

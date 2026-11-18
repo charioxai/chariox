@@ -184,12 +184,10 @@ impl KernelRuntimeState {
             })
             .await?;
         let run = self.watched_process_run(&binding.worker_provider_run_id)?;
-        if run.agent_instance_id() != Some(agent.as_str())
-            || run.session_id() != room
-            || (run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-                && !self.sudo_task_authorizes_run(&run).await)
-        {
-            return Err(ledger::error("leased process requires an unrestricted build run with unattended command permission"));
+        if run.agent_instance_id() != Some(agent.as_str()) || run.session_id() != room {
+            return Err(ledger::error(
+                "leased process requires the leased agent's own build run",
+            ));
         }
         let root = run
             .working_directory()
@@ -218,14 +216,6 @@ impl KernelRuntimeState {
             crate::app::RemoteLeaseRuntime::new(app).leased_process_target(&b, &w, true)
         })
         .await?;
-        let run = self.watched_process_run(run.id())?;
-        if run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-            && !self.sudo_task_authorizes_run(&run).await
-        {
-            return Err(ledger::error(
-                "home sudo task ended before watched process launch",
-            ));
-        }
         let run = self.watched_process_run(run.id())?;
         wake.state = "starting".into();
         // Worker clock pins orphan recovery even when home clocks differ.

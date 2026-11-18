@@ -15,6 +15,13 @@ impl KernelRuntimeOwnedState {
     fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> bool {
         task.state == ExecutionState::Blocked
             && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+            // A usage-limit stop has its own stripe and its own resume.
+            && !self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
+                agent.usage_limit_stop().is_some_and(|stop| {
+                    stop.prompt_id == task.prompt_id
+                        && !matches!(stop.state, crate::agent::UsageLimitStopState::Declined)
+                })
+            })
             && !self
                 .durable_state_store
                 .agent_deletion_recorded(&task.agent_id)
@@ -114,6 +121,10 @@ impl KernelRuntimeState {
         if self.owned.goal_has_native_approval(&task) {
             return Ok(());
         }
+        // A workflow step never raises a card: its run ends and says why.
+        if self.end_run_step_of_blocked_task(&task).await? {
+            return Ok(());
+        }
         if self.defer_task_for_human_control(&task).await {
             return Ok(());
         }
@@ -134,9 +145,22 @@ impl KernelRuntimeState {
                 .agent_store
                 .get_agent(&task.agent_id)
                 .is_ok_and(|agent| agent.remote_execution().is_none());
+        let question = task.owner_action
+            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question);
         let message = if browser_access {
             "Browser access ended. Allow this agent to use your browser tabs and continue?"
                 .to_owned()
+        } else if question {
+            // The agent's own words: the recovery steps below are for the agent, not the person.
+            let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
+            let reason = crate::terminal::public_task_failure_reason(&task.reason);
+            match agent
+                .as_ref()
+                .map(|agent| agent.alias().unwrap_or(agent.agent_ref()))
+            {
+                Some(alias) => format!("{alias}: {reason}"),
+                None => reason,
+            }
         } else {
             // The card shows in the room agent's pane, so it says which agent needs the person.
             let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
@@ -190,35 +214,54 @@ impl KernelRuntimeState {
             // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
             self.owned.timeout_runtime_interaction(&task.room_id, &id)?;
         }
-        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+        let mut choices = vec![crate::session::RuntimeInteractionChoice::new(
+            "cancel",
+            if question { "Dismiss" } else { "Cancel" },
+            "cancel",
+            None,
+        )];
+        if !question {
+            choices.push(crate::session::RuntimeInteractionChoice::new(
+                if browser_access {
+                    "allow_browser"
+                } else {
+                    "resume"
+                },
+                if browser_access {
+                    "Allow browser"
+                } else {
+                    "Resume"
+                },
+                "resume",
+                None,
+            ));
+        }
+        let mut interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
             if browser_access {
                 "Allow browser access"
+            } else if question {
+                "Question"
             } else {
                 "Agent needs your action"
             },
             &message,
-            vec![
-                crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                crate::session::RuntimeInteractionChoice::new(
-                    if browser_access {
-                        "allow_browser"
-                    } else {
-                        "resume"
-                    },
-                    if browser_access {
-                        "Allow browser"
-                    } else {
-                        "Resume"
-                    },
-                    "resume",
-                    None,
-                ),
-            ],
+            choices,
         )
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone());
+        if question {
+            interaction = interaction.with_question_reply(
+                crate::session::RuntimeInteractionCustomChoice::new(
+                    "reply",
+                    "Reply",
+                    None,
+                    Some(1),
+                    None,
+                ),
+            );
+        }
 
         let rx = self
             .create_kernel_operation_interaction(
@@ -240,6 +283,7 @@ impl KernelRuntimeState {
                 let action = match answer.choice_id.as_deref() {
                     Some("allow_browser") => OwnerTaskAction::AllowBrowser,
                     Some("resume") => OwnerTaskAction::Resume,
+                    Some("reply") => OwnerTaskAction::Reply(answer.reply.unwrap_or_default()),
                     _ => OwnerTaskAction::Cancel,
                 };
                 state.resolve_agent_task_owner_action(&task, action).await;

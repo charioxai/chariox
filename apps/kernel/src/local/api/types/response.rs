@@ -91,6 +91,8 @@ pub enum LocalDaemonResponse {
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
+    AppAccounts { installation_id: String, credentials: Vec<AppCredentialSummary>, accounts: Vec<AppAccountSummary>, },
+    AppStanding { installation_id: String, standing: Vec<AppStandingSummary>, },
     /// Protocol 361: the caller's active installations and their configuration.
     AppSet { schema: String, installations: Vec<AppSetInstallation>, },
     /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
@@ -298,9 +300,8 @@ pub enum LocalDaemonResponse {
         query_completed_at_ms: u64,
         kernels: Vec<RelayKernelPresence>,
     },
-    WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
-    WaitingRoomSessionsListed { page: WaitingRoomSessionPage, },
-    WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
+    RoomListSessionsListed { page: RoomListSessionPage, },
+    RoomListSnapshot { snapshot: RoomListSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {
@@ -452,7 +453,12 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     SessionConfigUpdated { config: SessionConfigState, session: RuntimeSession, },
-    AgentConfigUpdated { agent: AgentInstance, session: RuntimeSession, },
+    AgentConfigUpdated {
+        agent: AgentInstance,
+        session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "SettingsApplies::is_now")]
+        applies: SettingsApplies,
+    },
     TerminalResized { session_id: String, cols: u16, rows: u16, },
     TerminalInputSent { session_id: String, attachment_id: String, byte_count: usize, },
     TerminalOutput { records: Vec<TerminalOutputRecord>, },
@@ -470,7 +476,12 @@ pub enum LocalDaemonResponse {
     SessionAliasSuggested { workspace_id: String, alias: String, },
     RoomSetupUpdated { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
-    AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
+    AgentProfileUpdated {
+        agent: AgentInstance,
+        session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "SettingsApplies::is_now")]
+        applies: SettingsApplies,
+    },
     AgentSpawned {
         agent: AgentInstance,
         #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>,
@@ -552,6 +563,8 @@ pub enum LocalDaemonResponse {
     WorkflowCodePackageImported { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeSourceExported { export: crate::workflow_code::WorkflowCodeSourceExport, },
     WorkflowAliased { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowResponsibleSet { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowRunAttentionCleared { run: WorkflowRun, session: RuntimeSession, },
     WorkflowsListed { workflows: Vec<WorkflowDefinition>, },
     WorkflowResolved { workflow: WorkflowDefinition, },
     WorkflowPublicationCreated { publication: WorkflowPublicationDefinition, session: RuntimeSession, },

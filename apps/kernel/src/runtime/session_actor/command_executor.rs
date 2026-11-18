@@ -377,12 +377,12 @@ impl SessionRuntimeCommandExecutor {
             }),
             LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
-                    .update_agent_config(request, caller_user_id)
+                    .update_agent_config(request, caller_user_id, caller_metaagent_id)
                     .await
             }),
             LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
                 self.store
-                    .update_agent_profile(request, caller_user_id)
+                    .update_agent_profile(request, caller_user_id, caller_metaagent_id)
                     .await
             }),
             LocalDaemonRequest::AliasAgent(request) => {

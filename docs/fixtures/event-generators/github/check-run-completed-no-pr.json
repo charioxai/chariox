@@ -1,0 +1,27 @@
+{
+  "action": "completed",
+  "repository": {
+    "full_name": "charioxai/chariox-github-app-drill",
+    "html_url": "https://github.com/charioxai/chariox-github-app-drill",
+    "default_branch": "main",
+    "owner": {
+      "login": "charioxai"
+    }
+  },
+  "sender": {
+    "login": "octo-author"
+  },
+  "check_run": {
+    "id": 89,
+    "name": "lint",
+    "status": "completed",
+    "conclusion": "success",
+    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "completed_at": "2026-11-15T10:56:00Z",
+    "pull_requests": [],
+    "check_suite": {
+      "id": 100,
+      "head_branch": "main"
+    }
+  }
+}

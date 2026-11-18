@@ -321,18 +321,10 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     };
 
     let entry_agent = harness.spawn_workflow_test_agent(session.id(), "entry");
-    let branch_one_worktree = crate::test_support::test_workspace_root()
-        .join("chariox-workflow-join-branch-one")
-        .join(session.id());
-    let branch_two_worktree = crate::test_support::test_workspace_root()
-        .join("chariox-workflow-join-branch-two")
-        .join(session.id());
-    std::fs::create_dir_all(&branch_one_worktree)
-        .expect("branch one workflow test worktree should exist");
-    std::fs::create_dir_all(&branch_two_worktree)
-        .expect("branch two workflow test worktree should exist");
-    let branch_one_worktree = branch_one_worktree.to_string_lossy().to_string();
-    let branch_two_worktree = branch_two_worktree.to_string_lossy().to_string();
+    let branch_one_dir = crate::test_support::TestWorktree::new("workflow-join-branch-one");
+    let branch_two_dir = crate::test_support::TestWorktree::new("workflow-join-branch-two");
+    let branch_one_worktree = branch_one_dir.path().to_string_lossy().to_string();
+    let branch_two_worktree = branch_two_dir.path().to_string_lossy().to_string();
     let branch_one_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "branch-one",

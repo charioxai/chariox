@@ -271,13 +271,13 @@ test("automation action handler activates waiting room when already detached", a
 })
 
 test("automation action handler activates a selected unattached agent", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   let activated = false
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
     externalProviderSessionsState: () => [
       externalSession("opencode:first", { last_modified_at_ms: 100 }),
@@ -287,7 +287,7 @@ test("automation action handler activates a selected unattached agent", async ()
       activated = true
     },
     snapshot: () => ({
-      waitingRoomState,
+      startState,
       activated,
     }),
   })
@@ -296,8 +296,8 @@ test("automation action handler activates a selected unattached agent", async ()
 
   assert.equal(activated, true)
   assert.deepEqual(result, {
-    waitingRoomState: {
-      ...waitingRoomState,
+    startState: {
+      ...startState,
       focus: "external-session",
       externalSessionIndex: 0,
     },
@@ -306,13 +306,13 @@ test("automation action handler activates a selected unattached agent", async ()
 })
 
 test("automation action handler indexes unattached agents in shared projected order", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   let activated = false
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
     externalProviderSessionsState: () => [
       externalSession("codex:old", { last_modified_at_ms: 100 }),
@@ -322,7 +322,7 @@ test("automation action handler indexes unattached agents in shared projected or
       activated = true
     },
     snapshot: () => ({
-      waitingRoomState,
+      startState,
       activated,
     }),
   })
@@ -331,8 +331,8 @@ test("automation action handler indexes unattached agents in shared projected or
 
   assert.equal(activated, true)
   assert.deepEqual(result, {
-    waitingRoomState: {
-      ...waitingRoomState,
+    startState: {
+      ...startState,
       focus: "external-session",
       externalSessionIndex: 0,
     },
@@ -341,13 +341,13 @@ test("automation action handler indexes unattached agents in shared projected or
 })
 
 test("automation action handler clamps stale unattached agent indexes", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   let activated = false
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
     externalProviderSessionsState: () => [
       externalSession("codex:old", { last_modified_at_ms: 100 }),
@@ -357,7 +357,7 @@ test("automation action handler clamps stale unattached agent indexes", async ()
       activated = true
     },
     snapshot: () => ({
-      waitingRoomState,
+      startState,
       activated,
     }),
   })
@@ -366,8 +366,8 @@ test("automation action handler clamps stale unattached agent indexes", async ()
 
   assert.equal(activated, true)
   assert.deepEqual(result, {
-    waitingRoomState: {
-      ...waitingRoomState,
+    startState: {
+      ...startState,
       focus: "external-session",
       externalSessionIndex: 1,
     },
@@ -376,14 +376,14 @@ test("automation action handler clamps stale unattached agent indexes", async ()
 })
 
 test("automation action handler sets waiting room launch placement", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
-    snapshot: () => ({ waitingRoomState }),
+    snapshot: () => ({ startState }),
   })
 
   const result = await handler({
@@ -397,7 +397,7 @@ test("automation action handler sets waiting room launch placement", async () =>
   })
 
   assert.deepEqual(result, {
-    waitingRoomState: {
+    startState: {
       ...waitingRoomFixture(),
       selectedMachineRef: "machine-peer",
       selectedKernelRef: "kernel-peer",
@@ -410,14 +410,14 @@ test("automation action handler sets waiting room launch placement", async () =>
 })
 
 test("automation action handler sets waiting room project launch selection", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
-    snapshot: () => ({ waitingRoomState }),
+    snapshot: () => ({ startState }),
   })
 
   const result = await handler({
@@ -428,7 +428,7 @@ test("automation action handler sets waiting room project launch selection", asy
   })
 
   assert.deepEqual(result, {
-    waitingRoomState: {
+    startState: {
       ...waitingRoomFixture(),
       projectSelectionId: "existing:project-1",
       showArchivedProjects: true,
@@ -438,13 +438,13 @@ test("automation action handler sets waiting room project launch selection", asy
 })
 
 test("automation action handler drives project selection and lifecycle through TUI controllers", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   const lifecycle: string[] = []
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
     waitingRoomProjects: () => [{
       id: "project-1",
@@ -462,7 +462,7 @@ test("automation action handler drives project selection and lifecycle through T
     applyWaitingRoomSessionLifecycleAction: async (action) => {
       lifecycle.push(action)
     },
-    snapshot: () => ({ waitingRoomState, lifecycle }),
+    snapshot: () => ({ startState, lifecycle }),
   })
 
   await handler({ action: "select_waiting_room_project", projectId: "project-1" })
@@ -472,13 +472,13 @@ test("automation action handler drives project selection and lifecycle through T
     projectAction: "archive",
   })
 
-  assert.equal(waitingRoomState.focus, "project-entry")
-  assert.equal(waitingRoomState.projectIndex, 0)
-  assert.deepEqual(result, { waitingRoomState, lifecycle: ["archive", "archive"] })
+  assert.equal(startState.focus, "project-entry")
+  assert.equal(startState.projectIndex, 0)
+  assert.deepEqual(result, { startState, lifecycle: ["archive", "archive"] })
 })
 
 test("automation exposes an archived project before resolving its lifecycle index", async () => {
-  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let startState: WaitingRoomState = waitingRoomFixture()
   const lifecycleStates: WaitingRoomState[] = []
   const projects = [
     {
@@ -510,15 +510,15 @@ test("automation exposes an archived project before resolving its lifecycle inde
   ]
   const handler = createCliAutomationActionHandler({
     ...baseDeps(),
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     setWaitingRoomState: (next) => {
-      waitingRoomState = next
+      startState = next
     },
     waitingRoomProjects: () => projects,
     applyWaitingRoomSessionLifecycleAction: async (_action, state) => {
       if (state) lifecycleStates.push(state)
     },
-    snapshot: () => ({ waitingRoomState }),
+    snapshot: () => ({ startState }),
   })
 
   await handler({ action: "select_waiting_room_project", projectId: "project-archived" })
@@ -528,8 +528,8 @@ test("automation exposes an archived project before resolving its lifecycle inde
     projectAction: "delete",
   })
 
-  assert.equal(waitingRoomState.showArchivedProjects, true)
-  assert.equal(waitingRoomState.projectIndex, 1)
+  assert.equal(startState.showArchivedProjects, true)
+  assert.equal(startState.projectIndex, 1)
   assert.deepEqual(lifecycleStates.map((state) => ({
     showArchivedProjects: state.showArchivedProjects,
     projectIndex: state.projectIndex,
@@ -715,7 +715,7 @@ function baseDeps() {
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
     requestExit: async () => {},
-    waitingRoomState: () => waitingRoomFixture(),
+    startState: () => waitingRoomFixture(),
     setWaitingRoomState: () => {},
     externalProviderSessionsState: () => [],
   }

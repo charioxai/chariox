@@ -4,7 +4,7 @@
 use super::room_setup_publish::short_reason;
 use super::*;
 use crate::runtime::workspace_git_common::{git_command_output, run_git};
-use crate::runtime::workspace_worktrees::create_waiting_room_worktree;
+use crate::runtime::workspace_worktrees::create_workspace_worktree;
 use crate::session::{RoomSetupRequest, RoomSetupStepId};
 
 impl KernelRuntimeState {
@@ -150,7 +150,7 @@ impl KernelRuntimeState {
         let created = {
             let (workspace, current) = (workspace.clone(), current.clone());
             tokio::task::spawn_blocking(move || {
-                create_waiting_room_worktree(&workspace, None, None, None, Some(&current), Some(&workspace))
+                create_workspace_worktree(&workspace, None, None, None, Some(&current), Some(&workspace))
             })
             .await
             .map_err(|_| "creating the worktree stopped unexpectedly; dismiss to continue in the current folder".to_string())?

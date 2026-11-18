@@ -329,8 +329,8 @@ async function main() {
       `kernel direct external-provider refresh did not discover seeded provider sessions: ${directIds.join(", ")}`,
     )
     const publicSnapshot = unwrap(
-      await client.send(requests.getWaitingRoomPublicSnapshotRequest()),
-      "WaitingRoomPublicSnapshot",
+      await client.send(requests.getRoomListSnapshotRequest()),
+      "RoomListSnapshot",
     ).snapshot
     const publicIds = (publicSnapshot?.external_provider_sessions ?? []).map((session) => session.external_session_id)
     assert.ok(

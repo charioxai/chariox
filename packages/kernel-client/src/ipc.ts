@@ -41,7 +41,7 @@ import { normalizeWebSocketRequest, type KernelRequestRoute } from "./kernel-tra
 import {
   buildKernelSubscriptionTransportRequest,
   createKernelSessionSubscriptionStart,
-  createWaitingRoomInventorySubscriptionStart,
+  createRoomListSubscriptionStart,
   kernelSubscriptionScopeValue,
   type KernelSubscriptionState,
 } from "./kernel-subscriptions.js"
@@ -542,19 +542,19 @@ export class LocalIpcClient {
     }
   }
 
-  async subscribeToWaitingRoomInventory(options: { readonly heartbeatIntervalMs?: number } = {}): Promise<void> {
+  async subscribeToRoomList(options: { readonly heartbeatIntervalMs?: number } = {}): Promise<void> {
     if (!this.supportsKernelEvents()) {
       return
     }
     const previous = this.activeKernelSubscription
-    if (this.isRelayMode() && previous?.scope === "waiting_room_inventory") {
+    if (this.isRelayMode() && previous?.scope === "room_list") {
       if (previous.heartbeatIntervalMs === options.heartbeatIntervalMs) {
         await this.sendRelaySubscribe(previous, null)
         return
       }
       await this.retireRelaySubscription(previous)
     }
-    const start = createWaitingRoomInventorySubscriptionStart({
+    const start = createRoomListSubscriptionStart({
       previous: this.activeKernelSubscription,
       lastReceivedEventId: this.lastReceivedEventId,
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
@@ -1661,7 +1661,7 @@ export class LocalIpcClient {
 
     // Inventory is a baseline/delta stream without replay. Session history
     // keeps its cursor; inventory must start with a fresh baseline.
-    const resumeFromEventId = subscription.scope === "waiting_room_inventory" ? null : this.lastReceivedEventId
+    const resumeFromEventId = subscription.scope === "room_list" ? null : this.lastReceivedEventId
     try {
       if (this.isRelayMode()) {
         await this.sendRelaySubscribe(

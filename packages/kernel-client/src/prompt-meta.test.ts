@@ -71,7 +71,7 @@ test("derivePromptMetaState formats provider, model, and effort from the current
       model: "opencode/gpt-5.4",
       variant: "high",
     }),
-    waitingRoomState: {
+    startState: {
       providerId: "opencode",
       modelId: "opencode/gpt-5.4",
       effort: "high",

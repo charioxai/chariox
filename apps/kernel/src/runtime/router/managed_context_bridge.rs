@@ -794,7 +794,7 @@ impl CommandRouter {
                     runtime_state
                         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                         .await;
-                    runtime_state.record_waiting_room_change();
+                    runtime_state.record_room_list_change();
                 });
             }
         }
@@ -826,7 +826,7 @@ impl CommandRouter {
             self.runtime_state
                 .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
-            self.runtime_state.record_waiting_room_change();
+            self.runtime_state.record_room_list_change();
         }
         let final_store = store;
         let final_status = self

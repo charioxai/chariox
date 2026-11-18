@@ -1765,6 +1765,7 @@ async fn room_own_schedule() {
     for refused in [
         "trigger add schedule --every 0m",
         "trigger add schedule --every 2x",
+        "trigger add schedule --every 30秒",
         "trigger add schedule --cron '0 9 * * *'",
         "trigger add schedule --cron '0 0 9 * * *' --timezone Mars/Olympus",
         "trigger add schedule --every 2m --cron '0 0 9 * * *'",

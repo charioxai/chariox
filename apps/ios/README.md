@@ -27,7 +27,7 @@ Current package areas:
 
 - `Kernel/`: local-kernel protocol envelopes and WebSocket client.
 - `State/`: observable app state and async runtime actions.
-- `Views/`: SwiftUI waiting-room UI and reusable components.
+- `Views/`: SwiftUI Room list UI and reusable components.
 
 ## Local Development
 
@@ -61,13 +61,13 @@ physical devices and remote endpoints never receive this local token.
 
 Workspace/worktree paths default to empty unless
 `CHARIOX_IOS_DEFAULT_WORKSPACE` is set for the app process. Set them from the
-waiting-room UI or with `/workspace set <path>` before creating a session.
+Room list UI or with `/workspace set <path>` before creating a session.
 
 Current local-kernel flow:
 
 - Refresh sessions from the configured kernel URL.
 - Create a session for the configured workspace/worktree.
-- Select a session in the waiting room.
+- Select a session in the Room list.
 - Attach to the selected session.
 - Subscribe to kernel events for the attachment.
 - Apply session snapshots, heartbeat state, replay-gap state, and reconnect
@@ -148,7 +148,7 @@ xcrun simctl list devices available
 
 The app should preserve conceptual parity with CLI and WEB_CLI components:
 
-- `WaitingRoom`
+- `RoomList`
 - `CommandCenter`
 - `PromptComposer`
 - `AgentPane`

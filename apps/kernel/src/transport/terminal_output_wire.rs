@@ -51,6 +51,9 @@ pub(crate) fn encode_reply(response: &mut Value) -> Result<Vec<u8>, serde_json::
         }
         return pack(response, &payload);
     }
+    if let Some(wire) = encode_mirror_reply(response)? {
+        return Ok(wire);
+    }
     let Some(records) = response
         .get_mut("TerminalOutput")
         .and_then(|output| output.get_mut("records"))
@@ -121,6 +124,61 @@ fn room_terminal_fields(value: &Value) -> &'static [(&'static str, RoomByteEncod
     }
 }
 
+/// A Browser reply's byte fields in wire order: a mirror packet's deflated body, then each whole resource, then a
+/// picture's pixels (`screenshot`). A field holds base64 text before encoding and its `[offset, length]` in the
+/// payload after it.
+fn mirror_fields(response: &Value) -> Vec<String> {
+    let Some(result) = response.pointer("/KernelBrowser/result") else {
+        return Vec::new();
+    };
+    let is_bytes = |field: Option<&Value>| field.is_some_and(|f| f.is_string() || f.is_array());
+    let mut fields = Vec::new();
+    if is_bytes(result.get("packet_base64")) {
+        fields.push("/KernelBrowser/result/packet_base64".to_string());
+    }
+    let resources = result.get("resources").and_then(Value::as_array);
+    for (index, resource) in resources.into_iter().flatten().enumerate() {
+        if is_bytes(resource.get("data_base64")) {
+            fields.push(format!(
+                "/KernelBrowser/result/resources/{index}/data_base64"
+            ));
+        }
+    }
+    if is_bytes(result.get("data_base64")) {
+        fields.push("/KernelBrowser/result/data_base64".to_string());
+    }
+    fields
+}
+
+/// Moves the base64 of a Browser reply's packet body, resources and picture out of the JSON as raw bytes. A resource slice
+/// that is not canonical base64 on its own stays text; `None` when no field moved.
+fn encode_mirror_reply(response: &mut Value) -> Result<Option<Vec<u8>>, serde_json::Error> {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut payload = Vec::new();
+    for pointer in mirror_fields(response) {
+        let Some(field) = response.pointer_mut(&pointer) else {
+            continue;
+        };
+        let Some(data) = field
+            .as_str()
+            .and_then(|text| engine.decode(text).ok())
+            // An empty field (a retained font has no bytes) stays a string: a `[0, 0]` range would
+            // read as bytes the client never expects there.
+            .filter(|data| {
+                !data.is_empty() && engine.encode(data) == field.as_str().unwrap_or_default()
+            })
+        else {
+            continue;
+        };
+        *field = serde_json::json!([payload.len(), data.len()]);
+        payload.extend_from_slice(&data);
+    }
+    if payload.is_empty() {
+        return Ok(None);
+    }
+    pack(response, &payload).map(Some)
+}
+
 fn invalid_room_reply() -> serde_json::Error {
     serde_json::Error::io(std::io::Error::other("invalid Room terminal reply bytes"))
 }
@@ -187,6 +245,35 @@ pub(crate) fn open(bytes: &[u8]) -> Result<Cow<'_, [u8]>, &'static str> {
                     std::str::from_utf8(data).map_err(|_| invalid)?.to_owned()
                 }
             });
+            cursor += length;
+        }
+        if cursor != payload.len() {
+            return Err(invalid);
+        }
+        return Ok(serde_json::to_vec(&event).map_err(|_| invalid)?.into());
+    }
+    let mirror = mirror_fields(&event);
+    if !mirror.is_empty() {
+        let mut cursor = 0;
+        for pointer in mirror {
+            let field = event.pointer_mut(&pointer).ok_or(invalid)?;
+            let Some(range) = field.as_array() else {
+                continue;
+            };
+            let (offset, length) = match range.as_slice() {
+                [offset, length] => (
+                    offset.as_u64().and_then(|n| usize::try_from(n).ok()),
+                    length.as_u64().and_then(|n| usize::try_from(n).ok()),
+                ),
+                _ => return Err(invalid),
+            };
+            let (offset, length) = offset.zip(length).ok_or(invalid)?;
+            if offset != cursor || length > payload.len() - cursor {
+                return Err(invalid);
+            }
+            *field = Value::String(
+                base64::engine::general_purpose::STANDARD.encode(&payload[cursor..cursor + length]),
+            );
             cursor += length;
         }
         if cursor != payload.len() {
@@ -346,5 +433,102 @@ mod room_terminal_tests {
     fn malformed_room_terminal_base64_is_an_error() {
         let mut response = serde_json::json!({"RoomTerminal":{"result":{"result":"output","output":{"data_base64":"not base64!"}}}});
         assert!(encode_reply(&mut response).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mirror_reply_tests {
+    use super::*;
+
+    fn packet() -> Value {
+        let engine = base64::engine::general_purpose::STANDARD;
+        serde_json::json!({"KernelBrowser":{"result":{
+            "wire":2,"sequence":1,"encoding":"deflate","packet_bytes":9,
+            "packet_base64":engine.encode(vec![0xa5u8; 4096]),
+            "resources":[
+                {"key":"f","resource_id":"r","mime_type":"font/woff2","data_base64":engine.encode(vec![7u8; 300])},
+                {"key":"s","resource_id":"s","mime_type":"text/css","data_base64":"AAAA","offset":1,"total":9}]}}})
+    }
+
+    #[test]
+    fn a_mirror_reply_carries_its_deflated_body_and_resources_as_raw_bytes() {
+        let original = packet();
+        let mut response = original.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert!(wire.starts_with(b"CXT1"));
+        assert!(
+            wire.len() < 4096 + 300 + 512,
+            "bytes still travel as base64: {}",
+            wire.len()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_screenshot_reply_carries_its_picture_as_raw_bytes() {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let original = serde_json::json!({"KernelBrowser":{"result":{
+            "tab_id":"t","generation":2,"mime_type":"image/png","width":800,"height":600,
+            "data_base64":engine.encode(vec![0x89u8; 6000])}}});
+        let mut response = original.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert!(
+            wire.len() < 6000 + 512,
+            "the picture still travels as base64: {}",
+            wire.len()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_slice_that_is_not_canonical_base64_stays_text() {
+        let mut response = serde_json::json!({"KernelBrowser":{"result":{
+            "wire":2,"resources":[{"data_base64":"QUJD","offset":1,"total":9},{"data_base64":"QUJDRA"}]}}});
+        let original = response.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_small_reply_that_only_retains_a_font_keeps_the_empty_field_a_string() {
+        let mut response = serde_json::json!({"KernelBrowser":{"result":{"wire":2,"resources":[
+            {"key":"f","resource_id":"r","mime_type":"font/woff2","data_base64":""}]}}});
+        let original = response.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original,
+            "the client reads a string where a retained font has no bytes"
+        );
+    }
+
+    #[test]
+    fn a_mirror_reply_without_byte_fields_is_plain_json() {
+        let mut response =
+            serde_json::json!({"KernelBrowser":{"result":{"wire":2,"sequence":2,"ops":[]}}});
+        let wire = encode_reply(&mut response).unwrap();
+        assert!(!wire.starts_with(b"CXT1"));
+    }
+
+    #[test]
+    fn a_mirror_reply_with_a_range_outside_its_payload_is_refused() {
+        let wire = frame_for_mirror(
+            serde_json::json!({"KernelBrowser":{"result":{"packet_base64":[0,9]}}}),
+            b"abc",
+        );
+        assert!(open(&wire).is_err());
+    }
+
+    fn frame_for_mirror(header: Value, payload: &[u8]) -> Vec<u8> {
+        pack(&header, payload).unwrap()
     }
 }

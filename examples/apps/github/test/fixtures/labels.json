@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/labels?per_page=100&page=1",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"eeb0c15d8dcd1b90fb4c9d03f0c012a039582f6369ddaa00339f18c9921d63de\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4728",
+  "x-ratelimit-reset": "1794736579",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"id\": 13084448845,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYTQ\",\n  \"name\": \"bug\",\n  \"color\": \"d73a4a\",\n  \"default\": true,\n  \"description\": \"Something isn't working\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448857,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYWQ\",\n  \"name\": \"documentation\",\n  \"color\": \"0075ca\",\n  \"default\": true,\n  \"description\": \"Improvements or additions to documentation\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448873,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYaQ\",\n  \"name\": \"duplicate\",\n  \"color\": \"cfd3d7\",\n  \"default\": true,\n  \"description\": \"This issue or pull request already exists\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448888,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYeA\",\n  \"name\": \"enhancement\",\n  \"color\": \"a2eeef\",\n  \"default\": true,\n  \"description\": \"New feature or request\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448902,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYhg\",\n  \"name\": \"good first issue\",\n  \"color\": \"7057ff\",\n  \"default\": true,\n  \"description\": \"Good for newcomers\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448919,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYlw\",\n  \"name\": \"help wanted\",\n  \"color\": \"008672\",\n  \"default\": true,\n  \"description\": \"Extra attention is needed\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448935,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYpw\",\n  \"name\": \"invalid\",\n  \"color\": \"e4e669\",\n  \"default\": true,\n  \"description\": \"This doesn't seem right\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448948,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYtA\",\n  \"name\": \"question\",\n  \"color\": \"d876e3\",\n  \"default\": true,\n  \"description\": \"Further information is requested\",\n  \"archived_at\": null,\n  \"archived_by\": null\n },\n {\n  \"id\": 13084448964,\n  \"node_id\": \"LA_kwDOVutRM88AAAADC-TYxA\",\n  \"name\": \"wontfix\",\n  \"color\": \"ffffff\",\n  \"default\": true,\n  \"description\": \"This will not be worked on\",\n  \"archived_at\": null,\n  \"archived_by\": null\n }\n]"
+}

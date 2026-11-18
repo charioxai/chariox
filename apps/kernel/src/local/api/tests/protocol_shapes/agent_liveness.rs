@@ -17,3 +17,42 @@ fn populated_agent_liveness_and_silent_agents_protocol_snapshot_and_hash() {
         "779368333283c6ba95ed8d8859d90c17ef81c0925a2ec27a1e6e8553bf0ca9e9"
     );
 }
+
+// Miguel 11-16: a waiting agent says what would wake it, and nothing judges how long it made no progress.
+#[test]
+fn waiting_events_wait_without_long_notice_and_question_task_are_bound_to_protocol1011() {
+    use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWait, TaskOwnerAction};
+    use crate::runtime::projection::AgentLiveness;
+    let bytes = include_bytes!("agent-waiting-events-1011.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "428009167752a32c0c618fac03b6ad9d3c688affd43fe39c8ee880748445439c"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        fixture["local"],
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        fixture["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let liveness: AgentLiveness = serde_json::from_value(fixture["liveness"].clone()).unwrap();
+    assert_eq!(liveness.waiting_events.len(), 2);
+    assert_eq!(
+        liveness.waiting_events[1].cancel_wake_id.as_deref(),
+        Some("wake-9")
+    );
+    assert_eq!(serde_json::to_value(liveness).unwrap(), fixture["liveness"]);
+    let wait: AgentWait = serde_json::from_value(fixture["wait"].clone()).unwrap();
+    let wire = serde_json::to_value(wait).unwrap();
+    assert_eq!(wire, fixture["wait"]);
+    assert!(wire.get("long_wait_notified").is_none());
+    let task: AgentTaskExecution =
+        serde_json::from_value(fixture["question_task"].clone()).unwrap();
+    assert_eq!(task.owner_action, Some(TaskOwnerAction::Question));
+    assert_eq!(
+        serde_json::to_value(task).unwrap(),
+        fixture["question_task"]
+    );
+}

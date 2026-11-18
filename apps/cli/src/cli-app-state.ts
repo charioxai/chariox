@@ -143,7 +143,7 @@ export function createCliAppState(options: {
   const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
     formatAgentLocationLabel(agent, slicesState())
   const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
-  const [waitingRoomState, setWaitingRoomStateSignal] = createSignal<WaitingRoomState>(
+  const [startState, setWaitingRoomStateSignal] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
       initialProviderCatalog,
@@ -154,7 +154,7 @@ export function createCliAppState(options: {
       initialThemeRegistry,
     ),
   )
-  const waitingRoomLaunchOwnership = createWaitingRoomLaunchOwnershipTracker(waitingRoomState())
+  const waitingRoomLaunchOwnership = createWaitingRoomLaunchOwnershipTracker(startState())
   const setWaitingRoomState = ((
     value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
   ) => {
@@ -296,7 +296,7 @@ export function createCliAppState(options: {
     agentLocationLabel,
     sessionBrowserIndex,
     setSessionBrowserIndex,
-    waitingRoomState,
+    startState,
     setWaitingRoomState,
     setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,

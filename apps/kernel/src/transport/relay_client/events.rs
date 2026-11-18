@@ -5,10 +5,51 @@ use crate::runtime::event_log::SerializedEvent;
 
 const RELAY_EVENT_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
+/// The two socket lanes a viewer's subscriptions travel on: a Room's session streams and the kernel-wide
+/// inventory and resource feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum HeartbeatLane {
+    Session,
+    Inventory,
+}
+
+/// When a viewer's lane last got a `heartbeat`. Any inbound event proves the lane alive, so its subscriptions
+/// share one heartbeat per interval instead of sending one each.
+#[derive(Debug, Default)]
+struct LaneHeartbeats(
+    std::sync::Mutex<std::collections::HashMap<(String, HeartbeatLane), Instant>>,
+);
+
+impl LaneHeartbeats {
+    /// Whether this subscription sends the lane's next heartbeat: no other subscription of the lane sent one
+    /// in the last half interval.
+    fn claim(&self, client_public_key: &str, lane: HeartbeatLane, interval: Duration) -> bool {
+        let now = Instant::now();
+        let mut last = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (client_public_key.to_string(), lane);
+        if last
+            .get(&key)
+            .is_some_and(|sent| now.duration_since(*sent) < interval / 2)
+        {
+            return false;
+        }
+        // A viewer that went away leaves its entry behind; forget the ones nobody refreshes.
+        last.retain(|_, sent| now.duration_since(*sent) < LANE_HEARTBEAT_FORGET_AFTER);
+        last.insert(key, now);
+        true
+    }
+}
+
+const LANE_HEARTBEAT_FORGET_AFTER: Duration = Duration::from_secs(120);
+
 #[derive(Debug)]
 pub(super) struct RelayEventRuntime {
     pub(super) event_log: EventLog<KernelEvent>,
     serialized_snapshot: tokio::sync::Mutex<Option<Arc<SerializedEvent<KernelEvent>>>>,
+    lane_heartbeats: LaneHeartbeats,
 }
 
 impl RelayEventRuntime {
@@ -18,6 +59,7 @@ impl RelayEventRuntime {
         let event_counter_path = event_counter_path.into();
         Ok(Self {
             serialized_snapshot: Default::default(),
+            lane_heartbeats: Default::default(),
             event_log: EventLog::new_with_persistent_event_store_and_retention(
                 EventRetentionPolicy {
                     max_stream_events: RECENT_EVENT_LIMIT,
@@ -75,10 +117,23 @@ impl RelayEventRuntime {
         Ok(encoded)
     }
 
+    /// Whether this subscription sends the viewer lane's next `heartbeat`: no other subscription of the lane
+    /// sent one in the last half interval.
+    pub(super) fn claim_heartbeat(
+        &self,
+        client_public_key: &str,
+        lane: HeartbeatLane,
+        interval: Duration,
+    ) -> bool {
+        self.lane_heartbeats
+            .claim(client_public_key, lane, interval)
+    }
+
     #[cfg(test)]
     pub(super) fn for_tests(retention_limit: usize) -> Self {
         Self {
             serialized_snapshot: Default::default(),
+            lane_heartbeats: Default::default(),
             event_log: EventLog::new(retention_limit),
         }
     }

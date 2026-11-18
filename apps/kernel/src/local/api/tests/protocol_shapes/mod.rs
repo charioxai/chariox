@@ -12,13 +12,16 @@ mod agent_max_context;
 mod agent_peek;
 mod agent_workflow;
 mod aggregate_agent_model;
+mod app_accounts;
 mod app_confirmation;
 mod app_dev_push;
 mod app_dev_register;
+mod app_event_routing;
 mod app_events;
 mod app_fetch;
 mod app_install;
 mod app_publisher;
+mod app_standing;
 mod app_view_inspection;
 mod apps;
 mod browser_artifact;
@@ -59,6 +62,7 @@ mod provider_auth_recovery;
 mod provider_usage_activity;
 mod provider_vault_login;
 mod publication;
+mod queued_agent_messages;
 mod recall_terminal_metaagent;
 mod released_provider_run;
 mod remote_jobs;
@@ -68,6 +72,7 @@ mod room_controller;
 mod room_environment;
 mod room_environment_placement;
 mod room_exec;
+mod room_list;
 mod room_setup;
 mod room_terminal;
 mod session_feed_596;
@@ -82,6 +87,7 @@ mod web_bot_auth;
 mod workflow_code;
 mod workflow_gate;
 mod workflow_notifications;
+mod workflow_responsible;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -126,9 +132,9 @@ fn history_page_entry(
 
 mod owner_handoff;
 mod relay_transport;
+mod room_list_workspace;
 mod room_workflows;
 mod screenshot;
-mod waiting_room_workspace;
 
 mod leased_agent_file_copy;
 mod machine_files;

@@ -43,6 +43,7 @@ allocation is needed for the offline check.
 | `log` | R3, L1/L2 | Bounded worker logging |
 | `host` | R2/R6, L1/L2 | Notifications, links, clipboard and file choice |
 | `validation` | R2/R6, L1/L2, A1 | Existing protected-effect approval operations |
+| `event-routing` (1.1.0) | GHA-2 | An App's own inbox routes and event targets inside one granted connection |
 | `handlers` (export) | R2/R3, L1/L2, A1, D1 | Concurrent dispatch, actor/context and cancellation |
 | `migration-handlers` (export) | R3/R6, L1/L2, D1 | State-only migration with deadline/cancellation |
 | WASI 0.3 clocks/random/filesystem/CLI/HTTP | R3/R6, L1/L2 | Standard APIs virtualized onto scoped brokers |
@@ -72,11 +73,12 @@ and the migration export; it cannot obtain network/files/host capabilities.
 
 ## Version compatibility
 
-Manifests name an exact world, never `1.x` or an SDK range. Production currently
-registers 1.0.0 only. A future minor must preserve older imports and add only
+Manifests name an exact world, never `1.x` or an SDK range. Production registers
+1.0.0 and 1.1.0 (1.0.0 plus `event-routing`, in `wit/deps/app-1.1.0`; only a
+manifest with `capabilities.eventRouting` names it). A future minor must preserve older imports and add only
 `@since(version = 1.N.0)` interfaces/functions. Registration requires both a
 structural compatibility vector and an explicit update to the supported-world
-and versioned import policy. An unregistered 1.1 world remains unsupported even
+and versioned import policy. An unregistered 1.2 world remains unsupported even
 when its interfaces happen to fit.
 
 Changing/removing a function, resource, record field, parameter, result or
@@ -99,9 +101,12 @@ component binary is checked in and no fixture code executes during admission.
   accepted for production 1.0.
 - Full admission-world fixture: every admitted interface including real WASI
   resource signatures; accepted.
-- `tests/fixtures/v1.1.wit`: test-only additive `@since` interface. Both the old
-  1.0 component and the new component pass the extended policy. Production
-  rejects its unregistered exact world and its new import.
+- `tests/fixtures/v1.2.wit`: test-only additive `@since` interface on top of 1.1.
+  Both the old component and the new component pass the extended policy.
+  Production rejects its unregistered exact world and its new import.
+- The 1.1.0 `event-routing` component: admitted in `chariox:app/app@1.1.0`,
+  refused in 1.0.0 (its import is not allowed there); a 1.0.0 component is
+  admitted in both.
 - `tests/fixtures/incompatible.wit` and source mutations: changed parameters,
   changed exports and sync downgrades are refused despite matching names.
 - Additional hostile vectors cover sockets, unlisted WASI patch versions,

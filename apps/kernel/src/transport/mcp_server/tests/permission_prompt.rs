@@ -248,7 +248,8 @@ async fn prompt_and_answer(
 
 #[tokio::test]
 async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -387,7 +388,8 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
 
 #[tokio::test]
 async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_prompt() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt-closed");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-closed-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -477,8 +479,9 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
     assert!(!tool_names(&router, YOLO_TOKEN)
         .await
         .contains(&"chariox.permission_prompt".to_string()));
+    // The tool is not listed to it, yet a call is answered from the current level: Full access allows.
     let response = rpc(&router, YOLO_TOKEN, "tools/call", call("toolu_other_mode")).await;
-    assert_eq!(response["result"]["isError"], true, "{response:#}");
+    assert_eq!(decision(&response)["behavior"], "allow", "{response:#}");
     // Without `input` the call is invalid, and Claude Code denies the tool.
     let missing = rpc(
         &router,
@@ -552,7 +555,8 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
 async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
     use tokio::io::AsyncWriteExt;
 
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt-disconnect");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-disconnect-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -658,7 +662,8 @@ async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
 /// wait for as long as the call runs, and no longer once it returns.
 #[tokio::test]
 async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("runtime-tool-wait");
+    let root = _tmp.join(format!(
         "chariox-runtime-tool-wait-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -1795,5 +1800,67 @@ async fn directory_grant_covers_all_authorized_file_names_without_another_prompt
             assert!(active_interactions(&router, session.id()).is_empty());
         }
     }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Full access is the consent: the current level answers a prompt of a process that was launched
+/// below it, and a lowered level asks again.
+#[tokio::test]
+async fn claude_permission_prompt_follows_the_current_permission_level() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    let (router, session, agent_id, root, app) =
+        claude_print_fixture_in_mode(AgentExecutionMode::Build, AgentPermissionLevel::Required);
+    async fn set_level(
+        app: &Arc<Mutex<DaemonApp>>,
+        session_id: &str,
+        agent_id: &str,
+        level: AgentPermissionLevel,
+    ) {
+        insert_claude_run_in_mode(
+            &mut *app.lock().await,
+            session_id,
+            agent_id,
+            "provider-run-claude-print",
+            CLAUDE_TOKEN,
+            crate::provider::ProviderClientInterface::Chariox,
+            AgentExecutionMode::Build,
+            level,
+        );
+    }
+
+    let asked = prompt_and_answer(&router, session.id(), &agent_id, "toolu_required", "deny").await;
+    assert_eq!(asked["behavior"], "deny");
+
+    set_level(&app, session.id(), &agent_id, AgentPermissionLevel::Yolo).await;
+    let input =
+        serde_json::json!({"command": "touch approved.txt", "description": "Create a file"});
+    let allowed = decision(
+        &tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rpc(
+                &router,
+                CLAUDE_TOKEN,
+                "tools/call",
+                serde_json::json!({"name": "chariox.permission_prompt", "arguments": {
+                    "tool_name": "Bash", "input": input, "tool_use_id": "toolu_full_access"}}),
+            ),
+        )
+        .await
+        .expect("a Full-access agent's prompt must not wait for a card"),
+    );
+    assert_eq!(allowed["behavior"], "allow");
+    assert_eq!(allowed["updatedInput"], input);
+    assert!(active_interactions(&router, session.id()).is_empty());
+
+    set_level(
+        &app,
+        session.id(),
+        &agent_id,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    let asked_again =
+        prompt_and_answer(&router, session.id(), &agent_id, "toolu_lowered", "deny").await;
+    assert_eq!(asked_again["behavior"], "deny");
     let _ = std::fs::remove_dir_all(root);
 }

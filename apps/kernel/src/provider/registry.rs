@@ -47,6 +47,11 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn supports_turn_scoped_execution_config(&self) -> bool {
         false
     }
+    /// Whether a turn can go on in a new provider process of this adapter: the harness resumes
+    /// its native session, or the kernel carries the conversation, from a finished step.
+    fn resumes_conversation_in_new_process(&self) -> bool {
+        false
+    }
     fn park(&self, run: &RuntimeProviderRun);
     fn resume(&self, run: &RuntimeProviderRun);
     fn terminate(&self, run: &RuntimeProviderRun);
@@ -137,6 +142,10 @@ static CLAUDE_ADAPTER: ClaudeAdapter = ClaudeAdapter;
 impl AgentEndpointAdapter for ClaudeAdapter {
     fn key(&self) -> &'static str {
         Self::KEY
+    }
+
+    fn resumes_conversation_in_new_process(&self) -> bool {
+        true
     }
 
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {

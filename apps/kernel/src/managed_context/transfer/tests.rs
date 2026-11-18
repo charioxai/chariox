@@ -1945,6 +1945,17 @@ fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
     }
 }
 
+thread_local! {
+    // Each test runs on a thread of its own, so this directory ends with the test.
+    static DESTINATION_OWNER: crate::test_support::TestTempDir =
+        crate::test_support::TestTempDir::new("managed-context-transfer");
+}
+
+fn destination_parent() -> PathBuf {
+    // The transfer creates this directory itself, as a private one.
+    DESTINATION_OWNER.with(|directory| directory.join("managed-projects"))
+}
+
 fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer {
     ArmManagedContextTransfer {
         plan: crate::managed_context::package::ManagedContextPlanBinding {
@@ -1980,7 +1991,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
         capability: "c".repeat(43),
         archive_sha256: sha256_bytes(archive),
         archive_size_bytes: archive.len() as u64,
-        destination_parent: std::env::temp_dir().join("managed-projects"),
+        destination_parent: destination_parent(),
         expires_at_ms,
     }
 }

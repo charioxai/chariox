@@ -49,7 +49,6 @@ fn ordinary_bootstrap_rejects_worker_shaped_records_without_mutation() {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),
             None => std::env::remove_var("CHARIOX_HOME"),
         }
-        fixture.cleanup();
         let error = result.expect_err("legacy worker must not become an ordinary registration");
         assert!(
             error.to_string().contains("managed bootstrap"),

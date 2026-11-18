@@ -81,7 +81,7 @@ Protocol version `13` adds the `agent_activity` projection to `PromptSubmitted` 
 
 Protocol version `21` adds semantic history search mode selection. `SemanticSearchHistory` accepts `mode: "knn" | "agent" | null`; omitted/null defaults to KNN. `SemanticHistoryEvents` may include an `answer` for focused-agent semantic search, and each `SemanticHistoryMatch` may include a short `reason`.
 
-Protocol version `22` removes the kernel-to-kernel provider catalog request and stops embedding relay remote machine/kernel inventory in waiting-room snapshots. Browser clients now obtain per-kernel catalogs by opening target-scoped runtime connections to each available kernel.
+Protocol version `22` removes the kernel-to-kernel provider catalog request and stops embedding relay remote machine/kernel inventory in Room list snapshots. Browser clients now obtain per-kernel catalogs by opening target-scoped runtime connections to each available kernel.
 
 Protocol version `17` adds optional editable custom choices for choice interactions. `RuntimeInteraction` may include `custom_choice`, and `RespondToInteraction` may include `custom_reply` when responding with that custom choice id.
 

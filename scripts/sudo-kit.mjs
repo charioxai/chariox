@@ -104,7 +104,7 @@ try {
       if (status !== 401) throw new Error("MP-11: expected 401")
     }
   } else if (mode === "observe") {
-    await client.subscribeToWaitingRoomInventory()
+    await client.subscribeToRoomList()
     emit({ action: "observing_owner_popups" })
   } else if (mode === "access-list") {
     const result = await client.send({ ListKernelAccessGrants: {} })

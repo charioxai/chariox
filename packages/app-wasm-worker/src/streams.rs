@@ -1,6 +1,6 @@
 //! Bounded stream bridges. Producers stop on guest drop and on invocation end.
 use crate::{
-    bindings::chariox::app::app_types::{AppError, LiveEvent},
+    bindings::chariox::app1_0_0::app_types::{AppError, LiveEvent},
     broker::context,
     host::{app_error, Host},
     ipc::error,

@@ -546,6 +546,18 @@ impl ProviderProcessServiceStore {
             .adapter_supports_turn_scoped_execution_config(adapter_key)
     }
 
+    pub(crate) fn adapter_resumes_conversation_in_new_process(&self, adapter_key: &str) -> bool {
+        self.read()
+            .adapter_resumes_conversation_in_new_process(adapter_key)
+    }
+
+    pub(crate) fn mark_run_settings_stale(
+        &self,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().mark_run_settings_stale(run_id)
+    }
+
     pub(crate) fn update_run_execution_config(
         &self,
         run_id: &str,

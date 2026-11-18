@@ -108,7 +108,7 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
 }
 
 // MP-08 / MP-10 / MP-11: the session picker's older-sessions page is a Room client read like the
-// waiting-room snapshot: it reaches the handler, which lists only the caller's own Rooms.
+// room-list snapshot: it reaches the handler, which lists only the caller's own Rooms.
 #[tokio::test]
 async fn a_room_collaborator_lists_only_its_own_rooms_in_the_older_sessions_page() {
     let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
@@ -133,7 +133,7 @@ async fn a_room_collaborator_lists_only_its_own_rooms_in_the_older_sessions_page
         &router,
         &AtomicU64::new(1),
         KernelCaller::for_relay_request(Some(relay_user("full-member"))),
-        LocalDaemonRequest::ListWaitingRoomSessions(crate::local::ListWaitingRoomSessionsRequest {
+        LocalDaemonRequest::ListRoomListSessions(crate::local::ListRoomListSessionsRequest {
             inventory_version: None,
             cursor: None,
             limit: None,
@@ -151,7 +151,7 @@ async fn a_room_collaborator_lists_only_its_own_rooms_in_the_older_sessions_page
             )
         }
     };
-    let crate::local::LocalDaemonResponse::WaitingRoomSessionsListed { page } = response else {
+    let crate::local::LocalDaemonResponse::RoomListSessionsListed { page } = response else {
         panic!("unexpected response: {response:?}");
     };
     let listed: Vec<&str> = page

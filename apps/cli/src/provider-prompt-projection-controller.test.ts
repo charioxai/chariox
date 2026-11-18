@@ -23,7 +23,7 @@ test("provider prompt projection prefers provider run, then focused agent, then 
       model: "openai/gpt-5.3-codex",
       effort: "medium",
     }),
-    getWaitingRoomState: () => waitingRoomState({
+    getWaitingRoomState: () => startState({
       providerId: "opencode",
       modelId: "anthropic/claude-sonnet-4",
       effort: "high",
@@ -84,7 +84,7 @@ test("provider prompt projection derives prompt meta and usage", () => {
   const controller = createProviderPromptProjectionController({
     getProviderRun: () => run,
     getFocusedAgent: () => focusedAgent,
-    getWaitingRoomState: () => waitingRoomState(),
+    getWaitingRoomState: () => startState(),
     getDefaults: () => ({
       provider: "opencode",
       model: "default-model",
@@ -132,7 +132,7 @@ test("provider prompt projection uses owned provider run metadata for focused ag
       },
     }),
     getFocusedAgent: () => agent("agent-a"),
-    getWaitingRoomState: () => waitingRoomState(),
+    getWaitingRoomState: () => startState(),
     getDefaults: () => ({
       provider: "opencode",
       model: "default-model",
@@ -149,7 +149,7 @@ test("provider prompt projection uses owned provider run metadata for focused ag
   assert.equal(controller.promptUsageMeta()?.usageLabel, "4%")
 })
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

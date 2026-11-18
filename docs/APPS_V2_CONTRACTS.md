@@ -38,6 +38,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   names on `AppInstallationSummary` for the active release (or the retained one
   of an uninstalled installation that keeps its data). Both fields are absent
   from the JSON when the App declares none.
+  The Desktop shows each installed App with an active release as a tile with this
+  icon and name, or a letter tile in a colour taken from the app id when it
+  declares no icon; the text terminal shows names only.
 - Optional `idempotentTools` names sorted, unique declared backend tools that
   the worker may replay once after instance loss. Omission permits no automatic
   replay; effects and action descriptions never imply idempotence.
@@ -46,7 +49,13 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   person_confirmed`, an `approvalReason` for, and only for, `approval`, and a
   `confirmationView` for, and only for, `person_confirmed` (APP-CONFIRM-01: the
   name of the view the App registers with `chariox.view.confirmation(name,
-  render)`; also `data-chariox-confirmation-view` on an annotated form). Backend `actions` keep their
+  render)`; also `data-chariox-confirmation-view` on an annotated form; for an App
+  whose backend serves its view, the name of the backend tool that answers with
+  the preview rows). An optional `standing` `{class, repo, account}` on an `approval` or
+  `person_confirmed` action lets the owner decide once, per repository, that this
+  class (`merge | close | delete_branch | review`, a closed set) needs no card;
+  `repo` names the required text input property that holds `owner/name`, `account` the optional text
+  input property that names the account the call runs as. Backend `actions` keep their
   protected effect routes unchanged; an effect class grants no capability.
 - Signature slots: `signatures/publisher.sig` plus up to 8
   `signatures/reviews/<reviewer-key-id>.json` (`chariox.package-review.v1`, at
@@ -100,7 +109,8 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `BeginAppUpdate` with the expected generation. Every source uses it.
 - `check_source`: `dev_push` ⇔ dev channel ⇔ dev principal; every other source
   ⇔ release channel ⇔ publisher principal.
-- `AuthoritySet`: sorted atoms for network (origin+method), clipboard, files,
+- `AuthoritySet`: sorted atoms for network (origin+method), credential routes
+  (`credential-route:` origin, label, method, path, safety), clipboard, files,
   workflows, agents, connections, effect routes, and `critical-route` /
   `verified-route` for critical routes. Action names, texts and schemas are not
   authority. `approval_requirement(approved, candidate)` → `Reuse` unless the
@@ -215,13 +225,43 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   host, not the App or the agent, finds that one element and projects its pixels
   as the card's protected region. The card's frame (`app_confirmation`: App,
   publisher, action) is written by the kernel from the verified release, never
-  by the App. The card is the person's alone: no agent holder or owner agent, no
-  `/sudo`, no session approval and no earlier answer stands in for it; the
+  by the App. The card is the person's alone: no agent holder or owner agent and no
+  session approval or earlier answer stands in for it. A live `/sudo` task of the
+  calling agent is the owner's consent to the work, so the kernel raises no card
+  for it, as for a standing permission, and the action still checks the state it
+  acts on. When a card is raised, the
   turn, grant, release and generation are checked again after Confirm. Cancel,
   timeout, disconnect or a stale view run nothing and say so. The preview is
   removed on every path. Input an agent drove through the browser into a
   `person_confirmed` form or button is refused by the page bridge
-  (`person_confirmation_required`). It needs the App open in an App Tab.
+  (`person_confirmation_required`). A page view needs the App open in an App Tab.
+  An App whose backend serves the view has no page or Tab: the kernel calls the
+  backend tool the signed action names as its `confirmationView` with the exact
+  input, and the answer, `{rows: [{label, value}]}` (one to twelve rows of plain
+  text, labels up to 48 and values up to 400 characters, nothing else), travels
+  in the frame as `app_confirmation.preview`; the card has no protected region.
+  The card is otherwise the same, and an answer that does not fit refuses the
+  call before any card.
+- **Tool calls of gated actions.** An action that needs approval or the person's
+  confirmation is asked for only through `chariox.app_view_invoke`: an agent
+  that calls the backend tool of the same name directly is refused with
+  `USE_APP_VIEW_INVOKE` and the App never runs.
+- **Standing permissions.** The owner, never an App or an agent, can give a
+  standing permission with `GrantAppStanding {installation_id, account, repo,
+  class, expires_at_ms?}` (CLI `/app standing grant|list|revoke`; 30 days unless
+  `--days n` or `--never`). When an agent invokes an `approval` or
+  `person_confirmed` action whose signed `standing` names that class and whose
+  input names that repository, no card is raised and the use is counted. It
+  covers only the named repository, account and class. A backend-served App
+  that leaves the account to itself answers the reserved tool `view_account`
+  `{repo}` with `{account}`, the one the call runs as (the repository's, the
+  default, else the first known); the kernel pins that account into the input,
+  so the permission is judged for, and the call runs as, the same account. Without
+  an answer, the account the call names or the only one bound counts; with
+  several bound and none known the card asks. A permission exists only while the account
+  binding it was made under (the same Vault entry) and the installation's active
+  release do. Force pushes, deleting a default branch, grants and bindings are not
+  classes; refusing the default or a protected branch stays the App's own rule.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
   stops at the first error, approval or person-confirmed action and reports
   `completed` and `stopped`; there is no rollback.
@@ -249,6 +289,74 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   the App's own code.
 - **Waits for R4/L1.** Declarations of an installed App exist only once a v2
   package installs; until then catalogs list views with no actions.
+## 10. Credentialed HTTP (`capabilities.network`)
+
+A destination may name a `credential` label and a signed route table:
+`{origin: "https://api.example.com", methods, credential: "example", routes:
+[{method, path: "/repos/{owner}/{repo}/pulls/{number}", safety: "read" | "write" |
+"destructive"}]}`. Such a destination needs the required feature `credentialed-http`,
+an `https` origin, at most 128 routes, `methods` equal to the routes' methods, and path
+templates of literal segments and `{name}` (one non-empty segment); `AuthoritySet`
+counts every route, so an update that adds a route or raises a safety class asks again.
+
+The owner binds an account: `GrantAppAccount {installation_id, account, credential,
+vault_credential_id, allow}` (`/app account grant`). Only the owner can; there is no
+agent tool. The Vault entry must be created for HTTP use at exactly that origin with an
+`Authorization` header (`chariox.vault.copy_for_use` makes one from an entry made for
+another use). The App calls `http.fetch` with `connection-id: "account:<label>"` and no
+`Authorization`; the kernel then
+
+1. matches origin, method and path against the signed routes (`APP_HTTP_ROUTE_NOT_DECLARED`)
+   and allows only the headers `accept, content-type, if-match, if-none-match,
+   if-modified-since, x-github-api-version`;
+2. checks the owner's binding exists for that credential label (`APP_HTTP_ACCOUNT_UNKNOWN`)
+   and allows at least the route's safety (`APP_HTTP_ACCOUNT_NOT_ALLOWED`);
+3. only then reads the Vault value (`APP_HTTP_ACCOUNT_UNAVAILABLE` if it cannot) and adds
+   `Authorization` and a `User-Agent` to the request itself;
+4. sends it (no redirects, public addresses only) and buffers the answer, at most 1 MiB
+   (`APP_HTTP_LIMIT`), with the value removed from the body and the headers, and only the
+   headers `content-type, etag, last-modified, link, location, retry-after,
+   x-poll-interval, x-github-request-id, x-ratelimit-*`. A 304 answer carries its `etag`.
+
+The same origin without an account (`APP_HTTP_ACCOUNT_REQUIRED`) and an account call to an
+origin without credentials (`APP_HTTP_ACCOUNT_UNKNOWN`) are refused. The App never sees the
+value; neither do App state, logs, history, traces or the agent's tool results.
+
+## 11. Event routing (`capabilities.eventRouting`, world 1.1.0)
+
+An App that routes one generator's events for itself declares
+`eventRouting: {generator, incoming: [event names], maxRoutes}` (1 to 200 routes, at most 32
+incoming events). The package needs the required feature `event-routing` and the world
+`chariox:app/app@1.1.0` (1.0.0 plus the `event-routing` import; `chariox_app_wit::APP_WORLD_1_1`);
+`AuthoritySet` counts the generator, each incoming event and the route limit, so growing
+any of them asks the owner again. A v1 manifest refuses the capability.
+
+The owner grants the connection exactly as for connection actions (`GrantAppConnection`,
+`/app connection grant`, owner only: no agent tool). The grant names the generator the manifest
+declares under `connections` or `eventRouting`. `ListAppConnections` then shows
+`event_routing: {max_routes, routes, paused}` for it, and revoking the grant removes the routes the
+App created itself (never the owner's hand-made ones).
+
+The App calls (WIT `event-routing`, wire `routing.*`; every call is scoped to the installation and
+takes no connection, token or Room):
+
+- `ensure-route {route-id, event, repository, source-event-type, source-event-version}`: the event
+  must be declared, the repository (the generator's `connection_scope`) must be one of the granted
+  connection's resources, and the generator must declare the source event; the route's scope and
+  filter come from the generator, not the App. Ensuring the same route again answers it
+  (`ROUTE_EXISTS` if the id names another shape); beyond `maxRoutes` it is `ROUTE_LIMIT`.
+  `remove-route`, `set-route-active` (a pause: the route is claimed inactive and takes nothing, and a
+  deployment handover never resumes it) and `list-routes` act only on the App's own routes.
+- `connection-status`, `connection-resources` and `start-authorization` read the one granted
+  connection and start the generator's consent (the owner still grants the new connection).
+- `bind-agent {event, agent-id?}` delivers an outgoing event to an agent through the ordinary agent
+  trigger. The kernel names the caller from its own record: an agent binds only itself (alone or
+  beside a person's call); a person may name any agent. `bind-workflow` needs a person's call;
+  `unbind-target` ends only the caller's own agent target (a person any); `list-targets` lists them.
+
+`PauseAppAutomation` and `SetAppInboxRoutePaused` give the owner the same pause
+(`/app automation pause`, `/app inbox pause|resume`).
+
 ## A4 inspection (MP-08 / MP-10 / MP-11)
 
 `InspectAppView` (local 933; peer 381) reads an **existing** Room App Tab.

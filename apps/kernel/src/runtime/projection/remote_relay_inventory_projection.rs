@@ -19,6 +19,8 @@ struct RemoteRelayInventoryProjectionState {
     refresh_requested_at_ms: u64,
     /// Kernels that were absent from the previous inventory and are present now, until taken.
     appeared_kernels: std::collections::BTreeSet<String>,
+    /// The kernels the owner's Cloud directory still linked on its last two reads, oldest first.
+    directory_reads: std::collections::VecDeque<std::collections::BTreeSet<String>>,
 }
 
 impl RemoteRelayInventoryProjectionStore {
@@ -28,6 +30,53 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    /// One read of the owner's Cloud directory: the kernels it still links, offline ones too.
+    pub(crate) fn record_directory_read(&self, linked: std::collections::BTreeSet<String>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.directory_reads.push_back(linked);
+        while state.directory_reads.len() > 2 {
+            state.directory_reads.pop_front();
+        }
+    }
+
+    /// Whether two reads of the directory exist, so a kernel can be told gone.
+    pub(crate) fn has_directory_history(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .directory_reads
+            .len()
+            >= 2
+    }
+
+    /// The kernels among `kernels` that neither of the last two reads of the directory linked:
+    /// removed from the account, not merely offline.
+    pub(crate) fn gone_kernels(
+        &self,
+        kernels: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.directory_reads.len() < 2 {
+            return std::collections::BTreeSet::new();
+        }
+        kernels
+            .iter()
+            .filter(|kernel| {
+                state
+                    .directory_reads
+                    .iter()
+                    .all(|linked| !linked.contains(*kernel))
+            })
+            .cloned()
+            .collect()
     }
 
     /// The kernels that (re)appeared in the inventory since the last call.
@@ -153,6 +202,7 @@ impl RemoteRelayInventoryProjectionStore {
         state.remote_kernels.clear();
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
+        state.directory_reads.clear();
     }
 }
 
@@ -182,6 +232,31 @@ fn sort_remote_machines(remote_machines: &mut [RemoteMachineRecord]) {
 #[cfg(test)]
 mod tests {
     use super::RemoteRelayInventoryProjectionStore;
+
+    fn kernels(ids: &[&str]) -> std::collections::BTreeSet<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    // A kernel is gone for good only once two consecutive reads of the owner's directory
+    // omit it; one miss, or an offline kernel the directory still links, is not.
+    #[test]
+    fn a_kernel_is_gone_after_two_directory_reads_without_it() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let watched = kernels(&["asleep", "removed"]);
+        assert!(projection.gone_kernels(&watched).is_empty(), "no read yet");
+        projection.record_directory_read(kernels(&["asleep"]));
+        assert!(
+            projection.gone_kernels(&watched).is_empty(),
+            "one read is not two"
+        );
+        projection.record_directory_read(kernels(&["asleep"]));
+        assert_eq!(projection.gone_kernels(&watched), kernels(&["removed"]));
+        projection.record_directory_read(kernels(&["asleep", "removed"]));
+        assert!(
+            projection.gone_kernels(&watched).is_empty(),
+            "a kernel listed again in either of the last two reads stays"
+        );
+    }
 
     #[test]
     fn remote_relay_inventory_projection_requests_refresh_when_empty_or_stale() {

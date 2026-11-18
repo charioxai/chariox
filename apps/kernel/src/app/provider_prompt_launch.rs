@@ -122,6 +122,21 @@ impl DaemonApp {
             request,
         )?;
         let mut replace_environment = false;
+        // Its agent's settings changed while it ran and it is between turns now: the turn that
+        // starts runs on the new settings, in a new process.
+        if let Some(stale_run) = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .filter(|run| {
+                run.settings_stale()
+                    && run.client_interface().is_chariox()
+                    && run.state() != ProviderRunState::Ended
+            })
+        {
+            if !self.provider_run_has_active_prompt(session_id, &stale_run)? {
+                self.end_agent_provider_run(session_id, agent_id)?;
+            }
+        }
         if let Some(mut agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
             let same_environment = agent_run.project_environment_revision()
                 == request.project_environment_revision.as_deref();

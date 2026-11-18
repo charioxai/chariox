@@ -658,6 +658,7 @@ fn a_mismatch_names_the_action_and_the_part_that_differs() {
         effect: UiActionEffect::Write,
         approval_reason: None,
         confirmation_view: None,
+        standing: None,
     }];
     let mut registered = declared.clone();
     registered[0].effect = UiActionEffect::Read;
@@ -779,6 +780,58 @@ fn kernel_verifier_admits_the_registered_signed_migration_world() {
     ));
 }
 
+fn routing_fixture() -> Fixture {
+    let mut fixture = base();
+    if let Some(actions) = fixture.manifest.ui_actions.take() {
+        fixture.files.remove(&actions);
+    }
+    fixture.manifest.world = APP_WORLD_1_1.into();
+    fixture.manifest.capabilities.event_routing = Some(crate::EventRouting {
+        generator: "dev.chariox.github".into(),
+        incoming: vec!["pull_request".into()],
+        max_routes: 50,
+    });
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    let component = fixture.manifest.runtime.component.clone();
+    fixture
+        .files
+        .insert(component, components::build(APP_WORLD_1_1, false));
+    fixture
+}
+
+#[test]
+fn an_app_with_event_routing_needs_the_minor_world_its_feature_and_its_import() {
+    let routed = routing_fixture();
+    assert!(routed
+        .manifest
+        .required_features
+        .contains(&RequiredFeature::EventRouting));
+    let kernel = crate::VerificationPolicy::new(1009, policy().trusted_publishers);
+    assert!(matches!(
+        crate::verify_app(&packed(&routed, &[]), &kernel),
+        Ok(crate::VerifiedAppPackage::Wasm(_))
+    ));
+
+    // The capability without the minor world cannot be used: refused when signed.
+    let mut old_world = routing_fixture();
+    old_world.manifest.world = APP_WORLD.into();
+    assert!(old_world.manifest.validate(&Limits::default()).is_err());
+
+    // The feature list must match what the package uses.
+    let mut understated = routing_fixture();
+    understated.manifest.required_features = vec![RequiredFeature::WasmComponent];
+    assert!(understated.manifest.validate(&Limits::default()).is_err());
+
+    // A 1.0.0 component under a 1.1.0 manifest world is still a valid App; the
+    // import-bearing component is refused under 1.0.0 by the admission world.
+    let mut mismatched = routing_fixture();
+    mismatched.manifest.capabilities.event_routing = None;
+    mismatched.manifest.world = APP_WORLD.into();
+    mismatched.manifest.required_features = mismatched.manifest.derive_features();
+    let error = verify(&packed(&mismatched, &[]), &policy()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ImportNotAllowed);
+}
+
 #[test]
 fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
     let fixture = base();
@@ -869,4 +922,115 @@ fn generic_verifier_refuses_a_signed_unknown_required_feature() {
         code(crate::verify_app(&bytes, &generic)),
         crate::ErrorCode::InvalidManifest
     );
+}
+
+fn actions_with_standing(
+    effect: &str,
+    standing: Value,
+    properties: Value,
+) -> crate::Result<Vec<UiActionDeclaration>> {
+    let mut action = json!({
+        "name": "merge_pull_request", "description": "Merge", "effect": effect,
+        "inputSchema": {"type": "object", "additionalProperties": false, "properties": properties, "required": ["repo"]},
+        "standing": standing
+    });
+    match effect {
+        "approval" => action["approvalReason"] = json!("Merges the pull request"),
+        "person_confirmed" => action["confirmationView"] = json!("preview_merge"),
+        _ => {}
+    }
+    let document = serde_json::to_vec(&json!({"uiActions": [action]})).unwrap();
+    super::ui_actions::read_ui_actions(&document, &Limits::default())
+}
+
+#[test]
+fn a_standing_declaration_names_a_closed_class_and_the_required_text_property_with_the_repository()
+{
+    let repo = json!({"repo": {"type": "string"}, "account": {"type": "string"}});
+    let declared = actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
+        repo.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        declared[0].standing_use(&json!({"repo": "Owner/Name"})),
+        Some(StandingUse {
+            class: StandingClass::Merge,
+            repo: "owner/name".into(),
+            account: None
+        })
+    );
+    assert_eq!(
+        declared[0]
+            .standing_use(&json!({"repo": "o/r", "account": "home"}))
+            .unwrap()
+            .account
+            .as_deref(),
+        Some("home"),
+        "the account the call names"
+    );
+    assert_eq!(declared[0].standing_use(&json!({"other": 1})), None);
+    // Only what asks can carry it, and only a class that exists.
+    assert!(actions_with_standing(
+        "write",
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "force_push", "repo": "repo", "account": "account"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "missing", "account": "account"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
+        json!({"repo": {"type": "integer"}})
+    )
+    .is_err());
+    assert!(
+        actions_with_standing(
+            "person_confirmed",
+            json!({"class": "merge", "repo": "repo", "account": "other"}),
+            repo.clone()
+        )
+        .is_err(),
+        "the account property must be a text property of the input"
+    );
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo", "account": "account", "branch": "x"}),
+        repo
+    )
+    .is_err());
+}
+
+#[test]
+fn a_standing_declaration_cannot_be_added_in_the_runtime_registration() {
+    let signed: UiActionDeclaration = serde_json::from_value(json!({
+        "name":"merge_pull_request", "description":"Merge", "inputSchema":{"type":"object"},
+        "effect":"person_confirmed", "confirmationView":"preview_merge"
+    }))
+    .unwrap();
+    let mut registered = signed.clone();
+    registered.standing = Some(StandingDeclaration {
+        class: StandingClass::Merge,
+        repo: "repo".into(),
+        account: "account".into(),
+    });
+    assert!(matches!(
+        check_registration(&[signed], &registered),
+        Err(UiActionMismatch::Differs {
+            field: UiActionField::Standing,
+            ..
+        })
+    ));
 }

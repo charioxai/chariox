@@ -628,6 +628,12 @@ fn cli_packs_and_validates_the_excalidraw_v2_app() {
         )
         .unwrap();
     }
+    // The App's own logo, which its manifest names.
+    fs::copy(
+        source.join("ui/icon.svg"),
+        fixture.path("bundle/ui/icon.svg"),
+    )
+    .unwrap();
     let args = [
         "pack",
         "--bundle",
@@ -669,11 +675,10 @@ fn cli_packs_and_validates_the_excalidraw_v2_app() {
 }
 
 #[test]
-fn cli_packs_and_validates_the_github_events_v2_app() {
+fn cli_packs_and_validates_the_github_v2_app() {
     let fixture = Fixture::new();
     let publisher = fixture.keygen();
-    let source =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/apps/github-events");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/apps/github");
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(source.join("app.json")).unwrap()).unwrap();
     manifest["publisher"] = serde_json::to_value(&publisher.publisher).unwrap();
@@ -688,7 +693,7 @@ fn cli_packs_and_validates_the_github_events_v2_app() {
     )
     .unwrap();
     fs::create_dir(fixture.path("bundle/schemas")).unwrap();
-    for name in ["tools.json", "events.json"] {
+    for name in ["tools.json", "events.json", "ui-actions.json"] {
         fs::copy(
             source.join("bundle/schemas").join(name),
             fixture.path("bundle/schemas").join(name),
@@ -696,8 +701,8 @@ fn cli_packs_and_validates_the_github_events_v2_app() {
         .unwrap();
     }
     fs::copy(
-        source.join("bundle/ui/index.html"),
-        fixture.path("bundle/ui/index.html"),
+        source.join("ui/icon.svg"),
+        fixture.path("bundle/ui/icon.svg"),
     )
     .unwrap();
     let packed = developer::run_cli(
@@ -716,7 +721,7 @@ fn cli_packs_and_validates_the_github_events_v2_app() {
         ]
         .map(str::to_owned),
     )
-    .expect("the GitHub events App must use the normal developer pack command");
+    .expect("the GitHub App must use the normal developer pack command");
     assert_eq!(packed["manifest"]["schema"], "chariox.app.v2");
     developer::run_cli(
         &[

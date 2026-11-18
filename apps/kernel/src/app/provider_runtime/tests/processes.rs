@@ -77,6 +77,8 @@ fn removing_claude_native_process_cleans_hook_files() {
         std::process::id(),
         crate::session::unix_epoch_ms(),
     ));
+    // The kernel removes this root only while it sits directly under the temp dir.
+    let _cleanup = crate::test_support::TestTempPath::new(root.clone());
     let context_response_dir = root.join("hook-context-responses");
     let permission_response_dir = root.join("permission-responses");
     std::fs::create_dir_all(&context_response_dir).expect("context response dir should exist");
@@ -795,8 +797,8 @@ fn provider_launch_scrubs_configured_credential_env_names() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let old_home = std::env::var_os("HOME");
-    let temp_home = std::env::temp_dir().join("chariox-provider-env-credential-test");
-    let _ = std::fs::remove_dir_all(&temp_home);
+    let _tmp = crate::test_support::TestTempDir::new("provider-env-credential-test");
+    let temp_home = _tmp.join("chariox-provider-env-credential-test");
     std::env::set_var("HOME", &temp_home);
     let source = temp_home.join("credential.yaml");
     std::fs::create_dir_all(&temp_home).unwrap();

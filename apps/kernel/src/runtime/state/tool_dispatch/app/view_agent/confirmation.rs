@@ -1,13 +1,21 @@
-//! A `person_confirmed` App action. The App's own signed component previews the exact
-//! input in its view; the kernel frames that preview with the verified App and publisher
-//! and asks the person on one card. Only the person's Confirm lets the action run: no
-//! grant, session approval or `/sudo` stands in for it, and no agent may answer the card.
+//! A `person_confirmed` App action. The App previews the exact input, either in its own
+//! signed component in an App Tab or, when its backend serves the view and no Tab exists,
+//! as plain rows its backend answers; the kernel frames that preview with the verified App
+//! and publisher and asks the person on one card. Only the person's Confirm lets the action
+//! run: no grant or session approval stands in for it, and no agent may answer the card.
+//! A standing permission the owner gave for this repository, account and action class, or a
+//! live `/sudo` task of the calling agent, replaces the card (the caller never raises it);
+//! never an agent's or the App's word.
 
 use super::*;
-use crate::local::AppConfirmationFrame;
+use crate::local::{AppConfirmationFrame, AppConfirmationPreviewRow};
 use crate::runtime::state::runtime_vault_unlock_state::CloseInteractionOnDrop;
 
 const CONFIRMATION_TIMEOUT_SEC: u64 = 300;
+/// What a backend's preview may hold, so a card stays readable whatever the App answers.
+const PREVIEW_MAX_ROWS: usize = 12;
+const PREVIEW_MAX_LABEL_CHARS: usize = 48;
+const PREVIEW_MAX_VALUE_CHARS: usize = 400;
 const CONFIRM: &str = "confirm";
 const CANCEL: &str = "cancel";
 
@@ -56,6 +64,41 @@ impl Drop for PreviewCleanup {
     }
 }
 
+/// The rows a backend answered, within what a card shows: an object with only `rows`, at most
+/// twelve of `{label, value}` plain text with nothing else in them.
+pub(super) fn checked_preview(answer: Value) -> Result<Vec<AppConfirmationPreviewRow>, ViewError> {
+    let bad = |why: &str| failure("view_error", format!("The App's preview {why}"));
+    let plain = |text: &str, max: usize| {
+        !text.trim().is_empty()
+            && text.chars().count() <= max
+            && !text.chars().any(char::is_control)
+    };
+    let Value::Object(mut object) = answer else {
+        return Err(bad("is not an object"));
+    };
+    let Some(Value::Array(rows)) = object.remove("rows") else {
+        return Err(bad("has no rows"));
+    };
+    if !object.is_empty() || rows.is_empty() || rows.len() > PREVIEW_MAX_ROWS {
+        return Err(bad(&format!("must hold only 1 to {PREVIEW_MAX_ROWS} rows")));
+    }
+    rows.into_iter()
+        .map(|row| {
+            let row: AppConfirmationPreviewRow = serde_json::from_value(row)
+                .map_err(|_| bad("has a row that is not {label, value} text"))?;
+            if plain(&row.label, PREVIEW_MAX_LABEL_CHARS)
+                && plain(&row.value, PREVIEW_MAX_VALUE_CHARS)
+            {
+                Ok(row)
+            } else {
+                Err(bad(
+                    "has an empty, control-character or too long label or value",
+                ))
+            }
+        })
+        .collect()
+}
+
 impl KernelRuntimeState {
     /// Returns `Ok` only after the person confirmed this invocation. The caller holds the
     /// view's turn, so nothing else runs in the page while its preview is shown.
@@ -67,7 +110,10 @@ impl KernelRuntimeState {
         action: &UiActionDeclaration,
         input: &Value,
     ) -> Result<(), ViewError> {
-        confirmation_tab(context)?;
+        let served_by_backend = matches!(context.host, ViewHost::Backend { .. });
+        if !served_by_backend {
+            confirmation_tab(context)?;
+        }
         let current_turn = || {
             self.authorize_room_provider_epoch(Some(agent.id()), Some(run_id))
                 .map_err(|_| {
@@ -79,7 +125,7 @@ impl KernelRuntimeState {
         };
         current_turn()?;
         self.view_still_bound(context)?;
-        let frame = self
+        let mut frame = self
             .app_confirmation_frame(&context.binding, &action.name)
             .await
             .map_err(|error| failure("confirmation_unavailable", error.to_string()))?;
@@ -88,21 +134,25 @@ impl KernelRuntimeState {
             .await?;
         declared_actions::check_registered(&context.declared, &registrations, &action.name)
             .map_err(action_error)?;
-        self.view_call(
-            context,
-            ViewAgentCallKind::PrepareConfirmation,
-            Some((&action.name, input.clone())),
-            None,
-        )
-        .await?;
+        let prepared = self
+            .view_call(
+                context,
+                ViewAgentCallKind::PrepareConfirmation,
+                Some((&action.name, input.clone())),
+                None,
+            )
+            .await?;
+        if served_by_backend {
+            frame.preview = Some(checked_preview(prepared)?);
+        }
         let mut preview = PreviewCleanup {
             state: self.clone(),
-            context: Some(context.clone()),
+            context: (!served_by_backend).then(|| context.clone()),
         };
         let decision = self
             .ask_person_to_confirm(run_id, agent, context, frame, input)
             .await;
-        // Every way out removes the preview from the page.
+        // Every way out removes the preview from the page, when a page showed it.
         let cleared = self
             .view_call(context, ViewAgentCallKind::ClearConfirmation, None, None)
             .await;
@@ -123,24 +173,31 @@ impl KernelRuntimeState {
         frame: AppConfirmationFrame,
         input: &Value,
     ) -> Result<(), ViewError> {
-        let (tab_id, generation, origin) = confirmation_tab(context)?;
-        let (tab_id, origin) = (tab_id.as_str(), origin.as_str());
         let unavailable =
             |error: DaemonError| failure("confirmation_unavailable", error.to_string());
         let session_id = agent.session_id();
         let id = format!("app-confirm-{:032x}", rand::random::<u128>());
-        let view = self
-            .resolve_app_confirmation_view(session_id, agent.id(), &id, tab_id, generation)
-            .await
-            .map_err(unavailable)?;
-        if view.browser_region.origin != origin.trim_end_matches('/') {
-            self.release_app_confirmation_view(agent.id(), &id, tab_id)
-                .await;
-            return Err(failure(
-                "confirmation_unavailable",
-                "The preview is not shown by the App's own page",
-            ));
-        }
+        // The App's own page shows the preview in a protected region; a backend's rows travel
+        // in the frame and there is no region.
+        let view = if frame.preview.is_some() {
+            None
+        } else {
+            let (tab_id, generation, origin) = confirmation_tab(context)?;
+            let (tab_id, origin) = (tab_id.as_str(), origin.as_str());
+            let view = self
+                .resolve_app_confirmation_view(session_id, agent.id(), &id, tab_id, generation)
+                .await
+                .map_err(unavailable)?;
+            if view.browser_region.origin != origin.trim_end_matches('/') {
+                self.release_app_confirmation_view(agent.id(), &id, tab_id)
+                    .await;
+                return Err(failure(
+                    "confirmation_unavailable",
+                    "The preview is not shown by the App's own page",
+                ));
+            }
+            Some(view)
+        };
         let action_name = frame.action_name.clone();
         // A client that cannot show the App's preview still reads the exact input, in the kernel's words.
         let shown: String = serde_json::to_string(input)
@@ -177,12 +234,15 @@ impl KernelRuntimeState {
             Some(CANCEL.into()),
         )
         .with_app_confirmation(frame)
-        .with_view(view)
         .with_native_origin(self.owned.capture_native_interaction_origin(
             session_id,
             agent.id(),
             run_id,
         ));
+        let interaction = match view {
+            Some(view) => interaction.with_view(view),
+            None => interaction,
+        };
         let receiver = self
             .create_runtime_interaction(session_id, interaction)
             .await

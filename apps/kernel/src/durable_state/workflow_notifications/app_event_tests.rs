@@ -24,6 +24,8 @@ fn installed_route(f: &Fixture) {
                 source_event_type: "dev.chariox.dummy/dummy.test".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
+                app_managed: false,
                 source: None,
             },
             now_ms: 1,

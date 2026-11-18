@@ -45,6 +45,10 @@ pub use super::workflow_outputs::{
     WorkflowTurnOutputSubmissions, WorkflowTurnSubmissionKind,
 };
 pub use super::workflow_publication::WorkflowPublicationDefinition;
+pub use super::workflow_responsible::{
+    ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, WorkflowResponsible,
+    WorkflowRunOutcome, WorkflowWaitingOn, OUTCOME_DETAIL_CHARS,
+};
 pub use super::workflow_run_records::{
     WorkflowMessage, WorkflowNodeRun, WorkflowNodeThinkingTrace,
 };

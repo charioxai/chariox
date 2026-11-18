@@ -4,28 +4,28 @@
     "label": "/mcp",
     "description": "Manage Chariox MCP registry and agent grants",
     "value": "/mcp ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "mcp-list",
         "label": "list",
         "description": "List Chariox-managed MCPs",
         "value": "/mcp list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "mcp-install",
         "label": "install",
         "description": "Install an MCP into Chariox",
         "value": "/mcp install ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "mcp-import",
         "label": "import",
         "description": "Import provider MCPs into Chariox",
         "value": "/mcp import ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "mcp-grant",
@@ -50,7 +50,7 @@
         "label": "show",
         "description": "Show MCP config",
         "value": "/mcp show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },
@@ -59,28 +59,28 @@
     "label": "/skill",
     "description": "Manage Chariox skills and agent grants",
     "value": "/skill ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "skill-list",
         "label": "list",
         "description": "List Chariox-managed skills",
         "value": "/skill list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "skill-install",
         "label": "install",
         "description": "Install a skill into Chariox",
         "value": "/skill install ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "skill-import",
         "label": "import",
         "description": "Import provider skills into Chariox",
         "value": "/skill import ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "skill-grant",
@@ -105,7 +105,7 @@
         "label": "show",
         "description": "Show skill metadata",
         "value": "/skill show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },
@@ -114,35 +114,35 @@
     "label": "/env",
     "description": "Manage external script environments",
     "value": "/env ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "env-list",
         "label": "list",
         "description": "List script environments",
         "value": "/env list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "env-register",
         "label": "register",
         "description": "Register Python or Node environment",
         "value": "/env register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "env-remove",
         "label": "remove",
         "description": "Remove an environment",
         "value": "/env remove ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "env-show",
         "label": "show",
         "description": "Show environment config",
         "value": "/env show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },
@@ -188,28 +188,28 @@
     "label": "/script",
     "description": "Manage script extensions",
     "value": "/script ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "script-list",
         "label": "list",
         "description": "List script extensions",
         "value": "/script list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "script-validate",
         "label": "validate",
         "description": "Validate a script with test_run",
         "value": "/script validate ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "script-register",
         "label": "register",
         "description": "Register a script extension",
         "value": "/script register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "script-grant",
@@ -234,7 +234,7 @@
         "label": "show",
         "description": "Show script metadata",
         "value": "/script show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },
@@ -243,42 +243,42 @@
     "label": "/credential",
     "description": "Manage connector credentials",
     "value": "/credential ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "credential-list",
         "label": "list",
         "description": "List credentials",
         "value": "/credential list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "credential-set",
         "label": "set",
         "description": "Store a vault secret",
         "value": "/credential set ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "credential-register",
         "label": "register",
         "description": "Register credential YAML",
         "value": "/credential register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "credential-remove",
         "label": "remove",
         "description": "Remove a credential",
         "value": "/credential remove ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "credential-show",
         "label": "show",
         "description": "Show credential metadata",
         "value": "/credential show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },
@@ -287,35 +287,35 @@
     "label": "/connector",
     "description": "Manage API connector extensions",
     "value": "/connector ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "connector-list",
         "label": "list",
         "description": "List connectors",
         "value": "/connector list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "connector-register",
         "label": "register",
         "description": "Register connector YAML",
         "value": "/connector register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "connector-doctor",
         "label": "doctor",
         "description": "Check connector metadata and credential policy",
         "value": "/connector doctor ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "connector-test",
         "label": "test",
         "description": "Test a connector operation",
         "value": "/connector test ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "connector-grant",
@@ -340,7 +340,7 @@
         "label": "show",
         "description": "Show connector metadata",
         "value": "/connector show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   },

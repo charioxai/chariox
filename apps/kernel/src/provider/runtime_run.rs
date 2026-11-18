@@ -110,6 +110,10 @@ pub struct RuntimeProviderRun {
     /// Runtime-only: the failed turn this run reruns on an agent substitute.
     #[serde(skip)]
     turn_substitute: Option<super::TurnSubstitute>,
+    /// Runtime-only: its agent's profile or limit changed while this process ran, so the next
+    /// step boundary or dispatch replaces the process.
+    #[serde(skip)]
+    settings_stale: bool,
     #[serde(skip)]
     metadata_only_discovery: bool,
     #[serde(skip)]
@@ -207,6 +211,7 @@ impl RuntimeProviderRun {
             preparation_base_path,
             read_only_discovery: false,
             turn_substitute: request.turn_substitute.clone(),
+            settings_stale: false,
             metadata_only_discovery: false,
             utility_system_prompt_file: None,
             project_environment_revision: request.project_environment_revision.clone(),
@@ -284,6 +289,7 @@ impl RuntimeProviderRun {
             preparation_base_path: None,
             read_only_discovery: false,
             turn_substitute: None,
+            settings_stale: false,
             metadata_only_discovery: false,
             utility_system_prompt_file: None,
             project_environment_revision: None,
@@ -515,6 +521,14 @@ impl RuntimeProviderRun {
             super::claude::apply_claude_root_yolo_environment(&mut self.pty_env, permission_level);
         }
         self.touch_activity();
+    }
+
+    pub(crate) fn settings_stale(&self) -> bool {
+        self.settings_stale
+    }
+
+    pub(crate) fn mark_settings_stale(&mut self) {
+        self.settings_stale = true;
     }
 
     pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {

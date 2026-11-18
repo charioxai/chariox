@@ -8,6 +8,9 @@ pub(crate) struct PreparedLeasedProfileUpdate {
     pub(crate) leased_agent: LeasedAgent,
     pub(crate) profile: RelayAgentExecutionProfile,
     pub(crate) changed: bool,
+    /// A change accepted while the agent's turn runs: its process takes the profile at its next
+    /// step boundary, so the commit leaves it running.
+    pub(crate) while_turn_runs: bool,
 }
 
 impl RemoteLeaseRuntime<'_> {
@@ -26,6 +29,7 @@ impl RemoteLeaseRuntime<'_> {
             account_profile,
             model,
             effort,
+            false,
         )?;
         self.commit_leased_agent_profile(prepared)
     }
@@ -37,6 +41,7 @@ impl RemoteLeaseRuntime<'_> {
         account_profile: String,
         model: Option<String>,
         effort: Option<String>,
+        while_turn_runs: bool,
     ) -> Result<PreparedLeasedProfileUpdate, DaemonError> {
         let leased_agent = self
             .app
@@ -78,23 +83,28 @@ impl RemoteLeaseRuntime<'_> {
                     effort,
                 },
                 changed: false,
+                while_turn_runs,
             });
         }
-        if self
+        let active_turn = self
             .app
             .prompt_owner_active_prompt_for_agent(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
             )?
-            .is_some()
-            || self
-                .app
-                .prompt_owner_peek_next_queued_prompt(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )?
-                .is_some()
-        {
+            .is_some();
+        let queued = self
+            .app
+            .prompt_owner_peek_next_queued_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some();
+        if if active_turn {
+            !while_turn_runs
+        } else {
+            queued
+        } {
             return Err(DaemonError::LocalTransport {
                 operation: "update leased agent profile",
                 message: format!(
@@ -112,6 +122,7 @@ impl RemoteLeaseRuntime<'_> {
                 effort,
             },
             changed: true,
+            while_turn_runs,
         })
     }
 
@@ -153,13 +164,14 @@ impl RemoteLeaseRuntime<'_> {
         if crate::provider::adapter_key_for_provider(&leased_agent.provider) != "codex" {
             self.ensure_leased_provider_capacity(&provider, Some(leased_agent_id))?;
         }
-        if self
-            .app
-            .prompt_owner_active_prompt_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )?
-            .is_some()
+        if !prepared.while_turn_runs
+            && self
+                .app
+                .prompt_owner_active_prompt_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )?
+                .is_some()
         {
             return Err(DaemonError::LocalTransport {
                 operation: "update leased agent profile",
@@ -172,7 +184,9 @@ impl RemoteLeaseRuntime<'_> {
             backing_agent.provider(),
             backing_agent.provider_account_profile(),
         )?;
-        self.terminate_backing_provider_runtime(&leased_agent);
+        if !prepared.while_turn_runs {
+            self.terminate_backing_provider_runtime(&leased_agent);
+        }
         let resume_state = backing_agent.provider_resume_state().after_profile_change(
             backing_agent.provider(),
             &source_account,

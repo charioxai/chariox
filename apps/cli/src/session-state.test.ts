@@ -37,7 +37,7 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
       workspace: "/workspace",
       worktree: "/workspace/tree",
     },
-    waitingRoomState: {
+    startState: {
       focus: "session",
       sessionIndex: 3,
       machineIndex: 0,
@@ -59,9 +59,9 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
   assert.equal(detached.createdSession, false)
   assert.equal(detached.session.id, "no-session")
   assert.equal(detached.statusLine, "No session attached.")
-  assert.equal(detached.waitingRoomState.focus, "new")
-  assert.equal(detached.waitingRoomState.introStep, 0)
-  assert.deepEqual(detached.waitingRoomState.keyState, {
+  assert.equal(detached.startState.focus, "new")
+  assert.equal(detached.startState.introStep, 0)
+  assert.deepEqual(detached.startState.keyState, {
     up: false,
     down: false,
     left: false,

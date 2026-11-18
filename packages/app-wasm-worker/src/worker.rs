@@ -214,7 +214,7 @@ impl AppWorker {
         let instance = self.pre.instantiate_async(&mut store).await?;
         let worker = Worker::new(&mut store, &instance)?;
         worker
-            .chariox_app_handlers()
+            .chariox_app1_0_0_handlers()
             .call_register(&mut store)
             .await?
             .map_err(|error| {
@@ -357,11 +357,13 @@ impl AppWorker {
                     }
                 })
                 .await;
+            let mut cause = None;
             let mut loss = match result {
                 Ok(Ok(None)) => return Ok(()),
                 Ok(Ok(Some(loss))) => loss,
                 Ok(Err(error)) => return Err(error),
                 Err(trap) => {
+                    cause = Some(format!("{trap:#}"));
                     let code = if trap.downcast_ref::<MemoryLimit>().is_some() {
                         "APP_MEMORY_LIMIT"
                     } else if let Some(stop) = trap.downcast_ref::<Stop>() {
@@ -381,9 +383,8 @@ impl AppWorker {
                 loss.1 = reason;
             }
             eprintln!(
-                "App instance stopped: {}; culprit: {}",
-                loss.1,
-                loss.0.as_deref().unwrap_or("unknown")
+                "{}",
+                stopped_line(loss.1, loss.0.as_deref(), cause.as_deref())
             );
             for active in accepted.values() {
                 active.scope.cancel("APP_INSTANCE_RESTARTED");
@@ -393,6 +394,46 @@ impl AppWorker {
             drop(store);
             restart = Some(loss);
         }
+    }
+}
+
+/// What the worker log says about a lost instance. A trap carries the engine's own message (a
+/// guest `unreachable`, a promise settled across two invocations, ...); without it nothing in the
+/// log tells an App author what to fix.
+fn stopped_line(code: &str, culprit: Option<&str>, cause: Option<&str>) -> String {
+    let mut line = format!(
+        "App instance stopped: {code}; culprit: {}",
+        culprit.unwrap_or("unknown")
+    );
+    if let Some(cause) = cause {
+        let cause: String = cause.split_whitespace().collect::<Vec<_>>().join(" ");
+        line.push_str("; cause: ");
+        line.extend(cause.chars().take(400));
+    }
+    line
+}
+
+#[cfg(test)]
+mod stopped_line_tests {
+    use super::stopped_line;
+
+    #[test]
+    fn a_trap_names_its_cause_in_one_bounded_line() {
+        let line = stopped_line(
+            "APP_TRAPPED",
+            Some("call-7"),
+            Some("error while executing\n  wasm trap: unreachable"),
+        );
+        assert_eq!(
+            line,
+            "App instance stopped: APP_TRAPPED; culprit: call-7; cause: error while executing wasm trap: unreachable"
+        );
+        let long = stopped_line("APP_TRAPPED", None, Some(&"x".repeat(1000)));
+        assert!(long.len() < 500 && !long.contains('\n'));
+        assert_eq!(
+            stopped_line("APP_MEMORY_LIMIT", None, None),
+            "App instance stopped: APP_MEMORY_LIMIT; culprit: unknown"
+        );
     }
 }
 

@@ -953,6 +953,8 @@ impl KernelRuntimeState {
         end_agent_processes(destroyed.session_id(), agent_id).await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        // The workflows it answered for are the person's again.
+        self.fall_back_for_deleted_agent(&destroyed).await;
         // Its blocked tasks no longer need the owner: their Resume/Cancel cards go with it.
         self.retract_stale_task_owner_interactions(destroyed.session_id())
             .await;

@@ -209,7 +209,7 @@ pub(crate) fn is_quiet_success_command_type(command_type: &str) -> bool {
         "relay.status"
             | "local_browser_renew"
             | "local_terminal_renew"
-            | "waiting_room.public_snapshot.get"
+            | "room_list.public_snapshot.get"
             | "slice.list"
             | "provider.catalog.get"
     )

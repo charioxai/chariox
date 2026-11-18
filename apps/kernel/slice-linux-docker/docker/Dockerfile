@@ -283,6 +283,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-perm
      apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-save.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-workspace-file.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-payment.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-wait.mjs /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
@@ -416,6 +417,9 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-font-subset.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-font-subset-worker.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-font-subset.wasm \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visited-links.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \

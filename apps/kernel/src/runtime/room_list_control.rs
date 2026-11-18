@@ -1,0 +1,265 @@
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+
+use crate::error::DaemonError;
+use crate::local::{
+    ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, RoomListSnapshot,
+};
+use crate::runtime::projection::{
+    DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore, SessionStateProjectionStore,
+};
+use crate::runtime::relay_config_control::projected_relay_status_view;
+use crate::runtime::room_list_projection::{
+    build_room_list_snapshot_from_cached_shared, RoomListCaller,
+    RoomListSessionSummaryProjectionStore,
+};
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::terminal_pairings::paired_terminal_records;
+use crate::session::unix_epoch_ms;
+use crate::transport::relay_client::RelayClientState;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing execute_room_list_request operation signature and explicit context arguments"
+)]
+pub(crate) async fn execute_room_list_request(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    request: LocalDaemonRequest,
+    caller_user_id: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::ListRoomListSessions(request) => {
+            let snapshot = projected_room_list_full_snapshot(
+                runtime_state,
+                session_projection,
+                room_list_session_summaries,
+                relay_state,
+                config_projection,
+                remote_relay_inventory_projection,
+                caller_user_id,
+            )
+            .await?;
+            if request
+                .inventory_version
+                .as_ref()
+                .is_some_and(|version| version != &snapshot.inventory_version)
+            {
+                return Err(DaemonError::MachineRequest {
+                    code: "room_list_changed".into(),
+                    message:
+                        "Session activity changed during listing. Read the session list again."
+                            .into(),
+                });
+            }
+            Ok(LocalDaemonResponse::RoomListSessionsListed {
+                page: super::room_list_sessions::session_page(snapshot.sessions, request)?,
+            })
+        }
+        LocalDaemonRequest::GetRoomListSnapshot(_) => {
+            execute_room_list_snapshot_request(
+                runtime_state,
+                session_projection,
+                room_list_session_summaries,
+                relay_state,
+                config_projection,
+                remote_relay_inventory_projection,
+                caller_user_id,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "Room list request",
+            message: "unsupported Room list request".to_string(),
+        }),
+    }
+}
+
+pub(crate) async fn execute_room_list_snapshot_request(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    caller_user_id: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    Ok(LocalDaemonResponse::RoomListSnapshot {
+        snapshot: projected_room_list_snapshot(
+            runtime_state,
+            session_projection,
+            room_list_session_summaries,
+            relay_state,
+            config_projection,
+            remote_relay_inventory_projection,
+            caller_user_id,
+        )
+        .await?,
+    })
+}
+
+pub(crate) async fn projected_room_list_snapshot(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    caller_user_id: &str,
+) -> Result<RoomListSnapshot, DaemonError> {
+    let snapshot = projected_room_list_full_snapshot(
+        runtime_state,
+        session_projection,
+        room_list_session_summaries,
+        relay_state,
+        config_projection,
+        remote_relay_inventory_projection,
+        caller_user_id,
+    )
+    .await?;
+    super::room_list_sessions::recent_snapshot(snapshot)
+}
+
+async fn projected_room_list_full_snapshot(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    caller_user_id: &str,
+) -> Result<RoomListSnapshot, DaemonError> {
+    let account_owner_user_id =
+        runtime_state.provider_account_authority_owner_user_id(caller_user_id);
+    let config = config_projection.snapshot();
+    let relay_status = projected_relay_status_view(relay_state, config_projection.clone()).await;
+    let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
+    let terminals = if super::self_host_terminal_grants::required(&config) {
+        super::self_host_terminal_grants::entries(&config)?
+            .into_iter()
+            .map(super::terminal_pairings::terminal_record)
+            .collect()
+    } else {
+        paired_terminal_records()
+    };
+    let (external_provider_session_page, metaagent_events) = runtime_state
+        .room_list_auxiliary_projection(
+            &account_owner_user_id,
+            &ListExternalProviderSessionsRequest {
+                provider: None,
+                cursor: None,
+                limit: Some(25),
+            },
+        );
+    let runtime_projects = runtime_state.list_room_list_projects(caller_user_id);
+    let slices = runtime_state.list_slices();
+    let (runtime_sessions, external_working_agents, session_revision, external_working_generation) =
+        session_projection.room_list_snapshot();
+    let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
+    let caller = RoomListCaller::new(caller_user_id, &config_projection);
+    let mut snapshot = build_room_list_snapshot_from_cached_shared(
+        runtime_sessions.as_ref(),
+        session_revision,
+        room_list_session_summaries,
+        &metaagent_events,
+        external_working_generation,
+        &external_working_agents,
+        &runtime_projects,
+        &slices,
+        external_provider_session_page.sessions,
+        external_provider_session_page.has_more,
+        external_provider_session_page.next_cursor,
+        relay_status,
+        remote_machines,
+        remote_kernels,
+        terminals,
+        unix_epoch_ms(),
+        &caller,
+    )?;
+    let mut accounts = runtime_state
+        .provider_account_profile_registry()
+        .list(&account_owner_user_id, None)?;
+    crate::runtime::provider_account_portability::mark_context_transfer(
+        &account_owner_user_id,
+        &config_projection.snapshot().user_config.credential_vault,
+        &mut accounts,
+    )?;
+    let github_credential_available =
+        match crate::managed_context::scm::GitCredentialCommandContext::inventory_from_process() {
+            Ok(context) => tokio::task::spawn_blocking(move || {
+                crate::managed_context::scm::github_credential_is_available(&context)
+            })
+            .await
+            .unwrap_or(false),
+            Err(_) => false,
+        };
+    let git_credentials = if github_credential_available {
+        vec![crate::local::RoomListGitCredentialSummary {
+            credential_id: crate::managed_context::scm::GITHUB_CREDENTIAL_ID.to_string(),
+            hostname: "github.com".to_string(),
+            label: "GitHub".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
+    for session in &mut snapshot.sessions {
+        for agent in &mut session.agents {
+            agent.account_label = accounts
+                .iter()
+                .find(|profile| {
+                    profile.provider
+                        == crate::provider::canonical_provider_family(&agent.provider)
+                            .unwrap_or(agent.provider.as_str())
+                        && profile.profile_id == agent.account_profile
+                })
+                .map(|profile| profile.label.clone());
+        }
+    }
+    let account_fingerprint =
+        serde_json::to_vec(&accounts).map_err(|error| DaemonError::LocalTransport {
+            operation: "project Room list provider accounts",
+            message: error.to_string(),
+        })?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(snapshot.structural_version.as_bytes());
+    hasher.update(account_fingerprint);
+    hasher.update(serde_json::to_vec(&git_credentials).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "project Room list Git credentials",
+            message: error.to_string(),
+        }
+    })?);
+    snapshot.structural_version = format!("{:x}", hasher.finalize());
+    // A page cursor must also be invalidated when semantic activity changes its order.
+    let mut ordering = Sha256::new();
+    ordering.update(snapshot.structural_version.as_bytes());
+    ordering.update(snapshot.activity_revision.as_bytes());
+    snapshot.inventory_version = format!("{:x}", ordering.finalize());
+    snapshot.provider_accounts = accounts;
+    snapshot.git_credentials = git_credentials;
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+mod architecture_tests {
+    #[test]
+    fn room_list_hot_path_uses_owned_projections_only() {
+        let source = include_str!("room_list_control.rs");
+        for forbidden in [
+            ["lock", "_app"].concat(),
+            ["list_session", "_snapshots"].concat(),
+            ["execute_list", "_sessions_request"].concat(),
+        ] {
+            assert!(
+                !source.contains(&forbidden),
+                "room-list hot path must not contain {forbidden}"
+            );
+        }
+    }
+}
