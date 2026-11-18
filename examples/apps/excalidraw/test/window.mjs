@@ -6,6 +6,7 @@
 //   save_scene   -> { version }            refused with an error unless `version` is the saved version
 //   view_changes -> { latest, dropped, changes }   `latest` rises on every write, window saves too
 //   write_file / read_file / pick_file     files; an offered copy returns a grant
+//   save_draft / read_drafts / discard_draft   one unsaved scene per window id, kept for a window that is replaced
 //
 // `agentEdit(fn)` edits the saved scene the way the backend does for an agent action.
 import assert from 'node:assert/strict';
@@ -87,6 +88,13 @@ export function fakeBackend() {
     pickWaits: 0, resumed: [],
     /** Message of the error every save_scene throws, with the saved version unchanged. */
     failSaves: null,
+    /** The kept drafts by window id. */
+    drafts: new Map(),
+    /**
+     * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
+     * never answers: the two ways an App update can end a save the window is waiting for.
+     */
+    holdSaves: null,
     /** Run once at the start of the next save_scene; the save is then refused when the version moved. */
     interleave: null,
     count: name => backend.calls.filter(call => call === name).length,
@@ -140,10 +148,15 @@ export function fakeBackend() {
         backend.interleave = null;
         interleave?.();
         if (backend.failSaves) throw Error(backend.failSaves);
+        if (backend.holdSaves === 'lose') await new Promise(() => {});
         if (input.version !== backend.version) throw Error('the diagram was changed by another window or an agent; load it again and retry');
         backend.write(input.scene);
+        if (backend.holdSaves === 'commit') await new Promise(() => {});
         return { version: backend.version };
       }
+      if (name === 'save_draft') { backend.drafts.set(input.id, clone(input.scene)); return {}; }
+      if (name === 'read_drafts') return { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
+      if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }
       if (name === 'write_file') {
         const bytes = input.base64 ? Buffer.from(input.base64, 'base64') : Buffer.from(input.text);
         backend.writes.push(clone(input));

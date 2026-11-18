@@ -656,3 +656,98 @@ async fn a_person_who_takes_longer_than_one_call_still_picks_with_the_same_reque
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn each_window_keeps_its_own_draft_in_the_data_directory_and_discards_only_that_one(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
+    for (window, element) in [("window-1", "left"), ("window-2", "right")] {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": window, "scene": scene(element)}),
+        )
+        .await?;
+    }
+    // A later write of a window replaces its own draft only.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-1", "scene": scene("left-again")}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let kept: Vec<(&str, &str)> = read["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| {
+            (
+                draft["id"].as_str().unwrap(),
+                draft["scene"]["elements"][0]["id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(kept.len(), 2);
+    assert!(kept.contains(&("window-1", "left-again")));
+    assert!(kept.contains(&("window-2", "right")));
+
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-1"}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    assert_eq!(
+        read["drafts"].as_array().unwrap().len(),
+        1,
+        "the other window's draft stays"
+    );
+    assert_eq!(read["drafts"][0]["id"], "window-2");
+
+    // An id names a file in the drafts folder and nothing else.
+    for bad in ["../scene", "a/b", ""] {
+        let refused = store
+            .run_concurrent(async |accessor| {
+                let cancel = accessor.with(|mut access| {
+                    FutureReader::new(
+                        &mut access,
+                        std::future::pending::<wasmtime::Result<String>>(),
+                    )
+                })?;
+                let context = InvocationContext {
+                    deadline_ms: u64::MAX,
+                    installation_id: None,
+                    room_id: None,
+                    operation_id: None,
+                    agent_id: None,
+                    task_id: None,
+                    turn_id: None,
+                    actor: None,
+                };
+                app.chariox_app1_0_0_handlers()
+                    .call_call_tool(
+                        accessor,
+                        "save_draft".into(),
+                        serde_json::json!({"id": bad, "scene": scene("x")}).to_string(),
+                        context,
+                        cancel,
+                    )
+                    .await
+            })
+            .await??;
+        assert!(refused.is_err(), "{bad:?} must be refused");
+    }
+    assert_eq!(
+        fs::read_dir(root.0.join("drafts"))?.count(),
+        1,
+        "only window-2's draft is on disk"
+    );
+    Ok(())
+}

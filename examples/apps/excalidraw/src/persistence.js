@@ -1,4 +1,5 @@
-import { checkedScene, sceneJSON, syncedSceneJSON } from './scene.js';
+import { checkedScene, replacement, sceneJSON, syncedSceneJSON } from './scene.js';
+import { drafts } from './draft.js';
 import { reconcileElements, restore, serializeAsJSON } from '@excalidraw/excalidraw';
 
 // The backend and Excalidraw serialize the same scene with different key order
@@ -25,16 +26,26 @@ export function persistence(chariox, api, loaded, feedHead) {
   let queue = Promise.resolve();
   let failure = null;
   let shownSelection = '';
+  // The window's unsaved scene, as the save would send it, waits in the App until it is saved.
+  const unsaved = () => sceneKey(JSON.parse(sceneJSON(api))) === lastSaved ? null : JSON.parse(syncedSceneJSON(api));
+  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved);
+  const settleDraft = () => { if (!unsaved()) draft.drop(); };
   const enqueue = work => {
     const pending = queue.then(work);
     queue = pending.catch(() => {});
     return pending;
   };
 
-  function merge(remote) {
-    const { restored, key } = normalized(remote.scene);
+  // The saved or kept scene's elements join the canvas: the newer version of each element wins.
+  function blend(scene) {
+    const { restored, key } = normalized(scene);
     const merged = reconcileElements(api.getSceneElementsIncludingDeleted(), restored.elements, api.getAppState());
     api.addFiles(Object.values(restored.files));
+    return { merged, key };
+  }
+
+  function merge(remote) {
+    const { merged, key } = blend(remote.scene);
     const selected = remote.scene.appState?.selectedElementIds;
     api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
     // An agent's selection stays in the saved scene until the window saves; show each one once.
@@ -46,20 +57,21 @@ export function persistence(chariox, api, loaded, feedHead) {
     }
     version = remote.version;
     lastSaved = key;
+    settleDraft();
   }
 
   const save = () => enqueue(async () => {
     for (let attempt = 1; ; attempt++) {
       // The key is the live scene, so a tombstone that expires does not cause a save.
       const key = sceneKey(JSON.parse(sceneJSON(api)));
-      if (key === lastSaved) return;
+      if (key === lastSaved) return settleDraft();
       if (failure) throw failure;
       // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(syncedSceneJSON(api));
       try {
         version = (await chariox.call('save_scene', { scene, version })).version;
         lastSaved = key;
-        return;
+        return settleDraft();
       } catch (error) {
         // A save is refused when the backend moved on: merge what it saved, then save what is left.
         const remote = await chariox.call('load_scene', {}).catch(() => null);
@@ -106,6 +118,24 @@ export function persistence(chariox, api, loaded, feedHead) {
   const filename = (name = 'diagram', extension = '.excalidraw') => name.endsWith(extension) ? name : name + extension;
   return {
     save,
+    // The window's edit changed: keep it in the App until it is saved.
+    keepDraft: draft.keep,
+    flushDraft: draft.flush,
+    // A replaced window's kept edits join this one's canvas and are saved with it. Its own draft is
+    // written before theirs are forgotten, so the edits are never kept nowhere.
+    async recover() {
+      const kept = await draft.recall();
+      if (!kept.length) return;
+      await enqueue(async () => {
+        for (const { scene } of kept) {
+          const { merged } = blend(scene);
+          api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
+        }
+      });
+      draft.keep();
+      await draft.flush();
+      await draft.forget(kept.map(({ id }) => id));
+    },
     stop: () => { stopped = true; },
     status: () => ({ saved: !failure, error: failure?.message ?? null }),
     async save_file({ name } = {}) {
@@ -130,7 +160,8 @@ export function persistence(chariox, api, loaded, feedHead) {
       const scene = checkedScene(JSON.stringify(result.scene));
       // Keep the previous diagram in Excalidraw's native Undo history.
       api.addFiles(Object.values(scene.files));
-      api.updateScene({ elements: scene.elements, appState: scene.appState, captureUpdate: 'IMMEDIATELY' });
+      const elements = replacement(api.getSceneElementsIncludingDeleted(), scene.elements);
+      api.updateScene({ elements, appState: scene.appState, captureUpdate: 'IMMEDIATELY' });
       api.scrollToContent(undefined, { fitToContent: true, animate: false });
       await save();
       return { name: result.name, elements: api.getSceneElements().length };
