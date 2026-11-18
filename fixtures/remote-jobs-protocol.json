@@ -1,5 +1,5 @@
 {
-  "local": 1012,
+  "local": 1013,
   "relayPeer": 447,
   "shapes": [
     {
@@ -7,10 +7,11 @@
       "wire": {
         "GetRemoteJobPolicy": {
           "session_id": "room",
-          "agent_id": null
+          "agent_id": null,
+          "project": false
         }
       },
-      "sha256": "507c489006663edee7d89ef9b1b9f476aa67da2f58780d4c6368cbc1bf9fd88e"
+      "sha256": "f912718142ca433f1cda144ee787ff96fc525b22202bc6a0e14c8791fac6220a"
     },
     {
       "kind": "request",
@@ -18,10 +19,11 @@
         "SetRemoteJobPolicy": {
           "session_id": "room",
           "agent_id": "agent",
+          "project": false,
           "policy": "when_busy"
         }
       },
-      "sha256": "acfda5a964580245a36e86a03cc6ccd3b614f8c60f22ea5202449bbc8bbd2f43"
+      "sha256": "f3b096a8b165a363420643f2cdc63bcd7cb28b670c9a321e8b42a85de2c378d4"
     },
     {
       "kind": "request",
@@ -29,10 +31,23 @@
         "SetRemoteJobPolicy": {
           "session_id": "room",
           "agent_id": "agent",
+          "project": false,
           "policy": null
         }
       },
-      "sha256": "02075a6dc955e76c00f133461b82eb7e98490da8423a0bed8b0820fc20c082d2"
+      "sha256": "cbe0f887d5c2907b215866b89b7f3a346483b8180ab28712fef89a51b34df9cf"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetRemoteJobPolicy": {
+          "session_id": "room",
+          "agent_id": null,
+          "project": true,
+          "policy": "always_heavy"
+        }
+      },
+      "sha256": "7d609444fabc7bd17691136e0df4b964fd5c574f25beddb43b1885c106308bea"
     },
     {
       "kind": "request",
@@ -313,19 +328,21 @@
         "deleted": true,
         "result": {
           "exit_code": 0,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [
+            "target/release/build"
+          ],
+          "conflicts": [],
           "ran_on": {
             "machine": "offload-abcd",
             "ip": "2001:db8::1"
           },
           "duration_ms": 120000,
-          "outcome": "completed",
-          "reason": null,
-          "files_back_count": 1,
-          "conflicts_count": 0
-        },
-        "read_error": null
+          "outcome": "completed"
+        }
       },
-      "sha256": "831ecf11455436fed502b2ac156753d11cd221247d66566fc7c34a1808a6ca00"
+      "sha256": "8751eda405df610132bffb5ab96bdf0f30857703b76eaece2c76a6051f2eb571"
     },
     {
       "kind": "session_process",
@@ -392,21 +409,23 @@
             "deleted": true,
             "result": {
               "exit_code": 0,
+              "output_tail": "done",
+              "log": "artifacts/job.log",
+              "files_back": [
+                "target/release/build"
+              ],
+              "conflicts": [],
               "ran_on": {
                 "machine": "offload-abcd",
                 "ip": "2001:db8::1"
               },
               "duration_ms": 120000,
-              "outcome": "completed",
-              "reason": null,
-              "files_back_count": 1,
-              "conflicts_count": 0
-            },
-            "read_error": null
+              "outcome": "completed"
+            }
           }
         ]
       },
-      "sha256": "ad0aab3fc6ef6de8ac648dadb0412194cdd3dc9a221d6086559802f943dd662d"
+      "sha256": "b60f500a59f2b37622631558fcf29ddd38815d81feac8e8d70acdd0498defa87"
     },
     {
       "kind": "agents_config",
@@ -546,19 +565,21 @@
         "deleted": true,
         "result": {
           "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
           "ran_on": {
             "machine": "offload-abcd",
             "ip": "2001:db8::1"
           },
           "duration_ms": 120000,
-          "outcome": "cancelled",
-          "reason": null,
-          "files_back_count": 0,
-          "conflicts_count": 1
-        },
-        "read_error": null
+          "outcome": "cancelled"
+        }
       },
-      "sha256": "0a7f4051d95f1b047072250523ad46ae207f74ea438f0336e4544df7260888f4"
+      "sha256": "e31adc077bb9ecefede273f12527e1ba9590c9f98aa489d07feef12685cd320d"
     },
     {
       "kind": "job_view",
@@ -580,19 +601,21 @@
         "deleted": true,
         "result": {
           "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
           "ran_on": {
             "machine": "offload-abcd",
             "ip": "2001:db8::1"
           },
           "duration_ms": 120000,
-          "outcome": "machine_lost",
-          "reason": null,
-          "files_back_count": 0,
-          "conflicts_count": 1
-        },
-        "read_error": null
+          "outcome": "machine_lost"
+        }
       },
-      "sha256": "ef28099ca3188ae99afad8f58fc851348551aa6b15293519928462058e5ae089"
+      "sha256": "7d5b3a7abd5e92f01436f28854cf33af784da7dfa88963e0c8de610523aea7cd"
     },
     {
       "kind": "job_view",
@@ -614,19 +637,21 @@
         "deleted": true,
         "result": {
           "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
           "ran_on": {
             "machine": "offload-abcd",
             "ip": "2001:db8::1"
           },
           "duration_ms": 120000,
-          "outcome": "time_limit",
-          "reason": null,
-          "files_back_count": 0,
-          "conflicts_count": 1
-        },
-        "read_error": null
+          "outcome": "time_limit"
+        }
       },
-      "sha256": "9dbfa788b6475661201b9f173df84727666ba9910ca4feadf4339b25b2925137"
+      "sha256": "4065c59d07b42a9c01f6917c88e8fe12f181ebf879e73f170a44bd0dc6a0f34d"
     },
     {
       "kind": "session_jobs",
@@ -661,17 +686,19 @@
               "deleted": true,
               "result": {
                 "exit_code": 0,
+                "output_tail": "done",
+                "log": "artifacts/job.log",
+                "files_back": [
+                  "target/release/build"
+                ],
+                "conflicts": [],
                 "ran_on": {
                   "machine": "offload-abcd",
                   "ip": "2001:db8::1"
                 },
                 "duration_ms": 120000,
-                "outcome": "completed",
-                "reason": null,
-                "files_back_count": 1,
-                "conflicts_count": 0
-              },
-              "read_error": null
+                "outcome": "completed"
+              }
             }
           ],
           "processes": [
@@ -716,7 +743,7 @@
           "disk_usage": []
         }
       },
-      "sha256": "2ab1de7d2f8e44884e1e98cf279b5f11005837a7324c3a6fd1069a8b59ecd191"
+      "sha256": "acb0f157cd6b38f3ba2a64cc531c7bc241581f05056611c4286cda376b0ee751"
     }
   ]
 }

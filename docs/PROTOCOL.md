@@ -8454,3 +8454,10 @@ own (a retry changes nothing); the earlier grant keeps its own, and ending it do
 An id that is unknown, ended, another owner's, the caller's own, or a grant that follows no targets is
 refused with `events_refused` naming what to run instead. `event-follow-1012.json` and its SHA-256 test pin
 the shapes.
+
+### Remote jobs per project, Room and agent — local 1013
+
+`GetRemoteJobPolicy` and `SetRemoteJobPolicy` take `{session_id, agent_id?, project?}`. `project: true` reads or writes the
+setting of the Room's project (not with `agent_id`); an agent's own setting wins over its Room's, and the Room's over its
+project's. The answer's `source` is `agent`, `session` or `project`; nothing set anywhere answers `project` with `off`.
+`fixtures/remote-jobs-protocol.json` pins the shapes.
