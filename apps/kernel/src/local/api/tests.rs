@@ -91,6 +91,7 @@ mod session_retirement_upgrade;
 mod session_state_history;
 mod session_view;
 mod session_worktree_paths;
+mod spawn_model_check;
 mod terminal_output;
 mod workflow_definition_control;
 mod workflow_run_control;

@@ -114,7 +114,12 @@ fn catalog_from_native_models(value: &serde_json::Value) -> Option<OpenCodeProvi
             .filter_map(serde_json::Value::as_str)
             .map(|effort| (effort.to_string(), serde_json::json!({})))
             .collect();
-        models.insert(id.to_string(), model);
+        // The picker names a model by the value `--model` takes (`sonnet`) and by the id it
+        // resolves to; two picker rows can resolve to one id, and keep both names.
+        let known: &mut OpenCodeProviderModel = models.entry(id.to_string()).or_insert(model);
+        if native_value != id && !known.aliases.iter().any(|alias| alias == native_value) {
+            known.aliases.push(native_value.to_string());
+        }
     }
     if models.is_empty() {
         return None;
@@ -243,6 +248,7 @@ fn claude_model(id: &str, name: &str) -> OpenCodeProviderModel {
         id: id.to_string(),
         name: name.to_string(),
         status: "available".to_string(),
+        aliases: Vec::new(),
         limit: None,
         variants: BTreeMap::from([
             ("low".to_string(), serde_json::json!({ "name": "Low" })),
@@ -302,6 +308,8 @@ mod tests {
         for provider in catalog.all {
             assert_eq!(provider.models.len(), 2);
             assert_eq!(provider.models["claude-opus-5-5"].name, "Opus");
+            assert_eq!(provider.models["claude-opus-5-5"].aliases, ["opus"]);
+            assert_eq!(provider.models["claude-haiku-5-5"].aliases, ["haiku"]);
             assert_eq!(
                 provider.models["claude-haiku-5-5"]
                     .variants

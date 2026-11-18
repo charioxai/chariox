@@ -593,4 +593,6 @@ pub use workspace::*;
 /// an App confirmation card carries the exact input the kernel will run (`AppConfirmationFrame.input`).
 /// 1033: a queued agent message in a session carries a `preview` (its first 200 characters) and `truncated`
 /// instead of the whole `prompt`, and a session lists at most the next ten per agent.
+/// 1013 lets a provider catalog's model list `aliases`, the other names the provider's own tool accepts
+/// for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room resolve to the model id.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

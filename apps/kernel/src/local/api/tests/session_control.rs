@@ -426,6 +426,9 @@ fn session_attach_clears_a_missing_active_provider_run() {
             },
         ))
         .expect("initial attachment should succeed");
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["kimi-k2.6"])
+    });
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             max_context_tokens: None,
@@ -855,6 +858,9 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["openai/gpt-5.4"])
+    });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             max_context_tokens: None,
@@ -998,6 +1004,9 @@ fn local_request_api_spawns_and_focuses_agents() {
         );
     });
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "codex", &["gpt-5.4"])
+    });
     let profiled = match harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -1573,6 +1582,7 @@ fn seed_codex_catalog(harness: &LocalRouterTestHarness) {
             id: "gpt-6.1-sol".to_string(),
             name: "GPT-6.1 Sol".to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: ["low", "high"]
                 .iter()
