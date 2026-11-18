@@ -874,6 +874,65 @@ fn a_linux_watch_lists_its_work_without_ps() {
     assert!(sample.resident_set_bytes > 0, "{sample:?}");
 }
 
+/// The sampler reads the process table five times a second while watches
+/// read it. Reading every stat file at every tick cost a kernel seconds of CPU
+/// a minute on a host of thousands of processes, so a process it already read
+/// is not read again. The bound counts the processes this test starts, not
+/// the host's: a small PID namespace lists only a few.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sampler_reads_a_process_it_knows_no_more() {
+    const STARTED: u64 = 64;
+    const TICKS: u64 = 10;
+    fn sampler_reads() -> u64 {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .flatten()
+            .filter(|task| {
+                std::fs::read_to_string(task.path().join("comm"))
+                    .is_ok_and(|name| name.trim() == "chariox-sampler")
+            })
+            .filter_map(|task| {
+                let io = std::fs::read_to_string(task.path().join("io")).ok()?;
+                io.lines()
+                    .find_map(|line| line.strip_prefix("syscr: "))?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum()
+    }
+    sampling::warm_up().unwrap();
+    let mut started = (0..STARTED)
+        .map(|_| {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    // The sampler ticks on its own every 200 ms; the next tick reads the new
+    // processes once.
+    let _ = sampling::process_rows(std::process::id());
+    std::thread::sleep(Duration::from_millis(500));
+    let before = sampler_reads();
+    for _ in 0..TICKS {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = sampling::process_rows(std::process::id());
+    }
+    let reads = sampler_reads() - before;
+    for child in &mut started {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // Reading the started processes again at every tick is at least
+    // STARTED reads a tick; what a tick reads anyway (/proc/uptime, a process
+    // the host started meanwhile) is a few.
+    assert!(
+        reads < TICKS * STARTED / 2,
+        "the sampler made {reads} reads in {TICKS} ticks with {STARTED} processes it had read"
+    );
+}
+
 /// A tree whose `ps` fails does not make the trees of other tests (or other
 /// workloads) lose their samples or refuse to start.
 #[cfg(unix)]

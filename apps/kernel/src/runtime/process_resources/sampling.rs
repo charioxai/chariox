@@ -249,8 +249,9 @@ impl ProcessTree {
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
-        let rows = process_rows(self.root)?;
-        self.observe(&rows)?;
+        let table = process_rows(self.root)?;
+        self.observe(&table)?;
+        let rows = self.own_rows(&table)?;
         self.parents = rows
             .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
@@ -330,6 +331,33 @@ impl ProcessTree {
             .collect())
     }
 
+    /// The rows of the root and the processes this tree owns, read now: the
+    /// shared table keeps what it first read of a process.
+    #[cfg(target_os = "linux")]
+    fn own_rows(&self, _table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        proc_table::current(self.ours())
+    }
+
+    /// The rows of the root and the processes this tree owns.
+    #[cfg(not(target_os = "linux"))]
+    fn own_rows(&self, table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        let ours = self.ours().collect::<std::collections::BTreeSet<_>>();
+        Ok(table
+            .iter()
+            .filter(|row| ours.contains(&row.pid))
+            .cloned()
+            .collect())
+    }
+
+    fn ours(&self) -> impl Iterator<Item = u32> + '_ {
+        std::iter::once(self.root).chain(
+            self.owned
+                .keys()
+                .copied()
+                .filter(move |pid| *pid != self.root),
+        )
+    }
+
     fn observe(&mut self, rows: &[Row]) -> Result<(), SamplingError> {
         self.identify_root()?;
         // A recorded start identity survives exec but never PID recycling.
@@ -403,6 +431,17 @@ impl ProcessTree {
     /// it inherited the marker from the process that started it.
     #[cfg(unix)]
     fn adopt_marked(&mut self, rows: &[Row]) {
+        self.adopt_marked_reading(rows, super::process_environment::read);
+    }
+
+    /// `adopt_marked` with the environment read by `environment`, so tests
+    /// can answer for processes the host may not have.
+    #[cfg(unix)]
+    fn adopt_marked_reading(
+        &mut self,
+        rows: &[Row],
+        environment: impl Fn(u32) -> std::io::Result<Vec<u8>>,
+    ) {
         let Some(marker) = self.marker.clone() else {
             return;
         };
@@ -421,7 +460,7 @@ impl ProcessTree {
             if known || self.owned.contains_key(&row.pid) {
                 continue;
             }
-            match super::process_environment::read(row.pid) {
+            match environment(row.pid) {
                 Ok(environment)
                     if environment
                         .split(|byte| *byte == 0)
@@ -436,8 +475,12 @@ impl ProcessTree {
                 Ok(_) => {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
-                // Another user's process: it never becomes readable.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Another user's process never becomes readable, and a kernel
+                // thread (or a process that is ending) has no environment.
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(libc::ESRCH) =>
+                {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
                 // Exited, or not readable yet: ask again at the next sample.
@@ -838,6 +881,8 @@ mod ownership_tests {
         ));
     }
 }
+/// One process as the table read it. On Linux the sampler's table reads a
+/// process once, so its resources there are those of its first read.
 #[derive(Clone)]
 pub(super) struct Row {
     pid: u32,
@@ -1045,6 +1090,12 @@ impl Drop for Sampler {
 
 fn sampler() -> &'static Sampler {
     static SAMPLER: std::sync::OnceLock<Sampler> = std::sync::OnceLock::new();
+    #[cfg(target_os = "linux")]
+    return SAMPLER.get_or_init(|| {
+        let mut table = proc_table::Table::default();
+        Sampler::new(move || table.read())
+    });
+    #[cfg(not(target_os = "linux"))]
     SAMPLER.get_or_init(|| Sampler::new(read_process_rows))
 }
 
@@ -1297,6 +1348,31 @@ mod marker_cache_tests {
         let _ = job.wait();
         assert!(kept_skipping, "a process already read was read again");
         assert!(adopted, "a marked process on a reused PID was skipped");
+    }
+
+    /// Linux answers ESRCH for the environment of its own threads (about 450
+    /// on a busy host); asking again at every tick of every watch cost more
+    /// CPU than the process table itself.
+    /// The thread is answered for, not looked up: in a PID namespace the
+    /// host's kernel threads are not listed and PID 2 is an ordinary process.
+    #[test]
+    fn a_kernel_thread_is_read_once() {
+        let thread = row(2, "kernel-thread");
+        let reads = std::cell::Cell::new(0);
+        let kernel_thread = |_pid| {
+            reads.set(reads.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ESRCH))
+        };
+        let mut tree = ProcessTree::new(std::process::id());
+        tree.set_marker(&new_marker());
+        tree.adopt_marked_reading(std::slice::from_ref(&thread), kernel_thread);
+        tree.adopt_marked_reading(std::slice::from_ref(&thread), kernel_thread);
+        assert_eq!(
+            reads.get(),
+            1,
+            "a kernel thread is read again at the next sample"
+        );
+        assert!(!tree.owned.contains_key(&2));
     }
 }
 
