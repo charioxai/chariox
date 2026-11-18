@@ -101,6 +101,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str, idl
             )
             .unwrap();
         }
+        crate::test_support::seed_default_account_models(app, "codex", &["gpt-test"]);
     });
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

@@ -1,7 +1,8 @@
 //! An agent always runs an explicit model and variant: the choice is made here, from the catalog
 //! of the agent's account, the same way New Room preselects one. A model the person (or the
-//! caller) named stays; a model the new account does not offer, or none at all, becomes that
-//! account's default; a variant the model does not support becomes its default variant.
+//! caller) names now must be one the account offers; a model the agent already runs stays; a
+//! model the new account does not offer, or none at all, becomes that account's default; a
+//! variant the model does not support becomes its default variant.
 
 use std::collections::BTreeSet;
 
@@ -13,11 +14,22 @@ const EFFORT_ORDER: [&str; 8] = [
 ];
 const PREFERRED_VARIANT: &str = "high";
 
+/// Where a requested model or variant comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Not chosen by the caller: a model the account does not offer becomes its default.
+    Inherited,
+    /// Already in use (an alias, a withdrawn model, a Room default): it stays even when the
+    /// catalog does not list it.
+    Kept,
+    /// The caller asks for it now: a model must be offered, a variant is taken as named.
+    Named,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Requested<'a> {
     pub value: Option<&'a str>,
-    /// The caller named it; it is kept even when the catalog does not list it.
-    pub explicit: bool,
+    pub source: Source,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,7 +39,14 @@ pub(super) struct AgentModelChoice {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct NoModelOffered;
+pub(super) enum ModelRefusal {
+    NoModelOffered,
+    /// The caller named a model the account's catalog does not list.
+    NotOffered {
+        wanted: String,
+        available: Vec<String>,
+    },
+}
 
 struct Offered<'a> {
     id: String,
@@ -41,9 +60,13 @@ pub(super) fn choose(
     provider: &str,
     model: Requested<'_>,
     effort: Requested<'_>,
-) -> Result<AgentModelChoice, NoModelOffered> {
+) -> Result<AgentModelChoice, ModelRefusal> {
     let offered = offered_models(catalog, provider);
-    let wanted = model.value.map(str::trim).filter(|value| !value.is_empty());
+    // `default` asks for the account's own default model, whoever asks.
+    let wanted = model
+        .value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && (*value != "default" || model.source == Source::Kept));
     let matched = wanted.and_then(|wanted| {
         offered.iter().find(|entry| entry.id == wanted).or_else(|| {
             (!wanted.contains('/'))
@@ -53,19 +76,28 @@ pub(super) fn choose(
     });
     let entry = match (matched, wanted) {
         (Some(entry), _) => Some(entry),
-        (None, Some(_)) if model.explicit => None,
-        _ => Some(default_entry(catalog, &offered).ok_or(NoModelOffered)?),
+        (None, Some(_)) if model.source == Source::Named && offered.is_empty() => {
+            return Err(ModelRefusal::NoModelOffered);
+        }
+        (None, Some(wanted)) if model.source == Source::Named => {
+            return Err(ModelRefusal::NotOffered {
+                wanted: wanted.to_string(),
+                available: offered.iter().map(|entry| entry.id.clone()).collect(),
+            });
+        }
+        (None, Some(_)) if model.source != Source::Inherited => None,
+        _ => Some(default_entry(catalog, &offered).ok_or(ModelRefusal::NoModelOffered)?),
     };
     let model_id = match (entry, wanted) {
         (Some(entry), _) => entry.id.clone(),
         (None, Some(wanted)) => wanted.to_string(),
-        (None, None) => return Err(NoModelOffered),
+        (None, None) => return Err(ModelRefusal::NoModelOffered),
     };
     let requested_effort = effort
         .value
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let effort = match (requested_effort, effort.explicit, entry) {
+    let effort = match (requested_effort, effort.source != Source::Inherited, entry) {
         (Some(value), true, _) => Some(value.to_string()),
         // A model the catalog does not list has no variants to check against.
         (value, _, None) => value.map(str::to_string),
@@ -237,20 +269,27 @@ mod tests {
 
     const NONE: Requested<'static> = Requested {
         value: None,
-        explicit: false,
+        source: Source::Inherited,
     };
 
     fn inherited(value: &str) -> Requested<'_> {
         Requested {
             value: Some(value),
-            explicit: false,
+            source: Source::Inherited,
         }
     }
 
-    fn explicit(value: &str) -> Requested<'_> {
+    fn kept(value: &str) -> Requested<'_> {
         Requested {
             value: Some(value),
-            explicit: true,
+            source: Source::Kept,
+        }
+    }
+
+    fn named(value: &str) -> Requested<'_> {
+        Requested {
+            value: Some(value),
+            source: Source::Named,
         }
     }
 
@@ -300,10 +339,27 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_model_and_variant_stay_even_when_unlisted() {
-        let choice = choose(&catalog(), "codex", explicit("future"), explicit("ultra")).unwrap();
+    fn a_kept_model_and_a_named_variant_stay_even_when_unlisted() {
+        let choice = choose(&catalog(), "codex", kept("future"), named("ultra")).unwrap();
         assert_eq!(choice.model, "future");
         assert_eq!(choice.effort.as_deref(), Some("ultra"));
+    }
+
+    #[test]
+    fn a_named_model_the_account_does_not_list_is_refused_with_the_offered_ones() {
+        assert_eq!(
+            choose(&catalog(), "claude-p", named("haiku-5-5"), NONE),
+            Err(ModelRefusal::NotOffered {
+                wanted: "haiku-5-5".to_string(),
+                available: vec!["claude-sonnet-5-5".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_named_model_the_account_lists_is_chosen() {
+        let choice = choose(&catalog(), "claude-p", named("claude-sonnet-5-5"), NONE).unwrap();
+        assert_eq!(choice.model, "claude-sonnet-5-5");
     }
 
     #[test]
@@ -324,7 +380,7 @@ mod tests {
     fn a_catalog_without_models_is_an_error() {
         assert_eq!(
             choose(&catalog(), "claude-headless", NONE, NONE),
-            Err(NoModelOffered)
+            Err(ModelRefusal::NoModelOffered)
         );
     }
 }
