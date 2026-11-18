@@ -409,6 +409,7 @@ fn vault_credential(
             vault_key: Some(id.to_owned()),
             created_at_ms: Some(now),
             updated_at_ms: Some(now),
+            copied_from: None,
         }),
     };
     crate::credential::validate_credential_registration(&credential)

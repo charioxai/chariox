@@ -401,13 +401,14 @@ async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill
     Ok((store, app))
 }
 
-async fn invoke(
+/// The App's answer to a tool call: the result text, or the error it refused with.
+async fn try_invoke(
     store: &mut Store<Host>,
     app: &Drill,
     name: &str,
     input: serde_json::Value,
-) -> wasmtime::Result<serde_json::Value> {
-    let result = store
+) -> wasmtime::Result<Result<String, AppError>> {
+    store
         .run_concurrent(async |accessor| {
             let cancel = accessor.with(|mut access| {
                 FutureReader::new(
@@ -429,7 +430,16 @@ async fn invoke(
                 .call_call_tool(accessor, name.into(), input.to_string(), context, cancel)
                 .await
         })
-        .await??;
+        .await?
+}
+
+async fn invoke(
+    store: &mut Store<Host>,
+    app: &Drill,
+    name: &str,
+    input: serde_json::Value,
+) -> wasmtime::Result<serde_json::Value> {
+    let result = try_invoke(store, app, name, input).await?;
     Ok(serde_json::from_str(&result.unwrap()).unwrap())
 }
 
@@ -654,5 +664,196 @@ async fn a_person_who_takes_longer_than_one_call_still_picks_with_the_same_reque
         1,
         "asking again never opens a second request"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn each_window_keeps_its_own_draft_in_the_data_directory_and_discards_only_that_one(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
+    for (window, element) in [("window-1", "left"), ("window-2", "right")] {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": window, "scene": scene(element)}),
+        )
+        .await?;
+    }
+    // A later write of a window replaces its own draft only.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-1", "scene": scene("left-again")}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let kept: Vec<(&str, &str)> = read["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| {
+            (
+                draft["id"].as_str().unwrap(),
+                draft["scene"]["elements"][0]["id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(kept.len(), 2);
+    assert!(kept.contains(&("window-1", "left-again")));
+    assert!(kept.contains(&("window-2", "right")));
+
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-1"}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    assert_eq!(
+        read["drafts"].as_array().unwrap().len(),
+        1,
+        "the other window's draft stays"
+    );
+    assert_eq!(read["drafts"][0]["id"], "window-2");
+
+    // An id names a file in the drafts folder and nothing else.
+    for bad in ["../scene", "a/b", ""] {
+        let refused = try_invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": bad, "scene": scene("x")}),
+        )
+        .await?;
+        assert!(refused.is_err(), "{bad:?} must be refused");
+    }
+    assert_eq!(
+        fs::read_dir(root.0.join("drafts"))?.count(),
+        1,
+        "only window-2's draft is on disk"
+    );
+    Ok(())
+}
+
+/// The review's second repro, at the App: a draft that a recovering window read and that its window then
+/// advanced is still the newer one afterwards, and nothing a window sends removes another window's draft.
+#[tokio::test(flavor = "current_thread")]
+async fn a_window_recovering_drafts_cannot_remove_the_newer_draft_of_another_window(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts-copy")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |ids: &[&str]| {
+        serde_json::json!({"type":"excalidraw","version":2,
+            "elements": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>(),
+            "appState":{},"files":{}})
+    };
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "open", "scene": scene(&["one"])}),
+    )
+    .await?;
+    // The recovering window reads, then the open window keeps a second element.
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    assert_eq!(
+        read["drafts"][0]["scene"]["elements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "open", "scene": scene(&["one", "two"])}),
+    )
+    .await?;
+    // It writes its own draft and discards its own; every call it makes names its own id.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "recovering", "scene": scene(&["one"])}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "recovering"}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let kept = read["drafts"].as_array().unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["id"], "open");
+    assert_eq!(kept[0]["scene"]["elements"].as_array().unwrap().len(), 2);
+    Ok(())
+}
+
+/// At the cap a window with a new id is refused and no other window's draft is removed to make room.
+#[tokio::test(flavor = "current_thread")]
+async fn at_the_cap_a_new_window_is_refused_and_no_draft_is_removed_to_make_room(
+) -> wasmtime::Result<()> {
+    let root = scratch("drafts-cap")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
+    for n in 0..4 {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": format!("window-{n}"), "scene": scene("kept")}),
+        )
+        .await?;
+    }
+    let refused = try_invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-new", "scene": scene("new")}),
+    )
+    .await?;
+    assert_eq!(refused.unwrap_err().code, "INVALID_STATE");
+    // A window that keeps a draft already can still rewrite it.
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-0", "scene": scene("again")}),
+    )
+    .await?;
+    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
+    let mut ids: Vec<&str> = read["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| draft["id"].as_str().unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, ["window-0", "window-1", "window-2", "window-3"]);
+    // One window gives its draft up, and the new window fits.
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-3"}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-new", "scene": scene("new")}),
+    )
+    .await?;
+    assert_eq!(fs::read_dir(root.0.join("drafts"))?.count(), 4);
     Ok(())
 }

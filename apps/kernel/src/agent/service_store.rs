@@ -533,21 +533,12 @@ impl AgentServiceStore {
         self.write().clear_agent_substitutes(agent_id)
     }
 
-    pub fn set_agent_usage_limit_stop(
+    pub fn change_usage_limit_stop(
         &self,
         agent_id: &str,
-        stop: Option<UsageLimitStop>,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.write().set_agent_usage_limit_stop(agent_id, stop)
-    }
-
-    pub fn mark_usage_limit_resume_sent(
-        &self,
-        agent_id: &str,
-        since_ms: u64,
+        next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
     ) -> Result<Option<AgentInstance>, DaemonError> {
-        self.write()
-            .mark_usage_limit_resume_sent(agent_id, since_ms)
+        self.write().change_usage_limit_stop(agent_id, next)
     }
 
     pub fn set_agent_self_settings(

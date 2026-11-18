@@ -1,9 +1,14 @@
 // Keeps the person's unsaved edit in the App, not in this window: the view is replaced when the App
 // updates or the connection returns, and its sandbox keeps nothing across that. The App holds one
-// draft, the open document's, with the revision the edit started from.
+// draft per (document, editor), with the revision the edit started from. A window has no identity that
+// outlives its replacement, so each window instance is a new editor with a random name: its saves and
+// discards reach only its own drafts, and its first `recall` is the one place another editor's draft is
+// seen: the App hands it a copy, written under this editor's name, and leaves the source where it is.
 const DELAY_MS = 400
 
-export function drafts(call) {
+export const newEditor = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+
+export function drafts(call, editor) {
   // One write at a time and in order, so a late save never outlives the discard that follows it.
   let queue = Promise.resolve()
   let pending = null
@@ -14,7 +19,7 @@ export function drafts(call) {
   }
   function send(read) {
     const draft = read()
-    if (draft) run("save_draft", draft).catch(() => {})
+    if (draft) run("save_draft", { editor, ...draft }).catch(() => {})
   }
   return {
     // `read` is asked when the write is due, so the latest keystrokes are the ones kept.
@@ -30,14 +35,17 @@ export function drafts(call) {
       pending = null
       send(read)
     },
-    drop() {
+    // This editor's draft of the document `id`; a pending write is this window's, so it goes with it.
+    drop(id) {
       clearTimeout(pending?.timer)
       pending = null
-      return run("discard_draft", {}).catch(() => {})
+      return run("discard_draft", { editor, id }).catch(() => {})
     },
+    // The draft this window starts with: its own, else a copy of the latest of another window. The claim
+    // goes through the queue so it is this window's only call in flight: a later save of this editor's
+    // draft cannot be overwritten by the copy the claim writes.
     async recall() {
-      await queue
-      return (await call("read_draft", {})).draft
+      return (await run("claim_draft", { editor })).draft
     },
   }
 }

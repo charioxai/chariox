@@ -21,7 +21,7 @@ fn touch(stamp: &mut Stamp, element: &mut Value, patch: impl FnOnce(&mut Map<Str
 
 /// How long a deleted element stays in the saved scene: a window that has not yet seen the
 /// deletion merges it, instead of drawing the element again.
-const TOMBSTONE_MS: u64 = 60 * 60 * 1000;
+pub const TOMBSTONE_MS: u64 = 60 * 60 * 1000;
 
 /// Drop the deleted elements that every open window has had time to see.
 pub fn forget_old_deletions(scene: &mut Value, now_ms: u64) {

@@ -752,6 +752,7 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
                     vault_key: Some(id.into()),
                     created_at_ms: None,
                     updated_at_ms: None,
+                    copied_from: None,
                 }),
             },
             "a06-owner-fixture-value",
