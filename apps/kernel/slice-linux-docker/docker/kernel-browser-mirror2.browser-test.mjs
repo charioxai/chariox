@@ -382,6 +382,33 @@ for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) t
   assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
 }, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
+// position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
+// on it reaches the content.
+const banner = '<style>body{margin:0;height:3000px}</style><p>page</p><div id="h" style="position:fixed;z-index:9"></div><script>document.querySelector("#h").attachShadow({mode:"closed"}).innerHTML=\'<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)"><b onclick="window.top.clicked=1" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b></div>\'</script>';
+for (const device_scale_factor of [1, 2]) test(`MP-10: the still of a closed root with no box of its own covers its fixed content (DPR${device_scale_factor})`, () => mirrored(banner, async ({ subscribe, evaluate }) => {
+  const { next, input } = await subscribe({ device_scale_factor });
+  const at = await evaluate('(()=>{const r=document.querySelector("#h").getBoundingClientRect();return [r.x,r.y,r.width,r.height]})()');
+  assert.deepEqual(at.slice(2), [0, 0], "fixture: the host has no box of its own");
+  // The closed host is the page's only opaque region.
+  let closed = false, still = null, packet;
+  for (let i = 0; i < 8 && !still; i++) {
+    packet = await next(1100);
+    closed ||= [...packet.nodes ?? [], ...packet.ops.flatMap(op => op.op === "children" ? op.nodes : [])].some(n => n[4]?.reason === "closed_shadow");
+    still = packet.tiles[0] ?? null;
+  }
+  assert(closed, "the closed host is an opaque region");
+  assert(still, "the closed content's still reaches the viewer");
+  assert.deepEqual([still.x, still.y, still.width, still.height], [100 - at[0], 200 - at[1], 300, 120], "the still covers the fixed content, relative to the host");
+  const pixels = decodePng(still.data_base64, 2), pixel = (x, y) => [...pixels.pixels.subarray((y * pixels.width + x) * 4, (y * pixels.width + x) * 4 + 3)];
+  assert.equal(pixels.width / 300, pixels.height / 120, "the still keeps the content's shape at the browser's own density");
+  assert.deepEqual(pixel(pixels.width - 2, pixels.height - 2), [255, 0, 0], "banner pixels");
+  assert.deepEqual(pixel(2, 2), [0, 0, 255], "banner content pixels");
+  await input(packet.sequence, { kind: "click", node_id: still.node_id, x: still.x + 10, y: still.y + 10 });
+  for (let i = 0; i < 40 && await evaluate("window.clicked === 1") !== true; i++) await settle(25);
+  assert.equal(await evaluate("window.clicked === 1"), true, "a click on the still reaches the closed content");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 test("MP-08/MP-10/MP-11: user keys follow a page-created editor before its mirror packet arrives", () => mirrored(
   '<input id="a"><p id="x">page</p>', async ({ next, evaluate, input }) => {
     const snapshot = await next();

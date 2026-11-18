@@ -99,6 +99,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const NODE_BUDGET = 900000, BYTE_BUDGET = 64 * 1024 * 1024, HEAD_BYTES = 2 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
     const DROP = new Set('script noscript template meta base title param track'.split(' '));
     const OPAQUE = new Set('canvas video audio object embed applet frame frameset portal fencedframe'.split(' '));
+    // Built-in elements that accept attachShadow(); custom elements are told apart by their tag.
+    const SHADOW_HOSTS = new Set('article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
     const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined'.split(' '));
@@ -125,6 +127,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
+    // Each closed host's root, handed over by the kernel: only its geometry is read, for the region's still.
+    const closedRoots = new WeakMap();
     // Resource keys by URL (and kind: an SVG sprite's bytes are its sanitized symbols, not the image), least
     // recently used first: over the budget the oldest mapping goes (a later use gets a new key). Keys are never
     // reused within a document, below the frame key slot.
@@ -529,6 +533,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       spend(64 + JSON.stringify(record.attrs).length);
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
+      // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
@@ -1013,13 +1019,32 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
       return [x, y, width, height];
     };
-    // Opaque regions visible now, in top-level viewport CSS pixels.
+    // What a closed root's content paints, which can lie outside its host's own box (a 0x0 host with fixed content),
+    // in the host's coordinates; null when it adds nothing to the host's box.
+    const closedInk = (node, [x, y, width, height]) => {
+      const root = closedRoots.get(node); if (!root) return null;
+      // The host's own frame offset (topBox) applies to its content as well.
+      const [dx, dy] = [x - box(node)[0], y - box(node)[1]];
+      let left = x, top = y, right = x + width, bottom = y + height, empty = !(width > 0 && height > 0), grown = false, seen = 0;
+      for (const element of root.querySelectorAll('*')) {
+        if (++seen > 4096) break;
+        const r = element.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0) || invisible(element)) continue;
+        const [l, t] = [r.x + dx, r.y + dy];
+        if (empty) { [left, top, right, bottom, empty] = [l, t, l + r.width, t + r.height, false]; grown = true; continue; }
+        if (l < left || t < top || l + r.width > right || t + r.height > bottom) grown = true;
+        left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, l + r.width); bottom = Math.max(bottom, t + r.height);
+      }
+      return grown ? [left, top, right - left, bottom - top] : null;
+    };
+    // Opaque regions visible now, in top-level viewport CSS pixels. A closed root's region also gives the box its content
+    // paints (ink), which its still covers.
     const opaqueBoxes = () => {
       const out = [];
       for (const [id, node] of nodes) {
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
-        const [x, y, width, height] = topBox(node);
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
+        const own = topBox(node), ink = closedInk(node, own), [x, y, width, height] = ink ?? own;
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: own, ...(ink ? { ink } : {}), view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
     };
@@ -1177,10 +1202,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
       let [bx, by, width, height] = box(node), moved = false;
+      // A closed root's content can paint outside its host's box: the viewer's offset stays relative to the host.
+      const ink = closedInk(node, [bx, by, width, height]), [ix, iy] = ink ? [ink[0] - bx, ink[1] - by] : [0, 0];
+      if (ink) [bx, by, width, height] = ink;
       for (let up = 0; !(width > 0 && height > 0) && node.parentElement && up < 32; up++) { node = node.parentElement; [bx, by, width, height] = box(node); moved = true; }
       if (!(width > 0 && height > 0)) throw new Error('mirror2 invisible node');
-      const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
-      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
+      const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x - ix, 0.5), width - 0.5) : width / 2;
+      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y - iy, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
       // A wheel step aimed at a node the page has scrolled past goes to the nearest visible point of the same panes and
       // frames: the viewer's earlier steps moved the node, and showing it again would take them back.
@@ -1272,9 +1300,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // CDP describes only these already serialized hosts. Unpublished records
     // can become opaque under the same id before their packet leaves the kernel.
-    const markClosedHost = function (fresh = false) {
+    const markClosedHost = function (fresh = false, root = null) {
       if (!this || this.nodeType !== 1) return true;
-      closedHosts.add(this); closedTodo.delete(this);
+      closedHosts.add(this); closedTodo.delete(this); if (root) closedRoots.set(this, root);
       const id = mirrored(this);
       if (!fresh || !id) { replaceNode(this); return true; }
       const removed = [], collect = at => { removed.push(at); for (const child of kids.get(at) ?? []) collect(child); };
