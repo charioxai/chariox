@@ -38,6 +38,7 @@ pub(crate) fn is_read_only(request: &LocalDaemonRequest) -> bool {
         LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::GetPaneFeed(_)
             | LocalDaemonRequest::ListSessionMembers(_)
             | LocalDaemonRequest::ListAgents(_)
             | LocalDaemonRequest::ListDescendants(_)

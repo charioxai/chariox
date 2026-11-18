@@ -155,6 +155,7 @@ mod provider_login;
 mod session_activity;
 
 mod owner_vault;
+mod pane_feed;
 mod person_inbox;
 mod totp;
 mod watcher;

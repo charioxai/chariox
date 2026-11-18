@@ -373,6 +373,7 @@ response_policies! {
         FreshRemoteMachineKernelsObserved,
         RoomListSessionsListed,
         RoomListSnapshot,
+        PaneFeed,
         PersonInbox,
         NotificationSubscriptions,
         NotificationSubscriptionTested,

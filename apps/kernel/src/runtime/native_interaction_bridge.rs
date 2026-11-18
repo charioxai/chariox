@@ -24,6 +24,9 @@ const REMOTE_NATIVE_INTERACTION_RETRY_MAX: Duration = Duration::from_secs(15);
 /// How long a home keeps a forwarded decision's answer for a worker whose
 /// reply was lost and that forwards the same interaction again.
 const FORWARDED_DECISION_RETENTION: Duration = Duration::from_secs(600);
+/// How often a card held open for a provider terminal checks the terminal is still there; the
+/// card's own timeout applies once it is gone.
+const PROVIDER_TERMINAL_RECHECK: Duration = Duration::from_secs(5);
 // A Claude permission hook outwaits a forwarded interaction's timeout and relay
 // buffer, with room for event pickup and the relay connection, so the deny it
 // resolves to still reaches Claude.
@@ -536,14 +539,25 @@ async fn request_runtime_interaction_with_timeout(
         timeout_session_id.clone(),
         timeout_interaction_id.clone(),
     )));
-    // Waiting for another tool consumes this decision's original budget.
-    let resolution = if let Some(deadline) = deadline {
-        tokio::select! {
-            biased;
-            resolution = &mut receiver => resolution,
-            _ = tokio::time::sleep_until(deadline) => {
-                state.timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id).await?;
-                receiver.await
+    // Waiting for another tool consumes this decision's original budget. While a provider's
+    // own terminal runs the pane the card shows in, the person sits there: it has no deadline.
+    let pane_agent_id = interaction
+        .shown_in_agent_id()
+        .or_else(|| interaction.agent_id())
+        .map(str::to_owned);
+    let resolution = if let Some(mut deadline) = deadline {
+        loop {
+            tokio::select! {
+                biased;
+                resolution = &mut receiver => break resolution,
+                _ = tokio::time::sleep_until(deadline) => {
+                    if pane_agent_id.as_deref().is_some_and(|agent_id| state.provider_terminal_runs_agent(&timeout_session_id, agent_id)) {
+                        deadline = tokio::time::Instant::now() + PROVIDER_TERMINAL_RECHECK;
+                        continue;
+                    }
+                    state.timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id).await?;
+                    break receiver.await;
+                }
             }
         }
     } else {
@@ -754,6 +768,70 @@ mod tests {
         }
         let resolution = second_task.await.unwrap().unwrap();
         assert_eq!(resolution.choice_id.as_deref(), Some("deny"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_permission_card_has_no_deadline_while_a_provider_terminal_runs_its_pane() {
+        let root = crate::test_support::test_workspace_root().join(format!(
+            "native-permission-terminal-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let worktree = root.to_string_lossy().into_owned();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &worktree, &worktree,
+            ))
+            .unwrap();
+        let (session, agent) = (session.id().to_string(), agent.id().to_string());
+        {
+            let run = app
+                .launch_provider(
+                    crate::provider::LaunchProviderRequest::new(
+                        &session,
+                        "dev-stub",
+                        "claude-code",
+                        "default",
+                        "sonnet",
+                    )
+                    .with_agent_id(&agent)
+                    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+                )
+                .unwrap();
+            app.update_provider_run_projection(run);
+        }
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let id = format!("native-terminal-{session}");
+        let waiting_state = state.clone();
+        let (waiting_session, waiting_id) = (session.clone(), id.clone());
+        let waiting = tokio::spawn(async move {
+            request_runtime_interaction_with_timeout(
+                &waiting_state,
+                &waiting_session,
+                queued_permission(&waiting_id, &agent, 1),
+                "native_permission_terminal_test",
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !waiting.is_finished(),
+            "the person at the provider terminal answers; the 1 s deadline does not deny for them"
+        );
+        state
+            .resolve_runtime_interaction(&session, &id, "allow", None)
+            .await
+            .unwrap();
+        let resolution = waiting.await.unwrap().unwrap();
+        assert_eq!(resolution.choice_id.as_deref(), Some("allow"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
