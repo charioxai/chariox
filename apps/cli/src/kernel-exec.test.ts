@@ -12,6 +12,10 @@ function kernel(text: string, code: number) {
   const data = Buffer.from(text).toString("base64")
   const send = async (body: any) => {
     sent.push(body)
+    // The kernel's own validation: a folder is chosen when a terminal opens, never afterwards.
+    if (body.KernelTerminal?.directory !== undefined && body.KernelTerminal.operation.operation !== "open") {
+      throw Object.assign(new Error("a folder is chosen when a terminal is opened, not afterwards"), { code: "terminal_refused" })
+    }
     const operation = body.KernelTerminal?.operation?.operation
     if (operation === "open") return { RoomTerminal: { result: { result: "opened", terminal: terminal({ state: "running" }, 0) } } }
     if (operation === "wait") return { RoomTerminal: { result: { result: "waited", waited: { fired: { kind: "finished" }, terminal: terminal(ended(code), text.length), screen_text: "", output_offset: text.length } } } }
@@ -47,4 +51,49 @@ test("a command killed by a signal is not reported as success", async () => {
     return reply
   }
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, killed, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_failed")
+})
+
+test("--directory goes with open only; wait, read and close carry none, and the terminal is closed", async () => {
+  const { sent, send } = kernel("/tmp\r\n", 0)
+  const out = sink()
+  assert.equal(await runKernelExec({ command: ["pwd"], directory: "/tmp", timeoutSeconds: 30 }, send, out.stream), 0)
+  assert.equal(out.text(), "/tmp\n")
+  assert.deepEqual(sent.map(body => body.KernelTerminal.directory), ["/tmp", undefined, undefined, undefined])
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+})
+
+test("a failed command run never leaves its terminal behind: it is closed, or named with the way to close it", async () => {
+  const { sent, send } = kernel("x", 0)
+  const failing = async (body: any) => {
+    if (body.KernelTerminal.operation.operation === "read_output") throw new Error("link lost")
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, failing, sink().stream), /link lost/)
+  assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close", "closed after the failure")
+  const stuck = async (body: any) => {
+    if (body.KernelTerminal.operation.operation === "close") throw new Error("kernel gone")
+    return send(body)
+  }
+  await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, stuck, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_terminal_left_open" && /terminal close --terminal t1/.test(JSON.stringify(error)))
+})
+
+test("a character split between two output pages is whole in the output, and a split CRLF is one newline", async () => {
+  const bytes = Buffer.from("a\u00e9b\r\nc", "utf8")
+  const cut = 2 // inside the two-byte e-acute
+  const pages = [bytes.subarray(0, cut), bytes.subarray(cut, 5), bytes.subarray(5)]
+  const edges = [cut, 5, bytes.length]
+  let page = 0
+  const send = async (body: any) => {
+    const operation = body.KernelTerminal.operation.operation
+    if (operation === "open") return { RoomTerminal: { result: { result: "opened", terminal: terminal({ state: "running" }, 0) } } }
+    if (operation === "wait") return { RoomTerminal: { result: { result: "waited", waited: { fired: { kind: "finished" }, terminal: terminal(ended(0), bytes.length), screen_text: "", output_offset: bytes.length } } } }
+    if (operation === "read_output") {
+      const index = page++
+      return { RoomTerminal: { result: { result: "output", output: { terminal: terminal(ended(0), bytes.length), data_base64: pages[index]!.toString("base64"), next_offset: edges[index], gap: false } } } }
+    }
+    return { RoomTerminal: { result: { result: "closed" } } }
+  }
+  const out = sink()
+  await runKernelExec({ command: ["x"], timeoutSeconds: 30 }, send, out.stream)
+  assert.equal(out.text(), "a\u00e9b\nc")
 })

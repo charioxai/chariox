@@ -156,7 +156,8 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  const terminalFamily = command === "terminal" && (rest.length === 0 || rest[0] === "--help")
+  // A bare `chariox terminal` is the attach to the kernel's own terminal (terminal-command.ts); only --help prints the usage.
+  const terminalFamily = command === "terminal" && rest[0] === "--help"
   if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb && !terminalFamily) return false
   if (terminalFamily) {
     console.log(`${TERMINAL_ATTACH_USAGE}\n${familyUsageOf("terminal", TERMINAL_VERBS)}`)
@@ -209,7 +210,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       if (!inRoom) {
         process.exitCode = await withKernel({ socket, timeoutSeconds: parseTimeout(flags.get("--timeout")), kernel: kernel ?? undefined }, send =>
-          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) }, send, process.stdout))
+          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")), signals: process }, send, process.stdout))
         return true
       }
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>

@@ -302,7 +302,7 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "95c3f9b964e149957e384ad22341d1559b00f7cdad408e5a960b9f6a85432b9a"
+        "6236d552d71084af22daf0f563b2f2a248bca4166efc05e4c8c18173432de0f1"
     );
 }
 

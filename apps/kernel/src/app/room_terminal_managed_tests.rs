@@ -632,4 +632,49 @@ mod kernel_terminal_access {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn a_folder_is_chosen_at_open_and_a_bad_one_leaves_no_terminal() {
+        let fixture = fixture("kernel-terminal-directory");
+        let runtime = &fixture.runtime;
+        let with_folder = |operation| KernelTerminalRequest {
+            directory: Some("/tmp".to_string()),
+            operation,
+        };
+        // Any later operation that names a folder is refused, as the one-shot CLI must not send one.
+        let refused = runtime
+            .kernel_terminal_for_client(&owner(), with_folder(RoomTerminalOperation::List))
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("chosen when a terminal is opened"),
+            "{refused}"
+        );
+        // A folder that does not exist refuses the open and starts nothing.
+        let missing = KernelTerminalRequest {
+            directory: Some("/nonexistent-kernel-terminal-folder".to_string()),
+            operation: RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: Some(vec!["sleep".into(), "300".into()]),
+            },
+        };
+        runtime
+            .kernel_terminal_for_client(&owner(), missing)
+            .await
+            .unwrap_err();
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { terminals },
+        } = runtime
+            .kernel_terminal_for_client(&owner(), list())
+            .await
+            .unwrap()
+        else {
+            panic!("a list answers a list");
+        };
+        assert!(terminals.is_empty());
+    }
 }
