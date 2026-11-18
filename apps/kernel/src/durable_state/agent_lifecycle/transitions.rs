@@ -1,5 +1,17 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
+/// Whether the only work left on `task` is finished sources whose outcome nobody acknowledged.
+fn only_unacknowledged_outcomes(task: &AgentTaskExecution) -> bool {
+    task.goal.is_none()
+        && task.wait.is_none()
+        && task.obligations.iter().any(|o| o.status == "settling")
+        && task
+            .obligations
+            .iter()
+            .filter(|o| o.requires_resolution() && !o.outlives_turn())
+            .all(|o| o.status == "settling")
+}
+
 /// Why a task is Blocked when its turn ended twice without finishing its obligations or yielding on them.
 pub(super) const INVALID_TURN_END_REASON: &str =
     "Repeated invalid turn end; owner must resume or cancel";
@@ -309,7 +321,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
             }
-            migration::audit(
+            audit::audit(
                 tx,
                 "room.obligation.registered",
                 &id,
@@ -341,7 +353,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     {
                         return Ok(Outcome::Task(task));
                     }
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "room.obligation.dispatch_receipt",
                         &id,
@@ -590,7 +602,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
-                migration::audit(
+                audit::audit(
                     tx,
                     "goal.blocked",
                     &t.task_id,
@@ -739,6 +751,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         t.task_id
                     ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
+                } else if only_unacknowledged_outcomes(&t) {
+                    // Every source finished and its outcome was shown to two turns. Nothing is
+                    // left that a person could decide: the outcomes stay in the inbox.
+                    for o in &mut t.obligations {
+                        if o.status == "settling" {
+                            o.status = "satisfied".into();
+                        }
+                    }
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
                 } else {
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;

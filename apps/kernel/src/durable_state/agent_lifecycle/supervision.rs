@@ -711,7 +711,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "goal.owner_resume",
                         &t.task_id,

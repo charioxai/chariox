@@ -76,9 +76,6 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
     if lower.contains("repeated invalid turn end") {
         return "Its turn ended before its work was done. Resume to continue, or Cancel.".into();
     }
-    if lower.contains("owner must reconcile") {
-        return "Its work was interrupted. Check its last turn, then Resume or Cancel.".into();
-    }
     if reason.contains("Provider prompt dispatch failed: provider protocol `") {
         if let Some((_, operation)) = reason.split_once("provider protocol `") {
             if let Some((operation, _)) = operation.split_once('`') {
@@ -117,18 +114,10 @@ mod tests {
     /// what happened and what Resume and Cancel do.
     #[test]
     fn a_blocked_task_card_reads_in_plain_words() {
-        for (reason, plain) in [
-            (
-                "Repeated invalid turn end; owner must resume or cancel",
-                "Its turn ended before its work was done. Resume to continue, or Cancel.",
-            ),
-            (
-                "Recovered legacy dispatch obligation; owner must reconcile its exact resource and resume or cancel",
-                "Its work was interrupted. Check its last turn, then Resume or Cancel.",
-            ),
-        ] {
-            assert_eq!(public_task_failure_reason(reason), plain);
-        }
+        assert_eq!(
+            public_task_failure_reason("Repeated invalid turn end; owner must resume or cancel"),
+            "Its turn ended before its work was done. Resume to continue, or Cancel."
+        );
     }
 
     #[test]

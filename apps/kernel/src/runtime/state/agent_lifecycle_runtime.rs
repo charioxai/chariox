@@ -1308,6 +1308,8 @@ impl KernelRuntimeState {
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
+        // Before any task is judged: a delivery the kernel can settle is not unresolved work.
+        self.settle_interrupted_deliveries(now)?;
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
@@ -1705,7 +1707,6 @@ impl KernelRuntimeState {
         // `now` was read; a newer sweep may have committed meanwhile. Commit with
         // the current clock, one sweep at a time, so an old `now` never reads as
         // a clock rollback that wakes every waiting task early.
-        self.settle_interrupted_deliveries(crate::session::unix_epoch_ms())?;
         let swept = {
             let _commit = SWEEP_COMMIT.lock().unwrap_or_else(|e| e.into_inner());
             self.owned

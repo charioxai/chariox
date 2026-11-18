@@ -362,6 +362,34 @@ fn a02_empty_or_tool_only_end_with_open_obligations_never_silently_done() {
     assert!(correction);
     assert_ne!(task.state, ExecutionState::Done);
 }
+/// A finished source whose outcome the agent never acknowledged is no question for a person:
+/// after the one correction the kernel settles the task, with no card.
+#[test]
+fn a02_unacknowledged_source_outcome_after_the_correction_settles_without_a_card() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "finished".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!()
+    };
+    assert!(correction);
+    let again = task.pending_prompt_id.unwrap();
+    f.begin(&again);
+    let Outcome::Settled { task, correction } = f.settle(&again, true) else {
+        panic!()
+    };
+    assert!(!correction);
+    assert_eq!(task.state, ExecutionState::Done);
+    assert!(task.obligations.iter().all(|o| o.status == "satisfied"));
+}
 #[test]
 fn a02_plain_turn_without_obligation_or_wait_ends_done_without_correction() {
     let f = Fixture::new();

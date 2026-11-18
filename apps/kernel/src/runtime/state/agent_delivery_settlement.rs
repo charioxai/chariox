@@ -6,27 +6,37 @@ use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, DELIVERY_TIME
 
 impl KernelRuntimeState {
     /// Settles every delivery whose attempt began a delivery window ago and has no receipt.
+    /// Each event is settled once: companions of one batch share their lead's receipt and are
+    /// found settled when their turn comes. One event that cannot be settled never stops the
+    /// others; the next lifecycle pass tries it again.
     pub(super) fn settle_interrupted_deliveries(&self, now: u64) -> Result<(), DaemonError> {
         let before = now.saturating_sub(DELIVERY_TIMEOUT_MS);
-        for event in self
-            .owned
-            .durable_state_store
-            .agent_interrupted_deliveries(before)?
-        {
-            let receipt = if self.turn_took_delivery(&event) {
+        let store = &self.owned.durable_state_store;
+        for event in store.agent_interrupted_deliveries(before)? {
+            let still_interrupted = store.agent_inbox_event(event.sequence).is_ok_and(|row| {
+                row.is_some_and(|(row, _)| {
+                    matches!(row.state.as_str(), "submitting" | "uncertain" | "blocked")
+                })
+            });
+            if !still_interrupted {
+                continue;
+            }
+            let state = if self.turn_took_delivery(&event) {
                 "accepted"
             } else {
-                "rejected"
+                "recovered"
             };
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::Receipt {
-                    room: event.room_id.clone(),
-                    agent: event.agent_id.clone(),
-                    sequence: event.sequence,
-                    state: receipt.into(),
-                    now,
-                })?;
+            let settled = store.agent_lifecycle(Operation::Receipt {
+                room: event.room_id.clone(),
+                agent: event.agent_id.clone(),
+                sequence: event.sequence,
+                state: state.into(),
+                now,
+            });
+            if let Err(error) = settled {
+                tracing::warn!(%error, sequence = event.sequence, room_id = %event.room_id,
+                    "interrupted delivery could not be settled; the next sweep retries it");
+            }
         }
         Ok(())
     }
