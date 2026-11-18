@@ -506,7 +506,7 @@ async fn mdnotes_two_local_connections_child() {
             .unwrap();
         assert_eq!(typed, serde_json::json!({ "generation": generation }));
         // A state read names each Tab's icon by hash; its PNG travels only to a
-        // viewer that lists no such hash (protocol 1021), never on a plain read.
+        // viewer that lists no such hash (protocol 1012), never on a plain read.
         let shown = |reply: serde_json::Value| {
             reply["tabs"]
                 .as_array()
@@ -530,7 +530,7 @@ async fn mdnotes_two_local_connections_child() {
         assert!(plain.get("favicon_png_base64").is_none(), "MP-08: {plain}");
         let wait = |id: &'static str, known: Vec<&str>| {
             let command = serde_json::json!({"op":"state_wait","after":"","wait_ms":0,"known_favicons":known});
-            (id, serde_json::from_value::<Browser>(command).expect("MP-08: protocol 1021 state wait"))
+            (id, serde_json::from_value::<Browser>(command).expect("MP-08: protocol 1012 state wait"))
         };
         let (id, lacking) = wait("MP-08-icon-lacking", vec![]);
         let lacking = shown(success(request(&mut a.0, id, lacking).await));
