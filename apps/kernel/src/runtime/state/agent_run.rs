@@ -78,8 +78,13 @@ impl KernelRuntimeState {
         });
     }
 
-    pub(crate) fn stop_waiting_for_worker(&self, worker: &str) {
-        self.owned.agent_run_waiters.release(worker);
+    /// See `AgentRunWaiters::abandon`.
+    pub(crate) fn abandon_worker_wait(
+        &self,
+        worker: &str,
+        end: &mut tokio::sync::oneshot::Receiver<WorkerEnd>,
+    ) -> Option<WorkerEnd> {
+        self.owned.agent_run_waiters.abandon(worker, end)
     }
 
     /// The call handed this worker's end to its caller in place of an inbox event, so the caller's

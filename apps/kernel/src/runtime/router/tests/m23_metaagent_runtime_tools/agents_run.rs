@@ -387,3 +387,62 @@ async fn meta_controllers_and_regular_agents_both_discover_agents_run() {
         );
     }
 }
+
+#[test]
+fn a_call_dropped_while_a_worker_end_is_in_flight_still_hears_of_it() {
+    run_large_stack_async_test("agents-run-in-flight", dropped_during_claim);
+}
+
+async fn dropped_during_claim() {
+    let world = world("agents-run-in-flight").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let mut call = Box::pin(world.router.dispatch_agents_run(
+        &world.tokens["a"],
+        serde_json::json!({
+            "workers": [{"name": "only", "brief": "answer now"}],
+            "origin_prompt_id": prompt,
+        }),
+    ));
+    let workers = tokio::select! {
+        outcome = &mut call => panic!("the call returned before its worker ended: {outcome:?}"),
+        workers = started_workers(&world, &["only"]) => workers,
+    };
+    // The worker's end has left the waiter map and is not sent yet when the call is dropped; the
+    // drop lets it send right after the call drained its channel.
+    let reached = world.router.runtime_state.pause_next_worker_claim();
+    let state = world.router.runtime_state.clone();
+    let (room, worker) = (world.room.clone(), workers[0].1.clone());
+    let ending = tokio::spawn(async move {
+        state
+            .end_agent_turn_for_test(&room, &worker, "only answer")
+            .await
+    });
+    tokio::select! {
+        outcome = &mut call => panic!("the call returned before its end was sent: {outcome:?}"),
+        reached = reached => reached.unwrap(),
+    }
+    drop(call);
+    ending.await.unwrap().unwrap();
+
+    // Neither the call's answer nor the event path may lose the end.
+    let store = world.app.lock().await.durable_state_store();
+    let mut inbox = Vec::new();
+    for _ in 0..100 {
+        inbox = store.agent_inbox(&world.room, &caller, 0).unwrap();
+        if inbox.iter().any(|event| event.kind == "child_finished") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let finished = inbox
+        .iter()
+        .filter(|event| {
+            event.kind == "child_finished" && format!("{event:?}").contains("only answer")
+        })
+        .count();
+    assert_eq!(
+        finished, 1,
+        "the in-flight end is announced once: {inbox:?}"
+    );
+}

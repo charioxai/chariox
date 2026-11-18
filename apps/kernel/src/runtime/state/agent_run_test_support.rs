@@ -4,6 +4,11 @@ use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::terminal::TerminalOutputKind;
 
 impl KernelRuntimeState {
+    /// See `AgentRunWaiters::pause_next_claim`.
+    pub(crate) fn pause_next_worker_claim(&self) -> tokio::sync::oneshot::Receiver<()> {
+        self.owned.agent_run_waiters.pause_next_claim()
+    }
+
     /// The agent's running turn answers `answer` and settles, as its provider's output does.
     pub(crate) async fn end_agent_turn_for_test(
         &self,

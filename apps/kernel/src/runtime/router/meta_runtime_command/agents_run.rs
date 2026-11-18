@@ -19,9 +19,9 @@ struct WaitedWorker {
 
 impl Drop for WaitedWorker {
     fn drop(&mut self) {
-        self.state.stop_waiting_for_worker(&self.agent);
         // The wait is released first, so an end is in the channel or goes to the event path.
-        if let Some(end) = self.taken.take().or_else(|| self.end.try_recv().ok()) {
+        let sent = self.state.abandon_worker_wait(&self.agent, &mut self.end);
+        if let Some(end) = self.taken.take().or(sent) {
             self.state.announce_undelivered_worker(end);
         }
     }
@@ -291,8 +291,10 @@ impl CommandRouter {
                 })))
             }
         };
-        self.runtime_state.stop_waiting_for_worker(&worker.agent);
-        if let Ok(end) = worker.end.try_recv() {
+        if let Some(end) = self
+            .runtime_state
+            .abandon_worker_wait(&worker.agent, &mut worker.end)
+        {
             worker.taken = Some(end);
             self.runtime_state
                 .unfollow_worker(caller_turn, origin_prompt_id, &registration)
