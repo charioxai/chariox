@@ -6,7 +6,7 @@
 //   save_scene   -> { version }            refused with an error unless `version` is the saved version
 //   view_changes -> { latest, dropped, changes }   `latest` rises on every write, window saves too
 //   write_file / read_file / pick_file     files; an offered copy returns a grant
-//   save_draft / list_drafts / read_draft / discard_draft   one unsaved scene per window id, kept for a window that is replaced
+//   save_draft / list_drafts / read_draft / retire_draft / discard_draft   one unsaved scene per window id, kept for a window that is replaced
 //
 // `agentEdit(fn)` edits the saved scene the way the backend does for an agent action.
 import assert from 'node:assert/strict';
@@ -47,6 +47,7 @@ export async function closeEnvironment() {
 }
 
 const MAX_CALL_BYTES = 512 * 1024;
+const MAX_DRAFTS = 4;
 const withinBudget = (name, value) => {
   const bytes = Buffer.byteLength(JSON.stringify(value ?? null));
   if (bytes > MAX_CALL_BYTES) throw Error(`${name}: ${bytes} bytes exceed the catalog's ${MAX_CALL_BYTES} byte call limit`);
@@ -174,6 +175,10 @@ export function fakeBackend() {
       }
       if (name === 'save_draft') {
         if (backend.failDraftSaves) throw Error(backend.failDraftSaves);
+        // The App keeps at most MAX_DRAFTS drafts of other windows and never removes one to make room.
+        if (!backend.drafts.has(input.id) && backend.drafts.size >= MAX_DRAFTS) {
+          throw Error(`${MAX_DRAFTS} other windows already keep an unsaved diagram; save or close one, or wait until it is an hour old`);
+        }
         backend.drafts.set(input.id, clone(input.scene));
         backend.revisions.set(input.id, ++backend.draftWrites);
         return {};
@@ -184,6 +189,11 @@ export function fakeBackend() {
         const reply = scene ? { id: input.id, revision: backend.revisions.get(input.id), scene: clone(scene) } : { id: input.id, revision: null, scene: null };
         await backend.afterReadDraft?.();
         return reply;
+      }
+      if (name === 'retire_draft') {
+        const retired = backend.drafts.has(input.id) && backend.revisions.get(input.id) === input.revision;
+        if (retired) backend.drafts.delete(input.id);
+        return { retired };
       }
       if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }
       if (name === 'write_file') {

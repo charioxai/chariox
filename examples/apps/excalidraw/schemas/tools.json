@@ -134,8 +134,30 @@
       }
     },
     {
+      "name": "retire_draft",
+      "description": "Forget the draft of this id when it is still at this revision, because the caller recovered it and now holds its content. A draft its window wrote since stays. Returns {retired}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "discard_draft",
-      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts never removes them.",
+      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts retires them with retire_draft instead.",
       "inputSchema": {
         "type": "object",
         "properties": {

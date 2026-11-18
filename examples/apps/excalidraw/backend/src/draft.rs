@@ -4,8 +4,10 @@
 //! window keeps its drafts under an id of its own choosing, and only that window removes its draft
 //! (`discard_draft`): one window saving never drops what another window has not saved. A recovering
 //! window lists the drafts and reads them one at a time, so no reply nears the catalog's call limit,
-//! and merges them into its canvas, leaving them where they are, because their window may still be
-//! open. The one removal that is not the window's own is age: a draft that
+//! and merges them into its canvas. It leaves them where they are until its own draft or the saved
+//! scene holds what it merged; then it retires exactly the revision it read (`retire_draft`), so a
+//! window that is still open and has written since keeps its newer draft, and replacements never pile
+//! drafts up against the cap. The other removal that is not the window's own is age: a draft that
 //! cannot be read, or that is older than the hour a deletion is kept, is dropped when the folder is next
 //! read or written. At the cap a new window's draft is refused, never made room for by removing another.
 //!
@@ -134,7 +136,14 @@ pub async fn save(input: &Value) -> Result<Value, AppError> {
     let path = path_of(id)?;
     let checked = scene::parse(&input["scene"].to_string())?;
     let now = now_ms();
-    let (useless, fits) = admit(files()?, id, now);
+    let files = files()?;
+    // Two writes of one window never share a revision, so a retirement names exactly one of them.
+    let revision = files
+        .iter()
+        .find(|(other, _)| other == id)
+        .and_then(|(_, text)| decode(text))
+        .map_or(now, |(previous, _)| now.max(previous + 1));
+    let (useless, fits) = admit(files, id, now);
     for id in useless {
         remove(&id)?;
     }
@@ -151,7 +160,7 @@ pub async fn save(input: &Value) -> Result<Value, AppError> {
             "cannot create the folder of the kept drafts",
         )
     })?;
-    file_io::replace(path, encode(&checked, now).into_bytes()).await?;
+    file_io::replace(path, encode(&checked, revision).into_bytes()).await?;
     Ok(json!({}))
 }
 
@@ -186,6 +195,23 @@ pub fn read(input: &Value) -> Result<Value, AppError> {
         Some((revision, scene)) => json!({"id": id, "revision": revision, "scene": scene}),
         None => json!({"id": id, "revision": null, "scene": null}),
     })
+}
+
+/// `retire_draft`: forget the draft of this id when it is still at the revision the caller recovered
+/// and now holds the content elsewhere. A window that is still open and has written since keeps its
+/// newer draft.
+pub fn retire(input: &Value) -> Result<Value, AppError> {
+    let id = input["id"]
+        .as_str()
+        .ok_or_else(|| error("INVALID_ARGUMENT", "id is required"))?;
+    let revision = input["revision"]
+        .as_u64()
+        .ok_or_else(|| error("INVALID_ARGUMENT", "revision is required"))?;
+    let current = kept_of(id)?.is_some_and(|(kept, _)| kept == revision);
+    if current {
+        remove(id)?;
+    }
+    Ok(json!({"retired": current}))
 }
 
 /// `discard_draft`: forget the draft of this id and no other. Only the window of that id sends it.

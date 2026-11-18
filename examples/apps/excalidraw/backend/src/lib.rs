@@ -34,12 +34,13 @@ fn view() -> Result<View, AppError> {
 }
 
 /// The tools that are not declared actions of the view.
-const OWN_TOOLS: [&str; 9] = [
+const OWN_TOOLS: [&str; 10] = [
     "load_scene",
     "save_scene",
     "save_draft",
     "list_drafts",
     "read_draft",
+    "retire_draft",
     "discard_draft",
     "write_file",
     "read_file",
@@ -98,6 +99,7 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
         "save_draft" => draft::save(&input).await,
         "list_drafts" => draft::list(),
         "read_draft" => draft::read(&input),
+        "retire_draft" => draft::retire(&input),
         "discard_draft" => draft::discard(&input),
         "write_file" => file_io::write(&input).await,
         "read_file" => file_io::read(&input).await,

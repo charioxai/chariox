@@ -25,6 +25,43 @@ for (const dpr of [1, 2]) test(`three near-limit drafts are all recovered at DPR
   } finally { await app.close(); }
 });
 
+// Each window edits, and is replaced before its scene save commits (the other windows) or after it (every third
+// windows). Every window leaves a draft of its own behind until a later window recovers it.
+for (const dpr of [1, 2]) test(`seven consecutive replacements lose no edit and always find room for a draft at DPR${dpr}`, { timeout: 240_000 }, async () => {
+  const backend = fakeBackend();
+  let app;
+  try {
+    for (let n = 1; n <= 7; n++) {
+      app = await openApp({ backend, dpr });
+      await app.load();
+      await waitUntil(() => backend.live().length === n - 1, { what: 'the recovered edits to be saved' });
+      const committed = n % 3 === 0;
+      if (!committed) backend.holdSaves = 'lose';
+      await app.draw(300 + 60 * n, 200);
+      if (committed) await waitUntil(() => backend.live().length === n, { what: `window ${n}'s save` });
+      else await waitUntil(() => [...backend.drafts.values()].some(scene => scene.elements.length === n), { what: `window ${n}'s draft` });
+      await app.close();
+      backend.holdSaves = null;
+    }
+    app = await openApp({ backend, dpr });
+    await app.load();
+    await app.until(elements => elements.length === 7, { timeout: 15_000, what: 'all seven rectangles' });
+    await waitUntil(() => backend.live().length === 7, { what: 'all seven to be saved' });
+    assert(backend.drafts.size <= 1, `${backend.drafts.size} drafts are kept`);
+  } finally { await app?.close(); }
+});
+
+test('a refused draft write is shown to the person', { timeout: 60_000 }, async () => {
+  const backend = fakeBackend();
+  backend.failDraftSaves = '4 other windows already keep an unsaved diagram; save or close one, or wait until it is an hour old';
+  const app = await openApp({ backend });
+  try {
+    await app.load();
+    await app.draw();
+    await waitUntil(async () => (await app.toast.allTextContents()).join(' ').includes('4 other windows already keep'), { what: 'the notice' });
+  } finally { await app.close(); }
+});
+
 for (const dpr of [1, 2]) test(`a background-only edit is recovered with the replaced window at DPR${dpr}`, { timeout: 90_000 }, async () => {
   const backend = fakeBackend();
   const first = await openApp({ backend, dpr });

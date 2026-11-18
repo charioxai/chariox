@@ -41,7 +41,10 @@ export function persistence(chariox, api, loaded, feedHead) {
     const scene = JSON.parse(syncedSceneJSON(api));
     return { ...scene, appState: changedSettings(scene.appState, savedSettings) };
   };
-  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved);
+  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved, {
+    failed: message => draftNotice.show(message),
+    recovered: () => draftNotice.clear(),
+  });
   const settleDraft = () => { if (!unsaved()) draft.drop(); };
   const enqueue = work => {
     const pending = queue.then(work);
@@ -102,20 +105,31 @@ export function persistence(chariox, api, loaded, feedHead) {
     if (remote.version !== version) merge(remote);
   });
 
-  // The next tick asks again, so a standing failure is told once, as a notice and in the console.
-  let pollFailure = null;
+  // A standing failure is shown to the person once, as a notice, and the notice leaves when it works again.
+  const standing = () => {
+    let shown = null;
+    return {
+      show(message) {
+        if (message === shown) return false;
+        shown = message;
+        api.setToast({ message, closable: true, duration: Infinity });
+        return true;
+      },
+      clear() {
+        if (!shown) return;
+        if (api.getAppState().toast?.message === shown) api.setToast(null);
+        shown = null;
+      },
+    };
+  };
+  const draftNotice = standing();
+  // The next tick asks again, so a standing poll failure is told once, as a notice and in the console.
+  const pollNotice = standing();
   const pollFailed = error => {
     const message = `Could not update from the saved diagram: ${error?.message ?? error}`;
-    if (message === pollFailure) return;
-    pollFailure = message;
-    console.error(message);
-    api.setToast({ message, closable: true, duration: Infinity });
+    if (pollNotice.show(message)) console.error(message);
   };
-  const pollRecovered = () => {
-    if (!pollFailure) return;
-    if (api.getAppState().toast?.message === pollFailure) api.setToast(null);
-    pollFailure = null;
-  };
+  const pollRecovered = () => pollNotice.clear();
 
   let since = feedHead, stopped = false;
   (async () => {
@@ -137,9 +151,10 @@ export function persistence(chariox, api, loaded, feedHead) {
     keepDraft: draft.keep,
     flushDraft: draft.flush,
     // A replaced window's kept edits join this one's canvas and are saved with it. Their drafts stay
-    // where they are: a draft is removed only by its own window or by the backend's age limit, so a
-    // window that is still open never loses its edit to this one. Merging twice is harmless, since
-    // the newer version of each element wins.
+    // until this window's own draft, or the saved scene, holds what it merged; then exactly the
+    // revisions it read are retired, so a window that is still open and has written since never loses
+    // its edit to this one, and the drafts of earlier windows never pile up against the cap. Merging
+    // twice is harmless, since the newer version of each element wins.
     async recover() {
       const kept = await draft.recall();
       if (!kept.length) return;
@@ -152,7 +167,7 @@ export function persistence(chariox, api, loaded, feedHead) {
         }
       });
       draft.keep();
-      await draft.flush();
+      if (await draft.flush()) await draft.retire(kept);
     },
     stop: () => { stopped = true; },
     status: () => ({ saved: !failure, error: failure?.message ?? null }),

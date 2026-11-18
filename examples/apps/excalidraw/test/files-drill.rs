@@ -949,3 +949,97 @@ async fn a_draft_discarded_after_the_list_reads_as_no_scene() -> wasmtime::Resul
     assert_eq!(read["scene"], serde_json::Value::Null);
     Ok(())
 }
+
+/// Retiring names the revision the caller read: a window that wrote since keeps its newer draft, and
+/// the revisions of one window rise with every write.
+#[tokio::test(flavor = "current_thread")]
+async fn a_retirement_removes_only_the_revision_that_was_read() -> wasmtime::Result<()> {
+    let root = scratch("drafts-retire")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let revision = |read: &serde_json::Value| read["revision"].as_u64().unwrap();
+    let mut seen = Vec::new();
+    for pad in 1..=3 {
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": "open", "scene": big_scene("e", pad)}),
+        )
+        .await?;
+        let read = kept_drafts(&mut store, &app).await?;
+        seen.push(revision(&read[0]));
+    }
+    assert!(seen.windows(2).all(|pair| pair[0] < pair[1]), "{seen:?}");
+    let stale = invoke(
+        &mut store,
+        &app,
+        "retire_draft",
+        serde_json::json!({"id": "open", "revision": seen[1]}),
+    )
+    .await?;
+    assert_eq!(stale["retired"], false);
+    assert_eq!(kept_drafts(&mut store, &app).await?.len(), 1);
+    let current = invoke(
+        &mut store,
+        &app,
+        "retire_draft",
+        serde_json::json!({"id": "open", "revision": seen[2]}),
+    )
+    .await?;
+    assert_eq!(current["retired"], true);
+    assert!(kept_drafts(&mut store, &app).await?.is_empty());
+    // Retiring what is gone, or an id that names no file, changes nothing and says so.
+    let again = invoke(
+        &mut store,
+        &app,
+        "retire_draft",
+        serde_json::json!({"id": "open", "revision": seen[2]}),
+    )
+    .await?;
+    assert_eq!(again["retired"], false);
+    let refused = try_invoke(
+        &mut store,
+        &app,
+        "retire_draft",
+        serde_json::json!({"id": "../scene", "revision": 1}),
+    )
+    .await?;
+    assert!(refused.is_err());
+    Ok(())
+}
+
+/// The review's cap finding at the App: windows that each recover the one before and retire it never
+/// hold more than two drafts, so every replacement can write its own however many there are.
+#[tokio::test(flavor = "current_thread")]
+async fn replacements_that_retire_what_they_recovered_never_reach_the_cap() -> wasmtime::Result<()>
+{
+    let root = scratch("drafts-chain")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    for window in 0..12 {
+        let before = kept_drafts(&mut store, &app).await?;
+        assert!(
+            before.len() <= 1,
+            "window {window} found {} drafts",
+            before.len()
+        );
+        invoke(
+            &mut store,
+            &app,
+            "save_draft",
+            serde_json::json!({"id": format!("window-{window}"), "scene": big_scene(&format!("e{window}"), 1)}),
+        )
+        .await?;
+        for draft in &before {
+            let retired = invoke(
+                &mut store,
+                &app,
+                "retire_draft",
+                serde_json::json!({"id": draft["id"], "revision": draft["revision"]}),
+            )
+            .await?;
+            assert_eq!(retired["retired"], true);
+        }
+    }
+    assert_eq!(kept_drafts(&mut store, &app).await?.len(), 1);
+    Ok(())
+}
