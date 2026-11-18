@@ -32,45 +32,60 @@ pub(super) async fn service(
     state.owned.config_projection.update(config);
     tokio::spawn(async move {
         for (action, status, response) in responses {
-            // A command that never ran never calls the service: end with that reason, not a hang.
-            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(60), listener.accept())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("the machine service never received its `{action}` call")
-                })
-                .unwrap();
-            let mut bytes = Vec::new();
-            let header_end = loop {
-                let mut chunk = [0; 4096];
-                let n = socket.read(&mut chunk).await.unwrap();
-                assert!(n > 0 && bytes.len() < 131072);
-                bytes.extend_from_slice(&chunk[..n]);
-                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    break end + 4;
-                }
-            };
-            let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    let (key, value) = line.split_once(':')?;
-                    key.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse().unwrap())
-                })
-                .unwrap();
-            while bytes.len() < header_end + length {
-                let mut chunk = [0; 4096];
-                let n = socket.read(&mut chunk).await.unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-            }
-            let body: serde_json::Value =
-                serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
-            assert_eq!(body["request"]["action"], action);
-            let response = response.to_string();
-            socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            tokio::time::timeout(
+                SCRIPTED_REQUEST_DEADLINE,
+                serve_one(&listener, action, status, response),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!("the kernel never made the scripted `{action}` service request")
+            });
         }
     })
+}
+
+/// The longest a test waits for the kernel's next request to the scripted
+/// service, or for a job tool to answer: what never comes ends the test with
+/// its name instead of leaving the test run waiting.
+pub(super) const SCRIPTED_REQUEST_DEADLINE: Duration = Duration::from_secs(60);
+
+async fn serve_one(
+    listener: &tokio::net::TcpListener,
+    action: &'static str,
+    status: u16,
+    response: serde_json::Value,
+) {
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0; 4096];
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0 && bytes.len() < 131072);
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            break end + 4;
+        }
+    };
+    let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+    let length: usize = headers
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().unwrap())
+        })
+        .unwrap();
+    while bytes.len() < header_end + length {
+        let mut chunk = [0; 4096];
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+    assert_eq!(body["request"]["action"], action);
+    let response = response.to_string();
+    socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
 }
 
 pub(super) fn machine(state: &str) -> serde_json::Value {

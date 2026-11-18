@@ -606,15 +606,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // attempt left behind, and a wait on a live source shows as a live registration.
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
-                || t.goal.is_some()
-                || t.obligations
-                    .iter()
-                    .any(AgentObligation::requires_resolution)
+                || t.owns_unfinished_work()
                 || unresolved
                 || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
             {
                 return Ok(Outcome::Task(t));
             }
+            // An interrupted wake turn keeps the wait and wake prompt it was dispatched with;
+            // with its source settled and handled nothing can consume them.
+            t.wait = None;
+            t.pending_prompt_id = None;
             t.state = ExecutionState::Cancelled;
             t.reason = "Superseded by a later turn of the same agent; it holds no open work".into();
             t.pending_prompt_id = None;

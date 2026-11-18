@@ -344,7 +344,7 @@ impl KernelRuntimeState {
             .filter(|task| {
                 task.prompt_id != prompt.id()
                     && task.state == ExecutionState::Blocked
-                    && task.goal.is_none()
+                    && !task.owns_unfinished_work()
             })
         {
             let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
