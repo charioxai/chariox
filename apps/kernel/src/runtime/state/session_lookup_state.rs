@@ -79,6 +79,37 @@ impl KernelRuntimeState {
         self.owned.session_snapshot(session_id)
     }
 
+    /// The room and its agents as stored: enough for reads that only ask which agents a
+    /// room has and who may see them. A full snapshot also reads the room's tasks, wakes and
+    /// queued messages from the durable store and republishes it (b3, 2026-11-18: ~800 ms
+    /// each under load, twice per history outline, on the kernel's async workers).
+    pub(crate) fn session_with_agents(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let mut session = self.owned.session_store.get_session(session_id)?;
+        session.set_agents(self.owned.agent_store.get_session_agents(session_id));
+        Ok(session)
+    }
+
+    /// Identical reads in flight share one read (`in_flight_reads`).
+    pub(crate) async fn read_once<F, Fut>(
+        &self,
+        key: String,
+        read: F,
+    ) -> Result<LocalDaemonResponse, DaemonError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>>,
+    {
+        self.in_flight_reads.read(key, read).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_session_snapshot_builds() -> usize {
+        super::session::call_counts::SNAPSHOT_BUILDS.with(|count| count.replace(0))
+    }
+
     pub(crate) fn list_session_snapshots(&self) -> Vec<crate::session::RuntimeSession> {
         self.owned
             .session_store

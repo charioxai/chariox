@@ -450,6 +450,15 @@ impl ProviderProcessServiceStore {
         self.write().terminate_run_provider_only(session_id, run_id)
     }
 
+    pub(crate) fn run_ids_for_session(&self, session_id: &str) -> Vec<String> {
+        self.read()
+            .runs
+            .values()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_owned())
+            .collect()
+    }
+
     pub(crate) fn run_owners_for_session(&self, session_id: &str) -> Vec<(String, String)> {
         self.read()
             .runs

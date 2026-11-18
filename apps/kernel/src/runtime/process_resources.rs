@@ -539,6 +539,8 @@ impl PreparedDomain {
                     // kernel leaves behind while a sample runs): the tree
                     // says nothing, so read again next tick.
                     Err(sampling::SamplingError::Ended) => false,
+                    // A busy host answers late; the tree is as it was.
+                    Err(sampling::SamplingError::TimedOut) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(
                             "process_resources.monitor",
