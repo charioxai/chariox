@@ -1389,6 +1389,13 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
+        // OpenCode runs its free models with no account, as plain `opencode`
+        // does. The running server's connected catalog refuses a model that
+        // needs an account and names the models that are available.
+        if provider == "opencode" {
+            self.get(owner_user_id, provider, agent.provider_account_profile())?;
+            return Ok(());
+        }
         self.require_authenticated(
             owner_user_id,
             provider,
