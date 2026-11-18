@@ -812,6 +812,7 @@ mod machine_binding_tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "public-key".into(),
+            local_protocol: None,
         };
         let expected = crate::local::ControlPlaneMachineTarget {
             kernel_id: kernel.kernel_id.clone(),

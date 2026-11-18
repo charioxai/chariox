@@ -1,8 +1,8 @@
-//! Local 1012: a listed machine is online or reconnecting; machines gone longer are offline in their own list, and Remove forgets one.
+//! Local 1012: a listed machine is online or reconnecting; machines gone longer are offline in their own list, Remove forgets one, and a listed machine names its kernels with their protocols.
 use super::*;
 use crate::local::{
-    ForgetRemoteMachineRequest, OfflineMachineRecord, RemoteMachinePresence, RemoteMachineRecord,
-    RemoteMachineTrustStatus,
+    ForgetRemoteMachineRequest, OfflineMachineRecord, RemoteMachineKernel, RemoteMachinePresence,
+    RemoteMachineRecord, RemoteMachineTrustStatus,
 };
 
 #[test]
@@ -32,6 +32,10 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
             kernel_count: 1,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
+            kernels: vec![RemoteMachineKernel {
+                kernel_id: "kernel-1".to_string(),
+                local_protocol: Some(1012),
+            }],
         }],
         offline_machines: vec![OfflineMachineRecord {
             machine_id: "machine-2".into(),
@@ -52,7 +56,8 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
                     "pending": false,
                     "kernel_count": 1,
                     "available_providers": [],
-                    "provider_accounts": []
+                    "provider_accounts": [],
+                    "kernels": [{"kernel_id": "kernel-1", "local_protocol": 1012}]
                 }],
                 "offline_machines": [
                     { "machine_id": "machine-2", "display_name": "laptop", "last_seen_ms": 42 }

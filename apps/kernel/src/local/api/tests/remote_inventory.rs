@@ -57,6 +57,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                 leased_agent_count: 2,
                 local_session_count: 3,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });
@@ -138,6 +139,7 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });
@@ -202,6 +204,7 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
                 leased_agent_count: 0,
                 local_session_count: 1,
                 public_key: "sibling-public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });

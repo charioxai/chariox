@@ -393,6 +393,7 @@ fn a_kernel_that_appears_in_the_inventory_is_reported_once() {
         leased_agent_count: 0,
         local_session_count: 0,
         public_key: String::new(),
+        local_protocol: None,
     };
     projection.update(Default::default(), vec![presence("a")]);
     assert_eq!(projection.take_appeared_kernels(), vec!["a".to_string()]);

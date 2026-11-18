@@ -60,6 +60,7 @@ fn remote_machine_record(
         kernel_count: machine.kernel_count,
         available_providers: machine.available_providers,
         provider_accounts: machine.provider_accounts,
+        kernels: Vec::new(),
     }
 }
 

@@ -265,6 +265,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
                 kernel_count: 1,
                 available_providers: vec!["codex".into()],
                 provider_accounts: vec![],
+                kernels: Vec::new(),
             }],
             ..Default::default()
         },
@@ -281,6 +282,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
             leased_agent_count: 0,
             local_session_count: 5,
             public_key: "public-fixture-key".into(),
+            local_protocol: None,
         }],
     );
     for request in [LocalDaemonRequest::GetRoomListSnapshot(

@@ -2930,6 +2930,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-public-key".to_string(),
+            local_protocol: None,
         };
         app.remote_relay_inventory_projection_store()
             .update(Default::default(), vec![worker.clone()]);

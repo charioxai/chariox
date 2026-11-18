@@ -716,6 +716,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         kernel_count: 1,
         available_providers: vec!["codex".to_string()],
         provider_accounts: vec![account.clone()],
+        kernels: Vec::new(),
     };
     let kernel = RelayKernelPresence {
         kernel_id: "kernel-1".to_string(),
@@ -730,6 +731,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         leased_agent_count: 1,
         local_session_count: 2,
         public_key: "public-key".to_string(),
+        local_protocol: Some(1012),
     };
     let snapshot = serde_json::json!([
         LocalDaemonResponse::RemoteMachinesListed {
@@ -754,7 +756,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "998d2e69bd336f538f69202f69a62818eb0b95fd27635e32d00ac1ee50c6bf44"
+        "d3221c43ac71ba37d4d091c19a5691bee55dfdc6d8e2adf199baaff7a8a49004"
     );
 }
 

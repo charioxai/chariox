@@ -251,10 +251,15 @@ async fn live_pass(
             .extend(validate_live_relay_kernels(runtime_config, &known_kernel_ids, kernels).await);
     }
     for machine in &mut remote_machines {
-        machine.kernel_count = remote_kernels
+        machine.kernels = remote_kernels
             .iter()
             .filter(|kernel| kernel.machine_id == machine.machine_id)
-            .count();
+            .map(|kernel| crate::local::RemoteMachineKernel {
+                kernel_id: kernel.kernel_id.clone(),
+                local_protocol: kernel.local_protocol,
+            })
+            .collect();
+        machine.kernel_count = machine.kernels.len();
     }
     let listed = listed_remote_machines(
         remote_machines,
@@ -355,6 +360,7 @@ mod tests {
             kernel_count,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
+            kernels: Vec::new(),
         };
         let ids = |machines: Vec<crate::local::RemoteMachineRecord>| {
             machines

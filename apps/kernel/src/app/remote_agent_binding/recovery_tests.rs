@@ -135,6 +135,7 @@ impl Fixture {
                 leased_agent_count: if index == 0 { 8 } else { 0 },
                 local_session_count: 0,
                 public_key: worker_config.relay_public_key.clone(),
+                local_protocol: None,
             };
             let worker = Arc::new(Mutex::new(DaemonApp::bootstrap(worker_config).unwrap()));
             let state = worker.lock().await.relay_client_state();

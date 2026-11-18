@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
+            local_protocol: None,
         };
         if chariox_relay::protocol::canonical_peer_daemon_id(&registration.daemon_id)
             != Some(config.daemon_id.as_str())

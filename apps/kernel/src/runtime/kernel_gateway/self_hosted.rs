@@ -201,6 +201,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: format!("key-{kernel_id}"),
+                local_protocol: None,
             },
             relay_token: None,
             paired_at_ms: 1,

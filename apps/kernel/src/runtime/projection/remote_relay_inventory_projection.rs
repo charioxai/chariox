@@ -403,6 +403,7 @@ mod tests {
                     kernel_count: 1,
                     available_providers: vec!["dev-stub".to_string()],
                     provider_accounts: Vec::new(),
+                    kernels: Vec::new(),
                 }],
                 ..Default::default()
             },
@@ -419,6 +420,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
         let refreshed_at_ms = projection.refreshed_at_ms();
@@ -433,6 +435,7 @@ mod tests {
             kernel_count: 1,
             available_providers: vec!["dev-stub".to_string()],
             provider_accounts: Vec::new(),
+            kernels: Vec::new(),
         });
 
         assert_eq!(projection.refreshed_at_ms(), refreshed_at_ms);
@@ -463,6 +466,7 @@ mod tests {
                     kernel_count: 1,
                     available_providers: Vec::new(),
                     provider_accounts: Vec::new(),
+                    kernels: Vec::new(),
                 }],
                 ..Default::default()
             },
@@ -479,6 +483,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
         let refreshed_at_ms = projection.refreshed_at_ms();

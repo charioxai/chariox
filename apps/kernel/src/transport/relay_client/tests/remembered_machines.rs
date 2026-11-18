@@ -282,6 +282,7 @@ async fn seed_healthy_primary_inventory(app: &Arc<Mutex<DaemonApp>>) {
                 kernel_count: 1,
                 available_providers: Vec::new(),
                 provider_accounts: Vec::new(),
+                kernels: Vec::new(),
             }],
             offline_machines: Vec::new(),
         },
@@ -298,6 +299,7 @@ async fn seed_healthy_primary_inventory(app: &Arc<Mutex<DaemonApp>>) {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "live-public-key".to_string(),
+            local_protocol: None,
         }],
     );
 }
@@ -499,6 +501,7 @@ async fn register_silent_kernel(
             accepting_remote_leases: true,
             leased_agent_count: 0,
             local_session_count: 0,
+            local_protocol: None,
         },
         &config.relay_private_key,
     )

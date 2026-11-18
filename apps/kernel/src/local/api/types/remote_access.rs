@@ -207,6 +207,19 @@ pub struct RemoteMachineRecord {
     pub available_providers: Vec<String>,
     #[serde(default)]
     pub provider_accounts: Vec<chariox_relay::protocol::RelayProviderAccountSummary>,
+    /// The machine's live kernels, each with the protocol it registered with at the relay, so a
+    /// kernel's update changes the machine list that clients follow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernels: Vec<RemoteMachineKernel>,
+}
+
+/// One live kernel of a listed machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMachineKernel {
+    pub kernel_id: String,
+    /// Absent for a kernel older than the field: clients show its protocol as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 /// A machine this kernel saw before and that has been gone past the reconnecting window.

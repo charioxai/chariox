@@ -1617,6 +1617,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-public-key".into(),
+            local_protocol: None,
         };
         activate_hosted_slice_relay_token(
             &DaemonConfigProjectionStore::new(config.clone()),
@@ -1744,6 +1745,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "authenticated-worker-key".to_string(),
+            local_protocol: None,
         };
 
         let relaunch_worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")
@@ -1812,6 +1814,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-key".to_string(),
+            local_protocol: None,
         };
         assert!(!hosted_slice_activation_presence_ready(None, "worker-key")
             .expect("offline worker should remain pending"));

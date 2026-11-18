@@ -77,6 +77,7 @@ async fn home_does_not_settle_a_completion_the_worker_refuses_for_a_run_change_a
                         accepting_remote_leases: true,
                         leased_agent_count: 1,
                         local_session_count: 0,
+                        local_protocol: None,
                     },
                     &worker_private_key,
                 )

@@ -134,6 +134,7 @@ fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
         accepting_remote_leases: false,
         leased_agent_count: 0,
         local_session_count: 0,
+        local_protocol: None,
     }
 }
 

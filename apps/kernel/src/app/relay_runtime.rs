@@ -68,6 +68,7 @@ impl DaemonApp {
             accepting_remote_leases: self.config.accept_remote_leases,
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
+            local_protocol: Some(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
         }
     }
 

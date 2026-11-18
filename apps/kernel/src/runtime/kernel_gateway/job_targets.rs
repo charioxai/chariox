@@ -81,6 +81,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "enrolled-worker-key".into(),
+            local_protocol: None,
         };
         crate::local::ControlPlaneMachineTarget {
             kernel_id: presence.kernel_id.clone(),

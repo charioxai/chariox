@@ -889,6 +889,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
+            local_protocol: Some(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
         },
         &config.relay_private_key,
     )?;
@@ -1393,6 +1394,7 @@ mod relay_rtt_tests {
                             leased_agent_count: 0,
                             local_session_count: 0,
                             public_key: metadata_public_key,
+                            local_protocol: None,
                         }),
                         error: None,
                     })

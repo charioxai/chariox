@@ -122,6 +122,13 @@ export type RemoteMachineRecord = {
   kernel_count: number
   available_providers?: string[]
   provider_accounts?: ProviderAccountSummary[]
+  /** The machine's live kernels with the protocol each registered with; `local_protocol` absent for a kernel older than the field. */
+  kernels?: RemoteMachineKernel[]
+}
+
+export type RemoteMachineKernel = {
+  kernel_id: string
+  local_protocol?: number | null
 }
 
 /** A machine gone past the reconnecting window: shown only in the Machines window's offline table. */
@@ -356,6 +363,8 @@ export type RelayKernelPresence = {
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number
+  /** The kernel's local protocol version; null when the kernel predates the field. */
+  local_protocol?: number | null
 }
 
 export type ProviderAccountSummary = {

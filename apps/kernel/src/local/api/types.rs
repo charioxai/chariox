@@ -591,5 +591,7 @@ pub use workspace::*;
 /// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
 /// managed context copy carries several source Projects (`source_projects`); a remote machine has a `presence` (`online`, `reconnecting` for ten
 /// minutes after its connection drops), a machine gone longer is listed in the inventory's `offline_machines`, and
-/// `ForgetRemoteMachine` (Remove) deletes it from the kernel's machine registry.
+/// `ForgetRemoteMachine` (Remove) deletes it from the kernel's machine registry; a remote kernel, and each
+/// listed machine's `kernels`, carry the `local_protocol` the kernel registered with at the relay (absent for a
+/// kernel older than the field).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

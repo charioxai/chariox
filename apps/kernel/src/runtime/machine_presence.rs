@@ -136,6 +136,7 @@ pub(crate) fn reconcile(
                 kernel_count: 0,
                 available_providers: Vec::new(),
                 provider_accounts: Vec::new(),
+                kernels: Vec::new(),
             }),
             Absence::Offline => offline_machines.push(OfflineMachineRecord {
                 machine_id: entry.machine_id.clone(),
@@ -188,6 +189,7 @@ mod tests {
             kernel_count: 1,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
+            kernels: Vec::new(),
         }
     }
 

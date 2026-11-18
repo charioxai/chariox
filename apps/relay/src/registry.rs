@@ -794,6 +794,7 @@ impl RelayRegistry {
             leased_agent_count: registration.leased_agent_count,
             local_session_count: registration.local_session_count,
             public_key: registration.public_key.clone(),
+            local_protocol: registration.local_protocol,
         }
     }
 

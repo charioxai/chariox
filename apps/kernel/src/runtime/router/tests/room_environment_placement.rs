@@ -663,6 +663,7 @@ async fn append_failure_remains_unhealthy_and_retryable() {
         leased_agent_count: 0,
         local_session_count: 0,
         public_key: "authenticated-worker-key".to_string(),
+        local_protocol: None,
     };
     let database =
         rusqlite::Connection::open(state.config.user_config.state.path.as_ref().unwrap()).unwrap();

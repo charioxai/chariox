@@ -456,6 +456,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "unauthenticated-key".to_string(),
+            local_protocol: None,
         };
 
         assert!(!worker_presence_is_authenticated(&relay_state, &worker));
