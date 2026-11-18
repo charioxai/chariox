@@ -37,7 +37,7 @@ const TOOLS: [&str; 12] = [
     "export_document",
     "snapshot_documents",
     "save_draft",
-    "claim_draft",
+    "read_draft",
     "discard_draft",
 ];
 
@@ -136,11 +136,11 @@ async fn call(name: &str, input: &Value) -> Result<Value, AppError> {
         }
         "save_draft" => {
             let (docs, _) = index::load().await?;
-            let (editor, id) = (text(input, "editor")?, text(input, "id")?);
-            draft::save(&docs, editor, id, revision(input, "base_revision")?, input).await
+            let (id, base) = (text(input, "id")?, revision(input, "base_revision")?);
+            draft::save(&docs, id, base, input).await
         }
-        "claim_draft" => draft::claim(&index::load().await?.0, text(input, "editor")?).await,
-        "discard_draft" => draft::discard(text(input, "editor")?, text(input, "id")?),
+        "read_draft" => draft::read(&index::load().await?.0),
+        "discard_draft" => draft::discard(),
         _ => Err(error("TOOL_NOT_FOUND", name)),
     }
 }

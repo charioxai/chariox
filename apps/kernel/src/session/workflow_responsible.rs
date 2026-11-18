@@ -59,14 +59,6 @@ pub struct ResponsibleAgent<'a> {
     pub label: &'a str,
 }
 
-impl ResponsibleAgent<'_> {
-    /// Whether both name the same agent; the label is only how it was called when it was chosen.
-    pub fn is_same_agent(&self, other: &ResponsibleAgent<'_>) -> bool {
-        (self.kernel_id, self.room_id, self.agent_id)
-            == (other.kernel_id, other.room_id, other.agent_id)
-    }
-}
-
 /// The workflow an agent's responsible trigger listens for. It identifies the workflow on its
 /// own kernel, so the trigger can be found again to replace or end it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

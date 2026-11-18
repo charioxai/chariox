@@ -392,6 +392,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    /// The watcher runs of this kernel life.
+    watcher_runs: Arc<watchers::WatcherRuns>,
     managed_activity_transitions:
         managed_activity_persistence::ManagedActivityTransitionState,
     // Serializes local activity-bearing mutations with their durable observation. Callers must
@@ -426,6 +428,7 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -582,12 +585,15 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod notification_subscriptions;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
-mod usage_limit_stop_transitions;
 mod wake_driver;
+mod watchers;
+#[cfg(test)]
+mod watchers_tests;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -1300,6 +1306,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                watcher_runs: Default::default(),
                 managed_activity_transitions,
                 managed_activity_mutation_lock,
                 managed_kernel_quiescence,
@@ -1324,6 +1331,7 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(

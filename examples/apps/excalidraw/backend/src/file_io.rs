@@ -88,7 +88,7 @@ impl Drop for ExportFile {
     }
 }
 
-pub async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
+async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
     let (mut writer, reader) = chariox_app_sdk::bindings::wit_stream::new();
     let (result, remaining) = futures::join!(files::atomic_replace(name, reader), async move {
         writer.write_all(bytes).await

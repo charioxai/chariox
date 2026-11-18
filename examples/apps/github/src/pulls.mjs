@@ -6,7 +6,6 @@ const fail = (code, message) => { throw { code, message, retryable: false }; };
 const splitRepo = repo => { const [owner, name] = repo.split('/'); return { owner, repo: name }; };
 const DIFF_DEFAULT = 256 * 1024;
 const REVIEW_PAGES = 30;
-const CHECK_PAGES = 30;
 
 /** The GitHub search that finds what a scope of the pull request list means. */
 export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'any', labels = [], author, review, query }) {
@@ -41,23 +40,13 @@ export function createPulls({ accounts, github }) {
   const params = input => ({ ...where(input), number: input.number });
   const fetchPull = (account, input, options) => github.get(account, pullPath, params(input), options);
 
-  /** Every run and status of the commit: a failing or pending one on a later page decides the state as much as the first page's. */
   async function checksOf(account, input, sha) {
     const base = { ...where(input), ref: sha };
-    const pages = async (template, key) => {
-      const found = [];
-      for (let page = 1; page <= CHECK_PAGES; page++) {
-        const { data, link } = await github.get(account, template, base, { query: { per_page: 100, page } });
-        found.push(...(data[key] ?? []));
-        if (!link.next) return found;
-      }
-      return fail('TOO_MANY_CHECKS', `The commit has more than ${CHECK_PAGES * 100} ${key.replace('_', ' ')}; open it on GitHub to see them.`);
-    };
     const [runs, statuses] = await Promise.all([
-      pages('/repos/{owner}/{repo}/commits/{ref}/check-runs', 'check_runs'),
-      pages('/repos/{owner}/{repo}/commits/{ref}/status', 'statuses'),
+      github.get(account, '/repos/{owner}/{repo}/commits/{ref}/check-runs', base, { query: { per_page: 100 } }),
+      github.get(account, '/repos/{owner}/{repo}/commits/{ref}/status', base, { query: { per_page: 100 } }),
     ]);
-    return { runs, statuses };
+    return { runs: runs.data.check_runs ?? [], statuses: statuses.data.statuses ?? [] };
   }
 
   /** Every review: the decision is each reviewer's latest verdict, which may sit on a later page. */

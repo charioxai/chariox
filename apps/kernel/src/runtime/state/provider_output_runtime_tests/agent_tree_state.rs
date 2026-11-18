@@ -493,7 +493,7 @@ async fn a_node_carries_the_usage_limit_stop_its_room_projection_does_not_list()
     team.runtime
         .owned
         .agent_store
-        .change_usage_limit_stop(&team.child, |_| Some(Some(stop.clone())))
+        .set_agent_usage_limit_stop(&team.child, Some(stop.clone()))
         .unwrap();
     let after = read(&team);
     assert_eq!(after.nodes[0].usage_limit_stop, Some(stop));

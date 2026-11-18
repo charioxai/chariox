@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 mod actions;
 mod binding;
 mod diagram;
-mod draft;
 mod draw;
 mod element;
 mod export_cleanup;
@@ -34,12 +33,9 @@ fn view() -> Result<View, AppError> {
 }
 
 /// The tools that are not declared actions of the view.
-const OWN_TOOLS: [&str; 8] = [
+const OWN_TOOLS: [&str; 5] = [
     "load_scene",
     "save_scene",
-    "save_draft",
-    "read_drafts",
-    "discard_draft",
     "write_file",
     "read_file",
     "pick_file",
@@ -94,9 +90,6 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
             .await?;
             Ok(json!({"version": version.to_string()}))
         }
-        "save_draft" => draft::save(&input).await,
-        "read_drafts" => draft::read(),
-        "discard_draft" => draft::discard(&input),
         "write_file" => file_io::write(&input).await,
         "read_file" => file_io::read(&input).await,
         "pick_file" => file_io::pick(input["pickId"].as_str()).await,

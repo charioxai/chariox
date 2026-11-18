@@ -1,6 +1,6 @@
 // Documents view. It talks to the App only through window.chariox.call, which
 // runs the App's own tools as the signed-in person; agents use the same tools.
-import { drafts, newEditor } from "./draft.js"
+import { drafts } from "./draft.js"
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
@@ -35,21 +35,18 @@ async function call(tool, input = {}) {
   }
 }
 
-const keeper = drafts(call, newEditor())
+const keeper = drafts(call)
 
-// Unsaved edits end here, saved or given up, and the App forgets the draft with them. The draft is
-// the dirty document's, which is no longer the open one when the person moved on.
+// Unsaved edits end here, saved or given up, and the App forgets the draft with them.
 function settle() {
-  if (dirty && dirtyId) keeper.drop(dirtyId)
+  if (dirty) keeper.drop()
   dirty = false
-  dirtyId = null
 }
 
 const unsavedDraft = () => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null
 
 function edited() {
   dirty = true
-  dirtyId = current?.id ?? null
   keeper.keep(unsavedDraft)
 }
 
@@ -281,11 +278,11 @@ async function restoreDraft() {
   restored = true
   if (!draft || dirty) return
   const doc = documents.find((item) => item.id === draft.id)
-  if (!doc) return keeper.drop(draft.id)
+  if (!doc) return keeper.drop()
   await open(doc.id)
   const same = draft.base_revision === doc.revision && draft.title === doc.title && draft.folder === doc.folder
     && draft.content === $("content").value
-  if (same) return keeper.drop(draft.id)
+  if (same) return keeper.drop()
   $("title").value = draft.title
   $("folder").value = draft.folder
   $("content").value = draft.content

@@ -286,7 +286,7 @@ pub(super) async fn run_subscription_loop(
                         &close_requested,
                         KernelEvent::WorkflowRunUpdated {
                             session_id: subscription.session_id.clone(),
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                         },
                         Some(&event_stream_id),
                         Some(&subscription.session_id),

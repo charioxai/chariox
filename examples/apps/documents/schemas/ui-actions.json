@@ -232,14 +232,10 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the unsaved edit that one editor (a window) has of an open document, started from base_revision, so a replaced window finds it again. Replaces that editor's earlier draft of that document, and only that one; saving the document is update_document.",
+      "description": "Keep the person's unsaved edit of an open document, started from base_revision, so a replaced window finds it again. Replaces the earlier draft; saving the document is update_document.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "editor": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,64}$"
-          },
           "id": {
             "type": "string",
             "maxLength": 64
@@ -262,7 +258,6 @@
           }
         },
         "required": [
-          "editor",
           "id",
           "base_revision"
         ],
@@ -271,42 +266,21 @@
       "effect": "write"
     },
     {
-      "name": "claim_draft",
-      "description": "The unsaved edit a window starts with: its own editor's latest draft, otherwise a copy of the most recently kept draft of another editor, written under this editor's name; the other editor's draft stays. Null when there is none. A draft of a deleted document is not offered. A draft is removed only by its editor (discard_draft) or once it is a day old.",
+      "name": "read_draft",
+      "description": "Read the person's unsaved edit, kept by save_draft, or null when there is none or its document was deleted.",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "editor": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,64}$"
-          }
-        },
-        "required": [
-          "editor"
-        ],
+        "properties": {},
         "additionalProperties": false
       },
-      "effect": "write"
+      "effect": "read"
     },
     {
       "name": "discard_draft",
-      "description": "Drop one editor's unsaved edit of the document id once it is saved or given up; other editors' drafts and other documents' drafts stay.",
+      "description": "Drop the person's unsaved edit once it is saved or given up.",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "editor": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,64}$"
-          },
-          "id": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,64}$"
-          }
-        },
-        "required": [
-          "editor",
-          "id"
-        ],
+        "properties": {},
         "additionalProperties": false
       },
       "effect": "write"

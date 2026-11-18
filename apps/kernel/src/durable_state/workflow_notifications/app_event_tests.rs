@@ -46,6 +46,7 @@ fn register(f: &Fixture, enabled: bool) -> WorkflowNotificationSource {
         name: "received".into(),
         exit_ordinal: 0,
         display_name: "Received".into(),
+        options: Vec::new(),
     };
     match f
         .store

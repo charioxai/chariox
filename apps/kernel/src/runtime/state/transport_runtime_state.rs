@@ -59,6 +59,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.schedule_watchers();
         // A person's Tab takeover returns to the agent once they stop sending input; an agent waiting for
         // it continues now instead of at the next periodic sweep.
         if self.owned.kernel_browser_host.reclaim_idle_takeovers() {
@@ -292,6 +293,23 @@ impl KernelRuntimeState {
         self.owned
             .session_projection
             .session_change_sequence(session_id)
+    }
+
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.owned.person_inbox_changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.owned
+            .person_inbox_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    /// A notice arrived, a read, snooze or mute changed what an Inbox shows, or a subscription
+    /// changed.
+    pub(crate) fn record_person_inbox_change(&self) {
+        self.owned.person_inbox_changes.record_change();
     }
 
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {

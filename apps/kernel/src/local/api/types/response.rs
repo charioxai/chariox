@@ -25,6 +25,11 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
+    Watcher { watcher: WatcherSummary },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
+    WatcherDryRun { result: WatcherDryRun },
+    WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
@@ -302,6 +307,17 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
+    NotificationSubscriptions {
+        subscriptions: Vec<NotificationSubscriptionRow>,
+        responsibilities: Vec<PersonResponsibilityRow>,
+    },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {

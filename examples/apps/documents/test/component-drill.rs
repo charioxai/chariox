@@ -524,71 +524,33 @@ async fn a_document_lives_through_edits_history_restore_and_delete() -> wasmtime
     Ok(())
 }
 
-fn kept_drafts(root: &Scratch) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(root.0.join("drafts"))
-        .map(|dir| {
-            dir.map(|e| e.unwrap().file_name().into_string().unwrap())
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    names
-}
-
-/// Draft names as `kept_drafts` lists them; ids are random, so the expected names are sorted too.
-fn sorted(mut names: Vec<String>) -> Vec<String> {
-    names.sort();
-    names
-}
-
-async fn make(store: &mut Store<Host>, app: &Drill, title: &str) -> String {
-    ok(
+#[tokio::test(flavor = "current_thread")]
+async fn an_unsaved_edit_is_kept_for_the_next_window_with_the_revision_it_started_from(
+) -> wasmtime::Result<()> {
+    let (root, mut store, app) = runtime("draft").await?;
+    let (store, app) = (&mut store, &app);
+    let id = ok(
         store,
         app,
         "create_document",
-        json!({"title": title, "content": "v1"}),
+        json!({"title": "Plan", "content": "v1"}),
     )
     .await["id"]
         .as_str()
         .unwrap()
-        .to_owned()
-}
-
-/// Drafts are ordered by the millisecond they were kept, so each write waits for the next one.
-async fn keep(store: &mut Store<Host>, app: &Drill, editor: &str, id: &str, content: &str) {
-    std::thread::sleep(std::time::Duration::from_millis(3));
-    ok(
-        store,
-        app,
-        "save_draft",
-        json!({"editor": editor, "id": id, "base_revision": 1, "content": content}),
-    )
-    .await;
-}
-
-async fn claim(store: &mut Store<Host>, app: &Drill, editor: &str) -> Value {
-    ok(store, app, "claim_draft", json!({"editor": editor})).await["draft"].clone()
-}
-
-// Every path that touches a draft (save, claim, discard, rename, delete) has one test below, and the
-// last one is the scenario the review found: two windows on one document.
-
-#[tokio::test(flavor = "current_thread")]
-async fn save_keeps_the_revision_the_edit_started_from_for_its_own_editor() -> wasmtime::Result<()>
-{
-    let (root, mut store, app) = runtime("draft_save").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    assert_eq!(claim(store, app, "w1").await, Value::Null);
+        .to_owned();
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
+    );
 
     ok(
         store,
         app,
         "save_draft",
-        json!({"editor": "w1", "id": id, "base_revision": 1, "title": "Plan 2", "folder": "work", "content": "unsaved"}),
+        json!({"id": id, "base_revision": 1, "title": "Plan 2", "folder": "work", "content": "unsaved"}),
     )
     .await;
-    assert_eq!(kept_drafts(&root), vec![format!("{id}.w1.json")]);
     // Someone else saves revision 2; the draft still names the revision it started from.
     ok(
         store,
@@ -597,7 +559,7 @@ async fn save_keeps_the_revision_the_edit_started_from_for_its_own_editor() -> w
         json!({"id": id, "expected_revision": 1, "content": "v2"}),
     )
     .await;
-    let kept = claim(store, app, "w1").await;
+    let kept = ok(store, app, "read_draft", json!({})).await["draft"].clone();
     assert_eq!(kept["id"], id.as_str());
     assert_eq!(kept["base_revision"], 1);
     assert_eq!(kept["title"], "Plan 2");
@@ -609,351 +571,35 @@ async fn save_keeps_the_revision_the_edit_started_from_for_its_own_editor() -> w
         "a draft is not a revision"
     );
 
-    // A later save of the same editor replaces its draft; it does not add a second.
-    keep(store, app, "w1", &id, "typed more").await;
-    assert_eq!(kept_drafts(&root).len(), 1);
-    assert_eq!(claim(store, app, "w1").await["content"], "typed more");
-
     let missing = call(
         store,
         app,
         "save_draft",
-        json!({"editor": "w1", "id": "nope", "base_revision": 1, "content": "x"}),
+        json!({"id": "nope", "base_revision": 1, "content": "x"}),
     )
     .await;
     assert_eq!(missing.unwrap_err().code, "NOT_FOUND");
-    for editor in ["", "../w", "w.1", &"e".repeat(65)] {
-        let bad = call(
-            store,
-            app,
-            "save_draft",
-            json!({"editor": editor, "id": id, "base_revision": 1, "content": "x"}),
-        )
-        .await;
-        assert_eq!(
-            bad.unwrap_err().code,
-            "INVALID_ARGUMENT",
-            "editor {editor:?}"
-        );
-    }
-    let no_editor = call(
+
+    ok(store, app, "discard_draft", json!({})).await;
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
+    );
+    assert!(!root.0.join("draft.json").exists());
+
+    // A draft of a document that was deleted has nothing to come back to.
+    ok(
         store,
         app,
         "save_draft",
-        json!({"id": id, "base_revision": 1, "content": "x"}),
+        json!({"id": id, "base_revision": 2, "content": "late"}),
     )
     .await;
-    assert!(no_editor.is_err(), "a draft names its editor");
-    assert_eq!(kept_drafts(&root).len(), 1);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn claim_gives_an_editor_its_own_draft_else_a_copy_of_the_latest_of_another(
-) -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_claim").await?;
-    let (store, app) = (&mut store, &app);
-    let (plan, notes) = (
-        make(store, app, "Plan").await,
-        make(store, app, "Notes").await,
-    );
-    keep(store, app, "old", &plan, "older").await;
-    keep(store, app, "old", &notes, "newer").await;
-
-    // The replacement is a new editor: it is handed a copy of the latest draft, and the source stays.
-    let copied = claim(store, app, "new").await;
+    ok(store, app, "delete_document", json!({"id": id})).await;
     assert_eq!(
-        (copied["id"].as_str(), copied["content"].as_str()),
-        (Some(notes.as_str()), Some("newer"))
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
     );
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![
-            format!("{notes}.new.json"),
-            format!("{notes}.old.json"),
-            format!("{plan}.old.json")
-        ]),
-        "the copy is the new editor's own; nothing of the old editor is moved or removed"
-    );
-    // Asked again, it keeps what it has.
-    assert_eq!(claim(store, app, "new").await["content"], "newer");
-    keep(store, app, "new", &plan, "own plan").await;
-    assert_eq!(
-        claim(store, app, "new").await["content"],
-        "own plan",
-        "an editor with a draft of its own takes none of another's"
-    );
-    assert_eq!(kept_drafts(&root).len(), 4);
-    assert_eq!(claim(store, app, "idle").await["content"], "own plan");
-    for editor in ["../w", ""] {
-        let bad = call(store, app, "claim_draft", json!({"editor": editor})).await;
-        assert_eq!(bad.unwrap_err().code, "INVALID_ARGUMENT");
-    }
-    Ok(())
-}
-
-/// The review's first repro: the only draft of a window that is still open must outlive another
-/// window opening, restoring it and discarding it.
-#[tokio::test(flavor = "current_thread")]
-async fn a_live_editors_only_draft_survives_another_editor_claiming_and_discarding(
-) -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_live").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    keep(store, app, "a", &id, "typed in the open window").await;
-
-    // Another window starts, is handed the edit, and its person gives it up.
-    assert_eq!(
-        claim(store, app, "b").await["content"],
-        "typed in the open window"
-    );
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "b", "id": id}),
-    )
-    .await;
-    assert_eq!(kept_drafts(&root), vec![format!("{id}.a.json")]);
-
-    // The first window is replaced; its successor still finds the edit.
-    assert_eq!(
-        claim(store, app, "a-next").await["content"],
-        "typed in the open window"
-    );
-    // A window that is still open keeps its own draft through all of it.
-    assert_eq!(
-        claim(store, app, "a").await["content"],
-        "typed in the open window"
-    );
-    Ok(())
-}
-
-/// A draft older than a day is swept by the next claim; one that is not stays, whoever kept it.
-#[tokio::test(flavor = "current_thread")]
-async fn a_claim_sweeps_drafts_older_than_a_day_and_no_others() -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_age").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    keep(store, app, "fresh", &id, "recent").await;
-    let stale = json!({
-        "editor": "stale", "id": id, "base_revision": 1, "saved_at_ms": 1,
-        "title": "", "folder": "", "content": "from long ago",
-    });
-    fs::write(
-        root.0.join("drafts").join(format!("{id}.stale.json")),
-        stale.to_string(),
-    )?;
-    assert_eq!(kept_drafts(&root).len(), 2);
-    assert_eq!(claim(store, app, "next").await["content"], "recent");
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![format!("{id}.fresh.json"), format!("{id}.next.json")]),
-        "the day-old draft is gone, the recent one and its copy stay"
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn discard_removes_only_the_draft_of_that_editor_and_document() -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_discard").await?;
-    let (store, app) = (&mut store, &app);
-    let (plan, notes) = (
-        make(store, app, "Plan").await,
-        make(store, app, "Notes").await,
-    );
-    for (editor, id) in [("w1", &plan), ("w2", &plan), ("w1", &notes)] {
-        keep(store, app, editor, id, "edit").await;
-    }
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "w1", "id": plan}),
-    )
-    .await;
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![format!("{notes}.w1.json"), format!("{plan}.w2.json")])
-    );
-    // Discarding what is not there is not an error, and removes nothing else.
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "w3", "id": plan}),
-    )
-    .await;
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "w1", "id": plan}),
-    )
-    .await;
-    assert_eq!(kept_drafts(&root).len(), 2);
-    for input in [
-        json!({"editor": "w1", "id": "../documents"}),
-        json!({"editor": "../w", "id": plan}),
-        json!({"editor": "w1.x", "id": plan}),
-        json!({"editor": "w1"}),
-        json!({"id": plan}),
-    ] {
-        assert!(call(store, app, "discard_draft", input).await.is_err());
-    }
-    assert_eq!(kept_drafts(&root).len(), 2);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn renaming_or_moving_a_document_leaves_every_editors_draft_of_it() -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_rename").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    keep(store, app, "w1", &id, "first").await;
-    keep(store, app, "w2", &id, "second").await;
-    // Another editor renames and files the document; its id, and with it every draft's key, stays.
-    ok(
-        store,
-        app,
-        "update_document",
-        json!({"id": id, "expected_revision": 1, "title": "Renamed", "folder": "work"}),
-    )
-    .await;
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![format!("{id}.w1.json"), format!("{id}.w2.json")])
-    );
-    let first = claim(store, app, "w1").await;
-    assert_eq!(
-        (first["content"].as_str(), first["base_revision"].as_u64()),
-        (Some("first"), Some(1))
-    );
-    assert_eq!(claim(store, app, "w2").await["content"], "second");
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn deleting_a_document_offers_none_of_its_drafts_removes_none_and_refuses_new_ones(
-) -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_delete").await?;
-    let (store, app) = (&mut store, &app);
-    let (gone, kept) = (
-        make(store, app, "Gone").await,
-        make(store, app, "Kept").await,
-    );
-    keep(store, app, "w1", &gone, "a").await;
-    keep(store, app, "w2", &gone, "b").await;
-    keep(store, app, "w2", &kept, "c").await;
-    ok(store, app, "delete_document", json!({"id": gone})).await;
-
-    // A window that starts now is offered the draft of the document that is left; the drafts of the
-    // deleted one are not offered, and no one but their editors (or a day's age) removes them.
-    assert_eq!(claim(store, app, "w3").await["id"], kept.as_str());
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![
-            format!("{gone}.w1.json"),
-            format!("{gone}.w2.json"),
-            format!("{kept}.w2.json"),
-            format!("{kept}.w3.json")
-        ])
-    );
-    let late = call(
-        store,
-        app,
-        "save_draft",
-        json!({"editor": "w1", "id": gone, "base_revision": 1, "content": "late"}),
-    )
-    .await;
-    assert_eq!(late.unwrap_err().code, "NOT_FOUND");
-    ok(store, app, "delete_document", json!({"id": kept})).await;
-    assert_eq!(claim(store, app, "w4").await, Value::Null);
-    assert_eq!(kept_drafts(&root).len(), 4);
-    // The editor of a deleted document's draft may still discard it.
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "w1", "id": gone}),
-    )
-    .await;
-    assert_eq!(kept_drafts(&root).len(), 3);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn the_drafts_kept_at_once_are_capped_per_editor_and_document_pair() -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_cap").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    for n in 0..32 {
-        keep(store, app, &format!("w{n}"), &id, "edit").await;
-    }
-    let over = call(
-        store,
-        app,
-        "save_draft",
-        json!({"editor": "extra", "id": id, "base_revision": 1, "content": "x"}),
-    )
-    .await;
-    assert_eq!(over.unwrap_err().code, "INVALID_STATE");
-    keep(store, app, "w7", &id, "replaced").await;
-    assert_eq!(kept_drafts(&root).len(), 32, "a kept pair is still written");
-    // A new window is still handed the edit; no copy fits, so the source stays and nothing else is
-    // removed to make room.
-    assert_eq!(claim(store, app, "late").await["content"], "replaced");
-    assert_eq!(kept_drafts(&root).len(), 32);
-    assert!(!kept_drafts(&root).contains(&format!("{id}.late.json")));
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn two_windows_on_one_document_keep_their_own_edit_when_the_other_saves_or_is_replaced(
-) -> wasmtime::Result<()> {
-    let (root, mut store, app) = runtime("draft_two_windows").await?;
-    let (store, app) = (&mut store, &app);
-    let id = make(store, app, "Plan").await;
-    keep(store, app, "w1", &id, "first window").await;
-    keep(store, app, "w2", &id, "second window").await;
-
-    // The first window saves its edit and gives up its draft: the second window's stays.
-    ok(
-        store,
-        app,
-        "update_document",
-        json!({"id": id, "expected_revision": 1, "content": "first window"}),
-    )
-    .await;
-    ok(
-        store,
-        app,
-        "discard_draft",
-        json!({"editor": "w1", "id": id}),
-    )
-    .await;
-    assert_eq!(kept_drafts(&root), vec![format!("{id}.w2.json")]);
-
-    // The first window is replaced: its successor is handed a copy of the second window's edit, and
-    // the second window, still open, keeps its own.
-    let handed = claim(store, app, "w1-next").await;
-    assert_eq!(handed["content"], "second window");
-    assert_eq!(
-        handed["base_revision"], 1,
-        "it names the revision it started from"
-    );
-    assert_eq!(
-        kept_drafts(&root),
-        sorted(vec![format!("{id}.w1-next.json"), format!("{id}.w2.json")])
-    );
-    // The second window keeps typing and saves again; it writes its own draft and nothing of the
-    // successor's is overwritten.
-    keep(store, app, "w2", &id, "second again").await;
-    assert_eq!(
-        claim(store, app, "w1-next").await["content"],
-        "second window"
-    );
-    assert_eq!(claim(store, app, "w2").await["content"], "second again");
     Ok(())
 }
 
