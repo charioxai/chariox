@@ -463,14 +463,22 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
     }
-    /// The live follows of peers an agent made in any of its tasks.
-    pub(crate) fn agent_peer_follows(
+    /// The live registrations an agent holds in its tasks other than `task`: a follow or a
+    /// delegate's completion outlives the turn that made it.
+    pub(crate) fn agent_registrations_of_other_tasks(
         &self,
         room: &str,
         agent: &str,
+        task: &str,
     ) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
-        peer_follows::held_by(&db, room, agent)
+        let mut q = db
+            .prepare("SELECT r.payload FROM agent_registrations r JOIN agent_tasks t ON t.task_id=r.task_id WHERE t.room_id=?1 AND t.agent_id=?2 AND t.task_id<>?3 AND json_valid(r.payload) AND COALESCE(json_extract(r.payload,'$.live'),0)=1 ORDER BY r.rowid")
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, task], |r| r.get::<_, String>(0))
+            .map_err(sql)?;
+        rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
     pub(crate) fn agent_delivery_front(
         &self,

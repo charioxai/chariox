@@ -147,7 +147,7 @@ impl KernelRuntimeState {
                 serde_json::json!({
                     "task":task,
                     "registrations":self.owned.durable_state_store.agent_registrations(task_id)?,
-                    "peer_follows":self.owned.durable_state_store.agent_peer_follows(room, actor)?,
+                    "other_tasks":self.owned.durable_state_store.agent_registrations_of_other_tasks(room, actor, task_id)?,
                 })
             }
             "chariox.events.unsubscribe" => {

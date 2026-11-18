@@ -99,7 +99,7 @@ impl Fixture {
             },
         });
     }
-    fn yield_now(&self) {
+    pub(super) fn yield_now(&self) {
         self.apply(Operation::Yield {
             task: "p".into(),
             prompt: "p".into(),
