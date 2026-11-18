@@ -177,3 +177,34 @@ async fn kernel_access_revocation_stops_waiting_and_deferred_provider_launches()
         "{result}"
     );
 }
+
+#[tokio::test]
+async fn a_grant_holders_answer_to_a_card_returns_a_small_acknowledgement_not_the_room() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    kernel.control("large-room").await;
+    kernel.control("agent-question").await;
+    let room = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+    assert!(
+        room.to_string().len() > 600_000,
+        "the Room must be larger than any reply the gateway keeps: {} bytes",
+        room.to_string().len()
+    );
+    let reply = holder.request(answer("routine-access-question", "continue", None));
+    assert_eq!(
+        reply["response"],
+        serde_json::json!({"InteractionResponded":{
+            "interaction_id":"routine-access-question","choice_id":"continue","outcome":"answered",
+        }}),
+        "{reply}"
+    );
+    assert!(reply.to_string().len() < 1024, "{reply}");
+    assert!(
+        kernel
+            .request(answer("routine-access-question", "continue", None))
+            .await["error"]
+            .is_object(),
+        "the answer closed the card"
+    );
+}

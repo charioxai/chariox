@@ -132,7 +132,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case promptCancelled
     case nothingToStop
     case agentTaskUpdated(taskID: String)
-    case interactionResponded(interactionID: String, session: RuntimeSession)
+    case interactionResponded(interactionID: String, choiceID: String)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
     case workspaceLinkAttached(session: RuntimeSession)
     case workspaceLiveSyncModeUpdated(session: RuntimeSession)
@@ -233,7 +233,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "InteractionResponded" }) {
             let payload = try container.decode(InteractionRespondedPayload.self, forKey: key)
-            self = .interactionResponded(interactionID: payload.interactionID, session: payload.session)
+            self = .interactionResponded(interactionID: payload.interactionID, choiceID: payload.choiceID)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLiveSyncStatus" }) {
@@ -484,11 +484,11 @@ private struct AgentTaskUpdatedPayload: Decodable, Equatable, Sendable {
 
 private struct InteractionRespondedPayload: Decodable, Equatable, Sendable {
     let interactionID: String
-    let session: RuntimeSession
+    let choiceID: String
 
     enum CodingKeys: String, CodingKey {
         case interactionID = "interaction_id"
-        case session
+        case choiceID = "choice_id"
     }
 }
 

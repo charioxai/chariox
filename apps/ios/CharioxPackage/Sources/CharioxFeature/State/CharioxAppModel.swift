@@ -424,8 +424,16 @@ public final class CharioxAppModel {
         ),
         to: try endpointURL()
       )
-      guard case .interactionResponded(_, let updatedSession) = response else {
+      guard case .interactionResponded = response else {
         throw KernelClientError.unexpectedResponse(String(describing: response))
+      }
+      // The answer is an acknowledgement; the Room is read from the kernel.
+      let state = try await client.send(
+        .getSessionState(sessionID: session.id),
+        to: try endpointURL()
+      )
+      guard case .sessionState(let updatedSession) = state else {
+        throw KernelClientError.unexpectedResponse(String(describing: state))
       }
       upsert(updatedSession)
       selectedSessionID = updatedSession.id

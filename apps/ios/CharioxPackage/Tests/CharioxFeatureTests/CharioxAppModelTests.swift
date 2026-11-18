@@ -792,7 +792,8 @@ import Testing
     )
     let updatedSession = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 201)
     let client = SequencedMockKernelClient(responses: [
-        .interactionResponded(interactionID: interaction.id, session: updatedSession),
+        .interactionResponded(interactionID: interaction.id, choiceID: interaction.choices[0].id),
+        .sessionState(updatedSession),
     ])
     let defaults = UserDefaults(suiteName: "CharioxAppModelTests.interaction")!
     defaults.removePersistentDomain(forName: "CharioxAppModelTests.interaction")

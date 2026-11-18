@@ -20,6 +20,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
+import { getSessionState } from "./session-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
 import { resolveAgentLaunchAccountProfile, resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
@@ -170,11 +171,12 @@ export async function respondToInteraction(
   const response = await client.send<Record<string, unknown>>(
     respondToInteractionRequest(sessionId, interactionId, choiceId, customReply, proof),
   )
-  const payload = expectVariant<{ interaction_id: string; session: RuntimeSession }>(response, "InteractionResponded")
-  if (payload.interaction_id !== interactionId || payload.session?.id !== sessionId) {
+  const payload = expectVariant<{ interaction_id: string; choice_id: string; outcome: string }>(response, "InteractionResponded")
+  if (payload.interaction_id !== interactionId || payload.choice_id !== choiceId) {
     throw new Error("interaction response identity mismatch")
   }
-  return normalizeRuntimeSession(payload.session)
+  // The kernel's reply is an acknowledgement; the terminal reads the Room it repaints from the kernel.
+  return getSessionState(client, sessionId)
 }
 
 function isRecoverableProviderError(error: unknown): boolean {

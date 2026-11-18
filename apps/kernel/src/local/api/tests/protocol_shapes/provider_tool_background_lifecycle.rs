@@ -8,7 +8,7 @@ fn mp10_provider_tool_background_lifecycle_snapshot_and_hash() {
     let bytes = include_bytes!("provider-tool-background-lifecycle.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "3a0c5cdfa582f7f60b3987c16a902e978fb9714277b72b2617e9258209c5897b"
+        "9983cbe6d5df5a42192e5b6ecd370e0dbd6dc00547fca5d19648b499b12b30be"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

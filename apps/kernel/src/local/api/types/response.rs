@@ -398,7 +398,9 @@ pub enum LocalDaemonResponse {
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
     RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
-    InteractionResponded { interaction_id: String, session: RuntimeSession, },
+    /// Protocol 1034: a small acknowledgement. The Room state follows on the event stream,
+    /// never in this reply (a large Room made it exceed the gateway's reply limit).
+    InteractionResponded { interaction_id: String, choice_id: String, outcome: InteractionOutcome, },
     DeploymentCredentialEnrollmentArmed {
         enrollment_id: String,
         profile_id: String,

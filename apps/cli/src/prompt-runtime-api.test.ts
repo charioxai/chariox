@@ -13,16 +13,22 @@ import {
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 
-test("interaction responses must match both requested session and interaction", async () => {
-  for (const [sessionId, interactionId] of [["other", "approval"], ["session-1", "other"], ["session-1", undefined]]) {
+test("an interaction answer is an acknowledgement for the requested interaction and choice; the terminal then reads the Room", async () => {
+  for (const [interactionId, choiceId] of [["other", "allow"], ["approval", "other"], [undefined, "allow"]]) {
     await assert.rejects(respondToInteraction(fakeClient({ InteractionResponded: {
-      session: runtimeSession(sessionId!), interaction_id: interactionId,
+      interaction_id: interactionId, choice_id: choiceId, outcome: "answered",
     } }), "session-1", "approval", "allow", null), /identity mismatch/)
   }
-  const result = await respondToInteraction(fakeClient({ InteractionResponded: {
-    session: runtimeSession("session-1"), interaction_id: "approval",
-  } }), "session-1", "approval", "allow", null)
+  const sent: Array<Record<string, unknown>> = []
+  const client = { send: async (request: Record<string, unknown>) => {
+    sent.push(request)
+    return "RespondToInteraction" in request
+      ? { InteractionResponded: { interaction_id: "approval", choice_id: "allow", outcome: "answered" } }
+      : { SessionState: { session: runtimeSession("session-1"), processes: [] } }
+  } } as unknown as LocalIpcClient
+  const result = await respondToInteraction(client, "session-1", "approval", "allow", null)
   assert.equal(result.id, "session-1")
+  assert.deepEqual(sent.map(request => Object.keys(request)[0]), ["RespondToInteraction", "GetSessionState"])
 })
 
 test("submitPromptWithRecovery merges projected agent activity into returned session", async () => {
