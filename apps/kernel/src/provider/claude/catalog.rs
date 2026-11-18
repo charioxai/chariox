@@ -28,10 +28,23 @@ const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
     ("claude-fable-5-1", "Fable 5.1"),
 ];
 
+// The names `--model` takes for the newest model of each family, as the official picker lists them.
+const CLAUDE_KNOWN_ALIASES: &[(&str, &str)] = &[
+    ("haiku", "claude-haiku-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("opus", "claude-opus-5-5"),
+    ("fable", "claude-fable-5-1"),
+];
+
 pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
     let mut models = BTreeMap::new();
     for (id, name) in claude_catalog_model_entries() {
         models.insert(id.clone(), claude_model(&id, &name));
+    }
+    for (alias, id) in CLAUDE_KNOWN_ALIASES {
+        if let Some(model) = models.get_mut(*id) {
+            model.aliases.push((*alias).to_string());
+        }
     }
     let providers = [
         (CLAUDE_HEADLESS_PROVIDER_ID, "Claude headless"),
@@ -283,6 +296,16 @@ mod tests {
                 .models
                 .values()
                 .all(|model| !model.name.contains("(latest)")));
+        }
+    }
+
+    #[test]
+    fn the_offline_list_names_each_family_alias_so_a_named_alias_resolves_without_the_picker() {
+        let catalog = claude_provider_catalog();
+        for provider in catalog.all {
+            for (alias, id) in CLAUDE_KNOWN_ALIASES {
+                assert_eq!(provider.models[*id].aliases, [*alias], "{alias}");
+            }
         }
     }
 
