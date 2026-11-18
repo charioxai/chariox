@@ -92,9 +92,11 @@ async fn a_request_is_binary_exactly_where_the_connection_offered_it() {
             );
             send(
                 &mut daemon,
-                RelayEnvelope::DaemonRegister {
-                    registration: test_registration("kernel", "machine", "Linux", 10),
-                },
+                signed_register(
+                    &url,
+                    &handshake,
+                    test_registration("kernel", "machine", "Linux", 10),
+                ),
             )
             .await;
             timeout(Duration::from_secs(3), async {

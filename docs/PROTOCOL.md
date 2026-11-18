@@ -16,6 +16,29 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Relay registration proof (relay peer 450)
+
+A relay token and a kernel's public key do not make a kernel. The relay answers
+every WebSocket upgrade with a fresh 32-byte challenge in the
+`x-chariox-registration-challenge` response header. `daemon_register` carries
+`proof`: the kernel identity key's P-256 ECDSA signature (SHA-256, 64-byte
+`r‖s`, base64) over the JSON array `["chariox-relay-registration-v1", <relay
+address>, <kernel id>, <hex SHA-256 of the relay token>, <challenge>]`. The relay
+address is the upgrade's `Host` header, lowercased: the kernel takes it from the
+relay URL it dials and the relay reads it from the same request, so a proof made
+for one relay is refused by another.
+
+The relay verifies the proof against the registration's `public_key` after the
+token check and before it binds a realm, admits the kernel or displaces the live
+connection of the same kernel. A refused proof closes only the refused socket,
+with the reason, and logs `relay_registration_proof_refused`. One challenge
+admits one registration: a second `daemon_register` on the same socket is closed
+with `relay connection already registered; reconnect to register again`. A
+heartbeat renews the token but cannot change the proven key; a heartbeat
+registration with another `public_key` closes the socket with `daemon identity
+key changed; reconnect to register it`. A kernel refuses a relay that offers no
+challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and

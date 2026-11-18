@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
-use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_access_native_launch_rechecks_after_temporary_discovery() {
@@ -142,9 +142,11 @@ async fn revoked_native_launch(connected: bool) {
         async move {
             let mut first_discovery = true;
             loop {
-                let mut socket = accept_async(listener.accept().await.unwrap().0)
-                    .await
-                    .unwrap();
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(
+                    listener.accept().await.unwrap().0,
+                )
+                .await
+                .unwrap();
                 match receive(&mut socket).await {
                     RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
                         if first_discovery {

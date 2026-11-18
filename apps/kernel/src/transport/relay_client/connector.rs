@@ -934,18 +934,23 @@ async fn run_daemon_relay_connector_inner(
                 if static_relay.is_some() {
                     registration.auth_token = active_relay_token.clone();
                 }
-                let register = RelayEnvelope::DaemonRegister { registration };
-                if send_outgoing_envelope(&outgoing_tx, register).is_err() {
+                let register = crate::transport::relay_socket_connect::daemon_register(
+                    &relay_url,
+                    &handshake,
+                    registration,
+                    &router.relay_private_key(),
+                )
+                .map_err(|error| error.to_string());
+                let sent = register.and_then(|register| {
+                    send_outgoing_envelope(&outgoing_tx, register)
+                        .map_err(|_| "failed to send relay registration".to_string())
+                });
+                if let Err(reason) = sent {
                     writer_task.abort();
                     clear_remote_inventory_projection(&router);
-                    disconnect_relay(&state, "failed to send relay registration", presence).await;
+                    disconnect_relay(&state, &reason, presence).await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
-                    record_relay_reconnect(
-                        &router,
-                        &relay_url,
-                        "failed to send relay registration",
-                        delay,
-                    );
+                    record_relay_reconnect(&router, &relay_url, &reason, delay);
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if wait_for_reconnect_delay(shutdown, delay).await {
                         break 'connector;

@@ -68,9 +68,11 @@ async fn mp08_peer96_binary_events_negotiate_per_connection_and_downgrade_for_ei
             );
             send(
                 &mut daemon,
-                RelayEnvelope::DaemonRegister {
-                    registration: test_registration("kernel", "machine", "Linux", 10),
-                },
+                signed_register(
+                    &url,
+                    &handshake,
+                    test_registration("kernel", "machine", "Linux", 10),
+                ),
             )
             .await;
             timeout(Duration::from_secs(3), async {

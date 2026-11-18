@@ -29,14 +29,20 @@ async fn run_controlled_workspace_live_sync_target(
         if *shutdown.borrow() {
             return;
         }
-        let (mut socket, _) = connect_async(&relay_url)
+        let (mut socket, socket_handshake) = connect_async(&relay_url)
             .await
             .expect("controlled workspace target should connect to relay");
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: registration.clone(),
-                })
+                serde_json::to_string(
+                    &crate::transport::relay_socket_connect::daemon_register(
+                        &relay_url,
+                        &socket_handshake,
+                        registration.clone(),
+                        &private_key,
+                    )
+                    .unwrap(),
+                )
                 .expect("controlled target registration should serialize")
                 .into(),
             ))

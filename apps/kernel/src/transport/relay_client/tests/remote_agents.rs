@@ -53,30 +53,36 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
     worker_config.host_machine_id = "termination-machine".to_string();
     let worker_private_key = worker_config.relay_private_key.clone();
     let worker_public_key = worker_config.relay_public_key.clone();
-    let (mut worker_socket, _) = connect_async(&relay_url)
+    let (mut worker_socket, worker_socket_handshake) = connect_async(&relay_url)
         .await
         .expect("worker fixture should connect to relay");
     worker_socket
         .send(Message::Text(
-            serde_json::to_string(&chariox_relay::protocol::RelayEnvelope::DaemonRegister {
-                registration: chariox_relay::protocol::DaemonRegistration {
-                    auth_token: "termination-test-token".to_string(),
-                    daemon_id: worker_config.daemon_id.clone(),
-                    machine_id: worker_config.host_machine_id.clone(),
-                    machine_alias: Some("termination-machine".to_string()),
-                    os_name: Some("Linux".to_string()),
-                    kernel_started_at_ms: crate::session::unix_epoch_ms(),
-                    daemon_alias: None,
-                    kernel_alias: Some("termination-worker".to_string()),
-                    public_key: worker_public_key.clone(),
-                    capabilities: vec!["kernel_ws".to_string()],
-                    available_providers: vec!["managed-dev-stub".to_string()],
-                    provider_accounts: Vec::new(),
-                    accepting_remote_leases: true,
-                    leased_agent_count: 1,
-                    local_session_count: 0,
-                },
-            })
+            serde_json::to_string(
+                &crate::transport::relay_socket_connect::daemon_register(
+                    &relay_url,
+                    &worker_socket_handshake,
+                    chariox_relay::protocol::DaemonRegistration {
+                        auth_token: "termination-test-token".to_string(),
+                        daemon_id: worker_config.daemon_id.clone(),
+                        machine_id: worker_config.host_machine_id.clone(),
+                        machine_alias: Some("termination-machine".to_string()),
+                        os_name: Some("Linux".to_string()),
+                        kernel_started_at_ms: crate::session::unix_epoch_ms(),
+                        daemon_alias: None,
+                        kernel_alias: Some("termination-worker".to_string()),
+                        public_key: worker_public_key.clone(),
+                        capabilities: vec!["kernel_ws".to_string()],
+                        available_providers: vec!["managed-dev-stub".to_string()],
+                        provider_accounts: Vec::new(),
+                        accepting_remote_leases: true,
+                        leased_agent_count: 1,
+                        local_session_count: 0,
+                    },
+                    &worker_private_key,
+                )
+                .unwrap(),
+            )
             .expect("worker registration should serialize")
             .into(),
         ))
