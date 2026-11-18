@@ -11,8 +11,7 @@ use crate::local::{
     AgentTriggerSourceRequest, CreateAgentTriggerRequest, DetachWorkflowNotificationRequest,
     LocalDaemonResponse, NotificationSubscriptionChange, NotificationSubscriptionHealth,
     NotificationSubscriptionRow, NotificationTraceOutcome, PersonResponsibilityRow,
-    UpdateNotificationSubscriptionRequest, WorkflowNotificationSubscription,
-    WorkflowNotificationTargetKind,
+    UpdateNotificationSubscriptionRequest, WorkflowNotificationTargetKind,
 };
 use crate::session::AgentTriggerNotificationSource;
 

@@ -407,13 +407,16 @@ pub(crate) struct DryRun {
     pub(crate) skipped: Option<(NotificationTraceOutcome, Option<String>)>,
 }
 
+/// options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms
+type SettingsColumns = (String, bool, bool, i64, Option<i64>, Option<i64>);
+
 impl DurableKernelStateStore {
     pub(crate) fn notification_subscription_settings(
         &self,
         sub: &WorkflowNotificationSubscription,
     ) -> Result<SubscriptionSettings, DaemonError> {
         let db = self.lock_connection("notification subscription settings")?;
-        let row: Option<(String, bool, bool, i64, Option<i64>, Option<i64>)> = db
+        let row: Option<SettingsColumns> = db
             .query_row(
                 "SELECT options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms
                  FROM notification_subscription_settings WHERE subscription_id=?1",
