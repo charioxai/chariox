@@ -1,5 +1,6 @@
 //! MP-08/MP-10: protocol 556 parked Browser state read. A viewer holds one `StateWait` instead of
 //! polling `State`; the host says when a read could differ and the reply's content decides.
+use super::kernel_browser_favicons::name_favicons;
 use super::kernel_browser_runtime::host_error;
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
@@ -41,6 +42,7 @@ impl KernelRuntimeState {
         caller: &KernelCommand,
         after: &str,
         wait_ms: u32,
+        known_favicons: &[String],
     ) -> Result<Value, DaemonError> {
         if wait_ms > MAX_WAIT_MS {
             return Err(host_error(format!(
@@ -105,6 +107,7 @@ impl KernelRuntimeState {
                 return Ok(unchanged(current));
             }
             if changed {
+                name_favicons(&mut state, Some(known_favicons));
                 state["revision"] = current.into();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 self.restore_user_app_tabs(&user);

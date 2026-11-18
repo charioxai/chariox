@@ -722,6 +722,7 @@ mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
+mod kernel_browser_favicons;
 mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
