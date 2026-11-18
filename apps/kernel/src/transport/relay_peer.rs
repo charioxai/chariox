@@ -219,9 +219,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// configuration in kernel responses.
 /// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
 /// with its interaction between kernels of one owner.
-/// 449 (provisional, above Landing 11's 448) carries the Skills v2 transfer manifest and leased skill
-/// delivery; Agent Move no longer lists skills and the per-agent skill grants are gone.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 447;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

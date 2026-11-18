@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1012,
-  "peer_protocol": 449,
+  "local_protocol": 1010,
+  "peer_protocol": 447,
   "request": {
     "KernelBrowser": {
       "command": {
