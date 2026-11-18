@@ -294,53 +294,100 @@ impl LiveReply {
         {
             self.hand_block_over();
         }
-        let Some((index, drawn_end)) = self
+        let Some(index) = self
             .streamed
             .iter()
-            .enumerate()
-            .find_map(|(index, streamed)| Some((index, drawn_prefix_end(&streamed.text, text)?)))
+            .position(|streamed| drawn_from(&streamed.text, text))
         else {
             return Adoption::NotStreamed;
         };
         let streamed = self.streamed.remove(index).expect("index found above");
         Adoption::Streamed {
-            rest: undrawn_tail(&streamed.text, text, drawn_end),
+            rest: undrawn_tail(&streamed.text, text),
             merge_key_suffix: streamed.merge_key_suffix,
         }
     }
 }
 
-/// Whether `drawn` is the start of `markdown` as the terminal shows it.
+/// Whether `drawn` is the start of `markdown` as the terminal shows it: the
+/// letters and digits of what was drawn come in order, close together, at the
+/// start of the markdown, which the terminal shows without its markup.
 fn drawn_from(drawn: &str, markdown: &str) -> bool {
-    drawn_prefix_end(drawn, markdown).is_some()
-}
-
-/// Where in `markdown` the text `drawn` ends, when it is the start of it as
-/// the terminal shows it: the letters and digits of what was drawn come in
-/// order, close together, at the start of the markdown, which the terminal
-/// shows without its markup. The offset is after the last of those letters.
-fn drawn_prefix_end(drawn: &str, markdown: &str) -> Option<usize> {
     /// Letters of markup (a code fence's language) the terminal may leave out.
     const MARKUP_LETTERS: usize = 16;
     let letters = |text: &str| {
-        text.char_indices()
-            .filter(|(_, c)| c.is_alphanumeric())
-            .flat_map(|(at, c)| {
-                c.to_lowercase()
-                    .map(move |lower| (lower, at + c.len_utf8()))
-            })
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
             .collect::<Vec<_>>()
     };
     let (drawn, source) = (letters(drawn), letters(markdown));
     if drawn.is_empty() {
-        return None;
+        return false;
     }
     let mut position = 0;
-    for (letter, _) in &drawn {
-        let found = source[position..].iter().position(|(c, _)| c == letter)?;
+    for letter in &drawn {
+        let Some(found) = source[position..].iter().position(|c| c == letter) else {
+            return false;
+        };
         position += found + 1;
     }
-    (position <= drawn.len() + drawn.len() / 2 + MARKUP_LETTERS).then(|| source[position - 1].1)
+    position <= drawn.len() + drawn.len() / 2 + MARKUP_LETTERS
+}
+
+/// What of `markdown` the terminal had not drawn when `drawn` was streamed.
+/// Every character the terminal drew, whitespace apart, is found in the
+/// markdown in the same order (what the terminal left out is the markup, a
+/// literal `*` it drew is matched like any letter); the text goes on after the
+/// word the last one sits in, and after what closes it on that line. The terminal draws no fence lines. Nothing is
+/// sent when the drawn text cannot be found that way.
+fn undrawn_tail(drawn: &str, markdown: &str) -> String {
+    /// Characters of markup the markdown may carry beyond what is drawn.
+    const MARKUP_SLACK: usize = 16;
+    let mut end = 0;
+    let mut skipped = 0;
+    let mut drawn_count = 0;
+    let mut source = markdown.char_indices().filter(|(_, c)| !c.is_whitespace());
+    for wanted in drawn.chars().filter(|c| !c.is_whitespace()) {
+        drawn_count += 1;
+        loop {
+            let Some((at, found)) = source.next() else {
+                return String::new();
+            };
+            if found == wanted {
+                end = at + found.len_utf8();
+                break;
+            }
+            skipped += 1;
+        }
+    }
+    if skipped > drawn_count / 2 + MARKUP_SLACK {
+        return String::new();
+    }
+    let tail = &markdown[end..];
+    // The rest of the last drawn word, and the rest of its line when that is
+    // only symbols: what the terminal drew of the line is all in `drawn`.
+    let line_end = tail.find('\n').unwrap_or(tail.len());
+    let word_end = if tail[..line_end].chars().any(char::is_alphanumeric) {
+        tail.find(char::is_whitespace).unwrap_or(tail.len())
+    } else {
+        line_end
+    };
+    let mut undrawn = tail[word_end..]
+        .split_inclusive('\n')
+        .filter(|line| !is_fence(line))
+        .collect::<String>();
+    // A fence that closes the text leaves the line break before it.
+    if undrawn.ends_with('\n') {
+        undrawn.pop();
+    }
+    undrawn
+}
+
+fn is_fence(line: &str) -> bool {
+    let line = line.trim();
+    line.strip_prefix("```")
+        .is_some_and(|language| language.chars().all(char::is_alphanumeric))
 }
 
 /// Whether the rows on the screen are the `earlier` rows drawn again: the same
@@ -365,50 +412,6 @@ fn confirmed_row(confirmed: &HashMap<String, usize>, rows: &[Row], index: usize)
         .filter(|row| row.text == *text)
         .count();
     confirmed.get(text).is_some_and(|shown| *shown >= nth)
-}
-
-/// What of `markdown` the terminal had not drawn when `drawn` was streamed,
-/// which ended at `drawn_end` (after its last letter): first the symbols that
-/// close the drawn text (`}`, a full stop) past the markup between them, then
-/// the markup closing the last word (`**`, a backtick). A fence line is not
-/// drawn at all.
-fn undrawn_tail(drawn: &str, markdown: &str, drawn_end: usize) -> String {
-    const MARKUP: [char; 5] = ['*', '_', '~', '`', '#'];
-    let symbols = drawn
-        .rsplit(char::is_alphanumeric)
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_whitespace());
-    let mut end = drawn_end;
-    for symbol in symbols {
-        let skipped = markdown[end..]
-            .find(|c: char| !(c.is_whitespace() || MARKUP.contains(&c)))
-            .unwrap_or(markdown.len() - end);
-        if !markdown[end + skipped..].starts_with(symbol) {
-            break;
-        }
-        end += skipped + symbol.len_utf8();
-    }
-    let tail = &markdown[end..];
-    let closing = tail
-        .find(|c: char| !MARKUP.contains(&c))
-        .unwrap_or(tail.len());
-    let mut drawn_lines = tail[closing..]
-        .split_inclusive('\n')
-        .filter(|line| !is_fence(line))
-        .collect::<String>();
-    // A fence that closes the text leaves the line break before it.
-    if drawn_lines.ends_with('\n') {
-        drawn_lines.pop();
-    }
-    drawn_lines
-}
-
-fn is_fence(line: &str) -> bool {
-    let line = line.trim();
-    line.strip_prefix("```")
-        .is_some_and(|language| language.chars().all(char::is_alphanumeric))
 }
 
 fn screen_rows(screen: &vt100::Screen) -> Vec<Row> {

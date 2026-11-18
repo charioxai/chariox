@@ -491,3 +491,79 @@ fn a_repeated_line_is_confirmed_as_often_as_it_was_shown() {
     let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
     assert!(!streamed.ends_with('}'), "{streamed:?}");
 }
+
+/// Streams `rows` as the reply of a prompt and has the transcript block `markdown` adopt it.
+fn adopted_tail(rows: &[&str], markdown: &str) -> (String, String) {
+    let mut reply = LiveReply::new(40, 120);
+    let mut screen = rows.to_vec();
+    screen.extend(["", "✻ Working (3s)"]);
+    let deltas = read_twice(&mut reply, "prompt-1", &draw(&screen));
+    let streamed = deltas.iter().map(|delta| delta.text.as_str()).collect();
+    let Adoption::Streamed { rest, .. } = reply.adopt(markdown) else {
+        panic!("the streamed block was not adopted");
+    };
+    (streamed, rest)
+}
+
+#[test]
+fn the_wildcard_of_a_streamed_command_is_not_sent_again_with_the_tail() {
+    let (streamed, rest) = adopted_tail(
+        &["● Run this:", "", "  ls *", "", "  Then check the output."],
+        "Run this:\n\n```\nls *\n```\n\nThen check the output.",
+    );
+    assert_eq!(streamed, "Run this:\n\nls *");
+    assert_eq!(rest, "\n\nThen check the output.");
+}
+
+#[test]
+fn an_inline_command_ending_in_a_wildcard_is_not_sent_again() {
+    let (streamed, rest) = adopted_tail(
+        &["● Try ls *", "", "  Then check."],
+        "Try `ls *`\n\nThen check.",
+    );
+    assert_eq!(streamed, "Try ls *");
+    assert_eq!(rest, "\n\nThen check.");
+}
+
+#[test]
+fn a_literal_underscore_or_backtick_ending_the_streamed_text_is_not_sent_again_nor_its_closers() {
+    let (streamed, rest) = adopted_tail(
+        &["● Rename it to x_", "", "  Done."],
+        "Rename it to `x_`\n\nDone.",
+    );
+    assert_eq!(
+        (streamed.as_str(), rest.as_str()),
+        ("Rename it to x_", "\n\nDone.")
+    );
+    let (streamed, rest) = adopted_tail(
+        &["● Use echo `", "", "  Done."],
+        "Use `` echo ` ``\n\nDone.",
+    );
+    assert_eq!(
+        (streamed.as_str(), rest.as_str()),
+        ("Use echo `", "\n\nDone.")
+    );
+    let (streamed, rest) = adopted_tail(
+        &["● It is bold *", "", "  Done."],
+        "It is **bold** *\n\nDone.",
+    );
+    assert_eq!(
+        (streamed.as_str(), rest.as_str()),
+        ("It is bold *", "\n\nDone.")
+    );
+}
+
+#[test]
+fn a_code_fence_closing_the_text_leaves_nothing_to_send() {
+    let (streamed, rest) = adopted_tail(
+        &["● Run this:", "", "  ls *", "  cat *.log"],
+        "Run this:\n\n```\nls *\ncat *.log\n```",
+    );
+    assert_eq!(streamed, "Run this:\n\nls *");
+    assert_eq!(rest, "\ncat *.log");
+    let (_, rest) = adopted_tail(
+        &["● Run this:", "", "  ls *", "  cat *.log", "", "  Done."],
+        "Run this:\n\n```\nls *\ncat *.log\n```\n\nDone.",
+    );
+    assert_eq!(rest, "\n\nDone.");
+}

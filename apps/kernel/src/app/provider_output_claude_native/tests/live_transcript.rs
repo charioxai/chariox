@@ -588,6 +588,34 @@ fn a_code_block_streamed_before_its_last_paragraph_is_not_repeated_by_the_transc
 }
 
 #[test]
+fn a_command_with_a_wildcard_streamed_before_the_transcript_block_is_not_repeated() {
+    let mut turn = running_turn("streamed-wildcard");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Run this:",
+        "",
+        "  ls *",
+        "",
+        "  Then check the output.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(turn.output_rows().concat(), "Run this:\n\nls *");
+
+    let reply = "Run this:\n\n```\nls *\n```\n\nThen check the output.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(
+        turn.output_rows().concat(),
+        "Run this:\n\nls *\n\nThen check the output."
+    );
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+#[test]
 fn a_stopped_turn_streams_nothing_more() {
     const PLAIN: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.pty.jsonl");
     let mut turn = running_turn("streamed-stop");
