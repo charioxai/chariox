@@ -1771,12 +1771,15 @@ mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
 #[cfg(test)]
+mod lifecycle_sweep_load_tests;
+#[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
 mod pump_stall_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
