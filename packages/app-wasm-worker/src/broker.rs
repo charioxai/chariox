@@ -2,7 +2,7 @@
 use crate::{
     bindings::chariox::{
         app1_0_0::{app_types as types, connections, events, host, schedule, state, validation},
-        app1_1_0::event_routing,
+        app1_1_0::{event_routing, workspace},
     },
     host::{app_error, json, Host},
     ipc::error,
@@ -603,4 +603,36 @@ impl<T: Send> event_routing::HostWithStore<T> for HasSelf<Host> {
         let value = call(accessor, "routing.list_targets", json!({})).await?;
         list(&value, "targets")?.iter().map(target).collect()
     }
+}
+
+impl workspace::Host for Host {}
+impl<T: Send> workspace::HostWithStore<T> for HasSelf<Host> {
+    async fn changes(
+        accessor: &Accessor<T, Self>,
+        worktree: String,
+    ) -> Result<String, types::AppError> {
+        json_text(call(accessor, "workspace.changes", json!({"worktree":worktree})).await?)
+    }
+    async fn commit(
+        accessor: &Accessor<T, Self>,
+        worktree: String,
+        files: Vec<String>,
+        message: String,
+        branch: Option<String>,
+    ) -> Result<String, types::AppError> {
+        let params = json!({"worktree":worktree,"files":files,"message":message,"branch":branch});
+        json_text(call(accessor, "workspace.commit", params).await?)
+    }
+    async fn push(
+        accessor: &Accessor<T, Self>,
+        worktree: String,
+        account: String,
+    ) -> Result<String, types::AppError> {
+        let params = json!({"worktree":worktree,"account":account});
+        json_text(call(accessor, "workspace.push", params).await?)
+    }
+}
+
+fn json_text(value: Value) -> Result<String, types::AppError> {
+    Ok(value.to_string())
 }

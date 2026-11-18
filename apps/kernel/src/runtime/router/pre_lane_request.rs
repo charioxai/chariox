@@ -128,13 +128,10 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceWorktrees(_)
             | LocalDaemonRequest::CreateWorkspaceWorktree(_)
             | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
             | LocalDaemonRequest::GetWorkspaceGitOverview(_)
             | LocalDaemonRequest::ListWorkspaceFiles(_)
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => Some(Box::pin(async move {
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)) => Some(Box::pin(async move {
                 execute_workspace_command_request(
                     &self.runtime_state,
                     &self.session_projection,

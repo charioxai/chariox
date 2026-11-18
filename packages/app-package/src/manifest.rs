@@ -115,7 +115,25 @@ pub struct Capabilities {
     /// import that uses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_routing: Option<EventRouting>,
+    /// Commit and push in a Room's worktree as one of the owner's accounts.
+    /// Only the App world 1.1.0 has the import that uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceAccess>,
 }
+
+/// The git actions an App may take in a worktree. They run as the owner's
+/// account bound to `credential`, whose destination must be GitHub's API: the
+/// kernel pushes to GitHub repositories only, and the App never holds the token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceAccess {
+    /// The credential label of one `network` destination.
+    pub credential: String,
+}
+
+/// The only origin whose account may push: `git` reaches GitHub with the token
+/// the owner bound for its API.
+pub const WORKSPACE_ACCOUNT_ORIGIN: &str = "https://api.github.com";
 
 /// One event generator (for example `dev.chariox.github`) whose events the App
 /// routes to its own declared incoming events. The owner still chooses the
@@ -309,6 +327,17 @@ impl Capabilities {
         }
         if let Some(routing) = &self.event_routing {
             routing.validate()?;
+        }
+        if let Some(workspace) = &self.workspace {
+            let bound = self.network.iter().any(|destination| {
+                destination.origin == WORKSPACE_ACCOUNT_ORIGIN
+                    && destination.credential.as_deref() == Some(workspace.credential.as_str())
+            });
+            if !bound {
+                return Err(invalid_manifest(
+                    "workspace needs the credential label of a network destination at https://api.github.com",
+                ));
+            }
         }
         if self.network.len() > 64 {
             return Err(invalid_manifest("too many network destinations"));
@@ -533,6 +562,9 @@ impl Manifest {
         self.capabilities.validate()?;
         if self.capabilities.event_routing.is_some() {
             return Err(invalid("eventRouting needs a v2 App"));
+        }
+        if self.capabilities.workspace.is_some() {
+            return Err(invalid("workspace needs a v2 App"));
         }
         if let Some(migrations) = &self.migrations {
             migrations.validate(limits, javascript_path)?;
@@ -818,5 +850,60 @@ mod event_routing_tests {
         let routed = serde_json::to_value(capabilities(routing())).unwrap();
         assert_eq!(routed["eventRouting"]["maxRoutes"], 200);
         assert_eq!(routed["eventRouting"]["generator"], "dev.chariox.github");
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn destination(origin: &str, credential: Option<&str>) -> NetworkDestination {
+        NetworkDestination {
+            origin: origin.into(),
+            methods: vec![HttpMethod::Get],
+            credential: credential.map(Into::into),
+            routes: credential
+                .map(|_| CredentialRoute {
+                    method: HttpMethod::Get,
+                    path: "/user".into(),
+                    safety: RouteSafety::Read,
+                    redirect_hosts: Vec::new(),
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn capabilities(network: Vec<NetworkDestination>, credential: &str) -> Capabilities {
+        Capabilities {
+            network,
+            workspace: Some(WorkspaceAccess {
+                credential: credential.into(),
+            }),
+            ..Capabilities::default()
+        }
+    }
+
+    #[test]
+    fn workspace_needs_the_credential_label_of_the_github_api_destination() {
+        let github = || destination(WORKSPACE_ACCOUNT_ORIGIN, Some("github"));
+        capabilities(vec![github()], "github").validate().unwrap();
+        for refused in [
+            capabilities(Vec::new(), "github"),
+            capabilities(vec![github()], "gitlab"),
+            capabilities(vec![destination(WORKSPACE_ACCOUNT_ORIGIN, None)], "github"),
+            capabilities(
+                vec![destination("https://example.com", Some("github"))],
+                "github",
+            ),
+        ] {
+            assert!(refused.validate().is_err(), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn an_app_without_workspace_keeps_its_manifest_bytes() {
+        let json = serde_json::to_string(&Capabilities::default()).unwrap();
+        assert!(!json.contains("workspace"), "{json}");
     }
 }

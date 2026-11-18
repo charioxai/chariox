@@ -496,17 +496,6 @@ export type WorkspaceGitActionResult = {
   generated_at_ms: number
 }
 
-export type WorkspacePullRequestRecord = {
-  workspace_id: string
-  worktree_id: string
-  branch: string
-  base_ref: string
-  url: string
-  title?: string | null
-  draft: boolean
-  generated_at_ms: number
-}
-
 // MP-08/MP-10/MP-11: protocol 525 Room viewer, no input authority.
 export type RoomDisplayBinding={generation:number;subscription_id:string;codec:string;bitrate:number;device_scale_factor:1|2;source:{kind:"desktop";surface_id:string;generation:string;width:number;height:number};resumed?:boolean}
 export type RoomDisplayOffer={codecs:readonly string[];bitrate:number;device_scale_factor:1|2;resume_hint?:string}

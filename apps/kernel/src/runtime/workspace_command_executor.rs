@@ -1,19 +1,14 @@
 use crate::error::DaemonError;
 use crate::local::{
-    CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
-    CreateWorkspaceDirectoryRequest, CreateWorkspacePullRequestRequest,
-    CreateWorkspaceWorktreeRequest, DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PushWorkspaceBranchRequest,
-    SearchWorkspaceDirectoriesRequest,
+    CommitWorkspaceChangesRequest, CreateWorkspaceDirectoryRequest, CreateWorkspaceWorktreeRequest,
+    DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
+    ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, SearchWorkspaceDirectoriesRequest,
 };
 use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::room_list_projection::infer_room_list_launch_target;
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::workspace_git_actions::{
-    commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
-    push_workspace_branch,
-};
+use crate::runtime::workspace_git_actions::commit_workspace_changes;
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
 use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
@@ -43,9 +38,6 @@ pub(crate) async fn execute_workspace_command_request(
             execute_delete_workspace_worktree_request(request, session_projection, runtime_state)
                 .await
         }
-        LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-            execute_create_workspace_pull_request_request(request)
-        }
         LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
             execute_get_workspace_git_overview_request(request)
         }
@@ -57,12 +49,6 @@ pub(crate) async fn execute_workspace_command_request(
         }
         LocalDaemonRequest::CommitWorkspaceChanges(request) => {
             execute_commit_workspace_changes_request(request)
-        }
-        LocalDaemonRequest::PushWorkspaceBranch(request) => {
-            execute_push_workspace_branch_request(request)
-        }
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-            execute_commit_and_push_workspace_changes_request(request)
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "workspace request",
@@ -166,20 +152,6 @@ pub(crate) async fn execute_delete_workspace_worktree_request(
     })
 }
 
-pub(crate) fn execute_create_workspace_pull_request_request(
-    request: CreateWorkspacePullRequestRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let pull_request = create_workspace_pull_request(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.title.as_deref(),
-        request.body.as_deref(),
-        request.base_ref.as_deref(),
-        request.draft,
-    )?;
-    Ok(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-}
-
 pub(crate) fn execute_get_workspace_git_overview_request(
     request: GetWorkspaceGitOverviewRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -223,29 +195,10 @@ pub(crate) fn execute_commit_workspace_changes_request(
     let result = commit_workspace_changes(
         &request.workspace_id,
         &request.worktree_id,
+        &request.files,
         &request.message,
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
-}
-
-pub(crate) fn execute_push_workspace_branch_request(
-    request: PushWorkspaceBranchRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = push_workspace_branch(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.force_with_lease,
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
-}
-
-pub(crate) fn execute_commit_and_push_workspace_changes_request(
-    request: CommitAndPushWorkspaceChangesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = commit_and_push_workspace_changes(
-        &request.workspace_id,
-        &request.worktree_id,
-        &request.message,
-    )?;
+        request.branch.as_deref(),
+    )?
+    .result;
     Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
 }
