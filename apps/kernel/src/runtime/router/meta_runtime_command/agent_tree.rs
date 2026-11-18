@@ -457,6 +457,15 @@ impl CommandRouter {
                 )
             }
         };
+        // The caller's session comes from the store without its agents, tasks and wakes; the
+        // activity that names what an agent waits on is read from the full snapshot.
+        let activity = match self
+            .runtime_state
+            .session_agent_snapshot(session.id(), caller.id())
+        {
+            Ok((snapshot, _)) => self.runtime_state.agent_activity_for_session(&snapshot),
+            Err(error) => return meta_command_failure_result(command, error),
+        };
         let mut listed = Vec::new();
         let mut frontier = vec![(root.id().to_string(), 1_u32)];
         while let Some((parent_id, depth)) = frontier.pop() {
@@ -482,9 +491,10 @@ impl CommandRouter {
                     "alias": agent.alias(),
                     "parent": parent_id,
                     "depth": depth,
-                    "state": format!("{:?}", agent.state()),
+                    "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
                     "is_processing": agent.is_processing(),
                     "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
+                    "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
                     "deadline": deadline,
                     "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
                         vec![WATCHED_PROCESS_GRANT]
