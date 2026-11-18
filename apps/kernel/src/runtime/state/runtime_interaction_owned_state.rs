@@ -19,7 +19,7 @@ pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::LocalTransport { operation: "runtime interaction", message }
-            if message == INTERACTION_ALREADY_PENDING || message == KERNEL_DECISION_LIMIT
+            if message == INTERACTION_ALREADY_PENDING || message.starts_with(KERNEL_DECISION_LIMIT)
     )
 }
 

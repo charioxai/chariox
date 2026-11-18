@@ -269,6 +269,54 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The agent asks for browser access again: its earlier requests, left open by turns that have
+    /// since ended, are answered by this one. Each keeps no card of its own, so a retrying agent
+    /// holds one open "Allow browser access" card, not one per turn. A request that still holds a
+    /// goal or open work keeps its card.
+    pub(super) async fn raise_browser_access_card(
+        &self,
+        task: AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        let mut retired_any = false;
+        for earlier in self
+            .owned
+            .durable_state_store
+            .agent_unfinished_tasks(&task.room_id, Some(&task.agent_id))?
+            .into_iter()
+            .filter(|earlier| {
+                earlier.task_id != task.task_id
+                    && earlier.state == ExecutionState::Blocked
+                    && earlier.owner_action
+                        == Some(
+                            crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess,
+                        )
+                    && earlier.goal.is_none()
+                    && earlier.obligations.is_empty()
+                    && earlier.wait.is_none()
+            })
+        {
+            let crate::durable_state::agent_lifecycle::Outcome::Task(cancelled) =
+                self.owned.durable_state_store.agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::OwnerResponse {
+                        task: earlier.task_id,
+                        revision: earlier.blocked_revision,
+                        resume: false,
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?
+            else {
+                unreachable!()
+            };
+            Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
+            retired_any = true;
+        }
+        if retired_any {
+            self.retract_stale_task_owner_interactions(&task.room_id)
+                .await;
+        }
+        self.ensure_task_owner_interaction(task).await
+    }
+
     /// A later turn of an agent replaces its interrupted attempts (a restart, a refused or
     /// unacknowledged dispatch, a wake that never resumed them), not a goal or open work. Every such
     /// attempt still waiting on the owner is cancelled with that reason, however many turns ago it

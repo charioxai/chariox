@@ -260,7 +260,9 @@ impl KernelRuntimeOwnedState {
                 sessions.restore_session(session.clone());
             }
             drop(pending);
-            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
+            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+                sessions.get_session(id).ok()
+            }) {
                 drop(sessions);
                 activity_mutation.record();
                 self.session_snapshot(session_id)?;

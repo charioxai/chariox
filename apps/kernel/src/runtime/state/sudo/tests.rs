@@ -90,10 +90,18 @@ async fn a12_external_sudo_keeps_the_agent_decision_quota() {
             let Err(error) = f.state.request_kernel_sudo(&grant, request).await else {
                 panic!("an external requester cannot spend reserved owner capacity");
             };
+            let message = error.to_string();
             assert!(
-                error.to_string().contains("Kernel decision limit reached"),
-                "{error}"
+                message.contains("Kernel decision limit reached"),
+                "{message}"
             );
+            // The refusal names every card that holds the limit, so the caller can clear them.
+            for index in 0..cards {
+                assert!(
+                    message.contains(&format!("agent-cap-control-{index} (Agent decision)")),
+                    "{message}"
+                );
+            }
         } else {
             let state = f.state.clone();
             let pending =

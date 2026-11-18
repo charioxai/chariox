@@ -24,7 +24,9 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
+        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+            self.session_store.get_session(id).ok()
+        })?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
