@@ -175,7 +175,28 @@ async fn raised() {
 }
 
 #[test]
-fn the_caps_are_depth_four_sixteen_per_parent_and_sixty_four_per_team() {
+fn a_parent_spawns_more_than_sixteen_sub_agents_through_the_spawn_command() {
+    run_large_stack_async_test("authority-wide-fan-out", wide_fan_out);
+}
+
+async fn wide_fan_out() {
+    let mut world = world("authority-wide-fan-out").await;
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    world.tokens.insert("s", token);
+    for index in 0..24 {
+        let spawned = room_command(
+            &world,
+            "s",
+            &format!("agent spawn wide-{index} --provider dev-stub"),
+        )
+        .await;
+        assert!(spawned.ok, "sub-agent {index} must start: {spawned:?}");
+    }
+}
+
+#[test]
+fn the_caps_are_depth_four_and_sixty_four_per_team() {
     run_large_stack_async_test("authority-caps", caps);
 }
 
@@ -207,24 +228,7 @@ async fn caps() {
         !too_deep.ok && error_text(&too_deep).contains("levels below"),
         "{too_deep:?}"
     );
-    // Per parent: s takes sixteen, the seventeenth is refused.
-    let s = world.ids["s"].clone();
-    let token = launch(&world.app, &world.room, &s).await;
-    world.tokens.insert("s", token);
-    for index in 0..16 {
-        spawn_under(&world, &s, &format!("s-child-{index}")).await;
-    }
-    let seventeenth = room_command(&world, "s", "agent spawn s-17 --provider dev-stub").await;
-    assert!(
-        !seventeenth.ok && error_text(&seventeenth).contains("at most 16"),
-        "{seventeenth:?}"
-    );
-    // Per team: fill below a up to sixty-four, no parent over sixteen, then one more is refused.
-    let b = world.ids["b"].clone();
-    for index in 0..15 {
-        spawn_under(&world, &b, &format!("b-fill-{index}")).await;
-        spawn_under(&world, &d, &format!("d-fill-{index}")).await;
-    }
+    // Per team: fill below a up to sixty-four, then one more is refused.
     let mut index = 0;
     while team_size(&world).await < 64 {
         spawn_under(&world, &e, &format!("e-fill-{index}")).await;
@@ -611,90 +615,6 @@ async fn room_defaults() {
     assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
 }
 
-#[test]
-fn children_that_finished_do_not_count_against_the_sixteen_a_parent_runs() {
-    run_large_stack_async_test("authority-finished-children", finished_children);
-}
-
-async fn finished_children() {
-    let world = world("authority-finished-children").await;
-    let s = world.ids["s"].clone();
-    let token = launch(&world.app, &world.room, &s).await;
-    let mut world = world;
-    world.tokens.insert("s", token);
-    let mut children = Vec::new();
-    for index in 0..16 {
-        children.push(spawn_under(&world, &s, &format!("done-{index}")).await);
-    }
-    // A child that was never prompted is a prepared agent, not a finished one.
-    let waiting = room_command(&world, "s", "agent spawn waiting --provider dev-stub").await;
-    assert!(
-        !waiting.ok && error_text(&waiting).contains("at most 16"),
-        "{waiting:?}"
-    );
-    // Once each child has had its turn and is idle again, none of them is running.
-    {
-        let app = world.app.lock().await;
-        for child in &children {
-            app.agents().note_prompt_sent_at(child, 1).unwrap();
-        }
-    }
-    let next = room_command(&world, "s", "agent spawn next --provider dev-stub").await;
-    assert!(
-        next.ok,
-        "finished children must not block a spawn: {next:?}"
-    );
-    // Children that are working do count.
-    {
-        let app = world.app.lock().await;
-        for child in &children {
-            app.agents()
-                .set_agent_state(child, crate::agent::AgentState::Working)
-                .unwrap();
-        }
-    }
-    let over = room_command(&world, "s", "agent spawn over --provider dev-stub").await;
-    assert!(
-        !over.ok && error_text(&over).contains("at most 16"),
-        "sixteen working children are the cap: {over:?}"
-    );
-}
-
-#[test]
-fn children_with_a_prompt_through_real_admission_keep_their_places() {
-    run_large_stack_async_test("authority-prompted-children", prompted_children);
-}
-
-async fn prompted_children() {
-    let mut world = world("authority-prompted-children").await;
-    let s = world.ids["s"].clone();
-    let token = launch(&world.app, &world.room, &s).await;
-    world.tokens.insert("s", token);
-    for index in 0..16 {
-        spawn_under(&world, &s, &format!("busy-{index}")).await;
-        let prompted =
-            room_command(&world, "s", &format!("prompt busy-{index} \"keep going\"")).await;
-        assert!(prompted.ok, "{prompted:?}");
-    }
-    // The prompt left the stored state alone, but each child is running its turn.
-    {
-        let app = world.app.lock().await;
-        let child = app
-            .agents()
-            .get_session_agents(&world.room)
-            .into_iter()
-            .find(|agent| agent.alias() == Some("busy-0"))
-            .unwrap();
-        assert!(child.last_prompt_sent_at_ms().is_some());
-        assert_ne!(child.state(), crate::agent::AgentState::Working);
-    }
-    let over = room_command(&world, "s", "agent spawn over --provider dev-stub").await;
-    assert!(
-        !over.ok && error_text(&over).contains("at most 16"),
-        "sixteen children running a prompt are the cap: {over:?}"
-    );
-}
-
 fn git(workspace: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -741,30 +661,28 @@ async fn refused_spawn_is_atomic() {
             .is_empty(),
         "alias refusal left a branch"
     );
-    // The cap refuses it the same way.
-    for index in 0..16 {
-        spawn_under(&world, &s, &format!("fill-{index}")).await;
-    }
+    // The authority limit refuses it the same way.
+    set_level(&world, "s", AgentPermissionLevel::Required).await;
     let target = world._env.root.join("wt-cap");
     let refused = room_command(
         &world,
         "s",
         &format!(
-            "agent spawn capped --provider dev-stub --worktree {} --branch cap-branch",
+            "agent spawn capped --provider dev-stub --permission yolo --worktree {} --branch cap-branch",
             target.display()
         ),
     )
     .await;
     assert!(
-        !refused.ok && error_text(&refused).contains("at most 16"),
+        !refused.ok && error_text(&refused).contains("more authority"),
         "{refused:?}"
     );
-    assert!(!target.exists(), "cap refusal left a checkout");
+    assert!(!target.exists(), "authority refusal left a checkout");
     assert!(
         git(&workspace, &["branch", "--list", "cap-branch"])
             .trim()
             .is_empty(),
-        "cap refusal left a branch"
+        "authority refusal left a branch"
     );
     assert_eq!(
         git(&workspace, &["worktree", "list"]).lines().count(),
@@ -778,7 +696,7 @@ async fn refused_spawn_is_atomic() {
         &world,
         "s",
         &format!(
-            "agent spawn kept --provider dev-stub --worktree {} --branch kept-branch",
+            "agent spawn kept --provider dev-stub --permission yolo --worktree {} --branch kept-branch",
             target.display()
         ),
     )

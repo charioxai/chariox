@@ -177,7 +177,7 @@ impl AgentService {
         Ok(created_agents)
     }
 
-    /// A child above its parent's current limit, or beyond the fan-out caps, is refused where
+    /// A child above its parent's current limit, or beyond the depth and team caps, is refused where
     /// it is created, so nothing can change between the check and the effect.
     fn check_authority_limit(
         &self,
@@ -192,20 +192,7 @@ impl AgentService {
         let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
             return Ok(());
         };
-        let unfinished_work = self
-            .durable_state
-            .as_ref()
-            .map(|state| state.agents_with_unfinished_work(&request.session_id))
-            .transpose()?
-            .unwrap_or_default();
-        super::authority_limit::check_spawn(
-            request,
-            parent,
-            &agents,
-            earlier_in_batch,
-            session,
-            &unfinished_work,
-        )
+        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
     }
 
     pub(crate) fn create_agent_for_session(
