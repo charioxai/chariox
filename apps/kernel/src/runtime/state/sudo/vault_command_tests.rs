@@ -919,6 +919,27 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
     )
     .await
     .is_err());
+    // A retry that names another source is a different request, not the committed copy.
+    let other = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push-other", "argv": printing(SECRET), "host": "github.com",
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let other = other["credential_id"].as_str().unwrap();
+    let swapped = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":other,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        swapped.to_string().contains("request_id already names"),
+        "{swapped}"
+    );
     // Refused: plain HTTP, an entry that does not exist, a missing binding.
     for refused in [
         json!({"request_id":"plain","from":from,"use_binding":site("http://api.github.com")}),
