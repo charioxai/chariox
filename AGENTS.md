@@ -37,7 +37,7 @@ Rules 3 (the relay only carries encrypted traffic) and 6 (hosted connections use
 
 ## Enforced by `pnpm lint`
 
-`pnpm lint:rules` (`scripts/checks/`) fails with the file, the line and the root fix for: provider SDKs, relay isolation, a protocol shape change without its version bump, retired names, a slice image missing a module it imports, plain `ws://` in deploy config and tracked state or logs. Each check's allow list holds today's violations and only shrinks (`node scripts/checks/run.mjs --shrink`). Each check, its rule and its root fix: `scripts/checks/README.md`.
+`pnpm lint:rules` (`scripts/checks/`) fails with the file, the line and the root fix for: provider SDKs, relay isolation, a protocol shape change without its version bump, retired names, a slice image missing a module it imports, plain `ws://` in deploy config, tracked state or logs, and a performance budget raised without a `budget raised:` line. Each check's allow list holds today's violations and only shrinks (`node scripts/checks/run.mjs --shrink`). Each check, its rule and its root fix: `scripts/checks/README.md`.
 
 ## Writing clean code
 
@@ -72,6 +72,7 @@ Agents are benign and act for the user; UX comes first. Chariox gives them tools
 - A commit message is a short summary of the change: one subject line, and a few short lines only if needed. No Co-Authored-By lines, no agent or model names, no logs.
 - Work on a branch. Changes reach `main` through a squash merge with a short summary.
 - Run CI only when the work is ready to merge; until then use focused checks and `[skip ci]`.
+- Review: a change that moves a performance budget the wrong way (`perf-budgets/`, `apps/kernel/agent_context_budget.json`, or a gate that stops measuring one) is a functional finding, unless its `budget raised:` line gives a reason the reviewer approves (`docs/PERFORMANCE_BUDGETS.md`). Keep the line in the squash message.
 
 ## Read more
 

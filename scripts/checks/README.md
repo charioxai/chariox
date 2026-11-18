@@ -16,6 +16,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `protocol-shape-needs-version` | Protocol changes: a changed serialized shape needs the version bump and the snapshot | raise the constant, run `pnpm protocol:generate`, update the snapshot under `protocol_shapes/` |
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
+| `perf-budget-tighten-only` | `docs/PERFORMANCE_BUDGETS.md`: performance budgets only tighten | bring the number back under the budget, or add `budget raised: <id>: <why>` to a commit message and get it approved in review |
 | `tracked-state` | State, logs and recordings never live in a repository | `git rm` it and keep it under `~/.chariox/dev/<task>/` |
 
 ## Allow lists
@@ -26,7 +27,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 - an entry that is not in the list at the merge base is red (CI sets `CHARIOX_BOUNDARY_BASE`; CI without a base fails);
 - a count that fell, or a file with no violation left, is red until `--shrink` lowers or deletes it.
 
-A check with an empty list holds the rule everywhere. `protocol-shape-needs-version` has no list: its ratchet is the diff against the merge base.
+A check with an empty list holds the rule everywhere. `protocol-shape-needs-version` and `perf-budget-tighten-only` have no list: their ratchet is the diff against the merge base.
 
 ## Adding a check
 
@@ -38,3 +39,4 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 - `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from. A relative import is looked up from where its importer is installed in the image, so a module installed elsewhere does not count.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.
+- `perf-budget-tighten-only` compares the ceilings in `perf-budgets/*.json` and `apps/kernel/agent_context_budget.json` with the merge base and reads `budget raised:` lines from the commit messages since it. It cannot tell whether review approved the line; the reviewer line in `AGENTS.md` does. It does not measure anything: each budget's gate does (`docs/PERFORMANCE_BUDGETS.md`).
