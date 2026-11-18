@@ -858,6 +858,9 @@ pub(super) enum SamplingError {
     /// to the children it leaves behind. The tree is as it was; the next tick
     /// may read it.
     Ended,
+    /// The sampler has read no table since it started or resumed; the next
+    /// tick may read it.
+    Pending,
     /// Nothing will change by trying again: `ps` is missing, refused or
     /// answers with columns the monitor cannot read.
     Unusable(String),
@@ -871,6 +874,9 @@ impl std::fmt::Display for SamplingError {
                 std::io::Error::from_raw_os_error(*errno)
             ),
             Self::Ended => f.write_str("process resource monitor's ps was ended by a signal"),
+            Self::Pending => {
+                f.write_str("process resource monitor has not read the process table yet")
+            }
             Self::Unusable(message) => f.write_str(message),
         }
     }
@@ -906,14 +912,26 @@ struct RowObservation {
     started_at: std::time::Instant,
 }
 
+/// Reading the process table costs a `ps` run, so the sampler reads only while
+/// watches read it: it pauses this long after the last read.
+const SAMPLER_IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+const SAMPLER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 struct RowSnapshot {
     rows: Option<RowObservation>,
     error: Option<SamplingError>,
+    last_read: std::time::Instant,
+    paused: bool,
+}
+
+enum SamplerSignal {
+    Resume,
+    Stop,
 }
 
 struct Sampler {
     snapshot: std::sync::Arc<crate::runtime::checked_lock::CheckedMutex<RowSnapshot>>,
-    stop: std::sync::mpsc::Sender<()>,
+    signal: std::sync::mpsc::Sender<SamplerSignal>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -924,10 +942,12 @@ impl Sampler {
             RowSnapshot {
                 rows: None,
                 error: None,
+                last_read: std::time::Instant::now(),
+                paused: false,
             },
         ));
         let published = std::sync::Arc::clone(&snapshot);
-        let (stop, stopping) = std::sync::mpsc::channel();
+        let (signal, signals) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new().name("chariox-sampler".into()).spawn(move || {
             let mut failed = false;
             loop {
@@ -945,6 +965,7 @@ impl Sampler {
                             started_at,
                         });
                         state.error = None;
+                        drop(state);
                         failed = false;
                     }
                     Err(error) => {
@@ -954,48 +975,61 @@ impl Sampler {
                             crate::logging::warn_with_fields("process_resources.sampler", "process sample failed; retaining the last good snapshot", serde_json::json!({"operation": "ps", "error": error.to_string()}));
                             failed = true;
                         }
-                        if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
-                        continue;
                     }
                 }
+                if !matches!(signals.recv_timeout(SAMPLER_INTERVAL), Ok(SamplerSignal::Resume) | Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                let mut state = published.lock().unwrap_or_else(|e| e.into_inner());
+                if state.last_read.elapsed() < SAMPLER_IDLE {
+                    continue;
+                }
+                // A paused table goes stale, so readers see none until the
+                // first read after resuming.
+                state.rows = None;
+                state.error = None;
+                state.paused = true;
                 drop(state);
-                if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                if !matches!(signals.recv(), Ok(SamplerSignal::Resume)) { break; }
             }
         }).expect("process sampler thread must start");
         Self {
             snapshot,
-            stop,
+            signal,
             worker: Some(worker),
         }
     }
 
+    /// Marks the table as read now, and resumes a paused sampler.
+    fn demand(&self) -> crate::runtime::checked_lock::CheckedMutexGuard<'_, RowSnapshot> {
+        let mut state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_read = std::time::Instant::now();
+        if std::mem::take(&mut state.paused) {
+            let _ = self.signal.send(SamplerSignal::Resume);
+        }
+        state
+    }
+
     fn rows(&self) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.demand();
         state
             .rows
             .as_ref()
             .map(|snapshot| snapshot.rows.clone())
-            .ok_or_else(|| {
-                state
-                    .error
-                    .clone()
-                    .unwrap_or(SamplingError::Short(libc::EAGAIN))
-            })
+            .ok_or_else(|| state.error.clone().unwrap_or(SamplingError::Pending))
     }
 
     #[cfg(unix)]
     fn successful_observation(&self) -> Result<RowObservation, SamplingError> {
-        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.demand();
         if let Some(error) = &state.error {
             return Err(error.clone());
         }
-        state.rows.clone().ok_or(SamplingError::Short(libc::EAGAIN))
+        state.rows.clone().ok_or(SamplingError::Pending)
     }
 }
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        let _ = self.signal.send(SamplerSignal::Stop);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1074,7 +1108,7 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
     loop {
         match sampler().rows() {
             Ok(_) => return Ok(()),
-            Err(SamplingError::Short(libc::EAGAIN)) if std::time::Instant::now() < deadline => {}
+            Err(SamplingError::Pending) if std::time::Instant::now() < deadline => {}
             Err(error) => return Err(error),
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1085,7 +1119,8 @@ pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
     if let Some(errno) = ps_failure::injected(root) {
         return Err(std::io::Error::from_raw_os_error(errno));
     }
-    let _ = sampler();
+    // The first read waits for no tick of the watch.
+    let _ = sampler().demand();
     super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())
 }
 
@@ -1400,6 +1435,42 @@ mod snapshot_stall_tests {
         drop(sampler);
         assert!(!crate::runtime::process_health::process_running(pid));
         assert!(timed_out, "stalled ps did not hit its process deadline");
+    }
+
+    #[test]
+    fn the_sampler_reads_no_process_table_while_nothing_reads_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = reads.clone();
+        let sampler = Sampler::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        let idle = reads.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            idle,
+            "a sampler nothing reads runs no ps"
+        );
+        assert!(
+            sampler.rows().is_err(),
+            "a paused sampler's table is stale, so it hands out none"
+        );
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline + Duration::from_secs(3));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            reads.load(Ordering::SeqCst) > idle,
+            "the next read resumes sampling"
+        );
     }
 }
 
