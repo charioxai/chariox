@@ -1449,8 +1449,30 @@ async fn wait_for_message_state(
 /// back its message id at once and delivers when the lane frees; the sender never waits for the
 /// receiver's provider.
 fn urgent_send_to_a_busy_receiver_returns_at_once_and_delivers_when_it_frees() {
-    run_kernel_mixed_01_with_large_stack("urgent-send-busy-receiver", || async {
-        let worktree = crate::test_support::TestWorktree::new("urgent-send-busy-receiver");
+    urgent_send_to_a_busy_receiver("urgent-send-busy-receiver", |_, _| {});
+}
+
+#[test]
+/// The stored message outlives its sender's turn: the sender's provider run ends after the send
+/// returned and before the receiver's provider admits the message, and the healthy receiver
+/// still takes it. The receiver is neither reported as failed to start nor sent a second copy.
+fn a_deferred_urgent_delivery_survives_the_sender_epoch_changing() {
+    urgent_send_to_a_busy_receiver("urgent-send-sender-epoch", |app, sender_run| {
+        let ended = app
+            .providers_mut()
+            .terminate_run_provider_only(sender_run.session_id(), sender_run.id())
+            .expect("sender run should end")
+            .into_run();
+        app.update_provider_run_projection(ended);
+    });
+}
+
+fn urgent_send_to_a_busy_receiver(
+    name: &'static str,
+    change_sender: impl FnOnce(&mut DaemonApp, &crate::provider::RuntimeProviderRun) + Send + 'static,
+) {
+    run_kernel_mixed_01_with_large_stack(name, move || async move {
+        let worktree = crate::test_support::TestWorktree::new(name);
         let mut config = crate::DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let mut app =
@@ -1496,8 +1518,10 @@ fn urgent_send_to_a_busy_receiver_returns_at_once_and_delivers_when_it_frees() {
             app: Arc::clone(&app),
             provider_run_id: receiver_run.id().to_string(),
         };
-        let router =
-            crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app, 4);
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            4,
+        );
         let runtime = router.runtime_state();
         let token = sender_run.runtime_mcp_auth_token().unwrap().to_string();
         // The receiver's turn holds its lane for as long as its tool call runs.
@@ -1539,8 +1563,19 @@ fn urgent_send_to_a_busy_receiver_returns_at_once_and_delivers_when_it_frees() {
             "the receiver's provider has not taken it while its lane is held"
         );
 
+        change_sender(&mut *app.lock().await, &sender_run);
         drop(lane);
         wait_for_message_state(&runtime, &session_id, receiver.id(), sequence, "accepted").await;
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .agent_inbox(&session_id, receiver.id(), 0)
+                .unwrap()
+                .len(),
+            1,
+            "one copy of the message, however the sender changed"
+        );
     });
 }
 

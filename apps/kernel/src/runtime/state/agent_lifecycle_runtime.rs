@@ -711,8 +711,10 @@ impl KernelRuntimeState {
             payload: serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested}),
         })
     }
+    /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
+    /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
     fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
-        let state = self.clone();
+        let state = self.as_kernel();
         tokio::spawn(async move {
             if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
                 state.owned.record_notice_for_agent(
