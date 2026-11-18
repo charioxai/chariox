@@ -578,4 +578,4 @@ pub use workspace::*;
 /// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
 /// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1025;

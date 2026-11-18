@@ -1,5 +1,5 @@
 {
-  "local": 1012,
+  "local": 1025,
   "requests": [
     { "GetPersonInbox": null },
     { "SetInboxCardState": { "card_ids": ["notice_5_ab"], "change": { "read": { "read": true } } } },
@@ -8,6 +8,7 @@
     { "SetInboxMute": { "origin": { "session_id": "room-1", "agent_id": "agent-1" }, "muted": true } },
     { "ListNotificationSubscriptions": null },
     { "UpdateNotificationSubscription": { "subscription_id": "sub-1", "change": { "paused": { "paused": true } } } },
+    { "UpdateNotificationSubscription": { "subscription_id": "sub-1", "change": { "mode": { "mode": "steer" } } } },
     { "UpdateNotificationSubscription": { "subscription_id": "sub-1", "change": { "subscriber": { "agent_id": "agent-2" } } } },
     { "RemoveNotificationSubscription": { "subscription_id": "sub-1" } },
     { "TestNotificationSubscription": { "subscription_id": "sub-1" } },
@@ -18,7 +19,10 @@
       "cards": [
         { "card_id": "notice_5_ab", "session_id": "room-1", "snoozed_until_ms": null, "body": { "notice": {
           "agent_id": "agent-1", "agent_name": "Reviewer", "title": "PR review done", "body": "Two comments.",
-          "link": "https://github.com/charioxai/chariox/pull/976", "priority": "high", "created_at_ms": 5, "read": false } } },
+          "link": "https://github.com/charioxai/chariox/pull/976", "priority": "high", "created_at_ms": 5, "read": false, "folded": 0 } } },
+        { "card_id": "noisy_5_cd", "session_id": "room-1", "snoozed_until_ms": null, "body": { "notice": {
+          "agent_id": "agent-1", "agent_name": "Reviewer", "title": "Reviewer sent 3 more notifications", "body": "Latest: CI is green.",
+          "link": null, "priority": "normal", "created_at_ms": 6, "read": false, "folded": 3 } } },
         { "card_id": "permission-1", "session_id": "room-1", "snoozed_until_ms": 9000, "body": { "needs_you": { "interaction": {
           "id": "permission-1", "agent_id": "agent-1", "kind": "permission", "level": "info", "message": "Run the tests",
           "choices": [{ "id": "yes", "label": "Allow once", "reply": "yes" }], "requested_at_ms": 2 } } } },
@@ -38,7 +42,7 @@
         "source": { "kind": "app_event", "source_id": "app:pr-review", "kernel_id": "kernel-2", "session_id": "room-2", "workflow_id": "", "exit_node_id": "",
           "exit_ordinal": 0, "name": "Review requested", "display_name": "GitHub · Review requested", "available": true,
           "options": [{ "name": "pr", "label": "PR number", "type": "number", "field": "number" }] },
-        "subscriber_name": "Reviewer", "prompt": "Review the PR", "options": [{ "name": "pr", "value": 976 }], "once": true, "paused": false,
+        "subscriber_name": "Reviewer", "prompt": "Review the PR", "options": [{ "name": "pr", "value": 976 }], "once": true, "paused": false, "mode": "queue",
         "fired": 1, "last_fired_at_ms": 12, "loop_stopped_at_ms": null, "responsible_for": null, "health": "ok"
       }],
       "responsibilities": [{ "session_id": "room-1", "workflow_id": "wf-1", "workflow_name": "nightly_deploy", "fired": 1, "last_fired_at_ms": 11 }]

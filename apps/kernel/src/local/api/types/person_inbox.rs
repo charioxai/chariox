@@ -72,6 +72,10 @@ pub struct PersonInboxNotice {
     pub priority: PersonInboxPriority,
     pub created_at_ms: u64,
     pub read: bool,
+    /// 0 for one notice. n when the agent sent more notices than the rate limit allows and this
+    /// card stands for the n notices past it: Noisy. `title` then reads "<agent> sent n more
+    /// notifications" and `body` names the latest one.
+    pub folded: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

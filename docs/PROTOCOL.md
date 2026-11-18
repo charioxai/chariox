@@ -6929,7 +6929,11 @@ a member's agent with this room's sources only. `AppInstallationSummary.events` 
 release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
-now optional on the request, a notification trigger refuses a value, and the trigger summary is
+now optional on the request (local 1025: a notification trigger takes `queue`, the default, or `steer` on create
+and update, and `NotificationSubscriptionRow.mode`, `NotificationSubscriptionChange::Mode` and
+`ReplacedListener.busy_policy` carry it; the prompt of an agent notification carries only a one-line notice
+with the title, the source and the inbox position, and the agent's inbox, kind `notification`, holds the
+occurrence payload, for every source), and the trigger summary is
 `{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The

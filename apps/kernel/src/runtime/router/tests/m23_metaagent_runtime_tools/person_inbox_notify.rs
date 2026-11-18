@@ -257,3 +257,56 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
         .unwrap();
     assert!(!read_of(&room.inbox().await, &loud));
 }
+
+/// Plan 5.1: past the rate limit an origin's further notices fold into one card flagged Noisy.
+#[tokio::test]
+async fn an_agent_that_sends_fourteen_notices_leaves_five_cards_and_one_noisy_card() {
+    let room = room("notify-person-fold");
+    let mut last = String::new();
+    for number in 1..=14 {
+        last = room
+            .notify(serde_json::json!({"title": format!("Review {number} done")}))
+            .await
+            .unwrap();
+    }
+
+    let cards = room.inbox().await;
+    let single = cards.iter().filter(|card| notice(card).folded == 0).count();
+    assert_eq!(single, 5, "the first five notices keep their own cards");
+    let noisy: Vec<_> = cards
+        .iter()
+        .filter(|card| notice(card).folded > 0)
+        .collect();
+    assert_eq!(noisy.len(), 1, "every further notice folds into one card");
+    assert_eq!(
+        noisy[0].card_id, last,
+        "a folded notice answers with the folded card's id"
+    );
+    let folded = notice(noisy[0]);
+    assert_eq!(folded.folded, 9);
+    assert!(
+        folded.title.ends_with("sent 9 more notifications"),
+        "{}",
+        folded.title
+    );
+    assert_eq!(folded.body.as_deref(), Some("Latest: Review 14 done"));
+    assert!(!folded.read);
+
+    room.set(&[&last], InboxCardChange::Read { read: true })
+        .await
+        .unwrap();
+    room.notify(serde_json::json!({"title": "Review 15 done"}))
+        .await
+        .unwrap();
+    let cards = room.inbox().await;
+    let folded = cards
+        .iter()
+        .map(notice)
+        .find(|notice| notice.folded > 0)
+        .unwrap();
+    assert_eq!(folded.folded, 10);
+    assert!(
+        !folded.read,
+        "a new folded notice makes the card unread again"
+    );
+}

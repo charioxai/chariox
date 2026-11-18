@@ -89,6 +89,21 @@ fn queued_message(
     Ok(e)
 }
 
+/// A wake whose prompt carried the event's text needs nothing more from the agent, unless the
+/// event asks something of it: a decision to answer, a question to reply to, or a loss it
+/// must decide on.
+fn settles_on_receipt(tx: &Transaction<'_>, e: &InboxEvent) -> Result<bool, DaemonError> {
+    if e.reply_requested || e.is_loss() || needs_answer(e) {
+        return Ok(false);
+    }
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_inbox_shown WHERE sequence=?1)",
+        [sql_integer(e.sequence)?],
+        |r| r.get(0),
+    )
+    .map_err(sql)
+}
+
 fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Send {
@@ -393,6 +408,20 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             replies::reconcile_event(tx, &e)?;
             if e.state == "accepted" {
                 super::unread_steers::revert_late_receipt(tx, &mut e)?;
+            }
+            if e.state == "accepted" && settles_on_receipt(tx, &e)? {
+                if let Outcome::Event(acked) = apply_row(
+                    tx,
+                    Operation::Ack {
+                        room,
+                        agent,
+                        sequence,
+                        handled: e.is_source_outcome(),
+                        now,
+                    },
+                )? {
+                    e = acked;
+                }
             }
             Ok(Outcome::Event(e))
         }

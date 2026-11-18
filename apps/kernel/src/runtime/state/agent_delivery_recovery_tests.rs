@@ -111,7 +111,7 @@ async fn refused_start_ends_with_a_typed_failure_and_the_next_message_starts_a_t
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
-    assert_eq!(f.state_of(next.sequence), "accepted");
+    assert_eq!(f.state_of(next.sequence), "acknowledged");
     assert!(f.child_is_running());
 }
 
@@ -162,7 +162,7 @@ async fn resume_on_an_unconfirmed_delivery_card_delivers_the_message_again() {
         )
         .await;
 
-    assert_eq!(f.state_of(lost.sequence), "accepted");
+    assert_eq!(f.state_of(lost.sequence), "acknowledged");
     assert!(f.child_is_running());
 }
 
@@ -201,7 +201,7 @@ async fn a_due_wake_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
-    assert_eq!(f.state_of(wake.sequence), "accepted");
+    assert_eq!(f.state_of(wake.sequence), "handled");
     assert!(f.child_is_running());
 }
 
@@ -260,12 +260,12 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
         .unwrap();
     let sequence = fired.last_sequence.expect("the timer fired into the inbox");
     for _ in 0..50 {
-        if f.state_of(sequence) == "accepted" {
+        if f.state_of(sequence) == "handled" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert_eq!(f.state_of(sequence), "accepted");
+    assert_eq!(f.state_of(sequence), "handled");
     assert!(f.child_is_running());
 }
 
@@ -298,6 +298,6 @@ async fn resume_on_the_card_of_an_undelivered_message_sends_it_again() {
         )
         .await;
 
-    assert_eq!(f.state_of(lost.sequence), "accepted");
+    assert_eq!(f.state_of(lost.sequence), "acknowledged");
     assert!(f.child_is_running());
 }

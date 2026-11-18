@@ -103,7 +103,7 @@ async fn an_agent_waiting_for_pr_976_is_woken_by_976_and_not_by_9760() {
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 1, "{queued:?}");
     assert!(
-        queued[0].contains("Review requested on PR #976\""),
+        queued[0].contains("Review requested on PR #976 (from"),
         "{}",
         queued[0]
     );
@@ -187,4 +187,54 @@ async fn a_once_subscription_ends_after_its_first_delivery() {
     review_requested(&rig, "pr-976-again", 976);
     rig.pass().await;
     assert_eq!(rig.queued_prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn one_app_whose_release_cannot_be_read_does_not_take_the_other_sources_with_it() {
+    let rig = rig().await;
+    let good = app_event_source(&rig);
+    let store = &rig.runtime.owned.durable_state_store;
+    // Active, but its release was never staged: the catalog cannot be read.
+    crate::durable_state::app_state::fixture_copy_installation(
+        store,
+        "local",
+        "ghost",
+        "deployment-ghost",
+        crate::durable_state::app_state::fixture_inbox_package_version("2.0.0", 0),
+    );
+    store
+        .app_inbox(AppInboxOperation::CreateRoute {
+            route: InboxRoute {
+                route_id: "ghost-route".into(),
+                owner_id: "local".into(),
+                installation_id: "ghost".into(),
+                event_name: "received".into(),
+                source_event_type: "dev.chariox.dummy/dummy.test".into(),
+                source_event_version: 1,
+                active: true,
+                paused: false,
+                app_managed: false,
+                source: None,
+            },
+            now_ms: 2,
+        })
+        .unwrap();
+    let (stored, _, _) = store.notification_inventory("local").unwrap();
+    rig.runtime
+        .owned
+        .sync_app_event_notification_sources("local", &stored)
+        .expect("one unreadable release must not fail the whole sources sync");
+    let sources: Vec<_> = store
+        .notification_inventory("local")
+        .unwrap()
+        .0
+        .into_iter()
+        .filter(|source| source.kind == NotificationSourceKind::AppEvent)
+        .collect();
+    let by_route = |route: &str| sources.iter().find(|source| source.workflow_id == route);
+    assert!(by_route("mail").is_some_and(|source| source.available && source.source_id == good));
+    assert!(
+        by_route("ghost-route").is_some_and(|source| !source.available),
+        "the unreadable App's source is listed, flagged unavailable: {sources:?}"
+    );
 }

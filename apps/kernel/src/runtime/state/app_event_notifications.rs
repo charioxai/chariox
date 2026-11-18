@@ -48,7 +48,8 @@ fn source_of(
 
 impl KernelRuntimeOwnedState {
     /// Brings the owner's App event sources in line with the installed Apps: one enabled source
-    /// per active route of an active installation, and a disabled one for each that is gone. A
+    /// per active route of an active installation (unavailable
+    /// when its App's release cannot be read), and a disabled one for each that is gone. A
     /// grant keeps following a disabled source's row, flagged unavailable, until it detaches.
     /// `stored` is the owner's inventory; a source it already holds unchanged is not written.
     pub(super) fn sync_app_event_notification_sources(
@@ -66,8 +67,25 @@ impl KernelRuntimeOwnedState {
         let mut live = std::collections::BTreeSet::new();
         let mut catalogs = std::collections::BTreeMap::new();
         for route in &routes {
-            let options = self.app_event_options(owner, route, &mut catalogs)?;
-            let source = source_of(&kernel, route, options);
+            // One App whose release cannot be read lists its own events as unavailable; the
+            // owner's other sources keep working.
+            let source = match self.app_event_options(owner, route, &mut catalogs) {
+                Ok(options) => source_of(&kernel, route, options),
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.app_event_notification",
+                        "an App event source is unavailable",
+                        serde_json::json!({
+                            "installation_id": route.installation_id,
+                            "event": route.event_name,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    let mut source = source_of(&kernel, route, Vec::new());
+                    source.available = false;
+                    source
+                }
+            };
             live.insert(source.source_id.clone());
             self.register_notification_source_if_changed(stored, source)?;
         }

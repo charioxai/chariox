@@ -475,6 +475,7 @@ impl KernelRuntimeState {
                     receipt.invocation.as_deref(),
                     &config.event_name,
                 ),
+                source: config.event_name.clone(),
             };
             let admission = self
                 .queue_agent_notification_input(
