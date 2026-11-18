@@ -247,7 +247,7 @@ pub(crate) enum KernelEvent {
     },
     WorkflowRunUpdated {
         session_id: String,
-        workflow_run: WorkflowRun,
+        workflow_run: Box<WorkflowRun>,
     },
     Heartbeat {
         session_id: String,
@@ -931,7 +931,7 @@ pub(crate) fn workflow_run_updated_events(
         .into_iter()
         .map(|workflow_run| KernelEvent::WorkflowRunUpdated {
             session_id: snapshot.session.id().to_string(),
-            workflow_run,
+            workflow_run: Box::new(workflow_run),
         })
         .collect()
 }

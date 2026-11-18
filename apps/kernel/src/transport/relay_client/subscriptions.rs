@@ -811,7 +811,7 @@ pub(super) async fn run_relay_subscription_loop(
                         &event_stream_id,
                         KernelEvent::WorkflowRunUpdated {
                             session_id: session_id.clone(),
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                         },
                     )
                     .await
