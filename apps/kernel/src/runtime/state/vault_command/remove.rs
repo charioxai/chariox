@@ -98,6 +98,7 @@ impl KernelRuntimeState {
             entry.clone(),
             None,
             "Removed by the agent that captured it",
+            super::super::owner_vault::BindingChange::Keep,
         )?;
         let browser_user = self.provider_account_authority_owner_user_id(&context.owner_user_id);
         self.drop_protected_value(&browser_user, key, &value, retained)

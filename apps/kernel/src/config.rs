@@ -11,6 +11,7 @@ mod credentials;
 mod payment_card;
 pub(crate) use payment_card::PaymentCard;
 pub use payment_card::{PaymentCardField, PaymentCardSummary};
+pub(crate) mod vault_kind;
 pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;

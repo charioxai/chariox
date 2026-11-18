@@ -990,5 +990,58 @@ async fn a_copy_request_replayed_with_another_source_is_refused() {
         )
         .unwrap();
     assert_eq!(authorization.as_str(), format!("Bearer {SECRET}"));
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_http_points_to_a_copy_not_a_change_of_kind() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id": handle, "url": "https://api.example.com/", "timeout_ms": 5000}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("chariox.vault.copy_for_use"),
+        "{refused}"
+    );
+    assert!(!refused.contains("change Kind"), "{refused}");
+    assert!(!refused.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_browser_fill_points_to_a_new_password_not_a_copy() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .validate_browser_secret_input_for_target_url(handle, "https://api.example.com/login")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("new Password entry")
+            && refused.contains("chariox.vault.generate"),
+        "{refused}"
+    );
+    assert!(!refused.contains("copy_for_use"), "{refused}");
+    assert!(!refused.contains(SECRET));
     f.state.shutdown_cleanup().await.unwrap();
 }
