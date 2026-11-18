@@ -1,4 +1,4 @@
-//! An expired Vault unlock ends the queued prompt that asked for it;
+//! An expired, declined or cancelled Vault unlock ends the queued prompt that asked for it;
 //! it never leaves the agent idle behind a prompt that nobody can start.
 use super::*;
 
@@ -125,6 +125,58 @@ async fn a_timed_out_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on(
     let started = runtime
         .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
         .await;
+    assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
+    drop(app);
+}
+
+#[tokio::test]
+async fn a_cancelled_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on() {
+    let (_root, app, runtime, session_id, agent_id) =
+        two_queued_prompts_behind_a_locked_vault("queue-vault-unlock-cancel").await;
+    let owner = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    // The owner cancels each unlock card as it appears.
+    let cancel_cards = async {
+        let mut cancelled = 0;
+        while cancelled < 2 {
+            let card = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interaction_for_agent(&agent_id)
+                .map(|card| card.id().to_string());
+            match card {
+                Some(card) => {
+                    runtime
+                        .resolve_terminal_runtime_interaction(
+                            &session_id,
+                            &card,
+                            "cancel",
+                            None,
+                            Some(&owner),
+                        )
+                        .await
+                        .unwrap();
+                    cancelled += 1;
+                }
+                None => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
+            }
+        }
+    };
+    let (started, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(
+            runtime.advance_project_queued_prompt_after_settlement(&session_id, &agent_id),
+            cancel_cards
+        )
+    })
+    .await
+    .expect("a cancelled unlock must end the queue, not wait");
     assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
     drop(app);
 }
