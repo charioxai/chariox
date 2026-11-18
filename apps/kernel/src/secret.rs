@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::config::vault_kind::VaultKind;
 use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
     UserCredentialUse, UserCredentialVaultConfig,
@@ -620,7 +621,12 @@ impl RuntimeSecretService {
         let credential = self.credential(credential_id)?;
         let binding = credential.metadata.as_ref().and_then(|m| m.use_binding.as_ref())
             .ok_or_else(|| secret_error("credential_policy", "this Vault entry has no declared use; capture it again for one exact destination".into()))?;
-        binding.require(target)?;
+        binding.require(target).map_err(|refusal| {
+            match VaultKind::refusal_for(credential, requested) {
+                Some(message) => secret_error("credential_policy", message),
+                None => refusal,
+            }
+        })?;
         self.ensure_use_allowed(credential, requested)?;
         if !matches!(
             credential.injection,
@@ -1264,7 +1270,9 @@ impl RuntimeSecretService {
             ) {
                 return Err(secret_error(
                     "credential_policy",
-                    "this Vault entry was created for a different use".into(),
+                    VaultKind::refusal_for(credential, requested).unwrap_or_else(|| {
+                        "this Vault entry was created for a different use".into()
+                    }),
                 ));
             }
         }
@@ -1273,10 +1281,12 @@ impl RuntimeSecretService {
         }
         Err(secret_error(
             "credential_policy",
-            format!(
-                "credential `{}` is not allowed for {:?}",
-                credential.id, requested
-            ),
+            VaultKind::refusal_for(credential, requested).unwrap_or_else(|| {
+                format!(
+                    "credential `{}` is not allowed for {:?}",
+                    credential.id, requested
+                )
+            }),
         ))
     }
 

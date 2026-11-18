@@ -16,6 +16,7 @@ pub(in crate::runtime::state) use capture::{
     capture_binding_schema, committed as committed_capture, service_host, Captured,
 };
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
+pub(in crate::runtime::state) use copy::site_bearer_use;
 pub(crate) use copy::{copy_for_use_spec, VAULT_COPY_FOR_USE};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
 pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};

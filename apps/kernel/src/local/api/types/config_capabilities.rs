@@ -619,6 +619,12 @@ pub enum OwnerVaultRequest {
         id: String,
         value: VaultPassphrase,
     },
+    /// Changes the entry's Kind and Use in place: same id and value.
+    Update {
+        id: String,
+        kind: String,
+        use_binding: crate::config::VaultUseBinding,
+    },
     Delete {
         id: String,
     },

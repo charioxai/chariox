@@ -118,14 +118,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("this entry holds no value"))?;
         let now = crate::session::unix_epoch_ms();
         let (allowed_host, allowed_use, injection) = match &args.use_binding.target {
-            VaultUseTarget::Site { origin } => (
-                host_of(origin)?,
-                UserCredentialUse::Http,
-                UserCredentialInjectionConfig::Header {
-                    name: "Authorization".into(),
-                    value: "Bearer ${secret}".into(),
-                },
-            ),
+            VaultUseTarget::Site { origin } => site_bearer_use(origin)?,
             VaultUseTarget::File { .. } => (
                 source.allowed_hosts.first().cloned().unwrap_or_default(),
                 UserCredentialUse::File,
@@ -183,6 +176,20 @@ impl KernelRuntimeState {
             payload: serde_json::json!({"credential_id": handle, "from": args.from, "created": true}),
         })
     }
+}
+
+/// An entry for one HTTPS API: it sends `Authorization: Bearer <value>` to exactly that origin.
+pub(in crate::runtime::state) fn site_bearer_use(
+    origin: &str,
+) -> Result<(String, UserCredentialUse, UserCredentialInjectionConfig), DaemonError> {
+    Ok((
+        host_of(origin)?,
+        UserCredentialUse::Http,
+        UserCredentialInjectionConfig::Header {
+            name: "Authorization".into(),
+            value: "Bearer ${secret}".into(),
+        },
+    ))
 }
 
 fn destination_word(target: &VaultUseTarget) -> String {

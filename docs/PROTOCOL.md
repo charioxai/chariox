@@ -3395,6 +3395,11 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012 / relay peer 448: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+  and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
+  changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
+  kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
+  credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,

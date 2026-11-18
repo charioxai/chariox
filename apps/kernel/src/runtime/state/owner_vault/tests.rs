@@ -67,6 +67,7 @@ fn owner_vault_entries_use_the_agent_resolver_and_preserve_their_binding() {
         entry.clone(),
         Some("old-value"),
         "Created by owner",
+        BindingChange::Keep,
     )
     .unwrap();
     assert_eq!(registry.list().unwrap().len(), 1);
@@ -87,6 +88,7 @@ fn owner_vault_entries_use_the_agent_resolver_and_preserve_their_binding() {
         entry.clone(),
         Some("new-value"),
         "Replaced by owner",
+        BindingChange::Keep,
     )
     .unwrap();
     let resolver = RuntimeSecretService::with_vault_store(
@@ -143,6 +145,7 @@ fn owner_vault_changes_roll_back_if_activity_cannot_be_committed() {
                 entry.clone(),
                 Some("old-value"),
                 "Created by owner",
+                BindingChange::Keep,
             )
             .unwrap();
             Some(entry.clone())
@@ -158,7 +161,8 @@ fn owner_vault_changes_roll_back_if_activity_cannot_be_committed() {
             } else {
                 Some("new-value")
             },
-            "Changed by owner"
+            "Changed by owner",
+            BindingChange::Keep,
         )
         .is_err());
         assert_eq!(
@@ -330,6 +334,7 @@ fn owner_factor_command_and_file_entries_use_the_real_injection_channels() {
             entry,
             Some(value),
             "Created by owner",
+            BindingChange::Keep,
         )
         .unwrap();
     }
