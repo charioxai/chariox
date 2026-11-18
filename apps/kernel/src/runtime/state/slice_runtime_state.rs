@@ -50,6 +50,14 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::CreateSliceRequest,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        if request.backend == crate::slice::SliceBackendKind::LocalDocker
+            && crate::slice::local_docker_slices_unavailable()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.create",
+                message: "This machine cannot run slices: its Chariox release has no slice service. Create the slice on a machine that runs slices.".to_string(),
+            });
+        }
         self.validate_slice_development_selection(
             request.development.as_ref(),
             &request.backend,
