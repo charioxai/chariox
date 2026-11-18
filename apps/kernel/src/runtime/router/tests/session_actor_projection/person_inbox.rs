@@ -33,6 +33,7 @@ async fn next_cards(events: &mut tokio::sync::mpsc::UnboundedReceiver<KernelEven
 fn room(owner: &str) -> RuntimeSession {
     let mut session = RuntimeSession::new(
         format!("inbox-room-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
