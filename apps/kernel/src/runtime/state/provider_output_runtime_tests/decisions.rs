@@ -1614,3 +1614,54 @@ mod other_turns;
 mod reparent;
 mod restored;
 mod tenure;
+
+// An owner-only card a sub-agent raises at any depth (here: approve renting a machine) is
+// one card of the Room: no agent above holds it, and the Room state every client reads
+// lists it with its asker and the top parent whose pane shows it.
+#[tokio::test]
+async fn a_sub_agents_owner_card_is_listed_for_the_person_in_its_top_parents_pane() {
+    let t = tree(
+        "decision-owner-card",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let card = RuntimeInteraction::for_kernel_operation(
+        "machine-acquisition-sub",
+        "machine-acquisition-sub",
+        "",
+        "Acquire a machine at the connected service's quoted rate?",
+        vec![
+            RuntimeInteractionChoice::new("approve", "Approve", "approve", None),
+            RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+        ],
+    )
+    .with_related_agent_id(t.c.clone());
+    let owner = t.session().owner_user_id().to_owned();
+    let _answer = t
+        .runtime
+        .create_kernel_operation_interaction(&t.room, &owner, card)
+        .await
+        .unwrap();
+    assert!(
+        t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty(),
+        "renting a machine stays the person's decision"
+    );
+    let response = t
+        .runtime
+        .session_state_response(crate::local::GetSessionStateRequest {
+            session_id: t.room.clone(),
+        })
+        .unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    let card = wire["SessionState"]["session"]["active_interactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == "machine-acquisition-sub")
+        .cloned()
+        .expect("the Room lists the card");
+    assert_eq!(card["related_agent_id"], t.c.as_str(), "{card}");
+    assert_eq!(card["shown_in_agent_id"], t.g.as_str(), "{card}");
+    assert!(card["agent_id"].is_null(), "{card}");
+}

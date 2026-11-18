@@ -590,6 +590,7 @@ mod owner_action_notifications;
 mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
+mod usage_limit_stop_transitions;
 mod wake_driver;
 mod watchers;
 #[cfg(test)]

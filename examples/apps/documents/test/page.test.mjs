@@ -142,7 +142,7 @@ class Element {
 function fakeBackend() {
   const store = {
     docs: new Map(),
-    // One draft per document, as the App keeps them; `draft` is the latest, for single-window tests.
+    // One draft per (editor, document), as the App keeps them; `draft` is the latest, for single-window tests.
     drafts: new Map(),
     get draft() { return [...this.drafts.values()].at(-1) ?? null; },
   };
@@ -158,14 +158,30 @@ function fakeBackend() {
       return { ...doc };
     },
     view_changes: () => ({ latest: 1, dropped: false, changes: [] }),
-    save_draft: (draft) => { store.drafts.delete(draft.id); store.drafts.set(draft.id, draft); return { saved: true }; },
-    read_draft: ({ id }) => {
-      const draft = id ? store.drafts.get(id) : [...store.drafts.values()].at(-1);
-      return { draft: draft && store.docs.has(draft.id) ? draft : null };
+    save_draft: (draft) => {
+      if (typeof draft.editor !== 'string') throw Error('editor is required');
+      const key = `${draft.editor}/${draft.id}`;
+      store.drafts.delete(key);
+      store.drafts.set(key, draft);
+      return { saved: true };
     },
-    discard_draft: ({ id }) => {
-      if (typeof id !== 'string') throw Error('id is required');
-      store.drafts.delete(id);
+    // The contract of the App's claim: an editor keeps its own latest draft, else takes the latest of another.
+    claim_draft: ({ editor }) => {
+      if (typeof editor !== 'string') throw Error('editor is required');
+      for (const [key, draft] of store.drafts) if (!store.docs.has(draft.id)) store.drafts.delete(key);
+      const all = [...store.drafts.values()];
+      const own = all.filter((draft) => draft.editor === editor).at(-1);
+      const other = all.filter((draft) => draft.editor !== editor).at(-1);
+      if (own) return { draft: own };
+      if (!other) return { draft: null };
+      store.drafts.delete(`${other.editor}/${other.id}`);
+      const moved = { ...other, editor };
+      store.drafts.set(`${editor}/${moved.id}`, moved);
+      return { draft: moved };
+    },
+    discard_draft: ({ editor, id }) => {
+      if (typeof editor !== 'string' || typeof id !== 'string') throw Error('editor and id are required');
+      store.drafts.delete(`${editor}/${id}`);
       return { discarded: true };
     },
   };
@@ -252,7 +268,7 @@ test('a saved edit leaves no draft to restore', async () => {
 
   const second = await loadView(backend);
   await until(() => second.$('docs').children.length === 1, 'the list');
-  await until(() => backend.calls.filter((tool) => tool === 'read_draft').length === 2, 'the new view asked for a draft');
+  await until(() => backend.calls.filter((tool) => tool === 'claim_draft').length === 2, 'the new view asked for a draft');
   assert.equal(second.$('content').value, '', 'nothing is opened for a view with no draft');
 });
 
@@ -264,11 +280,62 @@ test('a window that saves discards its own document\'s draft and leaves another 
   first.$('docs').children[0].children[0].click();
   await until(() => first.$('content').value === 'saved text', 'the document opened');
   type(first, { content: 'saved edit' });
-  await until(() => backend.store.drafts.has('d1'), 'the App keeps the draft');
-  backend.store.drafts.set('d2', { id: 'd2', base_revision: 1, title: 'Other', folder: '', content: 'edited in another window' });
+  await until(() => [...backend.store.drafts.values()].some((draft) => draft.id === 'd1'), 'the App keeps the draft');
+  backend.store.drafts.set('other/d2', { editor: 'other', id: 'd2', base_revision: 1, title: 'Other', folder: '', content: 'edited in another window' });
   first.$('save').click();
-  await until(() => !backend.store.drafts.has('d1'), 'the saved document\'s draft is dropped');
-  assert.equal(backend.store.drafts.get('d2')?.content, 'edited in another window');
+  await until(() => ![...backend.store.drafts.values()].some((draft) => draft.id === 'd1'), 'the saved document\'s draft is dropped');
+  assert.equal(backend.store.drafts.get('other/d2')?.content, 'edited in another window');
+});
+
+// Two windows on one document each have their own draft, so what one saves or gives up never reaches the
+// other's edit, and the window that replaces the other's view finds that edit again.
+async function otherWindowEdits(backend, content) {
+  await backend.call('save_draft', { editor: 'other', id: 'd1', base_revision: 1, title: 'Notes', folder: '', content });
+}
+
+test('a window that saves its document leaves another window\'s edit of the same document', async () => {
+  const backend = fakeBackend();
+  const first = await loadView(backend);
+  await openNotes(first);
+  type(first, { content: 'edit from this window' });
+  await until(() => backend.store.draft?.content === 'edit from this window', 'this window\'s draft is kept');
+  await otherWindowEdits(backend, 'edit from the other window');
+  first.$('save').click();
+  await until(() => backend.store.docs.get('d1').content === 'edit from this window', 'the save');
+  await until(() => backend.store.drafts.size === 1, 'this window\'s draft is dropped');
+  assert.equal(backend.store.drafts.get('other/d1').content, 'edit from the other window');
+
+  const second = await loadView(backend);
+  await until(() => second.$('content').value === 'edit from the other window', 'the other window\'s edit comes back');
+});
+
+test('a window that gives up its edit discards only its own draft of the document', async () => {
+  const backend = fakeBackend();
+  const first = await loadView(backend);
+  await openNotes(first);
+  type(first, { content: 'edit from this window' });
+  await until(() => backend.store.draft?.content === 'edit from this window', 'this window\'s draft is kept');
+  await otherWindowEdits(backend, 'edit from the other window');
+  const pick = () => first.$('docs').children[0].children[0].click();
+  pick();
+  await until(() => /Unsaved changes/.test(first.$('status').textContent), 'the window asks before it gives up the edit');
+  pick();
+  await until(() => first.$('content').value === 'saved text', 'the edit is given up');
+  await until(() => backend.store.drafts.size === 1, 'this window\'s draft is discarded');
+  assert.deepEqual([...backend.store.drafts.keys()], ['other/d1']);
+});
+
+test('a window whose own draft exists is not handed another window\'s edit', async () => {
+  const backend = fakeBackend();
+  const first = await loadView(backend);
+  await openNotes(first);
+  type(first, { content: 'edit from this window' });
+  await until(() => backend.store.draft?.content === 'edit from this window', 'this window\'s draft is kept');
+  const own = backend.store.drafts.values().next().value.editor;
+  await otherWindowEdits(backend, 'edit from the other window');
+  const claimed = await backend.call('claim_draft', { editor: own });
+  assert.equal(claimed.draft.content, 'edit from this window');
+  assert.equal(backend.store.drafts.size, 2, 'the other window\'s draft stays where it is');
 });
 
 test('a view that is going away hands over its latest keystrokes at once', async () => {

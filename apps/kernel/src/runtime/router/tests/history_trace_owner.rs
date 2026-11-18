@@ -92,3 +92,47 @@ async fn a_private_member_cannot_read_another_users_agent_history() {
         "the room owner must still read their agent's history outline: {owner_outline:?}"
     );
 }
+
+// A sub-agent's pane reads its history with the Room's outline: the owner reads every
+// agent of their tree, at any depth, though the Room's agent list leaves sub-agents out.
+#[tokio::test]
+async fn the_owner_reads_the_history_outline_of_sub_agents_at_any_depth() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, top) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let child = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub").with_parent_agent_id(top.id()),
+        )
+        .unwrap();
+    let grandchild = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub").with_parent_agent_id(child.id()),
+        )
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let asked = vec![child.id().to_string(), grandchild.id().to_string()];
+    let request = LocalDaemonRequest::GetSessionHistoryOutline(
+        crate::local::GetSessionHistoryOutlineRequest {
+            session_id: session.id().to_string(),
+            agent_ids: Some(asked.clone()),
+            latest_prompt_count: Some(2),
+            cursor: None,
+            include_prefetched_content: true,
+        },
+    );
+    let command = KernelCommand::from_local_request("sub-agent-history", None, None, &request);
+    let outline = router.dispatch(command, request).await;
+    let Ok(LocalDaemonResponse::SessionHistoryOutline { agents }) = &outline else {
+        panic!("the owner's outline of their sub-agents failed: {outline:?}");
+    };
+    let mut read = agents
+        .iter()
+        .map(|agent| agent.agent_id.clone())
+        .collect::<Vec<_>>();
+    read.sort();
+    let mut expected = asked;
+    expected.sort();
+    assert_eq!(read, expected, "every sub-agent the pane asked for is read");
+}

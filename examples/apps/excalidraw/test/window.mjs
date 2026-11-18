@@ -90,6 +90,8 @@ export function fakeBackend() {
     failSaves: null,
     /** The kept drafts by window id. */
     drafts: new Map(),
+    /** Message of the error every save_draft throws, with the kept drafts unchanged. */
+    failDraftSaves: null,
     /**
      * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
      * never answers: the two ways an App update can end a save the window is waiting for.
@@ -154,7 +156,7 @@ export function fakeBackend() {
         if (backend.holdSaves === 'commit') await new Promise(() => {});
         return { version: backend.version };
       }
-      if (name === 'save_draft') { backend.drafts.set(input.id, clone(input.scene)); return {}; }
+      if (name === 'save_draft') { if (backend.failDraftSaves) throw Error(backend.failDraftSaves); backend.drafts.set(input.id, clone(input.scene)); return {}; }
       if (name === 'read_drafts') return { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
       if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }
       if (name === 'write_file') {

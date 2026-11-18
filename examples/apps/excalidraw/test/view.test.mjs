@@ -460,6 +460,52 @@ test('an edit kept for a replaced window is merged with what an agent saved mean
   } finally { await first.close(); await second?.close(); }
 });
 
+test('a refused write of the recovering window\'s draft leaves the replaced window\'s edit in the App', { timeout: 90_000 }, async () => {
+  const backend = fakeBackend();
+  backend.holdSaves = 'lose';
+  const first = await openApp({ backend });
+  let second, third;
+  try {
+    await first.load();
+    await first.draw();
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
+    const [replacedId] = backend.drafts.keys();
+    // The App refuses the replacement draft, accepts the discard, and the scene save never commits.
+    backend.failDraftSaves = 'the draft store is unavailable';
+    const writes = backend.count('save_draft');
+    second = await replaced(first, backend);
+    assert.equal((await second.elements()).length, 1, 'the recovered rectangle is on the canvas');
+    await waitUntil(() => backend.count('save_draft') > writes, { what: 'the replacement draft to be refused' });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert(backend.drafts.has(replacedId), 'the replaced window\'s draft is still kept');
+    assert.equal(backend.live().length, 0, 'the scene save did not commit');
+    // The view is replaced once more: the edit is still there to recover.
+    backend.failDraftSaves = null;
+    backend.holdSaves = null;
+    third = await replaced(second, backend);
+    assert.equal((await third.elements()).length, 1, 'the rectangle comes back again');
+    await waitUntil(() => backend.live().length === 1, { what: 'the recovered edit to be saved' });
+    await waitUntil(() => backend.drafts.size === 0, { what: 'the kept drafts to be forgotten once saved' });
+  } finally { await first.close(); await second?.close(); await third?.close(); }
+});
+
+test('a recovering window whose draft writes are refused forgets the replaced draft once its scene is saved', { timeout: 90_000 }, async () => {
+  const backend = fakeBackend();
+  backend.holdSaves = 'lose';
+  const first = await openApp({ backend });
+  let second;
+  try {
+    await first.load();
+    await first.draw();
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
+    backend.failDraftSaves = 'the draft store is unavailable';
+    backend.holdSaves = null;
+    second = await replaced(first, backend);
+    await waitUntil(() => backend.live().length === 1, { what: 'the recovered edit to be saved' });
+    await waitUntil(() => backend.drafts.size === 0, { what: 'the replaced draft to be forgotten after the committed save' });
+  } finally { await first.close(); await second?.close(); }
+});
+
 test('two windows replaced together each get their edit back', { timeout: 90_000 }, async () => {
   const backend = fakeBackend();
   const left = await openApp({ backend });

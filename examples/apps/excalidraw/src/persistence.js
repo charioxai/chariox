@@ -28,8 +28,21 @@ export function persistence(chariox, api, loaded, feedHead) {
   let shownSelection = '';
   // The window's unsaved scene, as the save would send it, waits in the App until it is saved.
   const unsaved = () => sceneKey(JSON.parse(sceneJSON(api))) === lastSaved ? null : JSON.parse(syncedSceneJSON(api));
-  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved);
-  const settleDraft = () => { if (!unsaved()) draft.drop(); };
+  // Drafts of replaced windows whose edits this window holds, with the number of draft writes started
+  // when they joined its canvas. They are forgotten when a later write is acknowledged, which then
+  // carries their edits, or when this window's scene is saved.
+  let sources = [];
+  const forgetSources = (acknowledged = Infinity) => {
+    const done = sources.filter(source => source.since < acknowledged);
+    sources = sources.filter(source => !done.includes(source));
+    return draft.forget(done.map(source => source.id));
+  };
+  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved, forgetSources);
+  const settleDraft = () => {
+    if (unsaved()) return;
+    draft.drop();
+    forgetSources();
+  };
   const enqueue = work => {
     const pending = queue.then(work);
     queue = pending.catch(() => {});
@@ -121,8 +134,9 @@ export function persistence(chariox, api, loaded, feedHead) {
     // The window's edit changed: keep it in the App until it is saved.
     keepDraft: draft.keep,
     flushDraft: draft.flush,
-    // A replaced window's kept edits join this one's canvas and are saved with it. Its own draft is
-    // written before theirs are forgotten, so the edits are never kept nowhere.
+    // A replaced window's kept edits join this one's canvas and are saved with it. Their drafts stay
+    // until this window's own draft write is acknowledged or its scene save is committed, so a refused
+    // write leaves the edits in the App; a later write or save forgets them.
     async recover() {
       const kept = await draft.recall();
       if (!kept.length) return;
@@ -131,10 +145,11 @@ export function persistence(chariox, api, loaded, feedHead) {
           const { merged } = blend(scene);
           api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
         }
+        // A write that read the canvas before this point does not carry their edits.
+        sources.push(...kept.map(({ id }) => ({ id, since: draft.started() })));
       });
       draft.keep();
       await draft.flush();
-      await draft.forget(kept.map(({ id }) => id));
     },
     stop: () => { stopped = true; },
     status: () => ({ saved: !failure, error: failure?.message ?? null }),
