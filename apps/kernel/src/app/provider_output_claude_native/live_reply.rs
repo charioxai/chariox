@@ -37,11 +37,12 @@ pub(super) enum Adoption {
     /// Nothing was streamed for it: it goes out as usual.
     NotStreamed,
     /// It takes the place of the streamed row. `rest` is what a client that
-    /// appended the streamed text still misses; none when the block was drawn
-    /// differently from its markdown (the stored row is replaced either way).
+    /// appended the streamed text still misses: the markdown after the part the
+    /// terminal drew (empty when it drew all of it). The stored row is replaced
+    /// by the whole text either way.
     Streamed {
         merge_key_suffix: String,
-        rest: Option<String>,
+        rest: String,
     },
 }
 
@@ -97,6 +98,9 @@ struct LiveReply {
     blocks_started: usize,
     /// Rows the previous read showed: a row counts once two reads in a row show it.
     previous_rows: HashSet<String>,
+    /// The first row of the answer the screen showed when the prompt changed:
+    /// it is the previous turn's, so it is not streamed under the new prompt.
+    left_over: Option<String>,
 }
 
 struct Block {
@@ -132,19 +136,26 @@ impl LiveReply {
             finished: VecDeque::new(),
             blocks_started: 0,
             previous_rows: HashSet::new(),
+            left_over: None,
         }
     }
 
     fn read(&mut self, prompt_id: Option<&str>, bytes: &[u8]) -> Vec<LiveDelta> {
         self.touched = std::time::Instant::now();
-        self.screen.process(bytes);
         if self.prompt_id.as_deref() != prompt_id {
+            // Judged before this read's bytes: they may already draw the new reply.
+            self.left_over = reply_rows(&screen_rows(self.screen.screen()), false)
+                .1
+                .into_iter()
+                .next()
+                .map(|row| row.text);
             self.block = None;
             self.streamed.clear();
             self.finished.clear();
             self.previous_rows.clear();
             self.prompt_id = prompt_id.map(str::to_string);
         }
+        self.screen.process(bytes);
         if prompt_id.is_none() {
             return Vec::new();
         }
@@ -166,8 +177,16 @@ impl LiveReply {
             if block_head.is_some_and(|head| *head != first.text) {
                 self.hand_block_over();
             }
+            if self
+                .left_over
+                .as_ref()
+                .is_some_and(|head| *head != first.text)
+            {
+                self.left_over = None;
+            }
             if self.block.is_none() {
                 if done.is_empty()
+                    || self.left_over.is_some()
                     || self.finished.contains(&first.text)
                     || !confirmed.contains(&first.text)
                 {
@@ -268,47 +287,56 @@ impl LiveReply {
         {
             self.hand_block_over();
         }
-        let Some(index) = self
+        let Some((index, drawn_end)) = self
             .streamed
             .iter()
-            .position(|streamed| drawn_from(&streamed.text, text))
+            .enumerate()
+            .find_map(|(index, streamed)| Some((index, drawn_prefix_end(&streamed.text, text)?)))
         else {
             return Adoption::NotStreamed;
         };
         let streamed = self.streamed.remove(index).expect("index found above");
+        // The markup closing the last drawn word (`**`, a backtick) is not shown.
+        let tail = &text[drawn_end..];
+        let attached = tail.find(char::is_whitespace).unwrap_or(tail.len());
         Adoption::Streamed {
-            rest: text
-                .strip_prefix(streamed.text.as_str())
-                .map(str::to_string),
+            rest: tail[attached..].to_string(),
             merge_key_suffix: streamed.merge_key_suffix,
         }
     }
 }
 
-/// Whether `drawn` is the start of `markdown` as the terminal shows it: the
-/// letters and digits of what was drawn come in order, close together, at the
-/// start of the markdown, which the terminal shows without its markup.
+/// Whether `drawn` is the start of `markdown` as the terminal shows it.
 fn drawn_from(drawn: &str, markdown: &str) -> bool {
+    drawn_prefix_end(drawn, markdown).is_some()
+}
+
+/// Where in `markdown` the text `drawn` ends, when it is the start of it as
+/// the terminal shows it: the letters and digits of what was drawn come in
+/// order, close together, at the start of the markdown, which the terminal
+/// shows without its markup. The offset is after the last of those letters.
+fn drawn_prefix_end(drawn: &str, markdown: &str) -> Option<usize> {
     /// Letters of markup (a code fence's language) the terminal may leave out.
     const MARKUP_LETTERS: usize = 16;
     let letters = |text: &str| {
-        text.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
+        text.char_indices()
+            .filter(|(_, c)| c.is_alphanumeric())
+            .flat_map(|(at, c)| {
+                c.to_lowercase()
+                    .map(move |lower| (lower, at + c.len_utf8()))
+            })
             .collect::<Vec<_>>()
     };
     let (drawn, source) = (letters(drawn), letters(markdown));
     if drawn.is_empty() {
-        return false;
+        return None;
     }
     let mut position = 0;
-    for letter in &drawn {
-        let Some(found) = source[position..].iter().position(|c| c == letter) else {
-            return false;
-        };
+    for (letter, _) in &drawn {
+        let found = source[position..].iter().position(|(c, _)| c == letter)?;
         position += found + 1;
     }
-    position <= drawn.len() + drawn.len() / 2 + MARKUP_LETTERS
+    (position <= drawn.len() + drawn.len() / 2 + MARKUP_LETTERS).then(|| source[position - 1].1)
 }
 
 fn screen_rows(screen: &vt100::Screen) -> Vec<Row> {

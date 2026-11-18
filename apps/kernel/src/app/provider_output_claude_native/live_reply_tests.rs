@@ -129,7 +129,7 @@ fn a_reply_taller_than_the_screen_streams_row_by_row_and_the_transcript_continue
         reply.adopt(SCROLLED_REPLY),
         Adoption::Streamed {
             merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: Some(SCROLLED_REPLY[text.len()..].to_string()),
+            rest: SCROLLED_REPLY[text.len()..].to_string(),
         }
     );
 }
@@ -157,7 +157,7 @@ fn a_long_essay_streams_exactly_through_scrolls_and_redraws() {
         reply.adopt(ESSAY_REPLY),
         Adoption::Streamed {
             merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: Some(ESSAY_REPLY[text.len()..].to_string()),
+            rest: ESSAY_REPLY[text.len()..].to_string(),
         }
     );
 }
@@ -179,12 +179,17 @@ fn emphasis_streams_plain_and_the_transcript_text_replaces_it() {
         !EMPHASIS_REPLY.starts_with(&streamed.text()),
         "the row with `echo one` is drawn without its backticks"
     );
-    assert_eq!(
-        reply.adopt(EMPHASIS_REPLY),
-        Adoption::Streamed {
-            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: None,
-        }
+    let Adoption::Streamed {
+        merge_key_suffix,
+        rest,
+    } = reply.adopt(EMPHASIS_REPLY)
+    else {
+        panic!("the streamed block was not adopted");
+    };
+    assert_eq!(merge_key_suffix, "assistant:live-prompt-1-1:0");
+    assert!(
+        !rest.is_empty() && EMPHASIS_REPLY.ends_with(&rest),
+        "the tail the terminal had not drawn yet: {rest:?}"
     );
 }
 
@@ -198,7 +203,7 @@ fn a_heading_and_a_list_stream_plain_too() {
     );
     assert!(matches!(
         reply.adopt(HEADING_REPLY),
-        Adoption::Streamed { rest: None, .. }
+        Adoption::Streamed { rest, .. } if rest == "\n\nFinal plain line."
     ));
 }
 
@@ -237,6 +242,18 @@ fn a_new_prompt_starts_with_nothing_streamed() {
     assert!(!stream(&mut reply, &reads, PLAIN_REPLY).deltas.is_empty());
     assert!(reply.read(Some("prompt-2"), &[]).is_empty());
     assert_eq!(reply.adopt(PLAIN_REPLY), Adoption::NotStreamed);
+}
+
+#[test]
+fn the_answer_left_on_the_screen_is_not_streamed_again_under_the_next_prompt() {
+    let reads = terminal_output(PLAIN);
+    let mut reply = LiveReply::new(40, 120);
+    stream(&mut reply, &reads, PLAIN_REPLY);
+    // The screen still shows the previous answer while the new turn only spins.
+    for _ in 0..3 {
+        let deltas = reply.read(Some("prompt-2"), b"");
+        assert!(deltas.is_empty(), "{deltas:?}");
+    }
 }
 
 #[test]

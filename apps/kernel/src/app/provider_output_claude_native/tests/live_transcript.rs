@@ -16,6 +16,10 @@ struct RunningTurn {
 }
 
 fn running_turn(name: &str) -> RunningTurn {
+    running_turn_of(name, "claude-headless")
+}
+
+fn running_turn_of(name: &str, provider: &str) -> RunningTurn {
     let run_id = format!("provider-run-live-{name}");
     let worktree = crate::test_support::TestWorktree::new(name);
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -43,7 +47,7 @@ fn running_turn(name: &str) -> RunningTurn {
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-haiku",
     )
@@ -372,6 +376,49 @@ fn a_prompt_queued_before_the_stop_owns_what_claude_writes_once_it_is_handed_ove
     assert_eq!(turn.output_rows(), ["Here are the files."]);
 }
 
+#[test]
+fn a_prompt_typed_in_claudes_own_terminal_after_a_stop_owns_what_claude_writes_next() {
+    let mut turn = running_turn_of("native-prompt-after-stop", "claude");
+    turn.hook_event("UserPromptSubmit");
+    turn.append_transcript(tool_call("toolu_stopped", "sleep 20"));
+    turn.pass();
+    let stopped = turn.active_prompt_id();
+    crate::app::fence_cancelled_claude_turn(&turn.run, &stopped);
+    turn.app
+        .prompt_owner_cancel_active_prompt_only(&turn.session_id, &turn.agent_id)
+        .expect("the turn should cancel");
+    turn.append_transcript(assistant_text("stopped-tail", "I was interrupted."));
+    turn.pass();
+    assert!(turn.output_rows().is_empty(), "{:?}", turn.output_rows());
+
+    // The person types the next prompt into Claude's own terminal: only the
+    // UserPromptSubmit hook tells the kernel.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    fs::write(
+        &turn.events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Now list the files.",
+            "transcript_path": turn.transcript.display().to_string(),
+        })
+        .to_string()
+            + "\n",
+    )
+    .expect("hook event should be written");
+    turn.pass();
+    turn.append_transcript(tool_call("toolu_next", "ls"));
+    turn.append_transcript(assistant_text("next", "Here are the files."));
+    turn.pass();
+    assert!(
+        turn.tool_rows()
+            .iter()
+            .any(|row| row.contains("toolu_next")),
+        "the follow-up's tool row was dropped: {:?}",
+        turn.tool_rows()
+    );
+    assert_eq!(turn.output_rows(), ["Here are the files."]);
+}
+
 /// The terminal reads of a recorded Claude Code 2.1.296 session (40×120).
 fn recorded_terminal(recording: &str) -> Vec<Vec<u8>> {
     use base64::Engine;
@@ -462,11 +509,38 @@ fn a_reply_drawn_with_emphasis_streams_plain_and_the_transcript_text_replaces_it
         [EMPHASIS_REPLY],
         "the transcript text takes the streamed row's place, nothing else stays"
     );
+    let live = turn.output_rows().concat();
+    assert!(
+        live.starts_with(&streamed),
+        "no duplicate goes live: {live}"
+    );
+    assert!(
+        live.ends_with("so this output does not by itself prove the pause was honored, only that the sequence finished."),
+        "live clients miss the row the stream withheld: {live}"
+    );
+}
+
+#[test]
+fn a_heading_reply_shows_its_last_row_live_without_reloading_history() {
+    const HEADING: &str = include_str!("fixtures/claude-2.1.296-reply-with-heading.pty.jsonl");
+    const HEADING_REPLY: &str =
+        include_str!("fixtures/claude-2.1.296-reply-with-heading.reply.txt");
+    let mut turn = running_turn("streamed-heading");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    for bytes in recorded_terminal(HEADING) {
+        turn.terminal_shows(&bytes);
+    }
+    assert!(!turn.output_rows().concat().contains("Final plain line."));
+
+    turn.append_transcript(assistant_text("reply", HEADING_REPLY));
+    turn.pass();
     assert_eq!(
         turn.output_rows().concat(),
-        streamed,
-        "no duplicate goes live"
+        "Heading Two\n\nA paragraph with bold, italic, code and a link (https://example.com/x) inside.\n\n- first bullet\n- second bullet with bold\n\nFinal plain line.",
+        "the complete visible answer, as live clients show it"
     );
+    assert_eq!(turn.stored_replies(), [HEADING_REPLY]);
 }
 
 #[test]

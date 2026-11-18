@@ -814,6 +814,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         },
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
+                    // Typed in Claude's own terminal: no injection hands it over, so
+                    // the hook is where a stopped turn's fence ends.
+                    release_claude_cancelled_turn(context_file, prompt.id());
                 }
                 if let (Some(request_id), Some(context)) =
                     (hook_request_id, hook_context.as_deref())
@@ -1305,7 +1308,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         provider_run_id,
                         format!("claude-transcript:{provider_run_id}:{merge_key_suffix}"),
                         recipient_attachment_ids.clone(),
-                        rest.as_deref().unwrap_or_default(),
+                        &rest,
                         &chunk.text,
                     );
                     continue;
