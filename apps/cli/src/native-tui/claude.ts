@@ -24,7 +24,9 @@ import { createRemoteAttachmentRecovery, type RemoteAttachmentRef } from "./remo
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
+import { formatNativeReopenHint } from "./exit-hint.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
   defaultKernelEndpoint,
@@ -319,6 +321,7 @@ async function runClaudeRemoteRendered(
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,
       providerLines: ["  tui:            target-kernel-pty"],
+      promptPolicy: NATIVE_PROMPT_POLICY.observed,
     })
     process.stderr.write(banner)
     if (process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE) {
@@ -365,6 +368,7 @@ async function runClaudeRemoteRendered(
       })
     }
     await exited
+    process.stderr.write(formatNativeReopenHint("claude", session.id))
   } finally {
     exitController.abort()
     restoreResize?.()

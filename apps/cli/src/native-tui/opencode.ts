@@ -1,3 +1,5 @@
+import { formatNativeReopenHint } from "./exit-hint.js"
+import { resolveNativeModel } from "./native-model.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import { signalNativeChild } from "./native-child-signals.js"
@@ -41,6 +43,7 @@ import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
@@ -99,6 +102,11 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   let active = true
   let detach: (() => Promise<void>) | undefined
   try {
+    if (options.model !== "default") {
+      // Only the models that run without an account start; any other ends the
+      // provider run before attach with no reason the terminal could show.
+      await resolveNativeModel(client, "opencode", "OpenCode", options.model.replace(/^opencode\//, ""), "Add the model's provider in Provider Accounts, or pick another model.")
+    }
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
@@ -204,7 +212,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         `  opencode server:${upstreamBaseUrl}`,
         `  proxy:          ${proxyUrl}`,
       ],
-      promptPolicy: "native prompts pass through; Chariox observes the session",
+      promptPolicy: NATIVE_PROMPT_POLICY.throughKernel,
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment, {
       recovery,
@@ -217,6 +225,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       providerSessionId,
       workingDirectory: run.working_directory?.trim() || worktree,
     })
+    process.stderr.write(formatNativeReopenHint("opencode", session.id))
   } finally {
     active = false
     pump?.stop()

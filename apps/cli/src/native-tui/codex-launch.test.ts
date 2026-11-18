@@ -48,6 +48,7 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, Record<string, unknown>>) => {
     const [kind, payload] = Object.entries(request)[0]!
     switch (kind) {
+      case "GetProviderCatalog": return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { "fixture": { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       case "CreateSession": return { SessionCreated: { session: { id: "session", alias: "fixture", workspace_id: root, worktree_id: root, agents: [agent] }, agent } }
       case "AttachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
       case "GrantAgentExtension": return { AgentExtensionGranted: { agent } }

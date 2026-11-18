@@ -20,6 +20,7 @@ for (const [placement, flags] of [
       if ("CreateSession" in request) return { SessionCreated: { session: {
         id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
       }, agent } }
+      if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { fixture: { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
       if ("MoveAgentToRemote" in request) return { AgentMovedToRemote: { agent } }
       if ("LaunchProviderRun" in request) {
@@ -53,6 +54,7 @@ for (const state of ["Running", "Parked"]) {
       if ("CreateSession" in request) return { SessionCreated: { session: {
         id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
       }, agent } }
+      if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: { all: [{ id: "codex", name: "Codex", models: { fixture: { id: "fixture", name: "Fixture" } } }], default: { codex: "fixture" }, connected: ["codex"] } } }
       if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
       if ("LaunchProviderRun" in request) return { ProviderRunLaunchAccepted: { provider_run: run } }
       if ("GetProviderRun" in request) {

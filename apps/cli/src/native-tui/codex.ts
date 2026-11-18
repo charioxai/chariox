@@ -1,3 +1,5 @@
+import { resolveNativeModel } from "./native-model.js"
+import { formatNativeReopenHint } from "./exit-hint.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import { spawn } from "node:child_process"
@@ -35,6 +37,7 @@ import {
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
@@ -62,7 +65,7 @@ type NativeCodexOptions = {
   sliceRef?: string
   alias?: string
   agentAlias?: string
-  model: string
+  model?: string
   effort: string
   mode: "build" | "plan"
   permissions: "required" | "yolo"
@@ -72,18 +75,18 @@ type NativeCodexOptions = {
 }
 
 export async function runCodexNativeTui(args: string[]): Promise<void> {
-  const options = parseNativeCodexArgs(args)
+  const launch = parseNativeCodexArgs(args)
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
-  const workspace = options.workspace ?? inferredTargets.workspace
-  const worktree = options.worktree ?? inferredTargets.worktree
-  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort)
-  const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
+  const workspace = launch.workspace ?? inferredTargets.workspace
+  const worktree = launch.worktree ?? inferredTargets.worktree
+  const kernelEndpoint = launch.relayUrl ?? launch.kernelUrl ?? launch.socketPath ?? defaultKernelEndpoint(launch.kernelPort)
+  const client = new LocalIpcClient(kernelEndpoint, launch.relayUrl
     ? {
-      relayAuthToken: options.relayToken,
+      relayAuthToken: launch.relayToken,
       relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
-      relayAuthorizationIssuer: options.relayTokenIssuer,
-      targetDaemonId: options.targetDaemonId,
-      targetDaemonAlias: options.targetDaemonAlias,
+      relayAuthorizationIssuer: launch.relayTokenIssuer,
+      targetDaemonId: launch.targetDaemonId,
+      targetDaemonAlias: launch.targetDaemonAlias,
     }
     : undefined)
   let proxy: CodexProxyServer | null = null
@@ -93,6 +96,8 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   let detach: (() => Promise<void>) | undefined
 
   try {
+    const model = await resolveNativeModel(client, "codex", "Codex", launch.model)
+    const options = { ...launch, model }
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
@@ -180,7 +185,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         `  proxy:          ${proxyUrl}`,
         ...(run.provider_session_id ? [`  codex thread:   ${run.provider_session_id}`] : []),
       ],
-      promptPolicy: "native prompts pass through; Chariox observes the session",
+      promptPolicy: NATIVE_PROMPT_POLICY.throughKernel,
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment, {
       recovery,
@@ -197,6 +202,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       workingDirectory: worktree,
       initialPrompt: options.initialPrompt,
     })
+    process.stderr.write(formatNativeReopenHint("codex", session.id))
   } finally {
     active = false
     pump?.stop()
@@ -212,7 +218,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
 function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   const options: NativeCodexOptions = {
     clientId: `chariox-codex-native-${process.pid}`,
-    model: "gpt-5.4-mini",
     effort: "high",
     mode: "build",
     permissions: "yolo",
