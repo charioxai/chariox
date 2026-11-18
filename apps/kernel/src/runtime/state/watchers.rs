@@ -27,6 +27,8 @@ const GAP_PERIODS: u64 = 3;
 #[derive(Default)]
 pub(crate) struct WatcherRuns {
     live: std::sync::Mutex<BTreeMap<String, LiveRun>>,
+    /// Tells each run apart, so a run that ends removes only itself.
+    next_run: std::sync::atomic::AtomicU64,
     /// Check Now asks for a poll run before its time.
     check_now: std::sync::Mutex<BTreeSet<String>>,
     /// When an ended stream may start again, and how many times in a row it ended.
@@ -34,6 +36,7 @@ pub(crate) struct WatcherRuns {
 }
 
 struct LiveRun {
+    run: u64,
     revision: u64,
     stop: watch::Sender<bool>,
 }
@@ -43,8 +46,11 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl WatcherRuns {
+    /// A stopped run stays live until it has ended and ended what it left: no new run of the
+    /// watcher starts beside it, so its cleanup, which ends every process of the watcher's
+    /// claim, can't reach a newer run.
     fn stop(&self, watcher_id: &str) {
-        if let Some(run) = lock(&self.live).remove(watcher_id) {
+        if let Some(run) = lock(&self.live).get(watcher_id) {
             let _ = run.stop.send(true);
         }
     }
@@ -290,19 +296,15 @@ impl KernelRuntimeState {
             }
         };
         let now = crate::session::unix_epoch_ms();
-        {
-            let mut live = lock(&runs.live);
-            live.retain(|watcher_id, run| {
-                let current = records.iter().any(|record| {
-                    &record.watcher_id == watcher_id
-                        && record.state == WatcherState::Active
-                        && record.revision == run.revision
-                });
-                if !current {
-                    let _ = run.stop.send(true);
-                }
-                current
+        for (watcher_id, run) in lock(&runs.live).iter() {
+            let current = records.iter().any(|record| {
+                &record.watcher_id == watcher_id
+                    && record.state == WatcherState::Active
+                    && record.revision == run.revision
             });
+            if !current {
+                let _ = run.stop.send(true);
+            }
         }
         for record in records
             .into_iter()
@@ -352,9 +354,15 @@ impl KernelRuntimeState {
 
     fn start_watcher_run(&self, record: WatcherRecord) {
         let (stop, stopped) = watch::channel(false);
+        let run = self
+            .owned
+            .watcher_runs
+            .next_run
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         lock(&self.owned.watcher_runs.live).insert(
             record.watcher_id.clone(),
             LiveRun {
+                run,
                 revision: record.revision,
                 stop,
             },
@@ -363,15 +371,11 @@ impl KernelRuntimeState {
         let runs = Arc::clone(&self.owned.watcher_runs);
         tokio::spawn(async move {
             let watcher_id = record.watcher_id.clone();
-            let revision = record.revision;
             let stream = record.manifest.mode == WatcherMode::Stream;
             let end = run_once(&store, record, stopped).await;
             {
                 let mut live = lock(&runs.live);
-                if live
-                    .get(&watcher_id)
-                    .is_some_and(|run| run.revision == revision)
-                {
+                if live.get(&watcher_id).is_some_and(|live| live.run == run) {
                     live.remove(&watcher_id);
                 }
             }

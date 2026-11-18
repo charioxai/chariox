@@ -62,6 +62,11 @@ impl Rig {
     }
 
     async fn create(&self, script: &str) -> (String, String) {
+        self.create_in_mode(script, json!({"poll": {"every_s": 60}}))
+            .await
+    }
+
+    async fn create_in_mode(&self, script: &str, mode: serde_json::Value) -> (String, String) {
         let created = self
             .tool(
                 "chariox.watcher.create",
@@ -69,7 +74,7 @@ impl Rig {
                     "manifest": {
                         "name": "Bank mail",
                         "sentence": "Tells you when a mail from the bank arrives.",
-                        "mode": {"poll": {"every_s": 60}},
+                        "mode": mode,
                         "command": ["sh", "watch.sh"],
                         "events": [{"name": "mail", "keyed": true}],
                     },
@@ -106,6 +111,34 @@ impl Rig {
             // The transport tick.
             self.runtime.schedule_watchers();
         }
+    }
+
+    /// A stream made, dry run and turned on with the tools.
+    async fn stream(&self, script: &str) -> String {
+        let (watcher_id, _) = self.create_in_mode(script, json!("stream")).await;
+        self.tool("chariox.watcher.dry_run", json!({"watcher_id": watcher_id}))
+            .await
+            .unwrap();
+        self.tool(
+            "chariox.watcher.activate",
+            json!({"watcher_id": watcher_id}),
+        )
+        .await
+        .unwrap();
+        watcher_id
+    }
+
+    async fn pause(&self, watcher_id: &str, paused: bool) {
+        self.runtime
+            .execute_watcher_request(
+                WatcherRequest::Pause {
+                    watcher_id: watcher_id.into(),
+                    paused,
+                },
+                "local",
+            )
+            .await
+            .unwrap();
     }
 
     async fn deliver(&self) {
@@ -281,6 +314,110 @@ async fn a_failing_watcher_wakes_the_agent_that_made_it_once() {
         .filter(|event| event.kind == "watcher_health")
         .count();
     assert_eq!(again, 1);
+    rig.tool("chariox.watcher.remove", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+}
+
+/// A stream's script in `dir`: it answers a dry run at once and otherwise runs `body`.
+fn stream_script(dir: &std::path::Path, body: &str) -> String {
+    format!(
+        "read input\ncase \"$input\" in *'\"dry_run\":true'*) exit 0;; esac\ncd '{}'\n{body}\n",
+        dir.display()
+    )
+}
+
+/// Whether the loop that writes `file` is still counting.
+async fn counting(file: &std::path::Path) -> bool {
+    let before = std::fs::read_to_string(file).unwrap_or_default();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    before != std::fs::read_to_string(file).unwrap_or_default()
+}
+
+fn starts(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("starts"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[tokio::test]
+async fn pausing_a_stream_that_closed_its_output_ends_it() {
+    let rig = rig().await;
+    let dir = crate::test_support::TestTempDir::new("watcher-closed-stream");
+    let watcher_id = rig
+        .stream(&stream_script(
+            dir.path(),
+            "exec 1>&-\ni=0; while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done",
+        ))
+        .await;
+    rig.record_until(&watcher_id, |_| dir.path().join("beat").exists())
+        .await;
+    rig.pause(&watcher_id, true).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while counting(&dir.path().join("beat")).await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the paused stream is still running"
+        );
+    }
+    rig.tool("chariox.watcher.remove", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stream_paused_and_resumed_at_once_keeps_its_new_run() {
+    let rig = rig().await;
+    let dir = crate::test_support::TestTempDir::new("watcher-resumed-stream");
+    let watcher_id = rig
+        .stream(&stream_script(
+            dir.path(),
+            "echo $$ >> starts\ni=0; while :; do i=$((i+1)); echo $i > beat.$$; sleep 0.1; done",
+        ))
+        .await;
+    rig.record_until(&watcher_id, |_| starts(dir.path()).len() == 1)
+        .await;
+    rig.pause(&watcher_id, true).await;
+    rig.pause(&watcher_id, false).await;
+    rig.record_until(&watcher_id, |_| starts(dir.path()).len() >= 2)
+        .await;
+    // The first run's cleanup has had its time: the second run is the one running, unharmed.
+    let settled = std::time::Instant::now() + Duration::from_secs(2);
+    let record = rig
+        .record_until(&watcher_id, |_| std::time::Instant::now() >= settled)
+        .await;
+    assert_eq!(record.health, WatcherHealth::Ok);
+    let started = starts(dir.path());
+    assert_eq!(started.len(), 2, "{started:?}");
+    assert!(counting(&dir.path().join(format!("beat.{}", started[1]))).await);
+    rig.tool("chariox.watcher.remove", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stream_that_holds_too_much_without_a_cursor_fails_and_commits_nothing() {
+    let rig = rig().await;
+    let dir = crate::test_support::TestTempDir::new("watcher-uncommitted-stream");
+    let watcher_id = rig
+        .stream(&stream_script(
+            dir.path(),
+            r#"i=0; while [ $i -lt 20000 ]; do echo "{\"event\":\"mail\",\"key\":\"m$i\",\"text\":\"Bank: statement $i\"}"; i=$((i+1)); done
+exec sleep 600"#,
+        ))
+        .await;
+    let record = rig
+        .record_until(&watcher_id, |record| {
+            matches!(record.health, WatcherHealth::Failing { .. })
+        })
+        .await;
+    let WatcherHealth::Failing { reason, .. } = &record.health else {
+        unreachable!()
+    };
+    assert!(reason.contains("without a cursor line"), "{reason}");
+    assert_eq!((record.fired_count, record.cursor.clone()), (0, None));
     rig.tool("chariox.watcher.remove", json!({"watcher_id": watcher_id}))
         .await
         .unwrap();

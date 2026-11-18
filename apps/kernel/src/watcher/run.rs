@@ -9,8 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 const MAX_LINE_BYTES: usize = 64 * 1024;
-/// Output a poll run may write; a stream is bounded per line only.
-const MAX_POLL_OUTPUT_BYTES: usize = 256 * 1024;
+/// Output a run may write before what it reported is committed: a poll's whole run, a stream's
+/// lines between two cursor lines. The kernel holds that much, so more fails the run.
+const MAX_UNCOMMITTED_BYTES: usize = 256 * 1024;
 /// The end of the error output kept for the agent that repairs the script.
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 const STDERR_DRAIN_GRACE: Duration = Duration::from_secs(2);
@@ -20,7 +21,8 @@ pub(crate) struct RunSpec {
     pub manifest: WatcherManifest,
     pub input: Input,
     pub claim: String,
-    /// The longest a poll or dry run may take; a stream runs until it ends or is stopped.
+    /// The longest a poll or dry run may take; a stream runs until it ends or is stopped, and
+    /// commits at each cursor line.
     pub limit: Option<Duration>,
 }
 
@@ -102,19 +104,16 @@ pub(crate) async fn run(
     let deadline = spec.limit.map(|limit| tokio::time::Instant::now() + limit);
     let outcome = read_reports(child.stdout.take(), &spec, deadline, &mut stop, &mut report).await;
     let outcome = match outcome {
-        Ok(()) => {
-            let wait = child.supervised_wait();
-            let ended = match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, wait).await.ok(),
-                None => Some(wait.await),
-            };
-            match ended {
-                Some(Ok(status)) if status.success() => Ok(()),
-                Some(Ok(status)) => Err(Some(format!("exited with {status}"))),
-                Some(Err(e)) => Err(Some(format!("could not be awaited: {e}"))),
-                None => Err(Some(timed_out(&spec))),
-            }
-        }
+        // A script that closed its output can still be running: a stop ends it all the same.
+        Ok(()) => tokio::select! {
+            ended = child.supervised_wait() => match ended {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(Some(format!("exited with {status}"))),
+                Err(e) => Err(Some(format!("could not be awaited: {e}"))),
+            },
+            () = stopped(&mut stop) => Err(None),
+            () = until(deadline) => Err(Some(timed_out(&spec))),
+        },
         Err(reason) => Err(reason),
     };
     if outcome.is_err() {
@@ -148,6 +147,19 @@ pub(crate) async fn run(
     }
 }
 
+async fn stopped(stop: &mut watch::Receiver<bool>) {
+    if !*stop.borrow() {
+        let _ = stop.changed().await;
+    }
+}
+
+async fn until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 fn timed_out(spec: &RunSpec) -> String {
     format!(
         "took longer than {} s",
@@ -167,39 +179,27 @@ async fn read_reports(
         return Ok(());
     };
     let mut pending = Vec::new();
-    let mut total = 0usize;
+    let mut uncommitted = Uncommitted::default();
     let mut read = vec![0u8; 16 * 1024];
     loop {
         if *stop.borrow() {
             return Err(None);
         }
-        let until = async {
-            match deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending().await,
-            }
-        };
         let count = tokio::select! {
             read = stdout.read(&mut read) => read.map_err(|e| Some(format!("output could not be read: {e}")))?,
             _ = stop.changed() => return Err(None),
-            () = until => return Err(Some(timed_out(spec))),
+            () = until(deadline) => return Err(Some(timed_out(spec))),
         };
         if count == 0 {
             if !pending.iter().all(u8::is_ascii_whitespace) {
-                handle_line(spec, &pending, report)?;
+                uncommitted.line(spec, &pending, report)?;
             }
             return Ok(());
-        }
-        total += count;
-        if spec.limit.is_some() && total > MAX_POLL_OUTPUT_BYTES {
-            return Err(Some(format!(
-                "wrote more than {MAX_POLL_OUTPUT_BYTES} bytes"
-            )));
         }
         pending.extend_from_slice(&read[..count]);
         while let Some(end) = pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
-            handle_line(spec, &line[..end], report)?;
+            uncommitted.line(spec, &line, report)?;
         }
         if pending.len() > MAX_LINE_BYTES {
             return Err(Some(format!("wrote a line over {MAX_LINE_BYTES} bytes")));
@@ -207,19 +207,51 @@ async fn read_reports(
     }
 }
 
+/// The bytes of the lines read since what the run reported was last committed.
+#[derive(Default)]
+struct Uncommitted(usize);
+
+impl Uncommitted {
+    /// Hands over one line, ended by its newline or by the end of the output.
+    fn line(
+        &mut self,
+        spec: &RunSpec,
+        line: &[u8],
+        report: &mut impl FnMut(Report) -> Result<(), String>,
+    ) -> Result<(), Option<String>> {
+        self.0 += line.len();
+        if self.0 > MAX_UNCOMMITTED_BYTES {
+            return Err(Some(match spec.limit {
+                Some(_) => format!("wrote more than {MAX_UNCOMMITTED_BYTES} bytes"),
+                None => format!(
+                    "wrote more than {MAX_UNCOMMITTED_BYTES} bytes without a cursor line; a stream writes a cursor line after each batch of events so the kernel can commit them"
+                ),
+            }));
+        }
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        if handle_line(spec, line, report)? && spec.limit.is_none() {
+            self.0 = 0;
+        }
+        Ok(())
+    }
+}
+
+/// Ok(true) when the line was a cursor.
 fn handle_line(
     spec: &RunSpec,
     line: &[u8],
     report: &mut impl FnMut(Report) -> Result<(), String>,
-) -> Result<(), Option<String>> {
+) -> Result<bool, Option<String>> {
     if line.len() > MAX_LINE_BYTES {
         return Err(Some(format!("wrote a line over {MAX_LINE_BYTES} bytes")));
     }
     let line =
         std::str::from_utf8(line).map_err(|_| Some("wrote a line that is not UTF-8".into()))?;
     if line.trim().is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let parsed = parse_line(&spec.manifest, line.trim()).map_err(Some)?;
-    report(parsed).map_err(Some)
+    let cursor = matches!(parsed, Report::Cursor(_));
+    report(parsed).map_err(Some)?;
+    Ok(cursor)
 }
