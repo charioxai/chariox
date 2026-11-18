@@ -342,6 +342,178 @@ fn naming_a_folder_and_something_in_it_gives_each_its_own_result_and_undoes_both
     assert!(inner.exists());
 }
 
+/// What `move_to_trash` and `put_back` say about one path: the item that moved, if it did.
+fn moved<'a>(trashed: &'a [TrashedKernelFile], path: &Path) -> &'a TrashedKernelFile {
+    trashed
+        .iter()
+        .find(|item| item.path == path.display().to_string())
+        .unwrap_or_else(|| panic!("{} was not reported as moved: {trashed:?}", path.display()))
+}
+
+#[test]
+fn an_item_reported_inside_a_moved_folder_is_restored_on_its_own() {
+    let m = machine("nested-alone");
+    let folder = m.home.join("work/project");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    let (a, b) = (folder.join("a.txt"), folder.join("sub/b.txt"));
+    std::fs::write(&a, b"a").unwrap();
+    std::fs::write(&b, b"b").unwrap();
+    let (trashed, failed) = move_to_trash(&[&folder, &a, &b]).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+
+    // The deep item alone: its folders are made again, the rest stays in the Trash.
+    let (restored, failed) = put_back(&[moved(&trashed, &b).clone()]).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored, [b.display().to_string()]);
+    assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    assert!(!a.exists());
+    assert!(
+        Path::new(&moved(&trashed, &folder).trash_path)
+            .join("a.txt")
+            .exists(),
+        "the folder and its other item are still in the Trash"
+    );
+
+    // Its parent path is taken by something new: the item still comes back, nothing is replaced.
+    let (restored, failed) = put_back(&[moved(&trashed, &a).clone()]).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored, [a.display().to_string()]);
+    assert_eq!(std::fs::read(&a).unwrap(), b"a");
+
+    // The item gone from the Trash, or recorded for another place, is refused.
+    let (code, _) = say(put_back(&[moved(&trashed, &a).clone()]));
+    assert_eq!(code, "file_not_in_trash");
+    let mut elsewhere = moved(&trashed, &b).clone();
+    elsewhere.path = m.home.join("work/other/b.txt").display().to_string();
+    assert_eq!(say(put_back(&[elsewhere])).0, "file_not_in_trash");
+
+    // The folder itself still restores, and is refused where its place is taken.
+    let (code, message) = say(put_back(&[moved(&trashed, &folder).clone()]));
+    assert_eq!(code, "file_restore_conflict");
+    assert!(message.contains("is taken"), "{message}");
+}
+
+#[test]
+fn an_item_inside_a_moved_folder_that_does_not_exist_is_a_failure_not_a_result() {
+    let m = machine("nested-missing");
+    let folder = m.home.join("work/project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), b"x").unwrap();
+    let missing = folder.join("missing.txt");
+
+    let (trashed, failed) = move_to_trash(&[&folder, &folder.join("a.txt"), &missing]).unwrap();
+
+    assert_eq!(trashed.len(), 2, "{trashed:?}");
+    assert!(trashed
+        .iter()
+        .all(|item| item.path != missing.display().to_string()));
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(failed[0].contains("does not exist"), "{failed:?}");
+}
+
+#[test]
+fn a_path_with_dot_dot_is_refused_and_moves_nothing() {
+    let m = machine("dotdot");
+    let folder = m.home.join("work/project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let notes = m.home.join("work/notes.txt");
+    std::fs::write(&notes, b"x").unwrap();
+    let up = format!("{}/../notes.txt", folder.display());
+
+    let request = TrashKernelFilesRequest {
+        paths: vec![folder.display().to_string(), up.clone()],
+    };
+    match trash(&request, &StateGuard::default()).unwrap() {
+        LocalDaemonResponse::KernelFilesTrashed { trashed, failed } => {
+            assert_eq!(trashed.len(), 1, "{trashed:?}");
+            assert_eq!(failed.len(), 1, "{failed:?}");
+            assert_eq!(failed[0].path, up);
+            assert!(failed[0].message.contains("contains .."), "{failed:?}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(notes.exists(), "notes.txt is outside the folder that moved");
+
+    // Alone, it is the request's own error, and so is Undo of such an item.
+    assert_eq!(say(move_to_trash(&[Path::new(&up)])).0, "file_path_invalid");
+    assert!(notes.exists());
+    let item = TrashedKernelFile {
+        path: up,
+        trash_path: m
+            .home
+            .join(".local/share/Trash/files/project")
+            .display()
+            .to_string(),
+    };
+    assert_eq!(say(put_back(&[item])).0, "file_path_invalid");
+}
+
+#[test]
+fn a_link_is_moved_as_the_link_and_nothing_behind_it_is_taken() {
+    let m = machine("links");
+    let outside = m.home.join("work/outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("x.txt"), b"x").unwrap();
+    let link = m.home.join("work/link");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let dangling = m.home.join("work/dangling");
+    std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
+
+    // The link and a path through it: the link moves, the file behind it stays, and the path through
+    // it is a failure of its own.
+    let through = link.join("x.txt");
+    let (trashed, failed) = move_to_trash(&[&link, &dangling, &through]).unwrap();
+    assert_eq!(trashed.len(), 2, "{trashed:?}");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(outside.join("x.txt").exists());
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    let (restored, failed) = put_back(&trashed).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored.len(), 2);
+    assert_eq!(std::fs::read_link(&link).unwrap(), outside);
+    assert_eq!(std::fs::read_link(&dangling).unwrap(), Path::new("nowhere"));
+
+    // A link inside a folder that moved: a path through it is not reported as moved with the folder.
+    let folder = m.home.join("work/project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::os::unix::fs::symlink(&outside, folder.join("sub")).unwrap();
+    let (trashed, failed) = move_to_trash(&[&folder, &folder.join("sub/x.txt")]).unwrap();
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(outside.join("x.txt").exists());
+}
+
+#[test]
+fn a_name_up_to_255_bytes_moves_and_comes_back_with_its_exact_name() {
+    let m = machine("long-names");
+    let work = m.home.join("work");
+    let names = [
+        "a".repeat(255),
+        "b".repeat(250),
+        format!("{}-one", "c".repeat(250)),
+        format!("{}-two", "c".repeat(250)),
+    ];
+    for name in &names {
+        std::fs::write(work.join(name), name.as_bytes()).unwrap();
+    }
+    let paths: Vec<PathBuf> = names.iter().map(|name| work.join(name)).collect();
+    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+
+    let (trashed, failed) = move_to_trash(&refs).unwrap();
+
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(trashed.len(), 4);
+    let in_trash: std::collections::HashSet<_> =
+        trashed.iter().map(|item| item.trash_path.clone()).collect();
+    assert_eq!(in_trash.len(), 4, "each item has its own name in the Trash");
+    let (restored, failed) = put_back(&trashed).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored.len(), 4);
+    for (name, path) in names.iter().zip(&paths) {
+        assert_eq!(std::fs::read(path).unwrap(), name.as_bytes());
+    }
+}
+
 #[test]
 fn a_refused_folder_does_not_hide_what_was_named_inside_it() {
     let m = machine("refused-parent");

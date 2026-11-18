@@ -10,13 +10,16 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::dir::Dir;
 use crate::error::DaemonError;
 use crate::runtime::kernel_files::{fail, io_failure};
 
 const STICKY: u32 = 0o1000;
+/// The longest name a file has on the filesystems of the specification's trash.
+const NAME_MAX: usize = 255;
+const RECORD_SUFFIX: &str = ".trashinfo";
 
 type DeviceOf = Box<dyn Fn(&Path) -> std::io::Result<u64> + Send + Sync>;
 
@@ -283,16 +286,12 @@ impl Trash {
             None => path.to_path_buf(),
         };
         for attempt in 0u32.. {
-            let mut candidate = name.as_bytes().to_vec();
-            if attempt > 0 {
-                candidate.extend_from_slice(format!(".{attempt}").as_bytes());
-            }
-            let candidate = OsString::from_vec(candidate);
+            let candidate = trash_name(name, attempt);
             if files.stat_at(&candidate).is_ok() {
                 continue;
             }
             let mut record = candidate.clone();
-            record.push(".trashinfo");
+            record.push(RECORD_SUFFIX);
             let mut file = match info.create_at(&record) {
                 Ok(file) => file,
                 Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
@@ -330,18 +329,28 @@ impl Trash {
                 format!("{} {what}.", trash_path.display()),
             )
         };
-        let items = trash_path
-            .parent()
-            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
-        let root = items
-            .parent()
-            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
-        if items.file_name() != Some("files".as_ref()) {
+        if trash_path
+            .components()
+            .any(|part| part == Component::ParentDir)
+        {
             return Err(not_trash("is not an item in the Trash"));
         }
-        let name = trash_path
-            .file_name()
-            .ok_or_else(|| not_trash("is not an item in the Trash"))?;
+        // The item is a folder entry of `files/`, or something inside one: the record belongs to the
+        // entry of `files/`, and the path inside it is added to the recorded place.
+        let mut inside = Vec::new();
+        let mut entry = trash_path;
+        while entry.parent().and_then(Path::file_name) != Some("files".as_ref()) {
+            let (Some(name), Some(parent)) = (entry.file_name(), entry.parent()) else {
+                return Err(not_trash("is not an item in the Trash"));
+            };
+            inside.push(name);
+            entry = parent;
+        }
+        inside.reverse();
+        let (Some(name), Some(root)) = (entry.file_name(), entry.parent().and_then(Path::parent))
+        else {
+            return Err(not_trash("is not an item in the Trash"));
+        };
         let (folder, topdir) = self
             .open_root(root)
             .ok_or_else(|| not_trash("is not an item in a Trash folder that only you can use"))?;
@@ -352,14 +361,17 @@ impl Trash {
             (Ok(files), Ok(info)) => (files, info),
             _ => return Err(not_trash("is not an item in the Trash")),
         };
-        if files.stat_at(name).is_err() {
-            return Err(fail(
+        let gone = || {
+            fail(
                 "file_not_in_trash",
                 format!("{} is no longer in the Trash.", wanted.display()),
-            ));
+            )
+        };
+        if files.stat_at(name).is_err() {
+            return Err(gone());
         }
         let mut record = name.to_os_string();
-        record.push(".trashinfo");
+        record.push(RECORD_SUFFIX);
         let recorded = info
             .read_at(&record, self.uid)
             .ok()
@@ -373,6 +385,23 @@ impl Trash {
                     ),
                 )
             })?;
+        let recorded = inside.iter().fold(recorded, |path, part| path.join(part));
+        // The folder that holds the item to move, and the item's name in it.
+        let mut holder = None;
+        if !inside.is_empty() {
+            let mut dir = files.open_at(name).map_err(|_| gone())?;
+            for part in &inside[..inside.len() - 1] {
+                dir = dir.open_at(part).map_err(|_| gone())?;
+            }
+            if dir.stat_at(inside[inside.len() - 1]).is_err() {
+                return Err(gone());
+            }
+            holder = Some(dir);
+        }
+        let (from, from_name) = match (&holder, inside.last()) {
+            (Some(dir), Some(last)) => (dir, *last),
+            _ => (&files, name),
+        };
         if !same_place(&recorded, wanted) {
             return Err(fail(
                 "file_not_in_trash",
@@ -392,7 +421,7 @@ impl Trash {
         let parent_path =
             std::fs::canonicalize(parent).map_err(|error| io_failure(parent, &error))?;
         let parent_dir = Dir::open(&parent_path).map_err(|error| io_failure(parent, &error))?;
-        files.move_into(name, &parent_dir, original_name).map_err(|error| {
+        from.move_into(from_name, &parent_dir, original_name).map_err(|error| {
             if matches!(error.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
                 fail(
                     "file_restore_conflict",
@@ -405,7 +434,9 @@ impl Trash {
                 io_failure(wanted, &error)
             }
         })?;
-        let _ = info.unlink_at(&record);
+        if inside.is_empty() {
+            let _ = info.unlink_at(&record);
+        }
         Ok(wanted.to_path_buf())
     }
 
@@ -443,6 +474,20 @@ impl Trash {
         }
         None
     }
+}
+
+/// The name an item has in `files/`: its own, with `.N` after a collision, cut so that the record
+/// `<name>.trashinfo` is still a file name. The record keeps the full original name.
+fn trash_name(name: &OsStr, attempt: u32) -> OsString {
+    let suffix = if attempt > 0 {
+        format!(".{attempt}")
+    } else {
+        String::new()
+    };
+    let room = NAME_MAX - RECORD_SUFFIX.len() - suffix.len();
+    let mut bytes = name.as_bytes()[..name.len().min(room)].to_vec();
+    bytes.extend_from_slice(suffix.as_bytes());
+    OsString::from_vec(bytes)
 }
 
 /// Whether two paths name the same place: the same name in the same folder, links above it resolved.

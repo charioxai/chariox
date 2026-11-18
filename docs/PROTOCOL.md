@@ -7657,16 +7657,22 @@ agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_fi
 never deletes for good. The answer is `KernelFilesTrashed { trashed: [{ path, trash_path }], failed: [{ path, message }] }`:
 `path` is where the item was, `trash_path` where it is now. Items the kernel could not move are in `failed` with a reason
 the person can act on; when none could be moved the request itself fails (`file_not_found`, `file_state_protected`,
-`file_path_invalid`, `file_trash_failed`). A folder and something inside it, named together, moves once. The kernel's own
-state and Vault, a folder that holds them, the home folder and anything already in the trash are refused.
+`file_path_invalid`, `file_trash_failed`). A path with a `..` part is refused (`file_path_invalid`): name the full
+path. A folder and something inside it, named together, moves once; the inner item is reported in `trashed` only when it is
+found in the moved folder (through real folders, not links), with its `trash_path` inside the folder's. One that is not there
+is a `failed` entry ("does not exist"). The kernel's own state and Vault, a folder that holds them, the home folder and
+anything already in the trash are refused.
 
 `RestoreKernelTrash { items: [{ path, trash_path }] }` puts items back and answers `KernelTrashRestored { restored:
 [path], failed }`. It creates missing parent folders and never overwrites: an item whose `path` is taken stays in the trash
 and fails with `file_restore_conflict` ("... is taken, so the item stays in the Trash"); an item that is not in a trash
-folder, is gone from it, or whose record names another path fails with `file_not_in_trash`.
+folder, is gone from it, or whose record names another path fails with `file_not_in_trash`. An item reported inside a moved
+folder restores on its own: its place is the folder's recorded place plus the path inside it (Linux; macOS renames it from
+its trash path).
 
 Linux follows the freedesktop.org Trash specification: `$XDG_DATA_HOME/Trash` (`~/.local/share/Trash`) with `files/` and
-`info/<name>.trashinfo` (`Path=` percent-encoded, `DeletionDate=`); a name that is taken gets `.1`, `.2`, ... An item on
+`info/<name>.trashinfo` (`Path=` percent-encoded, `DeletionDate=`); a name that is taken gets `.1`, `.2`, ...; a name too
+long for its record is cut in `files/` and keeps its full name in `Path=`. An item on
 another filesystem than the home trash goes to that filesystem's `$topdir/.Trash/$uid` when the administrator made it
 (sticky, not a link), else `$topdir/.Trash-$uid`, with `Path=` relative to `$topdir`; where neither can be made the move
 fails with `file_trash_failed` and nothing moves. macOS moves the item with `NSFileManager trashItemAtURL` (run through

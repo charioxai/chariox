@@ -3,7 +3,7 @@
 //! Nothing here deletes for good: an item goes to the trash the machine's own file manager uses
 //! (freedesktop.org Trash specification on Linux, the system trash on macOS), so the owner can also
 //! empty or restore it there. `restore` puts an item back at its original path and never overwrites.
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::kernel_files::{fail, io_failure, resolve};
 use crate::error::DaemonError;
@@ -48,7 +48,7 @@ fn trash_with(
     let mut resolved: Vec<(String, PathBuf)> = Vec::new();
     let mut refused = Vec::new();
     for raw in &request.paths {
-        match resolve(raw, guard) {
+        match plain(raw, guard) {
             Ok(path) if resolved.iter().any(|(_, seen)| *seen == path) => {}
             Ok(path) => resolved.push((raw.clone(), path)),
             Err(error) => refused.push((raw.clone(), error)),
@@ -63,9 +63,11 @@ fn trash_with(
             path: path.display().to_string(),
             trash_path: trash_path.display().to_string(),
         };
+        // Inside a folder that moved: the item is reported once it is found in the moved folder. One
+        // that is not there (never existed, or reached through a link) is tried on its own.
         let inside = trashed.iter().find_map(|moved| {
             let rest = path.strip_prefix(&moved.path).ok()?;
-            Some(Path::new(&moved.trash_path).join(rest))
+            found_inside(Path::new(&moved.trash_path), rest)
         });
         if let Some(trash_path) = inside {
             trashed.push(item(&trash_path));
@@ -160,6 +162,37 @@ fn answer(
         .collect())
 }
 
+/// A path as the Files client and the agent tools name it: absolute, and with no `..` that could make the
+/// item it names differ from the one it reads as (a lone `.` inside a path is dropped by `Path` itself).
+fn plain(raw: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
+    let path = resolve(raw, guard)?;
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err(fail(
+            "file_path_invalid",
+            format!("\"{raw}\" contains ..; name the full path of the file or folder."),
+        ));
+    }
+    Ok(path)
+}
+
+/// Where `rest` of a folder now at `moved` is in the Trash, when it is there: every folder on the way is
+/// a real folder (not a link out of it) and the last part exists.
+fn found_inside(moved: &Path, rest: &Path) -> Option<PathBuf> {
+    let is_folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    let mut at = moved.to_path_buf();
+    let parts: Vec<_> = rest.components().collect();
+    for (index, part) in parts.iter().enumerate() {
+        if !is_folder(&at) {
+            return None;
+        }
+        at.push(part);
+        if index + 1 == parts.len() {
+            return std::fs::symlink_metadata(&at).ok().map(|_| at);
+        }
+    }
+    None
+}
+
 fn trash_one(
     trash: &platform::Trash,
     path: &Path,
@@ -194,6 +227,6 @@ fn restore_one(
     item: &TrashedKernelFile,
     guard: &StateGuard,
 ) -> Result<PathBuf, DaemonError> {
-    let wanted = resolve(&item.path, guard)?;
+    let wanted = plain(&item.path, guard)?;
     trash.restore(Path::new(&item.trash_path), &wanted)
 }

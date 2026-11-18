@@ -23,9 +23,12 @@ const TRASH_SCRIPT: &str = r#"function run(argv) {
   return ObjC.unwrap(resulting[0].path);
 }"#;
 
+const OSASCRIPT: &str = "/usr/bin/osascript";
+
 pub(super) struct Trash {
     home: PathBuf,
     uid: u32,
+    osascript: PathBuf,
 }
 
 impl Trash {
@@ -41,7 +44,16 @@ impl Trash {
     }
 
     pub(super) fn new(home: PathBuf, uid: u32) -> Self {
-        Self { home, uid }
+        Self::running(home, uid, OSASCRIPT.into())
+    }
+
+    /// The system call goes through `osascript`; a test names its own stand-in program.
+    fn running(home: PathBuf, uid: u32, osascript: PathBuf) -> Self {
+        Self {
+            home,
+            uid,
+            osascript,
+        }
     }
 
     /// Whether `path` lies in the user's trash or the trash of another volume.
@@ -58,7 +70,7 @@ impl Trash {
     }
 
     pub(super) fn move_to(&self, path: &Path) -> Result<PathBuf, DaemonError> {
-        let output = crate::process_spawn::command("/usr/bin/osascript")
+        let output = crate::process_spawn::command(&self.osascript)
             .args(["-l", "JavaScript", "-e", TRASH_SCRIPT])
             .arg(path)
             .bounded_output()
@@ -78,9 +90,7 @@ impl Trash {
                 ),
             ));
         }
-        Ok(PathBuf::from(
-            String::from_utf8_lossy(&output.stdout).trim(),
-        ))
+        Ok(trashed_path(&output.stdout))
     }
 
     /// The system keeps no record Chariox can read, so the item goes back where the client says it was.
@@ -175,6 +185,45 @@ mod tests {
             trashed_path(b"/Users/me/.Trash/two\n\n"),
             home.join(".Trash/two\n"),
             "only the one newline the script adds is removed"
+        );
+    }
+
+    /// The real `move_to` (the subprocess, its exit status and its output) against a stand-in for
+    /// `osascript` that prints what the system script prints: the new path of the item and a newline.
+    fn move_with(printing: &str, path: &Path) -> Result<PathBuf, DaemonError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::test_temp_dir::TestTempDir::new("osascript");
+        let program = dir.join("osascript");
+        std::fs::write(&program, format!("#!/bin/sh\n{printing}\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Trash::running(PathBuf::from("/Users/me"), 501, program).move_to(path)
+    }
+
+    #[test]
+    fn the_move_returns_the_trashed_name_exactly_and_the_system_reason_when_it_fails() {
+        let home = PathBuf::from("/Users/me");
+        // A name that starts and ends with a space, and one that ends with a newline.
+        let spaced = move_with(
+            r#"printf '%s\n' "/Users/me/.Trash/ report  ""#,
+            Path::new("/Users/me/work/ report  "),
+        )
+        .unwrap();
+        assert_eq!(spaced, home.join(".Trash/ report  "));
+        let newline = move_with(
+            r#"printf '%s\n\n' "/Users/me/.Trash/two""#,
+            Path::new("/Users/me/work/two\n"),
+        )
+        .unwrap();
+        assert_eq!(newline, home.join(".Trash/two\n"));
+        let refused = move_with(
+            r#"echo "The file couldn't be moved" >&2; exit 1"#,
+            Path::new("/Users/me/work/a"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(refused, DaemonError::MachineRequest { ref code, ref message }
+                if code == "file_trash_failed" && message.contains("couldn't be moved")),
+            "{refused:?}"
         );
     }
 
