@@ -9,6 +9,12 @@ const sceneKey = scene => JSON.stringify(scene, (_, value) =>
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
 
 const POLL_MS = 1000;
+// What a draft keeps of the document settings: only the ones the window changed since the scene it last
+// saved or loaded. A recovering window applies exactly those keys over the saved settings, so an agent's
+// change to another setting stays and the person's unsaved change to the same one wins, as it does when
+// the window saves.
+const changedSettings = (settings, base) =>
+  Object.fromEntries(Object.entries(settings).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(base[key])));
 const SAVE_ATTEMPTS = 4;
 
 // An agent edits the saved scene through the App's backend while this window is open. The window
@@ -20,14 +26,21 @@ export function persistence(chariox, api, loaded, feedHead) {
   let version = loaded.version;
   const normalized = scene => {
     const restored = restore(scene, null, null);
-    return { restored, key: sceneKey(JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'))) };
+    const exported = JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'));
+    return { restored, key: sceneKey(exported), settings: exported.appState };
   };
   let lastSaved = loaded.scene ? normalized(loaded.scene).key : null;
+  // The document settings of the saved scene this window last saved, loaded or merged.
+  let savedSettings = JSON.parse(sceneJSON(api)).appState;
   let queue = Promise.resolve();
   let failure = null;
   let shownSelection = '';
   // The window's unsaved scene, as the save would send it, waits in the App until it is saved.
-  const unsaved = () => sceneKey(JSON.parse(sceneJSON(api))) === lastSaved ? null : JSON.parse(syncedSceneJSON(api));
+  const unsaved = () => {
+    if (sceneKey(JSON.parse(sceneJSON(api))) === lastSaved) return null;
+    const scene = JSON.parse(syncedSceneJSON(api));
+    return { ...scene, appState: changedSettings(scene.appState, savedSettings) };
+  };
   const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved);
   const settleDraft = () => { if (!unsaved()) draft.drop(); };
   const enqueue = work => {
@@ -38,14 +51,14 @@ export function persistence(chariox, api, loaded, feedHead) {
 
   // The saved or kept scene's elements join the canvas: the newer version of each element wins.
   function blend(scene) {
-    const { restored, key } = normalized(scene);
+    const { restored, key, settings } = normalized(scene);
     const merged = reconcileElements(api.getSceneElementsIncludingDeleted(), restored.elements, api.getAppState());
     api.addFiles(Object.values(restored.files));
-    return { merged, key };
+    return { merged, key, settings };
   }
 
   function merge(remote) {
-    const { merged, key } = blend(remote.scene);
+    const { merged, key, settings } = blend(remote.scene);
     const selected = remote.scene.appState?.selectedElementIds;
     api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
     // An agent's selection stays in the saved scene until the window saves; show each one once.
@@ -57,6 +70,7 @@ export function persistence(chariox, api, loaded, feedHead) {
     }
     version = remote.version;
     lastSaved = key;
+    savedSettings = settings;
     settleDraft();
   }
 
@@ -71,6 +85,7 @@ export function persistence(chariox, api, loaded, feedHead) {
       try {
         version = (await chariox.call('save_scene', { scene, version })).version;
         lastSaved = key;
+        savedSettings = scene.appState;
         return settleDraft();
       } catch (error) {
         // A save is refused when the backend moved on: merge what it saved, then save what is left.
@@ -131,7 +146,9 @@ export function persistence(chariox, api, loaded, feedHead) {
       await enqueue(async () => {
         for (const { scene } of kept) {
           const { merged } = blend(scene);
-          api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
+          // Oldest first, so the newest draft's setting wins over an older one's.
+          const appState = Object.fromEntries(Object.entries(scene.appState ?? {}).filter(([key]) => key in savedSettings));
+          api.updateScene({ elements: merged, appState, captureUpdate: 'NEVER' });
         }
       });
       draft.keep();

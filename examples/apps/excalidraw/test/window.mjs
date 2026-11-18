@@ -266,11 +266,20 @@ export async function openApp({ dpr = 1, scene, backend = fakeBackend() } = {}) 
      * the canvas the way a person does: through the main menu's Export JSON, which serializes the
      * visible (not deleted) elements through write_file. It reads, it does not edit.
      */
-    async elements() {
+    async exported() {
       const before = backend.writes.length;
       await app.menu('Export JSON');
       await waitUntil(() => backend.writes.length > before, { what: 'Export JSON' });
-      return JSON.parse(backend.files.get('diagram.excalidraw').toString()).elements;
+      return JSON.parse(backend.files.get('diagram.excalidraw').toString());
+    },
+    async elements() { return (await app.exported()).elements; },
+    /** The document settings the canvas shows (the exported appState). */
+    async settings() { return (await app.exported()).appState; },
+    /** A person picks one of the canvas background swatches in the main menu. */
+    async setBackground(color) {
+      await page.getByTestId('main-menu-trigger').click();
+      await page.getByTestId(`color-top-pick-${color}`).click();
+      await page.keyboard.press('Escape');
     },
     async ids() { return (await app.elements()).map(element => element.id).sort(); },
     /** Read the canvas until `check(elements)` holds; returns how long the canvas took to show it. */

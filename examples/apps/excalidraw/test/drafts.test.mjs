@@ -24,3 +24,42 @@ for (const dpr of [1, 2]) test(`three near-limit drafts are all recovered at DPR
     app.assertClean();
   } finally { await app.close(); }
 });
+
+for (const dpr of [1, 2]) test(`a background-only edit is recovered with the replaced window at DPR${dpr}`, { timeout: 90_000 }, async () => {
+  const backend = fakeBackend();
+  const first = await openApp({ backend, dpr });
+  let second;
+  try {
+    await first.load();
+    backend.holdSaves = 'lose';
+    await first.setBackground('#fffce8');
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
+    await first.close();
+    backend.holdSaves = null;
+    second = await openApp({ backend, dpr });
+    await second.load();
+    await waitUntil(async () => (await second.settings()).viewBackgroundColor === '#fffce8', { timeout: 15_000, what: 'the background to come back' });
+    await waitUntil(() => backend.scene?.appState.viewBackgroundColor === '#fffce8', { what: 'the background to be saved' });
+    second.assertClean();
+  } finally { await first.close(); await second?.close(); }
+});
+
+test('a recovered setting overrides the same saved setting and keeps the other settings an agent saved meanwhile', { timeout: 90_000 }, async () => {
+  const backend = fakeBackend();
+  const first = await openApp({ backend });
+  let second;
+  try {
+    await first.load();
+    backend.holdSaves = 'lose';
+    await first.setBackground('#fffce8');
+    await waitUntil(() => backend.drafts.size === 1, { what: 'the edit to be kept' });
+    await first.close();
+    backend.holdSaves = null;
+    backend.agentEdit(scene => Object.assign(scene.appState, { viewBackgroundColor: '#f5faff', gridModeEnabled: true }));
+    second = await openApp({ backend });
+    await second.load();
+    await waitUntil(async () => (await second.settings()).viewBackgroundColor === '#fffce8', { timeout: 15_000, what: 'the person\'s background to win' });
+    assert.equal((await second.settings()).gridModeEnabled, true, 'the agent\'s grid setting stays');
+    await waitUntil(() => backend.scene.appState.viewBackgroundColor === '#fffce8' && backend.scene.appState.gridModeEnabled === true, { what: 'both settings to be saved' });
+  } finally { await first.close(); await second?.close(); }
+});
