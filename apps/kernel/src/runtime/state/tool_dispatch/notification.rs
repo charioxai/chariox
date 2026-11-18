@@ -35,6 +35,9 @@ struct NotifyPerson {
     link: Option<String>,
     #[serde(default)]
     priority: crate::local::PersonInboxPriority,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WatcherId {
     watcher_id: String,
 }
@@ -122,17 +125,20 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .notification_inventory(session.owner_user_id())?;
                 // The owner's agent also follows the owner's App events, whose source is the
-                // installation rather than a Room.
+                // installation rather than a Room, and the owner's watchers, which every Room of
+                // the owner lists wherever they were made.
                 let guest = self.notification_guest(session.owner_user_id(), agent.owner_user_id());
-                // A watcher is the owner's, wherever it was made: every Room of the owner lists it.
                 let sources = sources
                     .into_iter()
                     .filter(|s| {
                         s.enabled
                             && (s.session_id == session.id()
                                 || (!guest
-                                    && s.kind == crate::local::NotificationSourceKind::AppEvent))
-                                    && s.kind == crate::local::NotificationSourceKind::Watcher))
+                                    && matches!(
+                                        s.kind,
+                                        crate::local::NotificationSourceKind::AppEvent
+                                            | crate::local::NotificationSourceKind::Watcher
+                                    )))
                     })
                     .collect::<Vec<_>>();
                 let mut workflows = super::super::workflow_notification_router::summaries(

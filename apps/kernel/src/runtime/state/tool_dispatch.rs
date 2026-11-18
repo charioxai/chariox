@@ -247,8 +247,7 @@ impl KernelRuntimeState {
                                 != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
                                 && !crate::transport::runtime_tools::is_notification_tool(
                                     &spec.name,
-                                ))
-                                && !spec.name.starts_with("chariox.notification_")
+                                )
                                 && !spec.name.starts_with("chariox.watcher."))
                     }),
             );
