@@ -1989,7 +1989,8 @@ async fn a_refused_request_tells_the_grant_holder_why() {
     let refused = holder.request(serde_json::json!({"CreateSession": {
         "workspace_id": "/tmp",
         "worktree_id": "/tmp",
-        "metaagent": true
+        "metaagent": true,
+        "agent_defaults": {"provider": "claude", "model": "m", "effort": "low"}
     }}));
     let error = &refused["error"];
     let message = error["message"].as_str().unwrap_or_default();
@@ -1999,6 +2000,44 @@ async fn a_refused_request_tells_the_grant_holder_why() {
     );
     assert!(!message.contains("host terminal"), "{refused}");
     assert_eq!(error["code"], "local_transport_error", "{refused}");
+}
+
+// A kernel whose default Project is archived refuses CreateSession for an outside agent
+// with the reason and the next step, not "details are available only in the host terminal".
+#[tokio::test]
+async fn an_archived_default_project_is_explained_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let workspace = kernel.root.join("project-workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    // A named model and effort keep the account catalog out of this test.
+    let request = serde_json::json!({"CreateSession": {
+        "workspace_id": workspace, "worktree_id": workspace,
+        "agent_defaults": {"provider": "claude", "model": "m", "effort": "low"}
+    }});
+    let created = kernel.request(request.clone()).await;
+    let project_id = created["response"]["SessionCreated"]["session"]["project_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    let archived = kernel
+        .request(serde_json::json!({"ArchiveProject": {"project_id": project_id}}))
+        .await;
+    assert!(archived["error"].is_null(), "{archived}");
+    let refused = holder.request(request);
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&format!(
+            "default project `{project_id}` is archived; restore it before creating a session"
+        )),
+        "{refused}"
+    );
+    assert!(!message.contains("host terminal"), "{refused}");
+    assert!(
+        !message.contains(kernel.root.to_str().unwrap()),
+        "no host path reaches the caller: {refused}"
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: revocation may deliver only its final control record.
