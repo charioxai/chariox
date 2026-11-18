@@ -4466,8 +4466,11 @@ mod tests {
         ));
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4646,8 +4649,11 @@ mod tests {
         ));
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4860,8 +4866,11 @@ mod tests {
         config.local_socket_path =
             DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -5162,8 +5171,11 @@ mod tests {
 
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

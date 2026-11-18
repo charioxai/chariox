@@ -1067,7 +1067,8 @@ mod tests {
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             OwnedChild::new(child, &wake).unwrap(),
         ));
-        assert_eq!(marked_count_for_test(&wake), 3);
+        // The sandbox that keeps the kernel's state away, the command and its two descendants.
+        assert_eq!(marked_count_for_test(&wake), 4);
         assert!(signal_owned_session(&owned, libc::SIGTERM));
         let deadline = Instant::now() + Duration::from_secs(5);
         while owned.lock().unwrap().poll().ok().flatten().is_none() {

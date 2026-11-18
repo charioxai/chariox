@@ -59,6 +59,7 @@ mod usage_limit_reset;
 pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
+pub(crate) mod state_confinement;
 mod termination;
 mod types;
 mod usage_read_error;

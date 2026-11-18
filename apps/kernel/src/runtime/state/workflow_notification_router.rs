@@ -711,7 +711,7 @@ mod tests {
         config.user_config_path = f.root.join("runtime/config.toml");
         config = config.with_session_history_root(f.root.join("history"));
         config.user_config.history.operational.path =
-            Some(f.root.join("operational.db").display().to_string());
+            Some(f.root.join("runtime/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(f.root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

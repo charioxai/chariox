@@ -278,7 +278,7 @@ pub(super) fn fixture_for_owner(
     owner: &str,
 ) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
-    let vault = worktree.path().join("test-vault.json");
+    let vault = worktree.path().join(".vault").join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.providers.default = Some("dev-stub".into());
@@ -993,7 +993,7 @@ async fn sudo_rotation_cancels_authorized_queue_before_idle_dispatch() {
     f.state
         .change_vault_passphrase(
             "local",
-            &f._worktree.path().join("test-vault.json"),
+            &f._worktree.path().join(".vault/test-vault.json"),
             zeroize::Zeroizing::new(PASSKEY.into()),
             zeroize::Zeroizing::new("rotated sudo fixture".into()),
         )
@@ -1732,7 +1732,7 @@ async fn sudo_rotation_interrupts_running_turn_and_revokes_grant() {
     f.state
         .change_vault_passphrase(
             "local",
-            &f._worktree.path().join("test-vault.json"),
+            &f._worktree.path().join(".vault/test-vault.json"),
             zeroize::Zeroizing::new(PASSKEY.into()),
             zeroize::Zeroizing::new("rotated fixture".into()),
         )

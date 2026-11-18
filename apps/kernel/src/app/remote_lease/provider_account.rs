@@ -220,7 +220,7 @@ exit 2
         std::fs::create_dir_all(root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -250,7 +250,7 @@ exit 2
         std::fs::create_dir_all(&root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -336,7 +336,7 @@ exit 2
         let _native_auth = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -856,7 +856,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -887,7 +887,7 @@ exit 2
                 None,
             )
             .expect("old native validation failure should persist");
-        let parent = root.join("provider-accounts/owner-a/opencode");
+        let parent = root.join("kernel/provider-accounts/owner-a/opencode");
         std::fs::write(parent.join("old-worker/worker-note"), b"worker-owned")
             .expect("worker data should be present");
         let mut fixed = old.clone();
@@ -1023,7 +1023,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -1067,7 +1067,7 @@ exit 2
             profile.as_object_mut().unwrap().remove(field);
         }
         std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
-        let provider_parent = root.join("provider-accounts/owner-a/opencode");
+        let provider_parent = root.join("kernel/provider-accounts/owner-a/opencode");
         std::fs::remove_dir_all(&provider_parent).expect("simulate absent old provider parent");
 
         let mut app = crate::DaemonApp::bootstrap(config).expect("old worker should reopen");
@@ -1117,7 +1117,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -1168,7 +1168,7 @@ exit 2
             profile.as_object_mut().unwrap().remove(field);
         }
         std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
-        let managed_root = root.join("provider-accounts/owner-a/opencode/old-worker");
+        let managed_root = root.join("kernel/provider-accounts/owner-a/opencode/old-worker");
         std::fs::rename(&managed_root, root.join("retired-worker-root"))
             .expect("retire original worker root");
         std::fs::create_dir_all(&managed_root).expect("replace root without credentials");

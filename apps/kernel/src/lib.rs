@@ -73,6 +73,7 @@ pub mod transport;
 pub(crate) mod watcher;
 pub mod web_bot_auth;
 pub mod workflow_code;
+pub(crate) mod workflow_node_instructions;
 pub(crate) mod workflow_publication_apps;
 pub(crate) mod workflow_publication_requirements;
 pub(crate) mod workspace_live_sync_ignore;

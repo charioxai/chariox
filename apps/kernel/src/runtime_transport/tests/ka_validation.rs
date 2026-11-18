@@ -17,12 +17,12 @@ fn ka_validation_live_server() {
         config.local_socket_path = root.join("run/kernel.sock");
         config.user_config.state.path = Some(root.join("control/state.db").display().to_string());
         config.user_config_path = root.join("config/config.toml");
-        config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+        config.user_config.credential_vault.path = root.join("vault/vault.json").display().to_string();
         config.user_config.credential_vault.backend = crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.unlock_policy = crate::config::CredentialVaultUnlockPolicy::KernelInit;
         let passkey = std::fs::read_to_string(root.join("test-passkey")).unwrap();
-        crate::secret::create_chariox_encrypted_vault_for_test(&root.join("vault.json"), &passkey).unwrap();
-        crate::secret::unlock_chariox_encrypted_vault(root.join("vault.json"), &passkey, crate::secret::VaultUnlockLease::KernelShutdown).unwrap();
+        crate::secret::create_chariox_encrypted_vault_for_test(&root.join("vault/vault.json"), &passkey).unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(root.join("vault/vault.json"), &passkey, crate::secret::VaultUnlockLease::KernelShutdown).unwrap();
         let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
         let worktree = root.join("workspace");
         std::fs::create_dir_all(&worktree).unwrap();
@@ -46,7 +46,7 @@ fn ka_validation_live_server() {
                 match action.as_str() {
                     "stop" => { let _ = stop.send(()); break; }
                     "critical" => waiting.push(runtime.raise_critical_approval_for_test(session.id(), &format!("live-critical-{}", waiting.len())).await),
-                    "reuse" => runtime.control_access_for_test("reuse", &controls.join("vault.json")).await,
+                    "reuse" => runtime.control_access_for_test("reuse", &controls.join("vault/vault.json")).await,
                     _ => panic!("unknown candidate control"),
                 }
                 std::fs::write(controls.join("ack"), action).unwrap();

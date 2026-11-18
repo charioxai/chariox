@@ -54,7 +54,7 @@ fn kernel_access_child_server() {
             config.user_config_path = root.join("private/config.toml");
             config.user_config.credential_vault.backend =
                 crate::config::CredentialVaultBackend::CharioxEncrypted;
-            let vault = root.join("vault.json");
+            let vault = root.join("vault").join("vault.json");
             config.user_config.credential_vault.path = vault.to_string_lossy().into_owned();
             config.user_config.credential_vault.unlock_policy =
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;

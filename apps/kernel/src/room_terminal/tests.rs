@@ -3148,3 +3148,36 @@ async fn a_burst_shares_one_reply_for_up_to_four_frames() {
         "a burst that keeps writing is one reply for about four frames, not one frame or until it ends ({parts} parts)"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_terminal_an_agent_opens_cannot_read_the_kernels_secrets() {
+    let kernel = crate::provider::state_confinement::tests::DummyKernelHome::new();
+    let root = TempDir::new();
+    let service = service(root.path());
+    let summary = service
+        .open(OpenRoomTerminal {
+            project_environment: kernel.agent_environment(),
+            session_id: "room-1".to_string(),
+            working_directory: kernel.workspace.clone(),
+            cols: 200,
+            rows: 60,
+            title: None,
+            opened_by: agent("agent-1"),
+            command: Some(vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                format!("{}echo probe-done", kernel.probe_script()),
+            ]),
+        })
+        .expect("an agent's terminal opens");
+    until("the probe finishes", || {
+        screen_has(&service, &summary.terminal_id, "probe-done")
+    })
+    .await;
+    let snapshot = service.snapshot("room-1", &summary.terminal_id).unwrap();
+    kernel.assert_confined(&format!(
+        "{}{}",
+        snapshot.scrollback_text, snapshot.screen_text
+    ));
+}

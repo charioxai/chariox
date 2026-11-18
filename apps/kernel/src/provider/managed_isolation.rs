@@ -303,13 +303,18 @@ pub(crate) enum FreshChildFolder {
 }
 
 /// The arguments of a fresh provider child. A managed launch keeps its bubblewrap prefix through
-/// the provider program and starts in `folder`; an unmanaged one is just the provider's own
-/// arguments and starts where the run does.
+/// the provider program and starts in `folder`; an unmanaged one keeps its state confinement
+/// prefix before the provider's own arguments and starts where the run does.
 pub(crate) fn fresh_provider_child_args(
     current: &[String],
     provider_args: Vec<String>,
     folder: FreshChildFolder,
 ) -> Vec<String> {
+    if let Some(prefix) = super::state_confinement::confinement_prefix_len(current) {
+        let mut args = current[..prefix].to_vec();
+        args.extend(provider_args);
+        return args;
+    }
     let separator = current.iter().position(|arg| arg == "--");
     let Some(separator) = separator.filter(|separator| {
         current[..*separator]
@@ -1104,7 +1109,7 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         launch.pty_env_remove.sort();
         launch.pty_env_remove.dedup();
-        return Ok(launch);
+        return super::state_confinement::confine_launch(launch);
     }
 
     let Some(program) = launch.pty_program.take() else {
@@ -5683,7 +5688,7 @@ printf 'managed account environment probe passed\n'
     }
 
     #[test]
-    fn path1_ordinary_provider_launch_is_unwrapped_and_scrubs_managed_controls() {
+    fn path1_ordinary_provider_launch_is_only_state_confined_and_scrubs_managed_controls() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
@@ -5744,8 +5749,10 @@ printf 'managed account environment probe passed\n'
             .expect("ordinary kernel launch should not require managed isolation");
         restore_env(MANAGED_PROVIDER_ISOLATION_ENV, previous_isolation);
 
-        assert_eq!(prepared.pty_program.as_deref(), Some("/bin/sh"));
-        assert_eq!(prepared.pty_args, ["-c", "printf ordinary"]);
+        let program = super::super::state_confinement::confinement_prefix_len(&prepared.pty_args)
+            .expect("an ordinary launch keeps the kernel's state out of reach");
+        assert_eq!(prepared.pty_args[program - 1], "/bin/sh");
+        assert_eq!(prepared.pty_args[program..], ["-c", "printf ordinary"]);
         assert_eq!(prepared.working_directory, Some(PathBuf::from("/tmp")));
         assert_eq!(
             prepared.pty_env.get("ORDINARY_FS").map(String::as_str),

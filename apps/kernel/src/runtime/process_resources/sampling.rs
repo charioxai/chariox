@@ -92,6 +92,9 @@ pub(super) struct ProcessTree {
     /// running the provider's server): the harness. Commands are what it
     /// starts later.
     harness: std::collections::BTreeSet<u32>,
+    /// The program the root runs: the root itself, or what the Bubblewrap
+    /// sandbox at the root started (it only confines the program it starts).
+    workload: u32,
     /// Shells the harness started that ran several jobs at once (a tool call
     /// that starts a holder and a grower), by birth: each job is a command of
     /// its own, so the newest growing one can wait without the shell's other
@@ -140,6 +143,7 @@ impl ProcessTree {
             root_unread: Some(0),
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([root]),
+            workload: root,
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
@@ -198,6 +202,7 @@ impl ProcessTree {
             root_unread: None,
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([owned.root]),
+            workload: owned.root,
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
@@ -276,6 +281,19 @@ impl ProcessTree {
                 }
                 _ => None,
             };
+        }
+        self.workload = self.root;
+        while let Some(sandbox) = rows
+            .iter()
+            .find(|row| row.pid == self.workload && row.command == "bwrap")
+        {
+            let mut children = rows
+                .iter()
+                .filter(|row| row.parent == sandbox.pid && self.owned.contains_key(&row.pid));
+            match (children.next(), children.next()) {
+                (Some(program), None) => self.workload = program.pid,
+                _ => break,
+            }
         }
         self.launchers.retain(|pid, birth| {
             rows.iter()
@@ -764,7 +782,7 @@ impl ProcessTree {
     }
 
     pub fn is_root(&self, pid: u32) -> bool {
-        pid == self.root
+        pid == self.root || pid == self.workload
     }
 
     /// Part of the harness: never held or paused.
