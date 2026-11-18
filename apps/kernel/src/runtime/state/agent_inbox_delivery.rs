@@ -42,20 +42,23 @@ impl KernelRuntimeState {
             })
     }
 
-    /// The prompt carries the message, so it counts as read: a turn that never
-    /// opens its inbox must not hand the row back to pending.
-    pub(super) fn mark_brief_shown(
+    /// The prompt carries these events' text, so they count as read: a turn
+    /// that never opens its inbox must not hand the rows back to pending.
+    pub(super) fn mark_prompt_events_shown(
         &self,
         room: &str,
         agent: &str,
-        sequence: u64,
+        sequences: &[u64],
     ) -> Result<(), DaemonError> {
+        if sequences.is_empty() {
+            return Ok(());
+        }
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::MarkShown {
                 room: room.into(),
                 agent: agent.into(),
-                sequences: vec![sequence],
+                sequences: sequences.to_vec(),
             })?;
         Ok(())
     }
@@ -225,10 +228,13 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_read_cursor(&event, work.as_deref())?;
-        let brief = self.parent_brief(agent, &event, &batch);
-        let carries_brief = brief.is_some();
-        let text =
-            brief.unwrap_or_else(|| super::agent_inbox_wake_text::wake_text(&event, &batch, after));
+        let (text, shown) = match self.parent_brief(agent, &event, &batch) {
+            Some(brief) => (brief, vec![event.sequence]),
+            None => {
+                let wake = self.inline_wake(room, agent, &event, &batch, after)?;
+                (wake.text, wake.shown)
+            }
+        };
         let attachments = std::iter::once(&event)
             .chain(&batch)
             .map(|row| {
@@ -267,7 +273,7 @@ impl KernelRuntimeState {
                     active,
                     prompt,
                     work,
-                    carries_brief,
+                    &shown,
                 )
                 .await;
         }
@@ -315,9 +321,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.owned.record_woken_waits(&waiting, &attempt);
-        if carries_brief {
-            self.mark_brief_shown(room, agent, event.sequence)?;
-        }
+        self.mark_prompt_events_shown(room, agent, &shown)?;
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then
             // sent nothing: the row waits for the idle wake instead of the lane.

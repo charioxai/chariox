@@ -3,7 +3,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome, Registration};
 use crate::runtime::state::agent_inbox_sender::SenderRelation;
 impl KernelRuntimeState {
-    pub(super) async fn dispatch_agent_event_tool(
+    pub(in crate::runtime::state) async fn dispatch_agent_event_tool(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         name: &str,

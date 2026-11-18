@@ -280,6 +280,12 @@ fn a_fixture_kernel_ends_with_its_test() {
     );
 }
 
+/// A wake that carried the event's text settles it on receipt, so "delivered" is any state past
+/// the submission.
+fn is_delivered(state: &str) -> bool {
+    matches!(state, "accepted" | "acknowledged" | "handled")
+}
+
 #[tokio::test]
 async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     let f = fixture("ev13-driver-occurrence", false).await;
@@ -304,7 +310,7 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     let events = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if events.iter().all(|e| e.state == "accepted") && !events.is_empty() {
+            if events.iter().all(|e| is_delivered(&e.state)) && !events.is_empty() {
                 return events;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -336,7 +342,7 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
         )
     });
     assert_eq!(events.len(), 1, "a replayed occurrence is one admission");
-    assert_eq!(events[0].state, "accepted");
+    assert!(is_delivered(&events[0].state), "{:?}", events[0]);
     let woken = f.task(&task.task_id);
     assert_eq!(woken.state, ExecutionState::Working);
     assert_eq!(woken.prompt_id, events[0].prompt_id.clone().unwrap());
@@ -852,7 +858,7 @@ async fn refused_vault_wake_start(timed_out: bool) {
     assert_eq!(retried.len(), 1);
     assert_eq!(retried[0].sequence, original.sequence);
     assert_eq!(
-        retried[0].state, "accepted",
+        retried[0].state, "handled",
         "explicit Resume delivers the original answer once"
     );
     assert_eq!(retried[0].payload, original.payload);
@@ -1019,7 +1025,7 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "retry the original occurrence");
-    assert_eq!(events[0].state, "accepted");
+    assert_eq!(events[0].state, "acknowledged");
     assert!(events[0].submit_epoch.is_some());
     let retried = f.task(&task.task_id);
     assert_eq!(retried.state, ExecutionState::Working);
@@ -2072,7 +2078,13 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         loop {
             let input = std::fs::read_to_string(&received).unwrap();
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if input.contains("Inbox: at least 1 new event") && events[0].state == "accepted" {
+            // The wake quotes the event (the label the terminal was armed with), so the agent
+            // needs no inbox read, and the kernel closes the event once the turn took it.
+            if input.contains("> {")
+                && input.contains("\"label\":\"build\"")
+                && events[0].state == "handled"
+            {
+                assert!(!input.contains("chariox.events.inbox"), "{input}");
                 assert_eq!(events.len(), 1, "exactly one delivered occurrence");
                 let woken = f.task(&task.task_id);
                 assert_eq!(woken.state, ExecutionState::Working);
@@ -2655,7 +2667,7 @@ async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wak
                 .agent_inbox(&f.room, &f.agent, 0)
                 .unwrap()
                 .into_iter()
-                .any(|e| e.sequence == event.sequence && e.state == "accepted");
+                .any(|e| e.sequence == event.sequence && is_delivered(&e.state));
             if delivered {
                 return;
             }
@@ -2754,7 +2766,7 @@ impl Fixture {
         event.sequence
     }
 
-    async fn until_inbox_event(&self, sequence: u64, state: &str) {
+    async fn until_delivered(&self, sequence: u64) {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let reached = self
@@ -2762,7 +2774,7 @@ impl Fixture {
                     .agent_inbox(&self.room, &self.agent, 0)
                     .unwrap()
                     .into_iter()
-                    .any(|e| e.sequence == sequence && e.state == state);
+                    .any(|e| e.sequence == sequence && is_delivered(&e.state));
                 if reached {
                     return;
                 }
@@ -2770,7 +2782,7 @@ impl Fixture {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the event reaches {state}"));
+        .unwrap_or_else(|_| panic!("the event is delivered"));
     }
 }
 
@@ -2795,7 +2807,7 @@ async fn a_message_does_not_end_the_wait_row_of_a_task_that_keeps_waiting() {
         true,
     );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
-    f.until_inbox_event(sequence, "accepted").await;
+    f.until_delivered(sequence).await;
 
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
     let rows = f.wait_rows();
@@ -2865,7 +2877,7 @@ async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
         serde_json::json!({"task_id": task.task_id}),
     );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
-    f.until_inbox_event(sequence, "accepted").await;
+    f.until_delivered(sequence).await;
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
 
     f.runtime
