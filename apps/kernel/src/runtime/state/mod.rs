@@ -129,6 +129,7 @@ pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
 mod slice_home_pin;
 pub(super) use slice_home_pin::provisioned_slice_home;
+mod provider_login_vault;
 mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

@@ -988,6 +988,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartProviderLogin(_) => "provider.login.start",
         LocalDaemonRequest::GetProviderLoginStatus(_) => "provider.login.status",
         LocalDaemonRequest::SendProviderLoginInput(_) => "provider.login.input",
+        LocalDaemonRequest::SendProviderLoginVaultEntry(_) => "provider.login.vault_entry",
         LocalDaemonRequest::CancelProviderLogin(_) => "provider.login.cancel",
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
         LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",

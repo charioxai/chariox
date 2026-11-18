@@ -654,6 +654,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),

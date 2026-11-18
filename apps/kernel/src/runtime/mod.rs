@@ -137,6 +137,7 @@ pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
 mod provider_login_input;
 mod provider_login_terminal;
+mod provider_login_vault_entry;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;
 pub(crate) mod provider_usage_refresh;

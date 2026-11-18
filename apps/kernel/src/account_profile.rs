@@ -635,6 +635,21 @@ pub fn supported_provider_enrollment_methods(provider: &str) -> &'static [&'stat
     }
 }
 
+/// The one origin a Vault entry must be bound to for the kernel to type it into
+/// this API-key login. Methods that take no API key have none.
+pub(crate) fn provider_enrollment_vault_origin(
+    provider: &str,
+    method: Option<&str>,
+) -> Option<&'static str> {
+    match (
+        crate::provider::canonical_provider_family(provider)?,
+        method?,
+    ) {
+        ("opencode", "opencode_go_api_key" | "opencode_zen_api_key") => Some("https://opencode.ai"),
+        _ => None,
+    }
+}
+
 /// Validates a client-selected enrollment method against what the provider
 /// adapter actually supports. `None` keeps the provider's historical default.
 pub fn validate_provider_enrollment_method(

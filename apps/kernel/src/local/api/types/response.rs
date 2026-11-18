@@ -355,6 +355,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
+    ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },

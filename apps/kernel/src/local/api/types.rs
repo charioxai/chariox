@@ -569,4 +569,7 @@ pub use workspace::*;
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
 /// Provisional 1021 names each Browser Tab's icon by `favicon_hash`: a `state` read carries no icon PNG, and a
 /// `state_wait` carries one only when its `known_favicons` lacks the hash.
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1019 adds `SendProviderLoginVaultEntry` → `ProviderLoginVaultEntrySent`: a running API-key provider login
+/// takes a Vault entry by handle and the kernel types its value into the login.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
