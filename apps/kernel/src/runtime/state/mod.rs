@@ -139,6 +139,7 @@ mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
 mod vault_command;
+pub(crate) use vault_command::HomeVaultCaptureAnswer;
 mod vault_generate;
 mod vault_use;
 mod visual;
@@ -771,6 +772,8 @@ mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+#[cfg(test)]
+mod vault_leased_run_tests;
 
 mod capability_grant_runtime;
 mod workflow;

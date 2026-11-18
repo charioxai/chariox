@@ -183,7 +183,7 @@ impl KernelRuntimeState {
         if let Some(existing) = registry.get(&handle)? {
             return match &destination {
                 Some((binding, host)) => {
-                    super::vault_command::committed_capture(&existing, &turn, host, binding)
+                    super::vault_command::committed_capture(&existing, &turn.actor(), host, binding)
                 }
                 None => committed(&existing, &turn, &use_on, &use_target),
             };
@@ -283,13 +283,15 @@ impl KernelRuntimeState {
         if let Some((use_binding, host)) = destination {
             return self
                 .store_captured(
-                    &turn,
+                    &turn.actor(),
+                    &|| self.recheck_vault_agent(&turn),
                     &registry,
                     super::vault_command::Captured {
                         handle,
                         host,
                         label: Some(label),
                         use_binding,
+                        request_id: args.request_id.clone(),
                     },
                     &secret,
                 )
@@ -335,7 +337,7 @@ impl KernelRuntimeState {
                 credential,
                 secret.as_str(),
                 false,
-                Some(&turn),
+                Some(&|| self.recheck_vault_agent(&turn)),
             )
             .await
         {

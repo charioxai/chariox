@@ -95,6 +95,19 @@ impl VaultUnlockGuard {
         self.lock_on_drop
     }
 
+    /// Keeps the unlock this guard owns open for `hold`, so a "just this once" unlock outlasts
+    /// the operation's longest step instead of running out before it.
+    pub(super) fn keep_open_for(&self, hold: std::time::Duration) -> Result<(), DaemonError> {
+        match self.path.as_ref().filter(|_| self.lock_on_drop) {
+            Some(path) => crate::secret::hold_chariox_vault_unlock_until(
+                path,
+                crate::session::unix_epoch_ms()
+                    .saturating_add(u64::try_from(hold.as_millis()).unwrap_or(u64::MAX)),
+            ),
+            None => Ok(()),
+        }
+    }
+
     /// Ends the guard without locking, for a hold whose unlock runs out on its own.
     pub(super) fn disarm(mut self) {
         self.lock_on_drop = false;

@@ -29,7 +29,7 @@ pub(super) async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Va
     .map(|result| result.payload)
 }
 
-fn vault_path(f: &Fixture) -> String {
+pub(super) fn vault_path(f: &Fixture) -> String {
     f.state
         .owned
         .config_projection

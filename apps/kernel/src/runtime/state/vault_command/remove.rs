@@ -29,8 +29,29 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
-        self.recheck_vault_command_context(&context)?;
+        let context = self.vault_leased_context(token).await?;
+        if let Some(home) = context.home.clone() {
+            return self
+                .forward_vault_tool_to_home(home, VAULT_REMOVE_CAPTURE, arguments)
+                .await;
+        }
+        self.remove_from_vault(
+            &context.actor(),
+            &|| self.recheck_vault_command_context(&context),
+            arguments,
+        )
+        .await
+    }
+
+    /// Removes a capture `actor` made, from the Vault of this kernel: the owner's own, or the
+    /// home's for an agent on a leased worker.
+    pub(in crate::runtime::state) async fn remove_from_vault(
+        &self,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        recheck()?;
         let args: RemoveArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault remove arguments: {e}")))?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
@@ -39,8 +60,8 @@ impl KernelRuntimeState {
         })?;
         let own = entry.metadata.as_ref().is_some_and(|metadata| {
             metadata.created_by_kind.as_deref() == Some(CAPTURED_KIND)
-                && metadata.created_by_id.as_deref() == Some(context.agent_id.as_str())
-                && metadata.session_id.as_deref() == Some(context.session_id.as_str())
+                && metadata.created_by_id.as_deref() == Some(actor.agent_id.as_str())
+                && metadata.session_id.as_deref() == Some(actor.session_id.as_str())
         });
         if !own {
             return Err(error(
@@ -52,12 +73,12 @@ impl KernelRuntimeState {
         };
         let _unlock = self
             .ensure_vault_unlocked_for_agent(
-                &context.session_id,
-                &context.agent_id,
+                &actor.session_id,
+                &actor.agent_id,
                 "vault_remove_capture",
             )
             .await?;
-        self.recheck_vault_command_context(&context)?;
+        recheck()?;
         let _mutation = self.vault_observation_mutation_guard().await;
         if registry
             .other_handle_using_vault_key(key, &entry.id)?
@@ -100,7 +121,7 @@ impl KernelRuntimeState {
             "Removed by the agent that captured it",
             super::super::owner_vault::BindingChange::Keep,
         )?;
-        let browser_user = self.provider_account_authority_owner_user_id(&context.owner_user_id);
+        let browser_user = self.provider_account_authority_owner_user_id(&actor.owner_user_id);
         self.drop_protected_value(&browser_user, key, &value, retained)
             .await?;
         Ok(RuntimeToolResult {

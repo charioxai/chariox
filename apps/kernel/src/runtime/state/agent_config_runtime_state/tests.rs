@@ -1432,3 +1432,5 @@ fn same_execution_profile(
 
 #[path = "tests/profile_compaction.rs"]
 mod profile_compaction;
+#[path = "tests/queue_vault_unlock.rs"]
+mod queue_vault_unlock;
