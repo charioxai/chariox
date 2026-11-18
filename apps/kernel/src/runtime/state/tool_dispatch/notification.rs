@@ -4,8 +4,8 @@ use crate::local::{LocalDaemonResponse, WatcherRequest};
 use crate::session::AgentTriggerNotificationSource;
 use crate::transport::runtime_tools::{
     RuntimeToolResult, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
-    NOTIFY_PERSON,
-    WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN, WATCHER_REMOVE, WATCHER_STATUS,
+    NOTIFY_PERSON, WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN, WATCHER_REMOVE,
+    WATCHER_STATUS,
 };
 
 #[derive(serde::Deserialize)]
