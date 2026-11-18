@@ -53,6 +53,17 @@ fn parent_limit(
     })
 }
 
+/// An agent that calls is the origin of the change; a client's call is the person's.
+fn settings_context(
+    caller_agent_id: Option<&str>,
+    reason: Option<String>,
+) -> crate::runtime::state::SettingsContext {
+    match caller_agent_id {
+        Some(agent_id) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
+        None => crate::runtime::state::SettingsContext::person(),
+    }
+}
+
 impl SessionRuntimeStore {
     const MAX_BATCH_SPAWN_AGENTS: usize = 500;
 
@@ -60,11 +71,37 @@ impl SessionRuntimeStore {
         &self,
         request: UpdateAgentConfigRequest,
         caller_user_id: String,
+        caller_agent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let session_id = request.session_id.clone();
+        if let Some(action) = request.usage_limit.clone() {
+            let result = match self
+                .state
+                .resolve_usage_limit_stop(
+                    &request.session_id,
+                    &request.agent_id,
+                    &caller_user_id,
+                    caller_agent_id.as_deref(),
+                    action,
+                )
+                .await
+            {
+                Ok(agent) => self
+                    .state
+                    .session_snapshot(&session_id)
+                    .await
+                    .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                        agent,
+                        session,
+                        applies: Default::default(),
+                    }),
+                Err(error) => Err(error),
+            };
+            return self.with_session_projection_action_result(result).await;
+        }
         let execution_mode_override = if request.clear_execution_mode {
             Some(None)
         } else {
@@ -90,9 +127,10 @@ impl SessionRuntimeStore {
         } else {
             request.max_context_tokens.map(Some)
         };
-        let updated = self
+        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let result = match self
             .state
-            .update_agent_config(
+            .update_agent_config_as(
                 &request.session_id,
                 &request.agent_id,
                 &caller_user_id,
@@ -101,14 +139,20 @@ impl SessionRuntimeStore {
                 workspace_id,
                 worktree_id,
                 max_context_tokens,
+                request.self_settings,
+                context,
             )
-            .await;
-        let result = match updated {
-            Ok(agent) => self
+            .await
+        {
+            Ok((agent, applies)) => self
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                    agent,
+                    session,
+                    applies,
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -118,6 +162,7 @@ impl SessionRuntimeStore {
         &self,
         request: UpdateAgentProfileRequest,
         caller_user_id: String,
+        caller_agent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -128,9 +173,10 @@ impl SessionRuntimeStore {
         } else {
             request.effort.map(Some)
         };
+        let context = settings_context(caller_agent_id.as_deref(), request.reason);
         let result = match self
             .state
-            .update_agent_profile(
+            .update_agent_profile_as(
                 &request.session_id,
                 &request.agent_id,
                 &caller_user_id,
@@ -138,14 +184,19 @@ impl SessionRuntimeStore {
                 request.account_profile,
                 request.model,
                 effort,
+                context,
             )
             .await
         {
-            Ok(agent) => self
+            Ok((agent, applies)) => self
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentProfileUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentProfileUpdated {
+                    agent,
+                    session,
+                    applies,
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -212,7 +263,11 @@ impl SessionRuntimeStore {
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                    agent,
+                    session,
+                    applies: Default::default(),
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await

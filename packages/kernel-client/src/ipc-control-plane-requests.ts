@@ -4,7 +4,7 @@ export const machineAllocationMinimumProtocolVersion = 1006
 /** Optional connected service data. An absent machine_allocation hides hosted actions. */
 export type ControlPlaneRequest =
   | { action: "capabilities" }
-  | { action: "acquire"; capability_revision: string; request_id: string }
+  | { action: "acquire"; capability_revision: string; request_id: string; class_id?: string; region?: string }
   | { action: "acquire_job"; capability_revision: string; request_id: string; job_ref: string; needs: { memory_gib?: number; cpus?: number }; timeout_s: number }
   | { action: "get_job" | "cancel_job"; job_ref: string }
   | { action: "job_started"; allocation_ref: string; capability_revision: string }
@@ -15,7 +15,7 @@ export type ControlPlaneRequest =
 
 export type ControlPlaneResponse =
   | { kind: "job_cancelled"; job_ref: string }
-  | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
+  | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
   | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_target: null | {
       kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string
@@ -36,6 +36,12 @@ export type ControlPlaneSavedStateRow = {
 export type MachineAcquisitionOffer = {
   rate_per_minute?: { amount_micros: number; currency: string }
   machine_type: string; vcpu: number; ram_gb: number; disk_gb: number; location: string; terms: { amount: string; currency: string; period: "hour" | "month" }
+}
+
+/** One machine the connected service offers: size, rate in the account's currency, region and stock now. */
+export type MachineOption = {
+  class_id: string; region: string; vcpu: number; ram_gb: number; disk_gb: number
+  rate_per_minute: { amount_micros: number; currency: string }; available: boolean; note?: string
 }
 
 export type JobMachineOffer = { class_id: string; vcpu: number; usable_memory_mib: number; disk_gib: number; rate_per_minute: { amount_micros: number; currency: string } }

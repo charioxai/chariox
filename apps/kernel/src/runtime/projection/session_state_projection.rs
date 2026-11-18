@@ -80,9 +80,9 @@ impl SessionStateProjectionStore {
 
     #[allow(
         clippy::type_complexity,
-        reason = "Keep the explicit waiting_room_snapshot state or return type at the existing boundary"
+        reason = "Keep the explicit room_list_snapshot state or return type at the existing boundary"
     )]
-    pub(crate) fn waiting_room_snapshot(
+    pub(crate) fn room_list_snapshot(
         &self,
     ) -> (
         Option<Arc<[Arc<RuntimeSession>]>>,
@@ -987,7 +987,7 @@ mod tests {
             older,
             Some(prompt.clone()),
         ));
-        let (_, working, working_revision, working_generation) = store.waiting_room_snapshot();
+        let (_, working, working_revision, working_generation) = store.room_list_snapshot();
         assert_eq!(
             working,
             BTreeMap::from([(
@@ -1013,8 +1013,7 @@ mod tests {
             Some(prompt),
         ));
 
-        let (sessions, working, settled_revision, settled_generation) =
-            store.waiting_room_snapshot();
+        let (sessions, working, settled_revision, settled_generation) = store.room_list_snapshot();
         assert_eq!(sessions.expect("session list should be atomic").len(), 1);
         assert!(working.is_empty());
         assert!(settled_revision > working_revision);

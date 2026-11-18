@@ -6056,6 +6056,12 @@ printf 'managed account environment probe passed\n'
         let attachment_root = managed_prompt_attachment_root(&request)
             .expect("managed attachment root should prepare")
             .expect("agent-bound launches should have an attachment root");
+        let _cleanup = crate::test_support::TestTempPath::in_shared_directory(
+            attachment_root
+                .parent()
+                .expect("attachment root should have a session parent")
+                .to_path_buf(),
+        );
         let attachment = crate::session::PromptAttachment::new(
             "chariox-cloud://artifact/art-1",
             "text/plain",
@@ -6093,11 +6099,6 @@ printf 'managed account environment probe passed\n'
                 && window[1] == global_root.to_string_lossy()
                 && window[2] == global_root.to_string_lossy()
         }));
-        let _ = std::fs::remove_dir_all(
-            attachment_root
-                .parent()
-                .expect("attachment root should have a session parent"),
-        );
     }
 
     #[cfg(unix)]

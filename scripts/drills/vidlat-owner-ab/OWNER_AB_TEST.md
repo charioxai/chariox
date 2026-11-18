@@ -1,6 +1,6 @@
 # MP-08 / MP-10 — owner hands-on A/B (20 minutes)
 
-Chariox: [Open the disposable-account waiting room](https://pr972-vidlatab.val.51-255-87-178.sslip.io/waiting-room).
+Chariox: [Open the disposable-account Rooms](https://pr972-vidlatab.val.51-255-87-178.sslip.io/terminal).
 Selkies: [Open the gated baseline](https://pr972-vidlatab-selkies.val.51-255-87-178.sslip.io/).
 
 **One-step sign-in:** open the Chariox link. This private validation stack

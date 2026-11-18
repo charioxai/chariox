@@ -1,6 +1,6 @@
 //! Runs on the writer inside the normal terminal completion transaction.
-use super::run_finished;
 use super::*;
+use super::{run_attention, run_finished};
 use crate::durable_state::DurableWorkflowRunWrite;
 use crate::session::WorkflowRun;
 
@@ -11,17 +11,20 @@ pub(crate) fn capture_in(
     runs: &[DurableWorkflowRunWrite],
 ) -> rusqlite::Result<()> {
     for encoded in runs {
-        if !matches!(&*encoded.status, "Completed" | "Failed") {
+        let terminal = matches!(&*encoded.status, "Completed" | "Failed");
+        // Only a run that ended, or one that holds a node on a named thing, publishes.
+        if !terminal && !run_attention::may_hold(&encoded.payload_json) {
             continue;
         }
         let previous:Option<String>=tx.query_row("SELECT status FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",params![kernel,encoded.session_id,encoded.run_id],|r|r.get(0)).optional()?;
-        if matches!(previous.as_deref(), Some("Completed" | "Failed")) {
-            continue;
-        }
+        let first_end = terminal && !matches!(previous.as_deref(), Some("Completed" | "Failed"));
         let run: WorkflowRun = parse(&encoded.payload_json)?;
-        run_finished::emit(tx, kernel, current_owner, encoded, &run)?;
+        if first_end {
+            run_finished::emit(tx, kernel, current_owner, encoded, &run, run.id())?;
+        }
+        run_attention::capture(tx, kernel, current_owner, encoded, &run)?;
         // A run that fails before reaching an exit emits nothing through an exit.
-        if encoded.status != "Completed" {
+        if !first_end || encoded.status != "Completed" {
             continue;
         }
         let Some(exit_node_id) = run
@@ -43,7 +46,7 @@ pub(crate) fn capture_in(
         else {
             continue;
         };
-        deliver(tx, kernel, encoded, &run, &source, output)?;
+        deliver(tx, kernel, encoded, &run, run.id(), &source, output)?;
     }
     Ok(())
 }
@@ -54,12 +57,13 @@ pub(super) fn deliver(
     kernel: &str,
     encoded: &DurableWorkflowRunWrite,
     run: &WorkflowRun,
+    occurrence_id: &str,
     source: &WorkflowNotificationSource,
     output: crate::session::WorkflowOutputPayload,
 ) -> rusqlite::Result<()> {
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO workflow_notification_occurrences VALUES (?1,?2,NULL)",
-        params![source.source_id, run.id()],
+        params![source.source_id, occurrence_id],
     )?;
     prune_occurrences(tx)?;
     if inserted == 0 {
@@ -109,18 +113,19 @@ pub(super) fn deliver(
         None
     };
     if let Some(code) = diagnostic {
-        tx.execute("UPDATE workflow_notification_occurrences SET diagnostic=?3 WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,run.id(),code])?;
+        tx.execute("UPDATE workflow_notification_occurrences SET diagnostic=?3 WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,occurrence_id,code])?;
         return Ok(());
     }
     ancestry.push(identity);
     publish_in(
         tx,
         source,
-        run.id(),
+        occurrence_id,
         output,
         ancestry,
         run.completed_at_ms()
-            .unwrap_or(encoded.completed_at_ms.unwrap_or(0)),
+            .or(encoded.completed_at_ms)
+            .unwrap_or_else(crate::session::unix_epoch_ms),
     )
     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }

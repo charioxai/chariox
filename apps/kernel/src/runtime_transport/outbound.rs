@@ -209,6 +209,8 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // Only the relay viewer's own subscription tells its client that its task ended.
+                KernelEvent::SubscriptionEnded { .. } => {},
                 // Transcript turns are for the session's own clients, not external streams.
                 KernelEvent::AgentTurnChanged { .. } => {},
                 // External agents follow trees through their own `agent_tree` event.
@@ -237,9 +239,9 @@ public_events! {
     SessionUnavailable => "session_unavailable",
     RelayStatusChanged => "relay_status_changed",
     RemoteMachinesChanged => "remote_machines_changed",
-    WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
+    RoomListChanged => "room_list_changed",
     KernelResourceChanged => "kernel_resource_changed",
-    WaitingRoomRowsChanged => "waiting_room_rows_changed",
+    RoomListRowsChanged => "room_list_rows_changed",
     ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
     SlicesChanged => "slices_changed",

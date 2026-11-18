@@ -86,6 +86,15 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
+    if path == "agents.usage_limit_resume" {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".to_string(),
+            path: path.to_string(),
+            message: "usage limit handling updated for this running kernel".to_string(),
+            provider_reload: None,
+        }]);
+    }
+
     if path == "relay.accept_remote_leases" {
         return Ok(vec![UserConfigMutationEffect {
             kind: "runtime_config".to_string(),

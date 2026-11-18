@@ -24,7 +24,7 @@ pub enum TerminalCommandCatalogExecutionTarget {
 #[serde(rename_all = "snake_case")]
 pub enum TerminalCommandCatalogSurface {
     Session,
-    WaitingRoom,
+    RoomList,
     WorkflowScreen,
 }
 

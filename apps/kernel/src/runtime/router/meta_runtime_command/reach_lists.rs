@@ -54,7 +54,9 @@ impl CommandRouter {
                 let triggers = session
                     .agent_triggers()
                     .iter()
-                    .filter(|trigger| trigger.agent_id() == caller.id())
+                    .filter(|trigger| {
+                        trigger.agent_id() == caller.id() && trigger.responsible_for().is_none()
+                    })
                     .map(super::own_schedule::own_trigger_row)
                     .collect::<Vec<_>>();
                 serde_json::json!({"triggers": triggers})

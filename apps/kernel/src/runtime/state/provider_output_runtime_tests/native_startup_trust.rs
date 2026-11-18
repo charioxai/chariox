@@ -7,7 +7,8 @@ use std::fs;
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("claude-startup-trust-rejection");
+    let root = _tmp.join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
@@ -271,7 +272,8 @@ fn a_declined_trust_question_starts_a_queued_workflow_node_on_a_workflow_capable
 
 fn declined_dispatch_with_queued_successor(workflow_successor: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-dispatch-denied");
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("claude-trust-dispatch-denied");
+    let root = _tmp.join(format!(
         "chariox-claude-trust-dispatch-denied-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()

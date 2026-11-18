@@ -10,15 +10,15 @@ pub(crate) struct Fixture {
     pub store: DurableKernelStateStore,
     pub sessions: SessionService,
     pub session: String,
+    _owner: crate::test_support::TestTempDir,
 }
 impl Fixture {
     pub(crate) fn new() -> Self {
         Self::for_kernel("daemon-test")
     }
     pub(crate) fn for_kernel(kernel: &str) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("chariox-wfnotify-{:016x}", rand::random::<u64>()));
-        std::fs::create_dir(&root).unwrap();
+        let owner = crate::test_support::TestTempDir::new("wfnotify");
+        let root = owner.to_path_buf();
         std::fs::write(
             root.join("wfnotify-fixture-owner"),
             "/root/work/agent-wfnotify",
@@ -49,6 +49,7 @@ impl Fixture {
             store,
             sessions,
             session: id,
+            _owner: owner,
         }
     }
     pub(crate) fn workflow(&mut self, name: &str) -> (String, String, String) {
@@ -291,10 +292,7 @@ impl Fixture {
     }
 }
 pub(crate) fn cleanup(mut f: Fixture) {
-    let root = f.root.clone();
     f.sessions = SessionService::new(&crate::config::DaemonConfig::for_tests());
-    drop(f);
-    std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn completion_persists_before_router_restart_deduplicates_and_failed_runs_emit_nothing() {

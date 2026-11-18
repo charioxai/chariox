@@ -490,3 +490,103 @@ async fn single_address_keeps_connecting_while_a_syn_is_retried() {
     .await
     .unwrap();
 }
+
+const SENTINEL: &str = "ghp_SENTINEL0123456789abcdefABCDEF";
+
+async fn drive_account(
+    io: TcpStream,
+    exchange: Exchange,
+    stop: watch::Receiver<bool>,
+) -> Result<()> {
+    let target = fixture_get("http://api.example.com/fixture")
+        .with_authorization(zeroize::Zeroizing::new(format!("Bearer {SENTINEL}")));
+    let mut exchange = exchange;
+    let mut stop = stop;
+    let progress = progress::Progress::new();
+    exchange_io(
+        progress::ObservedIo::new(io, progress.clone()),
+        &target,
+        &mut exchange,
+        &mut stop,
+        progress,
+        Instant::now() + Duration::from_secs(2),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_accounts_call_carries_the_credential_and_nothing_of_it_comes_back() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let (_upload, mut receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            let head = request_head(&mut server).await;
+            assert!(head.contains(&format!("authorization: Bearer {SENTINEL}\r\n")), "{head}");
+            assert!(head.contains("user-agent: chariox-app\r\n"));
+            // A debugging endpoint that echoes the request, and headers an
+            // App has no use for.
+            let body = format!("{{\"echo\":{head:?},\"token\":\"{SENTINEL}\"}}");
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"abc\"\r\nX-RateLimit-Remaining: 4999\r\nX-OAuth-Scopes: repo, workflow\r\nSet-Cookie: s=1\r\nX-Echo: Bearer {SENTINEL}\r\nServer: GitHub.com\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            server.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let head = receive.headers.await.unwrap().unwrap();
+        let names: Vec<_> = head.headers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["content-type", "etag", "x-ratelimit-remaining"]);
+        let mut answer = Vec::new();
+        while let Some(chunk) = receive.chunks.recv().await {
+            answer.extend_from_slice(&chunk.unwrap());
+        }
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(answer.contains("[redacted]"), "{answer}");
+        assert!(!answer.contains("SENTINEL"), "{answer}");
+        driver.await.unwrap().unwrap();
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_not_modified_answer_and_an_answer_over_the_cap_are_each_handled() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let (_upload, receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            request_head(&mut server).await;
+            server
+                .write_all(b"HTTP/1.1 304 Not Modified\r\nETag: \"abc\"\r\nX-RateLimit-Remaining: 59\r\nRetry-After: 7\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let head = receive.headers.await.unwrap().unwrap();
+        assert_eq!(head.status, 304);
+        assert!(head.headers.iter().any(|(name, value)| name == "etag" && value == "\"abc\""));
+        assert!(head.headers.iter().any(|(name, value)| name == "retry-after" && value == "7"));
+        driver.await.unwrap().unwrap();
+        server_task.await.unwrap();
+
+        let (client, mut server) = sockets().await;
+        let (_upload, receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            request_head(&mut server).await;
+            let _ = server
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", scrub::ANSWER_BYTES + 1).as_bytes())
+                .await;
+        });
+        // `run` reports a failure through the head; the driver here returns it.
+        assert_eq!(driver.await.unwrap().unwrap_err(), HttpError::Limit);
+        assert!(receive.headers.await.is_err());
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}

@@ -133,7 +133,7 @@ pub(crate) async fn execute_get_provider_auth_status_request(
         runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
-        runtime_state.record_waiting_room_change();
+        runtime_state.record_room_list_change();
     }
     result
 }

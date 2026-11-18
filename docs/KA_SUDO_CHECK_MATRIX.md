@@ -34,7 +34,7 @@ The final evidence report is authoritative for executed results and gaps.
 
 | ID / PR | Required observation | Automated selector (existing tests) / class | Mac gate |
 | --- | --- | --- | --- |
-| KA-03.1 / 3 | Owner terminal attached and waiting-room terminal get identical popup; one answer clears both; late answer refused | `one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_it` — WIRE | H1: actual local TUI, web, remote TUI; unattached owner included |
+| KA-03.1 / 3 | Owner terminal attached and Room list terminal get identical popup; one answer clears both; late answer refused | `one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_it` — WIRE | H1: actual local TUI, web, remote TUI; unattached owner included |
 | KA-03.2 / 3 | Concurrent correct answers resolve once; refusal needs no passkey | `two_terminals_answering_at_once_resolve_the_prompt_once`, `the_first_answer_closes_the_prompt_and_a_later_one_is_already_answered` — STATE | H1/H2: one winning terminal and one audit |
 | KA-03.3 / 3 | Wrong passkey leaves popup open and counts toward common lockout; expiry returns error | `wrong_passkeys_keep_the_prompt_open_and_count_toward_the_lockout`, `an_unanswered_prompt_expires_with_its_decision` — STATE; grant timeout — WIRE | H1: one wrong attempt; avoid deliberate live lockout |
 | KA-03.4 / 3 | Only shared-session host gets/answers popup; host credential cannot submit passkey | `a_critical_approval_is_a_passkey_prompt_for_its_owner_alone`, class passkey tests — STATE; popup host exclusion — WIRE | H2: actual guest and host terminals |

@@ -333,8 +333,8 @@ try {
   const snapshot=await capture('01-enrolled-project')
   const session=(await rpc(source,{GetSessionState:{session_id:snapshot.session.id}})).SessionState.session
   assert.equal(session.owner_user_id,legacyLocal?'local':user)
-  const inventory=await rpc(source,{GetWaitingRoomInventory:{}})
-  assert(inventory.WaitingRoomInventory.snapshot.projects.some(project=>project.id === session.project_id))
+  const inventory=await rpc(source,{GetRoomListSnapshot:null})
+  assert(inventory.RoomListSnapshot.snapshot.projects.some(project=>project.id === session.project_id))
   await writeFile(path.join(evidence,'01-source-inventory.json'),JSON.stringify(inventory,null,2))
   if(legacyLocal) {
     // MP-08/MP-11: enroll through the actual TUI after it created the local Project/session.

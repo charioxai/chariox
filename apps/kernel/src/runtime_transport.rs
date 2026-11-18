@@ -31,8 +31,7 @@ use crate::runtime::router::CommandRouter;
 use crate::transport::kernel_protocol::{
     kernel_subscription_scope, map_kernel_error, requested_heartbeat_interval, serialize_frame,
     KernelEvent, KernelIncomingFrame, KernelOutgoingFrame, KernelSubscriptionScope,
-    KernelTransportError, WAITING_ROOM_INVENTORY_SENTINEL_ID,
-    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    KernelTransportError, ROOM_LIST_SENTINEL_ID, ROOM_LIST_SUBSCRIPTION_SCOPE,
 };
 
 mod local_auth;
@@ -65,7 +64,7 @@ use subscriptions::{
 };
 
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
-pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
+pub(crate) const ROOM_LIST_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
 /// At most half the process shutdown budget: the subsystem cleanup after it withdraws cards and
 /// stops provider utilities, and must still run before the watchdog ends the process.
@@ -74,7 +73,7 @@ const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
 pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 150;
-const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
+const ROOM_LIST_INTERVAL_TICKS: u64 = 100;
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES: u64 = 8 * 1024;
@@ -1210,7 +1209,7 @@ async fn detach_connection_subscription(
     router: &Arc<CommandRouter>,
     subscription: KernelSubscription,
 ) {
-    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+    if subscription.subscription_scope == KernelSubscriptionScope::RoomList {
         return;
     }
     match router
@@ -1253,7 +1252,7 @@ async fn record_connection_subscription_heartbeat(
     let Some(subscription) = subscription else {
         return;
     };
-    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+    if subscription.subscription_scope == KernelSubscriptionScope::RoomList {
         return;
     }
     if let Err(error) = router
@@ -1854,22 +1853,21 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     "connection_class": connection_class,
                 }),
             );
-            if scope != KernelSubscriptionScope::WaitingRoomInventory
-                && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
-                    || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
+            if scope != KernelSubscriptionScope::RoomList
+                && (session_id == ROOM_LIST_SENTINEL_ID || attachment_id == ROOM_LIST_SENTINEL_ID)
             {
                 crate::logging::warn_with_fields(
                     "daemon.runtime_transport",
-                    "waiting-room inventory sentinel arrived without subscription scope",
+                    "room-list inventory sentinel arrived without subscription scope",
                     serde_json::json!({
                         "session_id": session_id,
                         "attachment_id": attachment_id,
                         "subscription_scope": subscription_scope,
-                        "diagnosis": "client likely dropped subscription_scope=waiting_room_inventory",
+                        "diagnosis": "client likely dropped subscription_scope=room_list",
                     }),
                 );
             }
-            let replay_gap = if scope == KernelSubscriptionScope::WaitingRoomInventory {
+            let replay_gap = if scope == KernelSubscriptionScope::RoomList {
                 None
             } else {
                 let replay_result = replay_recent_events(
@@ -1919,14 +1917,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     }))),
                     error: None,
                 },
-                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE)
-                {
+                if subscription_scope.as_deref() == Some(ROOM_LIST_SUBSCRIPTION_SCOPE) {
                     None
                 } else {
                     Some(&session_id)
                 },
-                if subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE)
-                {
+                if subscription_scope.as_deref() == Some(ROOM_LIST_SUBSCRIPTION_SCOPE) {
                     None
                 } else {
                     Some(&attachment_id)

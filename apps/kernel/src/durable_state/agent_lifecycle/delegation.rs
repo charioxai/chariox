@@ -13,10 +13,11 @@ pub(super) fn bind(
     {
         return Err(error("delegation task binding is foreign or closed"));
     }
-    // Cancellation after admission cannot turn an accepted provider prompt into an error.
+    // Cancellation after admission cannot turn an accepted provider prompt into an error. A Done
+    // parent still binds the delegate it retained: its work message may be delivered after its turn.
     if !matches!(
         parent.state,
-        ExecutionState::Working | ExecutionState::Waiting
+        ExecutionState::Working | ExecutionState::Waiting | ExecutionState::Done
     ) {
         return Ok(());
     }
@@ -83,13 +84,7 @@ pub(super) fn bind_message(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), D
             return Ok(());
         }
         if let Some(child) = for_turn(tx, &e.room_id, &e.agent_id, prompt)? {
-            // Cancellation leaves no authority to bind new work.
-            if matches!(
-                load(tx, &parent)?.state,
-                ExecutionState::Working | ExecutionState::Waiting
-            ) {
-                bind(tx, &parent, &child.task_id)?;
-            }
+            bind(tx, &parent, &child.task_id)?;
         }
     }
     Ok(())

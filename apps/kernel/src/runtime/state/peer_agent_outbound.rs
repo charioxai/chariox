@@ -626,6 +626,17 @@ impl KernelRuntimeState {
         })
     }
 
+    /// The owner and the stamp `sender` is known by on `kernel`, for a request that is not a
+    /// message to an agent; a guest reaches no other kernel.
+    pub(super) fn peer_caller_of_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+    ) -> Result<(String, PeerAgentStamp), DaemonError> {
+        self.peer_agent_caller(sender, kernel)
+            .map(|caller| (caller.owner, caller.stamp))
+    }
+
     /// The Cloud owner whose kernels `sender` reaches, under the rules of its peer agent calls.
     pub(super) fn peer_owner_of_agent(
         &self,

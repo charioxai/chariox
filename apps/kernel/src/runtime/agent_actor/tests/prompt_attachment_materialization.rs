@@ -2,6 +2,15 @@ use super::*;
 
 #[test]
 fn materializes_inline_prompt_attachments_to_local_files() {
+    let _cleanup = crate::test_support::TestTempPath::in_shared_directory(
+        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            "session/one",
+            "agent:one",
+        )
+            .parent()
+            .expect("an attachment root has a session directory")
+            .to_path_buf(),
+    );
     let attachment = PromptAttachment::new(
         "chariox-cloud://artifact/art-1",
         "text/plain",

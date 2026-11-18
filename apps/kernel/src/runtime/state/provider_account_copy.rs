@@ -241,7 +241,7 @@ impl KernelRuntimeState {
         if result.is_ok() {
             self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
-            self.record_waiting_room_change();
+            self.record_room_list_change();
         }
         result
     }

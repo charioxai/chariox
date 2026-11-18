@@ -43,6 +43,7 @@ fn app_dev_register_snapshot_and_default_source() {
         installation: AppInstallationSummary {
             installation_id: "dev".into(),
             events: vec![],
+            standing_permissions: 0,
             app_id: "com.example.dev".into(),
             channel: InstallationChannel::Dev,
             dev_room_id: Some("room".into()),
@@ -74,6 +75,6 @@ fn app_dev_register_snapshot_and_default_source() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b5a30100ee8f72009c039c2565c804a05c5d5d0a941be1a67879f5c8cd348965"
+        "8288cfc35e1625df40ec6e6b49e712945d8be2227d773d7999f38108a340131f"
     );
 }

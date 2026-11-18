@@ -151,6 +151,9 @@ struct Inner {
     /// The kernel's config, for App actions through event generator
     /// connections (protocol 359); attached once when the kernel starts.
     event_config: EventConfig,
+    /// The kernel handle an App's `eventRouting` calls act through (protocol
+    /// 1011); attached once when the kernel starts.
+    routing_host: crate::runtime::app_event_routing_broker::RoutingHostSlot,
     store: DurableKernelStateStore,
     publisher: AppWorkerPublisher,
     admission: Arc<Semaphore>,
@@ -224,6 +227,13 @@ impl AppLifecycleService {
         let _ = self.0.event_config.set(config);
     }
 
+    pub(crate) fn attach_routing_host(
+        &self,
+        host: &Arc<crate::runtime::app_event_routing_broker::RoutingHost>,
+    ) {
+        self.0.routing_host.attach(host);
+    }
+
     pub(crate) fn new(
         store: DurableKernelStateStore,
         admission: Arc<Semaphore>,
@@ -232,6 +242,7 @@ impl AppLifecycleService {
         Self(Arc::new(Inner {
             http_limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
             event_config: EventConfig::default(),
+            routing_host: Default::default(),
             store,
             publisher,
             admission,

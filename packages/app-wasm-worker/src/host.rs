@@ -1,6 +1,6 @@
 use crate::{
     attribution::Attribution,
-    bindings::chariox::app::{app_types::AppError, log, registry},
+    bindings::chariox::app1_0_0::{app_types::AppError, log, registry},
     ipc::{error, Ipc},
     limits::Memory,
     scope::Scope,
@@ -137,4 +137,4 @@ impl log::Host for Host {
         Ok(())
     }
 }
-impl crate::bindings::chariox::app::app_types::Host for Host {}
+impl crate::bindings::chariox::app1_0_0::app_types::Host for Host {}

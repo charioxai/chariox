@@ -188,6 +188,8 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
                 options.capabilities.network.push(NetworkDestination {
                     origin: origin.to_owned(),
                     methods,
+                    credential: None,
+                    routes: Vec::new(),
                 });
             }
             let manifest = super::v2::generate_manifest(options, &limits)?;

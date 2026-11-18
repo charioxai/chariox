@@ -25,6 +25,41 @@ pub struct SessionProcess {
     pub placement: Option<crate::local::RemoteJobPlacement>,
 }
 
+/// A quiet process is repeated this often, so a client that stops hearing of a row can tell a
+/// finished process from a feed that went silent.
+const REPEAT_QUIET_PROCESS_MS: u64 = 30_000;
+const MEANINGFUL_RESIDENT_SET_BYTES: u64 = 1024 * 1024;
+
+/// Whether clients that already hold `published` learn nothing from `current`: the same processes in
+/// the same state, sampled again. A row's sample time and age move on every sample and its memory
+/// jitters, so those alone are not a change; memory counts from 1 MiB or 5 %, whichever is larger,
+/// and a row not repeated for 30 s is sent again. `published` is the last list that was sent, so
+/// a slow drift adds up against it instead of slipping through one small step at a time.
+pub(crate) fn same_to_clients(published: &[SessionProcess], current: &[SessionProcess]) -> bool {
+    published.len() == current.len()
+        && published.iter().zip(current).all(|(before, now)| {
+            let (a, b) = (&before.process, &now.process);
+            let meaningful = MEANINGFUL_RESIDENT_SET_BYTES
+                .max(a.resident_set_bytes.max(b.resident_set_bytes) / 20);
+            before.owner == now.owner
+                && before.state == now.state
+                && before.remote_available == now.remote_available
+                && before.remote_refusal == now.remote_refusal
+                && before.estimate == now.estimate
+                && before.placement == now.placement
+                && a.process_id == b.process_id
+                && a.pid == b.pid
+                && a.command == b.command
+                && a.cpu_millis == b.cpu_millis
+                && a.disk_io_bytes == b.disk_io_bytes
+                && a.disk_written_bytes == b.disk_written_bytes
+                && a.deleted_open_bytes == b.deleted_open_bytes
+                && a.outlived == b.outlived
+                && a.resident_set_bytes.abs_diff(b.resident_set_bytes) < meaningful
+                && b.sampled_at_ms.saturating_sub(a.sampled_at_ms) < REPEAT_QUIET_PROCESS_MS
+        })
+}
+
 /// Whether a command runs or waits for room (admission).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -288,7 +288,8 @@ impl KernelRuntimeState {
     }
 
     /// A native Stop with no active prompt ends a child's notification turn: once the final
-    /// transcript flush is drained, its held task finishes with the turn's answer.
+    /// transcript flush is drained, its held task finishes with the turn's answer. On a worker
+    /// the held task is at the home, which hears of the end as a completion record.
     async fn release_held_turn_after_native_stop(
         &self,
         session_id: &str,
@@ -298,10 +299,16 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let provider_run_id = provider_run.id();
-        if self
+        // A worker holds no task: its home does, and learns from the turn's completion record.
+        let leased = self
             .owned
-            .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
-            .is_empty()
+            .provider_run_projection
+            .is_leased_provider_run(provider_run_id);
+        if !leased
+            && self
+                .owned
+                .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
+                .is_empty()
         {
             return Ok(());
         }

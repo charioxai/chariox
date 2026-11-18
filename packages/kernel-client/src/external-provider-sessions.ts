@@ -1,4 +1,4 @@
-import { waitingRoomTimestampLabel } from "./waiting-room-activity.js"
+import { roomListTimestampLabel } from "./room-list-activity.js"
 
 export type ExternalProviderSessionCapabilities = {
   readonly can_read_history?: boolean
@@ -155,7 +155,7 @@ export function externalProviderSessionModifiedLabel(
   if (!value) {
     return "-"
   }
-  return waitingRoomTimestampLabel(value, options)
+  return roomListTimestampLabel(value, options)
 }
 
 export function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {

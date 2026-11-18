@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/pulls/2/comments?per_page=50&page=1",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"0c9f131f5db4617f719fa05dc4f44bdc72ebea2312fdc5dae524852a7922a460\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4893",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"pull_request_review_id\": 5909249134,\n  \"id\": 4577148508,\n  \"diff_hunk\": \"@@ -0,0 +1,6 @@\\n+export function hello(name) {\\n+  const who = name ?? \\\"world\\\";\",\n  \"path\": \"src/hello.js\",\n  \"commit_id\": \"271de153c2b8c196681165cc32ff2688634e1238\",\n  \"original_commit_id\": \"271de153c2b8c196681165cc32ff2688634e1238\",\n  \"user\": {\n   \"login\": \"mgutierrez09\",\n   \"id\": 33031955,\n   \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n   \"html_url\": \"https://github.com/mgutierrez09\",\n   \"type\": \"User\",\n   \"user_view_type\": \"public\",\n   \"site_admin\": false\n  },\n  \"body\": \"Prefer a default parameter here.\",\n  \"created_at\": \"2026-11-15T05:20:30Z\",\n  \"updated_at\": \"2026-11-15T05:20:30Z\",\n  \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/pull/2#discussion_r4577148508\",\n  \"reactions\": {\n   \"total_count\": 0,\n   \"+1\": 0,\n   \"-1\": 0,\n   \"laugh\": 0,\n   \"hooray\": 0,\n   \"confused\": 0,\n   \"heart\": 0,\n   \"rocket\": 0,\n   \"eyes\": 0\n  },\n  \"start_line\": null,\n  \"original_start_line\": null,\n  \"start_side\": null,\n  \"line\": 2,\n  \"original_line\": 2,\n  \"side\": \"RIGHT\",\n  \"author_association\": \"MEMBER\",\n  \"original_position\": 2,\n  \"position\": 2,\n  \"subject_type\": \"line\",\n  \"is_copilot_code_review\": false,\n  \"copilot_code_review_sources\": []\n }\n]"
+}

@@ -1,0 +1,38 @@
+{
+  "local": 1011,
+  "peer": 448,
+  "arguments": {
+    "wait": false,
+    "message": "Press Send Code, then enter the code from your email",
+    "choices": [
+      {
+        "id": "cancel",
+        "label": "Cancel",
+        "reply": "cancel"
+      }
+    ],
+    "view": {
+      "browser_region": {
+        "tab_id": "tab-1",
+        "ref": "backend:7",
+        "done_text": "Verification accepted"
+      }
+    }
+  },
+  "region": {
+    "tab_id": "tab-1",
+    "ref": "backend:7",
+    "generation": 1,
+    "document_id": "document-1",
+    "origin": "https://example.com",
+    "rect": {
+      "x": 16,
+      "y": 24,
+      "width": 320,
+      "height": 240
+    },
+    "viewport_width": 1280,
+    "viewport_height": 800,
+    "done_text": "Verification accepted"
+  }
+}

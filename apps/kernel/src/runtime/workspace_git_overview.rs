@@ -206,7 +206,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let error = crate::runtime::workspace_worktrees::create_waiting_room_worktree(
+        let error = crate::runtime::workspace_worktrees::create_workspace_worktree(
             path, None, None, None, None, None,
         )
         .unwrap_err();

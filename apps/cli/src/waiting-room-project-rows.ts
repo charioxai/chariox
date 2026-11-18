@@ -1,4 +1,4 @@
-import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
+import { roomListTimestampLabel } from "@chariox/kernel-client/room-list-activity"
 import type { SessionListEntry } from "./sessions.js"
 import {
   activeWaitingRoomProjects,
@@ -59,7 +59,7 @@ export function waitingRoomProjectRows(
     rows.push({
       id: `project-entry:${project.id}`,
       title: project.name,
-      value: `${waitingRoomTimestampLabel(project.last_session_activity_at_ms ?? project.updated_at_ms)} · ${formatWaitingRoomProjectSummary(project, projectSessions)}`,
+      value: `${roomListTimestampLabel(project.last_session_activity_at_ms ?? project.updated_at_ms)} · ${formatWaitingRoomProjectSummary(project, projectSessions)}`,
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "project-entry" && (state.projectIndex ?? 0) === projectIndex,

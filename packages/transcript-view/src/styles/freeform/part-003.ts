@@ -898,7 +898,7 @@ export const freeformStylesPart003 = `
   }
 }
 
-@keyframes waitingRoomRedactedSweep {
+@keyframes roomListRedactedSweep {
   0% {
     background-position: 140% 0, 0 0;
   }

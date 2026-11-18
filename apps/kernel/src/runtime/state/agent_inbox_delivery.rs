@@ -186,6 +186,14 @@ impl KernelRuntimeState {
         if active.is_some() && (!event.urgent || event.attempted_at_ms.is_some()) {
             return Ok(());
         }
+        if let child_finish_window::Window::Open { left, first } =
+            self.sibling_window(room, agent, &event)
+        {
+            if first {
+                self.deliver_when_window_ends(room, agent, left);
+            }
+            return Ok(());
+        }
         let batch = self.delivery_batch(
             room,
             agent,
@@ -525,8 +533,9 @@ impl KernelRuntimeState {
         tasks: &[ledger::AgentTaskExecution],
     ) -> WakeDisposition {
         // A peer event names the turn that created its persistent follow,
-        // not unfinished work whose wake expires when that turn ends.
-        if event.kind == "peer_event" {
+        // not unfinished work whose wake expires when that turn ends. Work the ended turn left
+        // running reports its end to the agent, not to the turn.
+        if event.kind == "peer_event" || event.payload["after_turn"] == true {
             return WakeDisposition::Deliver;
         }
         let mut ids = Vec::new();

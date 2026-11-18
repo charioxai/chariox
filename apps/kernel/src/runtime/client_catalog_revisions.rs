@@ -31,7 +31,7 @@ pub(super) async fn catalog_snapshot(
     request: GetClientCatalogSnapshotRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let known = request.known;
-    // A client opening the waiting room is the moment to notice new logins.
+    // A client opening the Room list is the moment to notice new logins.
     accounts.request_discovery();
     let mut snapshot = load(
         providers,
@@ -130,7 +130,7 @@ const BACKEND_PROVIDERS: [&str; 6] = [
 /// Clients offer only providers that are connected, reachable on a remote
 /// machine, or a backend's own. OpenCode lists every other models.dev provider
 /// too, which made the snapshot megabytes (235 providers and 9,173 models:
-/// 3.2 MB per waiting room open over the relay).
+/// 3.2 MB per Room list open over the relay).
 fn usable_providers_only(mut catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
     let usable = |provider: &crate::provider::OpenCodeProviderInfo| {
         catalog.connected.contains(&provider.id)

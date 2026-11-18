@@ -11,6 +11,7 @@ const CAPTURE: &str = "chariox.vault.capture_command";
 const USE_ENV: &str = "chariox.vault.use_env";
 const CAPTURE_FILE: &str = "chariox.vault.capture_file";
 const WRITE_FILE: &str = "chariox.vault.write_file";
+const COPY_FOR_USE: &str = "chariox.vault.copy_for_use";
 const SECRET: &str = "sk_test_51CaptureValue9f8e7d";
 
 fn printing(text: &str) -> Value {
@@ -842,4 +843,152 @@ async fn overlapping_capture_retry_retains_ownership_after_tool_drop() {
     );
     assert_eq!(stored_value.as_str(), SECRET);
     assert_eq!(retried["created"], false);
+}
+
+#[tokio::test]
+async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    assert!(names(&f).iter().any(|name| name == COPY_FOR_USE));
+    // The owner's `git push` entry: one command environment at github.com.
+    let pushed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push", "argv": printing(SECRET), "host": "github.com",
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let from = pushed["credential_id"].as_str().unwrap().to_string();
+    let site = |origin: &str| json!({"target":{"kind":"site","origin":origin}});
+    let copied = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap();
+    assert!(!copied.to_string().contains(SECRET), "{copied}");
+    let to = copied["credential_id"].as_str().unwrap().to_string();
+    assert_ne!(to, from);
+    // The copy is bound to one HTTP destination and sends the value as `Bearer`.
+    let service = f.state.home_runtime_secret_service().unwrap();
+    assert_eq!(
+        service
+            .app_account_authorization(&to, "https://api.github.com")
+            .unwrap()
+            .as_str(),
+        format!("Bearer {SECRET}")
+    );
+    for origin in [
+        "https://api.example.com",
+        "https://github.com",
+        "http://api.github.com",
+    ] {
+        assert!(
+            service.app_account_authorization(&to, origin).is_err(),
+            "{origin}"
+        );
+    }
+    // The original keeps its own single use.
+    assert!(service
+        .validate_app_account(&from, "https://api.github.com")
+        .is_err());
+    assert_eq!(stored(&f, &from).as_str(), SECRET);
+    // A retry names the same entry; a new request makes a second one.
+    let again = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            again["credential_id"].as_str().unwrap(),
+            again["created"].clone()
+        ),
+        (to.as_str(), json!(false))
+    );
+    assert!(call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.example.com")}),
+    )
+    .await
+    .is_err());
+    // Refused: plain HTTP, an entry that does not exist, a missing binding.
+    for refused in [
+        json!({"request_id":"plain","from":from,"use_binding":site("http://api.github.com")}),
+        json!({"request_id":"missing","from":"nope","use_binding":site("https://api.github.com")}),
+        json!({"request_id":"nobinding","from":from}),
+    ] {
+        assert!(
+            call(&f, COPY_FOR_USE, refused.clone()).await.is_err(),
+            "{refused}"
+        );
+    }
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(!session.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_copy_request_replayed_with_another_source_is_refused() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let entry = |request: &'static str, secret: &'static str| {
+        let f = &f;
+        async move {
+            call(
+                f,
+                CAPTURE,
+                json!({"request_id": request, "argv": printing(secret), "host": "github.com",
+                    "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+            )
+            .await
+            .unwrap()["credential_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let first = entry("first", SECRET).await;
+    let second = entry("second", "ghp_second_entry_value").await;
+    let site = json!({"target":{"kind":"site","origin":"https://api.github.com"}});
+    let copy = |from: &str| {
+        call(
+            &f,
+            COPY_FOR_USE,
+            json!({"request_id":"api","from":from,"use_binding":site}),
+        )
+    };
+    let of_first = copy(&first).await.unwrap();
+    // The same request naming another entry is refused: it is not the copy the request already made.
+    let refused = copy(&second).await.unwrap_err().to_string();
+    assert!(refused.contains("use a new request_id"), "{refused}");
+    // Nor is an entry that does not exist answered with the first copy.
+    assert!(copy("nope").await.is_err());
+    // The same source still gets its copy back, holding the first entry's value.
+    let again = copy(&first).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].clone(), again["created"].clone()),
+        (of_first["credential_id"].clone(), json!(false))
+    );
+    let authorization = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .app_account_authorization(
+            of_first["credential_id"].as_str().unwrap(),
+            "https://api.github.com",
+        )
+        .unwrap();
+    assert_eq!(authorization.as_str(), format!("Bearer {SECRET}"));
+    f.state.shutdown_cleanup().await.unwrap();
 }

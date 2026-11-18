@@ -26,6 +26,13 @@ pub(crate) enum AppInboxOperation {
         route_id: String,
         active: bool,
     },
+    /// An owner's or an App's pause: independent of the handover above.
+    SetRoutePaused {
+        owner: String,
+        installation: String,
+        route_id: String,
+        paused: bool,
+    },
     Routes {
         owner: String,
         installation: String,
@@ -151,6 +158,15 @@ fn apply(
             active,
         } => {
             app_inbox::set_route_active_in(connection, &owner, &installation, &route_id, active)?;
+            Ok(AppInboxOutcome::Recorded(None))
+        }
+        AppInboxOperation::SetRoutePaused {
+            owner,
+            installation,
+            route_id,
+            paused,
+        } => {
+            app_inbox::set_route_paused_in(connection, &owner, &installation, &route_id, paused)?;
             Ok(AppInboxOutcome::Recorded(None))
         }
         AppInboxOperation::Routes {
@@ -327,7 +343,7 @@ impl DurableKernelStateStore {
             routes.extend(
                 app_inbox::routes(&connection, owner, &installation)?
                     .into_iter()
-                    .filter(|route| route.active),
+                    .filter(|route| route.admits()),
             );
         }
         Ok(routes)

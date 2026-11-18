@@ -16,6 +16,8 @@ pub(crate) mod app_control;
 mod app_dev_push;
 pub(crate) mod app_event_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_routing_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
@@ -142,6 +144,11 @@ pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub(crate) mod resource_telemetry;
 pub(crate) mod response_redaction;
+pub(crate) mod room_list_activity;
+pub(crate) mod room_list_control;
+mod room_list_launch_directory;
+pub(crate) mod room_list_projection;
+pub(crate) mod room_list_sessions;
 pub(crate) mod room_tab_outline;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
@@ -162,11 +169,6 @@ pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
 pub(crate) mod user_domain_access;
-pub(crate) mod waiting_room_activity;
-pub(crate) mod waiting_room_control;
-mod waiting_room_launch_directory;
-pub(crate) mod waiting_room_public_projection;
-pub(crate) mod waiting_room_sessions;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
 pub(crate) mod workspace_command_executor;

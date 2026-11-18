@@ -2,27 +2,28 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { signReference } from '../build-reference.mjs';
-import { referencePrelude } from './reference-fixture.mjs';
+import { adoptStandInSdk } from './reference-fixture.mjs';
 import { processNetwork } from './process-network.mjs';
 import { browserProfile } from './browser-profile.mjs';
 
-export async function referenceCases({ chromium, launchOptions, server, evidence, builds }) {
+export async function referenceCases({ chromium, launchOptions, server, evidence, builds, names = ['excalidraw', 'univer'] }) {
   const rows = [];
-  for (const name of ['excalidraw', 'univer']) {
+  for (const name of names) {
     // Only this test adapter supplies the old SDK in document memory. It does
     // not claim backend persistence, agent admission, broker access or a Room.
-    const packed = await signReference(name, join(builds, name), join(evidence, 'signed-references'), referencePrelude());
+    const packed = await signReference(name, join(builds, name), join(evidence, 'signed-references'), adoptStandInSdk);
     for (const dpr of [1, 2]) {
-      let profile;
-      const row = { name, dpr, errors: [], remoteRequests: [], builtEntry: true, backend: 'frontend-only fixture' };
+      let profile, page;
+      const row = { name, dpr, errors: [], console: [], remoteRequests: [], builtEntry: true, backend: 'frontend-only fixture' };
       try {
         // Use an actual renderer scale: context-only emulation did not reach
         // opaque out-of-process frames in the earlier Chrome155/Playwright run.
         profile = await browserProfile(chromium, { ...launchOptions, clientView: true, captureDirectory: join(evidence, 'process-tree', name + '-dpr' + dpr), args: [...launchOptions.args, `--force-device-scale-factor=${dpr}`],
           viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
         const { context } = profile;
-        const page = await context.newPage();
+        page = await context.newPage();
         page.on('pageerror', e => row.errors.push(e.stack));
+        page.on('console', message => { if (row.console.length < 50) row.console.push(message.type() + ': ' + message.text().slice(0, 300)); });
         const requests = [];
         context.on('request', request => {
           requests.push(request.url());
@@ -32,7 +33,13 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         await server.open(page, packed, true);
         row.builtRequests = requests.filter(url => url.startsWith(server.origin + '/assets/'));
         const frame = await server.frame(page);
-        await frame.waitForFunction(() => globalThis.__charioxViewAgent?.registrations().length > 0, null, { timeout: 25000 });
+        // Excalidraw's page has no agent surface: its backend serves the actions. It is ready when its canvas is up and it
+        // has asked the change feed once (its first call after the two it makes before it renders).
+        if (name === 'excalidraw') {
+          await frame.locator('.excalidraw__canvas.interactive').waitFor({ timeout: 25000 });
+          await frame.waitForFunction(() => globalThis.__standInBackend.calls() > 2, null, { timeout: 25000 });
+        }
+        else await frame.waitForFunction(() => globalThis.__charioxViewAgent?.registrations().length > 0, null, { timeout: 25000 });
         await delay(500);
         row.reportedDpr = await frame.evaluate(() => devicePixelRatio);
         row.parentDpr = await page.evaluate(() => devicePixelRatio);
@@ -41,12 +48,16 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
           const canvas = frame.locator('.excalidraw__canvas.interactive');
           await canvas.click({ position: { x: 150, y: 180 } }); await page.keyboard.press('r');
           const bounds = await canvas.boundingBox();
-          await page.mouse.move(bounds.x + 180, bounds.y + 180); await page.mouse.down();
-          await page.mouse.move(bounds.x + 400, bounds.y + 310, { steps: 8 }); await page.mouse.up();
-          await frame.waitForFunction(async () => (await globalThis.__charioxViewAgent.state()).value?.total > 0);
-          row.nativeDrawing = await frame.evaluate(() => globalThis.__charioxViewAgent.state());
-          row.text = await frame.evaluate(() => globalThis.__charioxViewAgent.invoke('add_elements', { elements: [{ id: 'font-proof', type: 'rectangle', x: 450, y: 180, label: 'Native App fonts' }] }));
-          assert.equal(row.text.ok, true);
+          // Clear of the property panel that opens over the canvas's left edge once a tool is chosen.
+          await page.mouse.move(bounds.x + 400, bounds.y + 300); await page.mouse.down();
+          await page.mouse.move(bounds.x + 640, bounds.y + 430, { steps: 8 }); await page.mouse.up();
+          await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.length > 0);
+          row.nativeDrawing = await frame.evaluate(() => globalThis.__standInBackend.scene().elements.length);
+          // Text typed into the rectangle is a bound label in the page's own font.
+          await page.mouse.dblclick(bounds.x + 520, bounds.y + 365);
+          await page.keyboard.type('Native App fonts');
+          await page.keyboard.press('Escape');
+          await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.some(element => element.text === 'Native App fonts'));
         } else {
           row.formula = await frame.evaluate(async () => {
             await globalThis.__charioxViewAgent.invoke('set_range', { range: 'A1:C2', values: [['Item', 'Qty', 'Total'], ['AV1', 7, '=B2*3']] });
@@ -82,7 +93,11 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         assert.equal(row.remoteRequests.length, 0, 'reference uses no remote frontend resources');
         await page.screenshot({ path: join(evidence, name + '-dpr' + dpr + '.png') });
         await writeConsole(page, join(evidence, name + '-dpr' + dpr + '-dom.txt'));
-      } catch (error) { row.failure = error.stack; }
+      } catch (error) {
+        row.failure = error.stack;
+        // What the page showed when it stopped is the first thing to read.
+        if (page) { await page.screenshot({ path: join(evidence, name + '-dpr' + dpr + '-failed.png') }).catch(() => {}); await writeConsole(page, join(evidence, name + '-dpr' + dpr + '-failed-dom.txt')).catch(() => {}); row.frames = await Promise.all(page.frames().map(async frame => ({ url: frame.url().slice(0, 100), text: await frame.locator('body').innerText({ timeout: 2000 }).then(text => text.slice(0, 300), () => null) }))); }
+      }
       finally { await profile?.close(); if (profile) row.processNetwork = await processNetwork(join(evidence, 'process-tree', name + '-dpr' + dpr)); }
       rows.push(row);
       console.log(name, dpr, JSON.stringify({ rendered: row.rendered, failure: row.failure?.slice(0, 180), pageErrors: row.errors.length }));

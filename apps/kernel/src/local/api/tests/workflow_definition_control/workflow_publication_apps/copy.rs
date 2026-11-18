@@ -60,6 +60,8 @@ fn deployed(harness: &LocalRouterTestHarness, label: &str, consent: bool) -> Dep
                         source_event_type: "slack.app_mention".into(),
                         source_event_version: 1,
                         active: true,
+                        paused: false,
+                        app_managed: false,
                         source: Some(InboxSource {
                             generator_id: "slack".into(),
                             connection_id: "connection-1".into(),
@@ -770,6 +772,8 @@ fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
                         source_event_type: "slack.app_mention".into(),
                         source_event_version: 1,
                         active: true,
+                        paused: false,
+                        app_managed: false,
                         source: Some(InboxSource {
                             generator_id: "slack".into(),
                             connection_id: "connection-1".into(),

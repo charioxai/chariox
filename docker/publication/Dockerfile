@@ -32,13 +32,14 @@ COPY fixtures fixtures
 COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
 COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs
 COPY apps/kernel/src/local/api/tests/protocol_shapes apps/kernel/src/local/api/tests/protocol_shapes
+COPY apps/kernel/src/agent_move/protocol-639-241.json apps/kernel/src/agent_move/protocol-639-241.json
 COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1010
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1011
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -77,7 +78,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.159.3
 ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.296
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1010
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1011
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

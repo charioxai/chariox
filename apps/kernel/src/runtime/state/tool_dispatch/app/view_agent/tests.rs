@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod confirmation;
+mod standing;
 
 const APP: &str = "installed";
 const TARGET: &str = "view-1";
@@ -237,6 +238,7 @@ fn action(name: &str, effect: UiActionEffect) -> UiActionDeclaration {
         approval_reason: (effect == UiActionEffect::Approval).then(|| "Deletes the list".into()),
         confirmation_view: (effect == UiActionEffect::PersonConfirmed)
             .then(|| "review_payment".into()),
+        standing: None,
     }
 }
 

@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` between a home workspace and a leased
 //! agent's workspace behind a fake worker that serves the real slice functions, drops the link
 //! and loses answers on cue, and lets a test edit the source mid-copy.
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use super::workspace_slices::SLICE_BYTES;
 use super::*;
 use crate::runtime::kernel_files::StagedWrite;
+use crate::test_support::TestTempDir;
 
 /// What happens to one request on its way to the worker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,25 +78,19 @@ impl RemoteWorkspace for FakeWorker {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "agent-file-copy-{name}-{:08x}",
-        rand::random::<u32>()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TestTempDir {
+    TestTempDir::new(&format!("agent-file-copy-{name}"))
 }
 
-fn workspaces() -> (Workspace, Workspace) {
-    let home = Workspace {
-        root: scratch("home"),
+/// The two workspaces and the directories that own them; keep the directories
+/// alive for the test.
+fn workspaces() -> (Workspace, Workspace, [TestTempDir; 2]) {
+    let owners = [scratch("home"), scratch("worker")];
+    let [home, worker] = [0, 1].map(|index| Workspace {
+        root: owners[index].path().to_path_buf(),
         read_only: false,
-    };
-    let worker = Workspace {
-        root: scratch("worker"),
-        read_only: false,
-    };
-    (home, worker)
+    });
+    (home, worker, owners)
 }
 
 /// A file of `size` bytes no two slices of which are alike.
@@ -133,7 +128,7 @@ const BUNDLE: usize = 3 * SLICE_BYTES as usize + 12_345;
 
 #[tokio::test]
 async fn a_file_crosses_both_ways_byte_for_byte_with_its_digest() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     let sha256 = plant(&worker.root, "out/x.bundle", BUNDLE);
     let remote = FakeWorker::new(worker.clone());
     let pulled = pull(
@@ -178,11 +173,11 @@ async fn a_file_crosses_both_ways_byte_for_byte_with_its_digest() {
 
 #[tokio::test]
 async fn paths_that_leave_the_workspace_or_pass_through_links_are_refused() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&worker.root, "real/file", 10);
     let outside = scratch("outside");
-    plant(&outside, "secret", 10);
-    std::os::unix::fs::symlink(&outside, worker.root.join("linked")).unwrap();
+    plant(outside.path(), "secret", 10);
+    std::os::unix::fs::symlink(outside.path(), worker.root.join("linked")).unwrap();
     std::os::unix::fs::symlink(worker.root.join("real/file"), worker.root.join("alias")).unwrap();
     let remote = FakeWorker::new(worker.clone());
     let options = CopyOptions::default();
@@ -212,7 +207,7 @@ async fn paths_that_leave_the_workspace_or_pass_through_links_are_refused() {
             .unwrap_err();
         assert!(error.contains(expected), "{destination}: {error}");
     }
-    assert!(!outside.join("planted").exists());
+    assert!(!outside.path().join("planted").exists());
     assert_eq!(
         std::fs::read(worker.root.join("real/file")).unwrap().len(),
         10
@@ -221,7 +216,7 @@ async fn paths_that_leave_the_workspace_or_pass_through_links_are_refused() {
 
 #[tokio::test]
 async fn git_and_chariox_files_and_plan_mode_agents_never_receive_a_file() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     std::fs::create_dir_all(worker.root.join(".git/hooks")).unwrap();
     plant(&home.root, "hook", 10);
     let remote = FakeWorker::new(worker.clone());
@@ -272,7 +267,7 @@ async fn git_and_chariox_files_and_plan_mode_agents_never_receive_a_file() {
 
 #[tokio::test]
 async fn an_existing_file_is_replaced_only_with_overwrite_and_oversized_files_never_move() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     let sha256 = plant(&home.root, "new", 1000);
     plant(&worker.root, "old", 10);
     let remote = FakeWorker::new(worker.clone());
@@ -324,7 +319,7 @@ async fn an_existing_file_is_replaced_only_with_overwrite_and_oversized_files_ne
 
 #[tokio::test]
 async fn a_source_that_changes_mid_copy_ends_the_copy_with_nothing_written() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&worker.root, "moving", BUNDLE);
     let source = worker.root.join("moving");
     let remote = FakeWorker::cued(worker.clone(), move |request| {
@@ -361,7 +356,7 @@ async fn a_source_that_changes_mid_copy_ends_the_copy_with_nothing_written() {
 
 #[tokio::test]
 async fn a_copy_resumes_where_it_stopped_after_the_link_drops() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     let sha256 = plant(&worker.root, "big", BUNDLE);
     // The forwarder restarts while slices are in flight: three requests in a row never arrive.
     let remote = FakeWorker::cued(worker.clone(), |request| match request {
@@ -394,7 +389,7 @@ async fn a_copy_resumes_where_it_stopped_after_the_link_drops() {
 
 #[tokio::test]
 async fn a_link_that_stays_down_ends_the_copy_with_nothing_published() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&home.root, "big", BUNDLE);
     let remote = FakeWorker::cued(worker.clone(), |request| {
         if request >= 1 {
@@ -412,7 +407,7 @@ async fn a_link_that_stays_down_ends_the_copy_with_nothing_published() {
 
 #[tokio::test]
 async fn a_staged_file_is_removed_once_the_link_is_back_after_the_copy_gave_up() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&home.root, "big", BUNDLE);
     // The write retries and the first discard both meet the dead link; it returns before the
     // discard gives up.
@@ -432,7 +427,7 @@ async fn a_staged_file_is_removed_once_the_link_is_back_after_the_copy_gave_up()
 
 #[tokio::test]
 async fn a_staged_file_that_could_not_be_removed_is_named_in_the_error() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&home.root, "big", BUNDLE);
     let remote = FakeWorker::cued(worker.clone(), |request| {
         if request >= 1 {
@@ -450,7 +445,7 @@ async fn a_staged_file_that_could_not_be_removed_is_named_in_the_error() {
 
 #[tokio::test]
 async fn a_file_named_like_the_old_staging_sidecar_is_never_touched() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     let sidecar = plant(&worker.root, "report.chariox-partial", 50);
     plant(&home.root, "report", 70);
 
@@ -504,7 +499,7 @@ async fn a_file_named_like_the_old_staging_sidecar_is_never_touched() {
 
 #[tokio::test]
 async fn a_refused_copy_deletes_nothing_beside_its_destination() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     let sidecar = plant(&worker.root, "docs.chariox-partial", 50);
     let neighbour = plant(&worker.root, "docs", 60);
     plant(&home.root, "src", 70);
@@ -528,7 +523,7 @@ async fn a_refused_copy_deletes_nothing_beside_its_destination() {
 
 #[tokio::test]
 async fn a_lost_answer_on_a_single_slice_push_still_reports_the_copy() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     for (name, size) in [("one", 100), ("empty", 0)] {
         let sha256 = plant(&home.root, name, size);
         let remote = FakeWorker::cued(worker.clone(), |request| {
@@ -548,7 +543,7 @@ async fn a_lost_answer_on_a_single_slice_push_still_reports_the_copy() {
 
 #[tokio::test]
 async fn a_lost_answer_does_not_make_an_unrelated_destination_count_as_copied() {
-    let (home, worker) = workspaces();
+    let (home, worker, _owners) = workspaces();
     plant(&home.root, "one", 100);
     plant(&worker.root, "one", 90);
     let remote = FakeWorker::cued(worker.clone(), |request| {

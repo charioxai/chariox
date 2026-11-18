@@ -24,7 +24,7 @@ export type SessionBrowserControllerDeps = {
   selectedProject?: () => WaitingRoomProjectSummary | null
   normalizeSelectedIndex: () => number
   setSelectedIndex: (updater: (index: number) => number) => void
-  waitingRoomState: () => WaitingRoomState
+  startState: () => WaitingRoomState
   providerCatalog: () => ProviderCatalog
   currentProvider: () => BackendProviderId
   currentModel: () => string
@@ -47,7 +47,7 @@ export function createSessionBrowserController(deps: SessionBrowserControllerDep
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const selectedWaitingRoomState = (selectedIndex: number): WaitingRoomState => ({
-    ...deps.waitingRoomState(),
+    ...deps.startState(),
     focus: "session",
     sessionIndex: Math.max(0, sessionBrowserVisibleSessions(deps.availableSessions()).findIndex((session) => (
       session.id === deps.visibleSessions()[selectedIndex]?.id

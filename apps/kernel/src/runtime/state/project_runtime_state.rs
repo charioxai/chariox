@@ -74,7 +74,7 @@ impl KernelRuntimeState {
             .list_projects(caller_user_id, include_archived)
     }
 
-    pub(crate) fn list_waiting_room_projects(
+    pub(crate) fn list_room_list_projects(
         &self,
         caller_user_id: &str,
     ) -> Vec<crate::session::RuntimeProject> {

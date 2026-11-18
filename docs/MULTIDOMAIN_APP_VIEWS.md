@@ -17,10 +17,14 @@ a terminal surface; runtime MCP access is a separate authenticated agent path.
 The page supplies only a method and input, never owner, actor, generation,
 Room, agent, credentials or approval context.
 
-`OpenUserAppView` returns a view descriptor and verified frontend bundle.
-`ListUserAppViews` lists the owner's live instances. `GetUserAppViewFrontend`
-re-verifies the active release and refuses a generation mismatch; reopen after
-an update. `CallUserAppView` invokes the App channel; `CloseUserAppView` ends
+`OpenUserAppView` returns a view descriptor and the frontend's entry and
+security policy, never its files: a view may be far larger than one relay reply
+(the kernel refuses a reply over 1 MiB), so a client that renders the view
+itself fetches the signed files through `ClientAppView`, and a kernel browser
+Tab is handed them inside the kernel. `ListUserAppViews` lists the owner's live
+instances. `GetUserAppViewFrontend` re-verifies the active release (the same
+entry and policy, no files) and refuses a generation mismatch; reopen after an
+update. `CallUserAppView` invokes the App channel; `CloseUserAppView` ends
 the instance and cancels its in-flight calls. `SubscribeUserAppViews` is a
 bounded cursor long poll over the ordinary kernel request transport: it
 returns the owner's complete view/interaction snapshot when it changes.
@@ -109,7 +113,7 @@ any Tab (DOM mirror under the same observation protection, display stream,
 screenshots). Web and TUI open Apps with `host: "kernel_browser"`; the web
 client shows that Tab in its browser modal and needs no isolated App origin.
 With the App-view feature enabled, `/app open` uses this host both from the
-waiting room and while a Room is attached. The TUI projects the same Tab as
+Room list and while a Room is attached. The TUI projects the same Tab as
 text and sends its input through the kernel browser.
 A focused or granted agent may input in (including a Vault fill), navigate
 within the App origin and close an App Tab after the kernel claimed

@@ -65,6 +65,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("ui.worktree_aliases.<alias>", "string", &[], true, true, "no_runtime_effect", "unwired", "Pattern key for a worktree alias entry."),
         entry("relay.url", "string|null", &[], true, true, "no_runtime_effect", "unwired", "Persisted user-config relay URL; daemon relay connection currently uses daemon config."),
         entry("agents.offload_without_asking", "bool", &["true", "false"], true, true, "runtime_config", "live", "Agents may offload and acquire machines without asking."),
+        entry("agents.usage_limit_resume", "enum", &["ask", "automatic"], true, true, "runtime_config", "live", "What the kernel does when an agent hits a usage limit: ask the person, or resume it automatically when usage is back."),
         entry("relay.accept_remote_leases", "bool", &["true", "false"], true, true, "runtime_config", "live", "Allow this kernel to accept same-user remote execution leases."),
         entry("history.operational.enabled", "bool", &["true", "false"], true, false, "runtime_config", "live", "Record searchable operational history."),
         entry("history.operational.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Operational history storage backend."),

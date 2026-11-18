@@ -2,7 +2,7 @@ use super::*;
 
 /// The relaunch sleeps 12 s before it starts the provider, and a cold provider
 /// start on a loaded host takes tens of seconds more; the continuation outlasts both.
-const PROVIDER_RELAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(super) const PROVIDER_RELAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl KernelRuntimeState {
     pub(super) fn runtime_catalog_signature_for_agent(

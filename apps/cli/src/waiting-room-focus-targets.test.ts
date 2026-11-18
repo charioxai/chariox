@@ -52,7 +52,7 @@ test("waiting room focus movement tracks indexed targets", () => {
     session({ id: "old", last_used_at_ms: Date.UTC(2026, 0, 1) }),
     session({ id: "new", last_used_at_ms: Date.UTC(2026, 0, 2) }),
   ]
-  let state = waitingRoomState({ focus: "join-sessions" })
+  let state = startState({ focus: "join-sessions" })
 
   state = moveWaitingRoomFocus(state, sessions, 1)
   assert.equal(state.focus, "session")
@@ -66,7 +66,7 @@ test("waiting room focus movement tracks indexed targets", () => {
   assert.equal(state.focus, "relay")
   assert.equal(state.sessionIndex, 1)
 
-  state = waitingRoomState({ focus: "remote-kernel" })
+  state = startState({ focus: "remote-kernel" })
   state = moveWaitingRoomFocus(state, sessions, 1, remoteState())
   assert.equal(state.focus, "slice-entry")
   assert.equal(state.sliceIndex, 0)
@@ -102,7 +102,7 @@ test("waiting room focus targets include unattached agents and pagination", () =
 
 test("waiting room focus movement clamps stale unattached agent indexes", () => {
   const state = moveWaitingRoomFocus(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    startState({ focus: "external-session", externalSessionIndex: 99 }),
     [],
     1,
     {
@@ -141,7 +141,7 @@ function remoteState(): WaitingRoomRemoteState {
   }
 }
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

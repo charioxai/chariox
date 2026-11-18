@@ -6,7 +6,7 @@
     "value": "/app",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -16,7 +16,7 @@
         "value": "/app list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -46,7 +46,7 @@
         "value": "/app set",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -56,7 +56,7 @@
         "value": "/app status ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -66,7 +66,7 @@
         "value": "/app journal ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -76,7 +76,7 @@
         "value": "/app logs ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -86,7 +86,7 @@
         "value": "/app worker ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -96,7 +96,7 @@
         "value": "/app start ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -106,7 +106,7 @@
         "value": "/app stop ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -116,7 +116,7 @@
         "value": "/app restart ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -135,7 +135,7 @@
         "value": "/app uninstall ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -258,7 +258,7 @@
         "value": "/app automation ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -268,7 +268,7 @@
             "value": "/app automation list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -278,7 +278,7 @@
             "value": "/app automation add ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -288,7 +288,17 @@
             "value": "/app automation disable ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-automation-pause",
+            "label": "pause",
+            "description": "Pause an App automation",
+            "value": "/app automation pause ",
+            "surfaces": [
+              "session",
+              "room_list"
             ]
           }
         ]
@@ -300,7 +310,7 @@
         "value": "/app inbox ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -310,7 +320,7 @@
             "value": "/app inbox list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -320,7 +330,7 @@
             "value": "/app inbox add ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -330,7 +340,27 @@
             "value": "/app inbox remove ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-inbox-pause",
+            "label": "pause",
+            "description": "Pause an App inbox route",
+            "value": "/app inbox pause ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-inbox-resume",
+            "label": "resume",
+            "description": "Resume a paused App inbox route",
+            "value": "/app inbox resume ",
+            "surfaces": [
+              "session",
+              "room_list"
             ]
           },
           {
@@ -340,7 +370,7 @@
             "value": "/app inbox test ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]
@@ -352,7 +382,7 @@
         "value": "/app connection ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ],
         "children": [
           {
@@ -362,7 +392,7 @@
             "value": "/app connection list ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -372,7 +402,7 @@
             "value": "/app connection grant ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           },
           {
@@ -382,7 +412,91 @@
             "value": "/app connection revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-account",
+        "label": "account",
+        "description": "Choose the account an App calls a service with",
+        "value": "/app account ",
+        "surfaces": [
+          "session",
+          "room_list"
+        ],
+        "children": [
+          {
+            "id": "app-account-list",
+            "label": "list",
+            "description": "List the accounts an App may call a service with",
+            "value": "/app account list ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-account-grant",
+            "label": "grant",
+            "description": "Let an App use one of your Vault entries (ACCOUNT CREDENTIAL ENTRY)",
+            "value": "/app account grant ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-account-revoke",
+            "label": "revoke",
+            "description": "Revoke an App's use of an account",
+            "value": "/app account revoke ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-standing",
+        "label": "standing",
+        "description": "Decide once that an action needs no card in one repository",
+        "value": "/app standing ",
+        "surfaces": [
+          "session",
+          "room_list"
+        ],
+        "children": [
+          {
+            "id": "app-standing-list",
+            "label": "list",
+            "description": "List the standing permissions you gave an App",
+            "value": "/app standing list ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-standing-grant",
+            "label": "grant",
+            "description": "Skip the card for an action class in a repository (ACCOUNT OWNER/REPO CLASS)",
+            "value": "/app standing grant ",
+            "surfaces": [
+              "session",
+              "room_list"
+            ]
+          },
+          {
+            "id": "app-standing-revoke",
+            "label": "revoke",
+            "description": "End a standing permission",
+            "value": "/app standing revoke ",
+            "surfaces": [
+              "session",
+              "room_list"
             ]
           }
         ]
@@ -421,7 +535,7 @@
             "value": "/app file revoke ",
             "surfaces": [
               "session",
-              "waiting_room"
+              "room_list"
             ]
           }
         ]

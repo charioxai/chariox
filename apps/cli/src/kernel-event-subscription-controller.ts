@@ -15,7 +15,7 @@ type KernelEventSubscriptionControllerOptions = {
   supportsKernelEventStream: () => boolean
   getAttachment: () => KernelEventSubscriptionAttachment | null
   getSessionId: () => string
-  subscribeToWaitingRoomInventory: () => Promise<void>
+  subscribeToRoomList: () => Promise<void>
   subscribeToKernelEvents: (sessionId: string, attachmentId: string) => Promise<void>
   onEvaluate: (state: KernelEventSubscriptionState & {
     nextSessionId: string | null
@@ -91,7 +91,7 @@ export function createKernelEventSubscriptionController(
         return
       }
       try {
-        await options.subscribeToWaitingRoomInventory()
+        await options.subscribeToRoomList()
         scope = "waiting-room"
         attachmentId = null
         sessionId = null

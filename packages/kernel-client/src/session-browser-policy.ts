@@ -1,4 +1,4 @@
-import { waitingRoomSessionRecencyMs } from "./waiting-room-activity.js"
+import { roomListSessionRecencyMs } from "./room-list-activity.js"
 
 export const DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT = 2
 
@@ -89,7 +89,7 @@ export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(
   return sessions
     .filter((session) => options.includeEnded || session.status !== "Ended")
     .slice()
-    .sort((left, right) => waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left) || (left.created_at_ms ?? 0) - (right.created_at_ms ?? 0) || (left.id ?? "").localeCompare(right.id ?? ""))
+    .sort((left, right) => roomListSessionRecencyMs(right) - roomListSessionRecencyMs(left) || (left.created_at_ms ?? 0) - (right.created_at_ms ?? 0) || (left.id ?? "").localeCompare(right.id ?? ""))
 }
 
 export function sessionBrowserPreviewSessions<T extends SessionBrowserSession>(

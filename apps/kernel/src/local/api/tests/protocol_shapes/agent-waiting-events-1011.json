@@ -1,0 +1,55 @@
+{
+  "local": 1011,
+  "peer": 448,
+  "liveness": {
+    "waiting_on": {
+      "kind": "source",
+      "detail": "child-1",
+      "since_ms": 7000
+    },
+    "waiting_events": [
+      {
+        "id": "reg-1",
+        "kind": "source",
+        "label": "sub-agent sub-agent-1",
+        "since_ms": 7000,
+        "task_id": "task-1",
+        "wait_started_at_ms": 7000
+      },
+      {
+        "id": "wake-9",
+        "kind": "timer",
+        "label": "timer check the build",
+        "since_ms": 9000,
+        "task_id": "task-1",
+        "wait_started_at_ms": 7000,
+        "cancel_wake_id": "wake-9"
+      }
+    ]
+  },
+  "wait": {
+    "registration_ids": ["reg-1"],
+    "deadline_ms": 67000,
+    "started_at_ms": 7000,
+    "inbox_cursor": 3,
+    "last_checked_at_ms": 7000
+  },
+  "question_task": {
+    "task_id": "question-task",
+    "room_id": "room",
+    "owner_user_id": "owner",
+    "agent_id": "agent",
+    "prompt_id": "turn",
+    "provider_run_id": "run",
+    "revision": 2,
+    "blocked_revision": 2,
+    "state": "blocked",
+    "reason": "Which pull request number should I review?",
+    "owner_action": "question",
+    "obligations": [],
+    "wait": null,
+    "last_progress_at_ms": 1,
+    "correction_used": false,
+    "pending_prompt_id": null
+  }
+}

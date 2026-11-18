@@ -40,7 +40,7 @@ async fn finding_a_held_decisions_event_does_not_read_the_whole_inbox() {
     }
     INBOX_ROWS_READ.with(|n| n.set(0));
     t.runtime
-        .move_seen_decisions_up(&t.room, &t.p)
+        .move_seen_decisions_up(&t.room, &t.p, None)
         .await
         .unwrap();
     let read = INBOX_ROWS_READ.with(|n| n.get());

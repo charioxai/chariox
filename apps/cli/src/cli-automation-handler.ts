@@ -62,7 +62,7 @@ export type CliAutomationActionDeps = {
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void | Promise<void>
   requestExit: () => Promise<unknown>
-  waitingRoomState: () => WaitingRoomState
+  startState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
   waitingRoomProjects?: () => WaitingRoomProjectSummary[]
@@ -177,7 +177,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           throw new Error("usage: activate_unattached_agent externalSessionId=<id> or externalSessionIndex=<index>")
         }
         deps.setWaitingRoomState({
-          ...deps.waitingRoomState(),
+          ...deps.startState(),
           focus: "external-session",
           externalSessionIndex: candidateIndex,
         })
@@ -223,7 +223,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> providerId=<id> modelId=<id> effort=<level> projectSelectionId=default|new|existing:<id> showArchivedProjects=<boolean> focus=new|launch-machine|launch-kernel|project")
         }
         deps.setWaitingRoomState({
-          ...deps.waitingRoomState(),
+          ...deps.startState(),
           ...(machineRef !== undefined ? { selectedMachineRef: machineRef } : {}),
           ...(kernelRef !== undefined ? { selectedKernelRef: kernelRef } : {}),
           ...(providerId !== undefined ? { providerId: providerId as WaitingRoomState["providerId"] } : {}),
@@ -242,7 +242,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         const projectIndex = projects.findIndex((project) => project.id === projectId)
         if (projectIndex < 0) throw new Error("usage: select_waiting_room_project projectId=<id>")
         deps.setWaitingRoomState({
-          ...deps.waitingRoomState(),
+          ...deps.startState(),
           focus: "project-entry",
           projectIndex,
           ...(projects[projectIndex]?.status === "archived" ? { showArchivedProjects: true } : {}),
@@ -267,7 +267,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         } else if (projectAction === "archive" || projectAction === "delete") {
           if (!deps.applyWaitingRoomSessionLifecycleAction) throw new Error("project lifecycle is unavailable in this CLI")
           const state = {
-            ...deps.waitingRoomState(),
+            ...deps.startState(),
             focus: "project-entry" as const,
             projectIndex,
             ...(projects[projectIndex]?.status === "archived" ? { showArchivedProjects: true } : {}),

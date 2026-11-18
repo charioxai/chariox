@@ -223,6 +223,13 @@ Two file tools complete the set:
   every `{{NAME}}` replaced by its Vault value and returns only the path, size
   and placeholder names. The agent's own later read of that file is its own
   action and is not scrubbed.
+- `chariox.vault.copy_for_use {request_id, from, use_binding, label?}` copies the value of
+  one entry into a NEW entry for one other declared use, inside the Vault, and returns only
+  the new `credential_id`. `use_binding.target` may also be `{kind: "site", origin}` (an
+  `https` origin): the copy then sends `Authorization: Bearer <value>` to exactly that
+  origin, for `chariox.http_request_with_credential` and for an App account (see
+  `APPS_V2_CONTRACTS.md` §10). Payment cards, TOTP seeds and backup codes cannot be
+  copied. A retry with the same `request_id` returns the same entry.
 - `chariox.vault.remove_capture {credential_id}` removes a capture the same agent made in
   the same session (for example a label captured by mistake) and stops masking its value
   in observations. The result names the removed entry (`credential_id`, `label`, `length`);

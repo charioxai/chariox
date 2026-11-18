@@ -377,8 +377,9 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
     let worktree = crate::test_support::TestWorktree::new(
         "remote_runtime_projection_records_output_and_completion_on_home_session",
     );
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // The history store outlives the app below, so the config keeps its state directory.
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
             worktree
@@ -553,7 +554,8 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
     // The provider launch now preflights the worktree as a real working
     // directory. Use an arbitrary real path to preserve arbitrary-cwd parity
     // instead of a synthetic string that never existed on disk.
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("remote-termination-worktree");
+    let worktree = _tmp.join(format!(
         "chariox-remote-termination-worktree-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()

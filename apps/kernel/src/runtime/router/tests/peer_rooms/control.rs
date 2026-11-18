@@ -47,6 +47,7 @@ fn a_message_after_a_peer_cancel_runs_on_the_cancelled_agent() {
                 "agent": "peer",
                 "room": rooms.peer_room,
                 "message": "take over parser.rs",
+                "urgent": true,
             }))
             .await
             .expect("a peer may message");
@@ -133,6 +134,7 @@ fn a_message_after_a_peer_cancel_of_a_parked_task_runs() {
                 "agent": "parked",
                 "room": rooms.peer_room,
                 "message": "take over parser.rs",
+                "urgent": true,
             }))
             .await
             .expect("a peer may message");

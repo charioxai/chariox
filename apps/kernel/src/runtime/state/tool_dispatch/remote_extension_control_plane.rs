@@ -556,6 +556,13 @@ impl KernelRuntimeState {
                     .await?,
                 None,
             )),
+            crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL => Ok((
+                Box::pin(
+                    self.handle_promote_agent_message_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
+                None,
+            )),
             crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
             }

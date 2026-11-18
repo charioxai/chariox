@@ -108,8 +108,8 @@ mod tests {
 
     #[test]
     fn inspects_git_status_inside_repo() {
-        let root = std::env::temp_dir().join("chariox-git-capability-test");
-        let _ = fs::remove_dir_all(&root);
+        let _tmp = crate::test_support::TestTempDir::new("git-capability-test");
+        let root = _tmp.join("chariox-git-capability-test");
         fs::create_dir_all(&root).expect("root should exist");
         crate::process_spawn::command("git")
             .args(["init", "-b", "main"])

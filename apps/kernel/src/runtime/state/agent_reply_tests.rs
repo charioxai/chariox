@@ -74,8 +74,9 @@ impl Fixture {
         }
     }
 
+    /// The reply request an urgent `agent steer --reply-requested` makes: it starts its receiver.
     pub(super) fn request(&self, key: &str) -> InboxEvent {
-        self.message(key, false, true)
+        self.message(key, true, true)
     }
 
     pub(super) fn message(&self, key: &str, urgent: bool, reply_requested: bool) -> InboxEvent {
@@ -390,4 +391,48 @@ async fn delegate_reply_pre_upgrade_accepted_orphan_is_recovered_by_sweep() {
     let before = f.replies();
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     assert_eq!(before, f.replies());
+}
+
+#[tokio::test]
+async fn a_turn_started_by_the_person_is_told_of_the_messages_queued_for_it() {
+    let f = Fixture::new();
+    let queued = f.message("queued-1", false, true);
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+    assert!(
+        f.runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&f.room), Some(&f.child))
+            .unwrap()
+            .is_empty(),
+        "a message that is not urgent starts no turn of its recipient"
+    );
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: f.owner.clone(),
+            room: f.room.clone(),
+            agent: f.child.clone(),
+            prompt: "person-turn".into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let context = f
+        .runtime
+        .owned
+        .agent_task_context_hint(&f.room, &f.child, "person-turn")
+        .unwrap()
+        .expect("the turn has a task context");
+    assert!(
+        context.contains(&format!(
+            "<chariox-queued-messages>1 message from another agent is queued for this turn. Before you answer, read with chariox.events.inbox after {}",
+            queued.sequence - 1
+        )),
+        "{context}"
+    );
 }

@@ -94,8 +94,8 @@ for the addressed paths and “Remaining work” for the unproven paths.
 | 16 | process-resource `ADOPTED` | `runtime/process_resources/admission.rs:188` | adopted command table | admission | to-verify | to-verify |
 | 17 | MCP stdio `SUPERVISOR` | `provider/mcp_proxy/stdio.rs:11` | process table, closed run/session sets | `process()` (spawns the child under the lock), `release_*`, `stop_all` | spawn (fork/exec, bounded) | MEDIUM (short term) |
 | 18 | MCP stdio per-process `Mutex<StdioMcpProcess>` | `stdio.rs:23` (`Arc<Mutex<…>>`) | one child's stdin/stdout state | `mcp_proxy.rs:150-158` | yes: `write_frame` `:385-393` no deadline | **BLOCKING, medium-high** |
-| 19 | `LAUNCH_TARGET_CACHE` | `runtime/waiting_room_public_projection.rs:33`, held `:625-643` | launch target per cwd | `cached_launch_target` | yes: git subprocesses `:650-675` | **BLOCKING, high** |
-| 20 | `GIT_BRANCH_CACHE`, `WORKTREE_LABEL_CACHE`, `WORKSPACE_LABEL_CACHE` | `waiting_room_public_projection.rs:34-38` | label caches | `cached_git_branch` `:1194-1203`, `:1172`, `:1218` | to-verify: is the guard alive across `detect_git_branch` (`:1203`)? | to-verify |
+| 19 | `LAUNCH_TARGET_CACHE` | `runtime/room_list_projection.rs:33`, held `:625-643` | launch target per cwd | `cached_launch_target` | yes: git subprocesses `:650-675` | **BLOCKING, high** |
+| 20 | `GIT_BRANCH_CACHE`, `WORKTREE_LABEL_CACHE`, `WORKSPACE_LABEL_CACHE` | `room_list_projection.rs:34-38` | label caches | `cached_git_branch` `:1194-1203`, `:1172`, `:1218` | to-verify: is the guard alive across `detect_git_branch` (`:1203`)? | to-verify |
 | 21 | `workflow_provider_launch_lock` | `runtime/state/workflow.rs:112-114` | admission + workflow-tool activation as one section | `workflow_ensure_provider_run` | yes, whole launch (documented) | MEDIUM, intentional; inherits §2 |
 | 22 | `Link.writer` (display link) | `runtime/browser_controller_process/display_frames.rs` (field), `Link::send` `:338-341` | per-link writer | display frames | yes: `write_all` `:341`, no deadline | **BLOCKING, medium** |
 | 23 | controller `process.stdin` lock | `runtime/browser_controller_process.rs` ~`:624-628` | per-process stdin | request path | yes: `write_line` | **BLOCKING, medium** |
@@ -148,7 +148,7 @@ cross-function call graph:
 | B8 | `runtime/kernel_browser_host` / `runtime/state/workflow.rs:112-114` | `workflow_provider_launch_lock` | whole provider launch | inherits B3/B4 | keep (documented), or per-agent lock |
 | B9 | `runtime/app_lifecycle/ownership.rs:194-212` | shutdown lock | `entry.join()` `:209` | no | join outside lock; bounded join |
 | B10 | `durable_state/writer_fence.rs:24-31` | worker lock | `worker.join()` | no | take handle out, join outside |
-| B11 | `runtime/waiting_room_public_projection.rs:625-643` | `LAUNCH_TARGET_CACHE` | `git rev-parse` ×2 `.output()` (`:650-675`) and `detect_git_branch` | no | compute outside lock, then insert |
+| B11 | `runtime/room_list_projection.rs:625-643` | `LAUNCH_TARGET_CACHE` | `git rev-parse` ×2 `.output()` (`:650-675`) and `detect_git_branch` | no | compute outside lock, then insert |
 | B12 | `provider/mcp_proxy/stdio.rs:385-393` (`write_frame`), reached from `:305-330` | per-process mutex (`mcp_proxy.rs:150-158`) | `write_all` to child stdin | **no deadline**; kill path skipped | writer thread + deadline, or kill at deadline |
 | B13 | `runtime/browser_controller_process/display_frames.rs:338-341` | `Link.writer` | `write_all` | no | writer thread or deadline |
 | B14 | `runtime/browser_controller_process.rs:624-628` | controller stdin lock | `write_line` | no | writer thread or deadline |
@@ -189,7 +189,7 @@ again. Failed or refused plans release their reservation. Handover identities
 are checked for collision and claimed only during commit, after all fallible
 planning, so a fence refusal cannot consume a live handover. Existing runs may
 be replaced when the agent's previous run is unchanged; simultaneous starts for
-one agent return an explicit retry error. Waiting-room target computation also
+one agent return an explicit retry error. Room list target computation also
 runs outside its cache lock.
 
 Linux account helpers retain pidfds for their observed process tree once readiness
@@ -225,7 +225,7 @@ handler exceeding that deadline is dropped and reconnected.
 
 | Lock | Rank | Work allowed while held |
 |---|---:|---|
-| `waiting_room_launch_target` | 5 | clone/publish cache entry |
+| `room_list_launch_target` | 5 | clone/publish cache entry |
 | `provider_managed_admission` | 10 | clone gate reference |
 | `provider_move_admission` | 20 | clone move-store reference |
 | `provider_service` | 30 | reserve/read/commit run state |

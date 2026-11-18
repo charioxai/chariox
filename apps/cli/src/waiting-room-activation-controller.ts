@@ -381,16 +381,16 @@ export function createWaitingRoomActivationController(
     }
     const worktreePath = deps.getWorktreeTarget()
     const workspacePath = deps.getWorkspaceTarget()
-    const waitingRoomState = deps.getWaitingRoomState()
+    const startState = deps.getWaitingRoomState()
     const developmentSetup = waitingRoomProjectDevelopmentSetup(
-      waitingRoomState,
+      startState,
       {
         ...deps.getRemoteState(),
         workspaceId: workspacePath,
         worktreeId: worktreePath,
       },
     )
-    if (waitingRoomState.managedDevelopmentMode === "current_project" && !developmentSetup) {
+    if (startState.managedDevelopmentMode === "current_project" && !developmentSetup) {
       throw new Error("Choose an existing Project and primary Workspace before using Current Project in a slice.")
     }
     const slice = await deps.createSlice({

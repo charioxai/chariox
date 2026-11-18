@@ -12,11 +12,11 @@ wit_bindgen::generate!({
     "#,
     world:"proxy",generate_all,
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext, Wake},
     handlers,
 };
-use exports::chariox::app::handlers::Guest;
+use exports::chariox::app1_0_0::handlers::Guest;
 use wit_bindgen::FutureReader;
 struct App;
 export!(App);
