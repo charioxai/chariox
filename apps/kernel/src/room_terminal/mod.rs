@@ -42,4 +42,5 @@ pub use events::{CompletionEvents, WatchOwner};
 pub use service::TerminalHandover;
 pub(crate) use service::KERNEL_SECRET_ENVIRONMENT;
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
+pub(crate) use shell::kernel_user_home;
 pub use types::*;

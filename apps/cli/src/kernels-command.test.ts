@@ -289,8 +289,8 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
       [["request", "--help"], /Usage: chariox request/],
       [["kernels", "--help"], /Usage: chariox kernels/],
       [["terminal", "open", "--help"], /Usage: chariox terminal open/],
-      [["terminal", "--help"], /chariox terminal --session[^]*chariox terminal open\|/],
-      [["terminal"], /chariox terminal --session[^]*chariox terminal open\|/],
+      [["terminal", "--help"], /chariox terminal \[--session[^]*chariox terminal open\|/],
+      [["terminal"], /chariox terminal \[--session[^]*chariox terminal open\|/],
     ] as const) {
       printed.length = 0
       process.exitCode = undefined

@@ -1095,9 +1095,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     // swept only once the Room has ended: an open that raced
                     // the cleanup then sees the end and removes its own shell.
                     if !backing_session_still_used {
-                        self.app
-                            .room_terminals
-                            .end_session(&agent.backing_session_id);
+                        self.app.room_terminals.end_scope(&agent.backing_session_id);
                     }
                     Ok(())
                 }

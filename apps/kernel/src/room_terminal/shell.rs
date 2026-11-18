@@ -70,6 +70,41 @@ fn account_shell() -> Option<String> {
     Path::new(shell).is_absolute().then(|| shell.to_string())
 }
 
+/// The home folder the account database lists for the kernel's user: where a terminal that
+/// belongs to no Room starts. `HOME` is not read, a service manager may point it elsewhere.
+#[cfg(unix)]
+pub(crate) fn kernel_user_home() -> Result<std::path::PathBuf, DaemonError> {
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    let home = (status == 0 && !found.is_null() && !entry.pw_dir.is_null())
+        .then(|| unsafe { CStr::from_ptr(entry.pw_dir) }.to_str().ok())
+        .flatten()
+        .filter(|home| Path::new(home).is_absolute());
+    home.map(std::path::PathBuf::from).ok_or_else(|| {
+        super::service::refused(
+            "this kernel's account lists no home folder; pass the folder to open the terminal in"
+                .to_string(),
+        )
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kernel_user_home() -> Result<std::path::PathBuf, DaemonError> {
+    Err(super::service::refused(
+        "kernel terminals need a Unix kernel".to_string(),
+    ))
+}
+
 #[cfg(not(unix))]
 fn account_shell() -> Option<String> {
     None

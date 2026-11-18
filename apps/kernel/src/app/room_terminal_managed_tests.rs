@@ -513,3 +513,123 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         );
     }
 }
+
+mod kernel_terminal_access {
+    use super::*;
+    use crate::local::{KernelTerminalRequest, LocalDaemonResponse};
+    use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommandSource};
+
+    fn owner() -> KernelCaller {
+        KernelCaller::for_source(&KernelCommandSource::LocalCli)
+    }
+
+    fn list() -> KernelTerminalRequest {
+        KernelTerminalRequest {
+            directory: None,
+            operation: RoomTerminalOperation::List,
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_kernel_owner_reaches_the_kernels_own_terminals() {
+        let fixture = fixture("kernel-terminal-access");
+        let runtime = &fixture.runtime;
+        runtime
+            .kernel_terminal_for_client(&owner(), list())
+            .await
+            .expect("the owner's client lists the kernel's terminals");
+
+        let guest = KernelCaller {
+            caller_kind: KernelCallerKind::RemoteClient,
+            user_id: Some("a-room-guest".to_string()),
+            ..owner()
+        };
+        let peer_kernel = KernelCaller {
+            caller_kind: KernelCallerKind::RemoteKernel,
+            ..owner()
+        };
+        let metaagent = KernelCaller {
+            caller_kind: KernelCallerKind::Metaagent,
+            ..owner()
+        };
+        for (who, caller) in [
+            ("a Room guest", guest),
+            ("a peer kernel", peer_kernel),
+            ("a metaagent", metaagent),
+        ] {
+            let refused = runtime
+                .kernel_terminal_for_client(&caller, list())
+                .await
+                .expect_err(who);
+            assert!(
+                refused.to_string().contains("only this kernel's owner"),
+                "{who}: {refused}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rooms_terminal_list_never_shows_the_kernels_terminals() {
+        let fixture = fixture("kernel-terminal-invisible");
+        let open = KernelTerminalRequest {
+            directory: Some(std::env::temp_dir().display().to_string()),
+            operation: RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: None,
+            },
+        };
+        let opened = fixture
+            .runtime
+            .kernel_terminal_for_client(&owner(), open)
+            .await
+            .expect("the owner opens a kernel terminal");
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { terminal },
+        } = opened
+        else {
+            panic!("unexpected {opened:?}");
+        };
+        assert_eq!(terminal.scope, crate::room_terminal::TerminalScope::Kernel);
+        // The path an agent's terminal list and a Room client take: the Room's own list.
+        let in_room = fixture.terminal(RoomTerminalOperation::List).await.unwrap();
+        assert!(
+            matches!(in_room, RoomTerminalResult::Listed { terminals } if terminals.is_empty())
+        );
+        // Nor can a Room reach it by id.
+        let by_id = fixture
+            .terminal(RoomTerminalOperation::Snapshot {
+                terminal_id: terminal.terminal_id.clone(),
+            })
+            .await;
+        assert!(by_id.is_err());
+        // Commands with their own streams need a Room.
+        let exec = KernelTerminalRequest {
+            directory: None,
+            operation: RoomTerminalOperation::ExecList,
+        };
+        let refused = fixture
+            .runtime
+            .kernel_terminal_for_client(&owner(), exec)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("belong to a Room"),
+            "{refused}"
+        );
+        fixture
+            .runtime
+            .kernel_terminal_for_client(
+                &owner(),
+                KernelTerminalRequest {
+                    directory: None,
+                    operation: RoomTerminalOperation::Close {
+                        terminal_id: terminal.terminal_id,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
