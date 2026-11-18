@@ -567,4 +567,7 @@ pub use workspace::*;
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// Provisional 1023: an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions`
+/// lists the person's open cards with why the person keeps one (`person_only`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1023;

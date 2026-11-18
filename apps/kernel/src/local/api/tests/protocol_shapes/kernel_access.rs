@@ -675,3 +675,46 @@ fn app_install_prompt_shape_is_pinned() {
         })
     );
 }
+
+#[test]
+fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_keeps_one() {
+    use crate::local::{ListOwnerInteractionsRequest, OwnerInteraction, OwnerInteractionChoice};
+    let request = LocalDaemonRequest::ListOwnerInteractions(ListOwnerInteractionsRequest {});
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"ListOwnerInteractions": {}})
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"ListOwnerInteractions": {"session_id": "s"}})
+    )
+    .is_err());
+    let card = |person_only: Option<&str>| OwnerInteraction {
+        session_id: "s".into(),
+        interaction_id: "i".into(),
+        title: Some("Install App".into()),
+        message: "Install this App?".into(),
+        choices: vec![OwnerInteractionChoice {
+            id: "approve".into(),
+            label: "Install".into(),
+        }],
+        reply_choice_id: None,
+        person_only: person_only.map(str::to_owned),
+    };
+    let response = LocalDaemonResponse::OwnerInteractionsListed {
+        interactions: vec![card(None), card(Some("it approves a payment"))],
+    };
+    assert_eq!(
+        serde_json::to_value(&response).unwrap(),
+        serde_json::json!({"OwnerInteractionsListed": {"interactions": [
+            {"session_id": "s", "interaction_id": "i", "title": "Install App", "message": "Install this App?",
+             "choices": [{"id": "approve", "label": "Install"}]},
+            {"session_id": "s", "interaction_id": "i", "title": "Install App", "message": "Install this App?",
+             "choices": [{"id": "approve", "label": "Install"}], "person_only": "it approves a payment"},
+        ]}})
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(serde_json::to_value(&response).unwrap())
+            .unwrap(),
+        response
+    );
+}
