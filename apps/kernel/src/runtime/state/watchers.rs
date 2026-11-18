@@ -235,13 +235,29 @@ impl KernelRuntimeState {
                 let _ = std::fs::remove_dir_all(package_dir(store, &watcher_id));
                 Ok(LocalDaemonResponse::WatcherRemoved { watcher_id })
             }
-            WatcherRequest::List {} => Ok(LocalDaemonResponse::Watchers {
-                watchers: store
+            WatcherRequest::List {} => {
+                let watchers: Vec<_> = store
                     .watchers(Some(caller))?
                     .iter()
                     .map(WatcherRecord::summary)
-                    .collect(),
-            }),
+                    .collect();
+                // A follower is held by the source kernel wherever it is, so it stays listed after
+                // the Room that made the source is deleted and when it follows from another kernel.
+                let followers = store
+                    .notification_inventory(caller)?
+                    .1
+                    .into_iter()
+                    .filter(|follower| {
+                        watchers
+                            .iter()
+                            .any(|watcher| watcher.source_id == follower.source_id)
+                    })
+                    .collect();
+                Ok(LocalDaemonResponse::Watchers {
+                    watchers,
+                    followers,
+                })
+            }
         }
     }
 

@@ -1,3 +1,4 @@
+import type { WorkflowNotificationSubscription } from "./kernel-types-workflow-notifications.js"
 /** A watcher: a supervised script on a kernel that is a notification source of its owner. */
 export type WatcherMode = { poll: { every_s: number } } | "stream"
 export type WatcherCoalesce = "every" | "latest_per_key"
@@ -21,6 +22,7 @@ export interface WatcherSummary {
 }
 export interface WatcherDryRun { reading: string | null; history: boolean; events: WatcherEvent[] }
 export type WatcherResponse = { Watcher: { watcher: WatcherSummary } }
-export type WatchersResponse = { Watchers: { watchers: WatcherSummary[] } }
+/** `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room. */
+export type WatchersResponse = { Watchers: { watchers: WatcherSummary[]; followers: WorkflowNotificationSubscription[] } }
 export type WatcherDryRunResponse = { WatcherDryRun: { result: WatcherDryRun } }
 export type WatcherRemovedResponse = { WatcherRemoved: { watcher_id: string } }

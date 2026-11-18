@@ -249,6 +249,77 @@ async fn an_agent_makes_a_watcher_and_its_followers_get_each_event_once() {
     assert!(!sources.to_string().contains(&source_id), "{sources}");
 }
 
+// c#665: the list names every follower of a source, wherever the follower is: a follower on
+// another kernel is held by this source kernel and is listed beside the Room's own.
+#[tokio::test]
+async fn the_watcher_list_names_the_followers_of_its_sources_on_every_kernel() {
+    let rig = rig().await;
+    let (watcher_id, source_id) = rig.create(SCRIPT).await;
+    rig.tool("chariox.watcher.dry_run", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+    rig.tool(
+        "chariox.watcher.activate",
+        json!({"watcher_id": watcher_id}),
+    )
+    .await
+    .unwrap();
+    rig.tool(
+        "chariox.notification_subscribe",
+        json!({"source": {"workflow": {"source_id": source_id}}}),
+    )
+    .await
+    .unwrap();
+    let store = &rig.runtime.owned.durable_state_store;
+    let local = store
+        .notification_inventory("local")
+        .unwrap()
+        .1
+        .into_iter()
+        .find(|follower| follower.source_id == source_id)
+        .unwrap();
+    // As the source kernel stores the follow another kernel asks of it.
+    let mut remote = local.clone();
+    remote.subscription_id = "remote-follow".into();
+    remote.target_kernel_id = "kernel-b".into();
+    remote.session_id = "room-b".into();
+    store
+        .notify(
+            crate::durable_state::workflow_notifications::NotificationOperation::SourceAttach {
+                subscription: remote,
+                generation: 1,
+            },
+        )
+        .unwrap();
+    let listed = rig
+        .runtime
+        .execute_watcher_request(WatcherRequest::List {}, "local")
+        .await
+        .unwrap();
+    let LocalDaemonResponse::Watchers { followers, .. } = listed else {
+        panic!("{listed:?}");
+    };
+    let mut followers: Vec<_> = followers
+        .iter()
+        .map(|follower| {
+            (
+                follower.subscription_id.as_str(),
+                follower.target_kernel_id.as_str(),
+            )
+        })
+        .collect();
+    followers.sort();
+    let mut expected = vec![
+        (
+            local.subscription_id.as_str(),
+            local.target_kernel_id.as_str(),
+        ),
+        ("remote-follow", "kernel-b"),
+    ];
+    expected.sort();
+    assert_eq!(followers, expected);
+}
+
 #[tokio::test]
 async fn a_failing_watcher_wakes_the_agent_that_made_it_once() {
     let rig = rig().await;

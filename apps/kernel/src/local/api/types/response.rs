@@ -26,7 +26,8 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
     Watcher { watcher: WatcherSummary },
-    Watchers { watchers: Vec<WatcherSummary> },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
     WatcherDryRun { result: WatcherDryRun },
     WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
