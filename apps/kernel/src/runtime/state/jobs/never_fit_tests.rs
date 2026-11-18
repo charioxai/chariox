@@ -246,3 +246,115 @@ async fn offload_job_larger_than_the_machine_goes_to_a_machine_that_can_take_it(
     state.cancel_session_job(&task.room_id, &owner, id).unwrap();
     server.abort();
 }
+
+/// The scripted service ends once the kernel has asked it to confirm the deletion.
+async fn asked_for_cleanup(server: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("the kernel never asked the service to finish the cleanup")
+        .unwrap();
+}
+
+/// The owner accepts the one card that asks to rent the machine.
+async fn approve_the_acquisition((state, _, task, _): &super::tests::Fixture) {
+    let card = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let session = state
+                .owned
+                .session_store
+                .get_session(&task.room_id)
+                .unwrap();
+            if let Some(card) = session.active_interactions().first() {
+                break card.id().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner was never asked to rent the machine");
+    state
+        .resolve_terminal_runtime_interaction(
+            &task.room_id,
+            &card,
+            "approve",
+            None,
+            Some(&task.owner_user_id),
+        )
+        .await
+        .unwrap();
+}
+
+/// An oversized job is offered a machine that never becomes ready, and the service cannot yet
+/// confirm the machine's deletion: the job is refused while its allocation receipt stays saved.
+async fn refused_with_unconfirmed_cleanup(fixture: &super::tests::Fixture) -> String {
+    let (state, _, _, _) = fixture;
+    let gib = 100_000;
+    let capabilities = serde_json::json!({"kind":"capabilities","machine_allocation":{
+        "revision":"v1","actions":["acquire_job"],"offer":null,"job_default_class_id":"big",
+        "job_offers":[{"class_id":"big","vcpu":64,"usable_memory_mib":gib * 1024 * 2,"disk_gib":400,
+        "rate_per_minute":{"amount_micros":600,"currency":"USD"}}]}});
+    // Every call after the offer finds the machine failed and the cancellation unconfirmed.
+    let (server, _) = machine_service(state, capabilities, "failed").await;
+    let (value, ()) = tokio::join!(
+        run(fixture, job(serde_json::json!({"memory_gib": gib}))),
+        approve_the_acquisition(fixture),
+    );
+    server.abort();
+    assert_eq!(
+        value["result"]["outcome"], "capacity_unavailable",
+        "{value}"
+    );
+    assert_eq!(value["deleted"], false, "{value}");
+    let id = value["job_id"].as_str().unwrap().to_owned();
+    let record = state.job_wake_driver.as_ref().unwrap().read(&id).unwrap();
+    assert_eq!(record.allocation_ref.as_deref(), Some("cleanup-test"));
+    id
+}
+
+#[tokio::test]
+async fn offload_job_refused_with_unconfirmed_cleanup_is_deleted_by_a_later_status() {
+    let fixture = super::tests::remote_fixture().await;
+    let id = refused_with_unconfirmed_cleanup(&fixture).await;
+    let (state, run, task, _) = &fixture;
+    let server = super::cleanup_tests::service(
+        state,
+        vec![("get", 200, super::cleanup_tests::machine("deleted"))],
+    )
+    .await;
+    let status = state
+        .dispatch_job_tool(
+            Some(run),
+            "chariox.jobs.status",
+            &serde_json::json!({"job_id": id}),
+            task,
+        )
+        .await
+        .unwrap();
+    asked_for_cleanup(server).await;
+    assert_eq!(status["deleted"], true, "{status}");
+    assert_eq!(status["result"]["outcome"], "capacity_unavailable");
+}
+
+#[tokio::test]
+async fn offload_job_refused_with_unconfirmed_cleanup_is_deleted_by_a_later_cancel() {
+    let fixture = super::tests::remote_fixture().await;
+    let id = refused_with_unconfirmed_cleanup(&fixture).await;
+    let (state, run, task, _) = &fixture;
+    let server = super::cleanup_tests::service(
+        state,
+        vec![("get", 200, super::cleanup_tests::machine("deleted"))],
+    )
+    .await;
+    let cancelled = state
+        .dispatch_job_tool(
+            Some(run),
+            "chariox.jobs.cancel",
+            &serde_json::json!({"job_id": id}),
+            task,
+        )
+        .await
+        .unwrap();
+    asked_for_cleanup(server).await;
+    assert_eq!(cancelled["deleted"], true, "{cancelled}");
+    assert_eq!(cancelled["result"]["outcome"], "capacity_unavailable");
+}
