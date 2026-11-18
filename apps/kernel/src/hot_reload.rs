@@ -104,6 +104,11 @@ pub(crate) struct ProviderHandover {
     run_id: String,
     // The running process authenticates its kernel tool calls with it.
     runtime_mcp_auth_token: Option<String>,
+    // The run as far as tool calls need it, until a recovered prompt claims the process: the
+    // surviving process keeps calling its tools with the token it has (Vault, timers, events).
+    // A program older than this field hands none over, and its runs authenticate at the claim.
+    #[serde(default)]
+    identity: Option<RunIdentity>,
     process: HandedOverProcess,
 }
 
@@ -154,6 +159,44 @@ impl ProviderHandover {
     }
 }
 
+/// A handed-over run as its tool calls read it. The run's own serialization leaves out what is
+/// kept in memory only; the runtime state tool calls read is carried beside it: whether workflow
+/// actions are offered (`workflow_tools_enabled`) and the workflow node whose fresh context the run
+/// holds. The other runtime-only fields (resolved account, discovery and substitute markers,
+/// settings staleness, sync roots, project environment revision, native checkpoint, last output
+/// time) are read at launch, prompt dispatch, settlement and reload, which the claiming run does.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RunIdentity {
+    run: crate::provider::RuntimeProviderRun,
+    #[serde(default)]
+    workflow_tools_enabled: bool,
+    #[serde(default)]
+    workflow_fresh_context_node_run_id: Option<String>,
+}
+
+impl RunIdentity {
+    pub(crate) fn of(run: &crate::provider::RuntimeProviderRun) -> Self {
+        Self {
+            run: run.handover_identity(),
+            workflow_tools_enabled: run.workflow_tools_enabled(),
+            workflow_fresh_context_node_run_id: run
+                .workflow_fresh_context_node_run_id()
+                .map(str::to_string),
+        }
+    }
+
+    pub(crate) fn into_run(self) -> crate::provider::RuntimeProviderRun {
+        let mut run = self.run;
+        if self.workflow_tools_enabled {
+            run.enable_workflow_tools();
+        }
+        if let Some(node) = self.workflow_fresh_context_node_run_id {
+            run.mark_workflow_fresh_context(node);
+        }
+        run
+    }
+}
+
 /// How this program was started, to start its successor the same way: the
 /// kernel removes secrets from its environment once it has read them.
 struct Start {
@@ -173,6 +216,10 @@ static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::ne
 static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
     Mutex::new(None);
 static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+// The handed-over runs' tool identities, from the handover until a recovered prompt claims the run:
+// their processes are alive and keep calling the kernel's tools with the token they have.
+static UNCLAIMED_RUNS: Mutex<BTreeMap<String, crate::provider::RuntimeProviderRun>> =
+    Mutex::new(BTreeMap::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -260,6 +307,15 @@ pub fn receive() {
             "attachments": handover.attachments.len(),
         }),
     );
+    *lock(&UNCLAIMED_RUNS) = handover
+        .providers
+        .iter_mut()
+        .filter_map(|p| {
+            p.identity
+                .take()
+                .map(|identity| (p.run_id.clone(), identity.into_run()))
+        })
+        .collect();
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
@@ -533,6 +589,49 @@ pub(crate) fn handed_over_run_id(
         .map(|p| p.run_id.clone())
 }
 
+/// The handed-over runs no recovered prompt has claimed yet that hold this tool token: their
+/// processes are alive and keep calling the kernel's tools, so the token must keep working.
+pub(crate) fn unclaimed_runs_for_token(token: &str) -> Vec<crate::provider::RuntimeProviderRun> {
+    lock(&UNCLAIMED_RUNS)
+        .values()
+        .filter(|run| run.runtime_mcp_auth_token() == Some(token))
+        .cloned()
+        .collect()
+}
+
+/// The handed-over run of an agent that no recovered prompt has claimed yet: until then it is the
+/// agent's current run, the one its event tools (timers, waits, inbox) name.
+pub(crate) fn unclaimed_run_for_agent(
+    session_id: &str,
+    agent_id: &str,
+) -> Option<crate::provider::RuntimeProviderRun> {
+    lock(&UNCLAIMED_RUNS)
+        .values()
+        .find(|run| run.session_id() == session_id && run.agent_instance_id() == Some(agent_id))
+        .cloned()
+}
+
+/// The run as the next program reads it from the handover: through the serialized form.
+#[cfg(test)]
+pub(crate) fn run_after_handover_for_tests(
+    run: &crate::provider::RuntimeProviderRun,
+) -> crate::provider::RuntimeProviderRun {
+    let body = serde_json::to_vec(&RunIdentity::of(run)).unwrap();
+    serde_json::from_slice::<RunIdentity>(&body)
+        .unwrap()
+        .into_run()
+}
+
+#[cfg(test)]
+pub(crate) fn hold_unclaimed_run_for_tests(run: crate::provider::RuntimeProviderRun) {
+    lock(&UNCLAIMED_RUNS).insert(run.id().to_string(), run);
+}
+
+#[cfg(test)]
+pub(crate) fn forget_unclaimed_runs_for_tests() {
+    lock(&UNCLAIMED_RUNS).clear();
+}
+
 /// A new run of the agent takes the handed-over run's id and tool token, and
 /// its runtime adopts the process instead of starting one.
 pub(crate) fn claim_provider_run(
@@ -547,6 +646,7 @@ pub(crate) fn claim_provider_run(
             && p.process.adapter_key() == adapter_key
     })?;
     let provider = providers.remove(index);
+    lock(&UNCLAIMED_RUNS).remove(&provider.run_id);
     lock(&ADOPTING).insert(provider.run_id.clone(), provider.process);
     Some((provider.run_id, provider.runtime_mcp_auth_token))
 }
@@ -599,6 +699,7 @@ pub(crate) fn is_handed_over_run(run_id: &str) -> bool {
 /// Ends handed-over turns no recovered prompt claimed, as a restart would have.
 pub(crate) fn end_unclaimed_providers() {
     let unclaimed = std::mem::take(&mut *lock(&RECEIVED_PROVIDERS));
+    lock(&UNCLAIMED_RUNS).clear();
     for provider in unclaimed {
         crate::logging::warn_with_fields(
             "hot_reload",
@@ -775,6 +876,7 @@ fn provider_handover(
         agent_id: run.agent_instance_id().map(str::to_string),
         run_id: run.id().to_string(),
         runtime_mcp_auth_token: run.runtime_mcp_auth_token().map(str::to_string),
+        identity: Some(RunIdentity::of(run)),
         process,
     }
 }
