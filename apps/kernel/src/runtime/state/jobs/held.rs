@@ -1,5 +1,28 @@
 //! A job placed on a machine the agent already holds runs through that machine's own kernel. The job
-//! never allocates or releases a machine: the agent keeps holding it afterwards.
+//! never allocates or releases a machine: the agent keeps holding it afterwards, so what the job
+//! uploaded there must be removed by the job itself.
+//!
+//! Naming a held machine does not need `CHARIOX_REMOTE_JOBS`: that switch governs placing
+//! jobs on worker machines by the kernel's own offload policy, and the agent chose this machine itself.
+//!
+//! The plan (`return.json`) names the uploaded workspace and is saved, with stage `Planned`, before
+//! the first byte goes up. It is forgotten only once the workspace is removed, so "plan saved" means
+//! "the machine may still hold the job's workspace". The result and the settled stage are saved
+//! before the removal.
+//!
+//! | stage / moment              | durable record            | workspace on the machine | cancel or failure                       | restart                                         |
+//! |-----------------------------|---------------------------|--------------------------|-----------------------------------------|-------------------------------------------------|
+//! | Idle, before the plan       | Idle, no plan             | none                     | nothing to clean                        | nothing to clean; job ends "not relaunched"     |
+//! | plan saved, record not yet  | Idle + plan               | none                     | save fails: plan forgotten              | recovery removes (nothing there) and forgets    |
+//! | Planned, uploading          | Planned + plan            | partial                  | Settled + result saved, then removed    | recovery gives up Planned, removes, forgets     |
+//! | Planned, command opened     | Planned + plan            | complete                 | as above; the command is not stopped    | removed; the opened command cannot be named     |
+//! | Running                     | Running + plan            | complete                 | stop by name, then as Settled           | reattach and follow to its end                  |
+//! | Finished, files not all home| Finished + plan + result  | complete                 | status collects; cancel gives up        | kept for collecting                             |
+//! | Settled, result saved       | Settled + plan + result   | present until removed    | removal fails: plan kept, warned        | recovery and status retry; result is kept       |
+//! | Settled, plan forgotten     | Settled + result          | none                     | nothing                                 | nothing                                         |
+//!
+//! A machine that is released or no longer held while a removal is owed has lost its disk: the plan
+//! is forgotten. A machine that is only unreachable keeps the plan.
 use super::super::job_compute::JobMachine;
 use super::super::machine_acquisition::acquisition_error;
 use super::execute::{cancelled_result, Output};
@@ -157,17 +180,6 @@ impl KernelRuntimeState {
             _ => Some(super::execute::HELD_COMMAND_MAY_RUN),
         }
     }
-
-    /// The held machine outlives the job, so the copy of the workspace uploaded to it goes once its
-    /// files are home. A failure leaves only disk use behind and does not fail the job.
-    pub(super) async fn remove_held_workspace(&self, record: &Record, remote: &Remote, root: &str) {
-        if record.request.machine.is_none() {
-            return;
-        }
-        if let Err(error) = remote.remove_workspace(root).await {
-            tracing::warn!(%error, job = %record.job_id, "the held machine keeps the job's uploaded workspace");
-        }
-    }
 }
 
 impl KernelRuntimeState {
@@ -218,12 +230,6 @@ impl KernelRuntimeState {
         run: &crate::provider::RuntimeProviderRun,
         allocation_ref: &str,
     ) -> Result<JobMachine, DaemonError> {
-        if !self.remote_jobs_enabled() {
-            return Err(acquisition_error(
-                "remote_jobs_off",
-                "Remote jobs are switched off on this kernel (CHARIOX_REMOTE_JOBS), so a job cannot run on a machine. Run it without machine here, or start the kernel with remote jobs on.",
-            ));
-        }
         let reach = self
             .reach_for_id(&format!(
                 "{}{}",

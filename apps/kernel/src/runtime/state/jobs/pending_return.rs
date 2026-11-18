@@ -38,6 +38,22 @@ impl PendingReturn {
         .map_err(|e| ledger::error(format!("Cannot keep the job's file return plan: {e}")))
     }
 
+    /// `None` when no plan was ever saved or it was already forgotten.
+    pub(super) fn load_saved(
+        state: &KernelRuntimeState,
+        job_id: &str,
+    ) -> Result<Option<Self>, DaemonError> {
+        match std::fs::read(Self::path(state, job_id)) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|_| ledger::error("The job's file return plan is unreadable")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ledger::error(format!(
+                "The job's file return plan cannot be read: {e}"
+            ))),
+        }
+    }
+
     pub(super) fn load(state: &KernelRuntimeState, job_id: &str) -> Result<Self, DaemonError> {
         let bytes = std::fs::read(Self::path(state, job_id))
             .map_err(|e| ledger::error(format!("The job's file return plan is missing: {e}")))?;
@@ -59,12 +75,51 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The command is stopped or its files are given up; the worker may now be released.
+    /// The command is stopped or its files are given up; the worker may now be released. A held
+    /// machine is not released, so its plan stays until `settle_pending_return` removes the workspace
+    /// the job uploaded there.
     pub(super) fn give_up_pending_return(&self, record: &mut Record) {
         if let Ok(next) = record.remote.next(StageEvent::GiveUp) {
             record.remote = next;
         }
+        if record.request.machine.is_none() {
+            self.forget_pending_return(&record.job_id);
+        }
+    }
+
+    /// Ends the job's claim on its files. The plan names where the job's workspace is on a held
+    /// machine, so it is forgotten only once that workspace is removed; a failure keeps it, and
+    /// recovery or the next status check retries. Released workers need no removal.
+    pub(super) async fn settle_pending_return(&self, record: &Record) -> Result<(), DaemonError> {
+        if record.request.machine.is_some() {
+            if let Some(plan) = PendingReturn::load_saved(self, &record.job_id)? {
+                let removed = tokio::time::timeout(Duration::from_secs(60), async {
+                    let grant = self.return_grant(record, &plan.kernel_id).await?;
+                    Remote::new(grant, String::new(), record.job_id.clone())
+                        .remove_workspace(&plan.root)
+                        .await
+                })
+                .await
+                .unwrap_or_else(|_| Err(ledger::error("Removing the job's workspace timed out")));
+                match removed {
+                    Ok(()) => {}
+                    // The machine is gone and its disk with it.
+                    Err(DaemonError::MachineRequest { code, .. })
+                        if matches!(code.as_str(), "machine_released" | "machine_not_held") => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         self.forget_pending_return(&record.job_id);
+        Ok(())
+    }
+
+    /// `settle_pending_return` for a path that cannot fail the job: the workspace a held machine
+    /// keeps is only disk use, and the kept plan lets recovery or the next status check retry.
+    pub(super) async fn settle_or_warn(&self, record: &Record) {
+        if let Err(error) = self.settle_pending_return(record).await {
+            tracing::warn!(%error, job = %record.job_id, "the held machine keeps the job's uploaded workspace; it is removed on the next restart or status check");
+        }
     }
 
     /// Fetches the files of a finished command and records them in its result. Files an earlier
@@ -96,9 +151,6 @@ impl KernelRuntimeState {
             .push_str("The files the worker still held were collected.\n");
         record.advance(StageEvent::Home)?;
         save_record(self, record)?;
-        self.remove_held_workspace(record, &remote, &plan.root)
-            .await;
-        self.forget_pending_return(&record.job_id);
         Ok(())
     }
 

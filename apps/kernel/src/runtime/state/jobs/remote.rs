@@ -6,6 +6,12 @@ use crate::room_exec::{ExecOutcome, ExecOutput};
 use crate::runtime::kernel_gateway::forward_with_retry;
 use std::io::Read;
 
+/// A job's place on its machine: the home directory and the workspace root below it.
+pub(super) struct Located {
+    home: String,
+    pub(super) root: String,
+}
+
 #[derive(Clone)]
 pub(super) struct Remote {
     grant: Arc<dyn GrantedSend>,
@@ -201,13 +207,13 @@ impl Remote {
             )
             .await
     }
-    pub(super) async fn prepare(
+    /// Where the job's workspace goes on the machine, known before any byte is uploaded so it can
+    /// be saved first.
+    pub(super) async fn locate(
         grant: Arc<dyn GrantedSend>,
-        record: &Record,
-        manifest: &crate::jobs::Manifest,
-        cancelled: &watch::Receiver<bool>,
-    ) -> Result<(Self, String), DaemonError> {
-        let probe = Self::new(grant.clone(), String::new(), record.job_id.clone());
+        job_id: &str,
+    ) -> Result<Located, DaemonError> {
+        let probe = Self::new(grant, String::new(), job_id.into());
         let home = match probe
             .call(
                 "home",
@@ -221,14 +227,23 @@ impl Remote {
             LocalDaemonResponse::KernelFileStat { stat } if stat.exists => stat.path,
             _ => return Err(ledger::error("Job machine has no home directory")),
         };
-        let room =
-            create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(&home)).await?;
-        let preparation = Self::new(grant.clone(), room, record.job_id.clone());
         let root = format!(
-            "{}/chariox-jobs/{}/workspace",
-            home.trim_end_matches('/'),
-            record.job_id
+            "{}/chariox-jobs/{job_id}/workspace",
+            home.trim_end_matches('/')
         );
+        Ok(Located { home, root })
+    }
+    pub(super) async fn prepare(
+        grant: Arc<dyn GrantedSend>,
+        record: &Record,
+        located: &Located,
+        manifest: &crate::jobs::Manifest,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<Self, DaemonError> {
+        let Located { home, root } = located;
+        let room =
+            create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(home)).await?;
+        let preparation = Self::new(grant.clone(), room, record.job_id.clone());
         let relative_cwd = record
             .cwd
             .strip_prefix(&record.workspace)
@@ -328,7 +343,7 @@ impl Remote {
         };
         let room =
             create_target_room(&*grant, &format!("{}:command", record.job_id), Some(&cwd)).await?;
-        Ok((Self::new(grant, room, record.job_id.clone()), root))
+        Ok(Self::new(grant, room, record.job_id.clone()))
     }
 
     pub(super) async fn return_files(

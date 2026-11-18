@@ -218,9 +218,13 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
     let base = crate::jobs::snapshot(source.path(), &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source.path(), &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
-    let (remote, root) = remote::Remote::prepare(worker, &record, &upload, &cancelled)
+    let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await
         .unwrap();
+    let remote = remote::Remote::prepare(worker, &record, &located, &upload, &cancelled)
+        .await
+        .unwrap();
+    let root = located.root;
     assert!(!Path::new(&root).join(".env").exists());
     let exec = remote
         .open(

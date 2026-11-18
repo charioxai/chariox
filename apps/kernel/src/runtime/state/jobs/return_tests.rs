@@ -76,9 +76,13 @@ pub(super) async fn finish_on_worker(
     let base = crate::jobs::snapshot(source, &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source, &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
-    let (remote, root) = remote::Remote::prepare(worker, &record, &upload, &cancelled)
+    let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await
         .unwrap();
+    let remote = remote::Remote::prepare(worker, &record, &located, &upload, &cancelled)
+        .await
+        .unwrap();
+    let root = located.root;
     let argv = validate(&record.request).unwrap();
     let exec = remote
         .open(argv.clone(), Some(JobNeeds::default()), "test-command")

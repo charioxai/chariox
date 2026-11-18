@@ -61,7 +61,11 @@ impl WakeDriver for JobDriver {
         tokio::spawn(async move {
             // Left by an earlier run with remote jobs on: end the job with its reason and leave
             // its worker, files and allocation exactly as saved.
-            if !state.remote_jobs_enabled() && record.has_remote_trace() {
+            // A job on a held machine never depended on the switch: the agent named a machine it holds.
+            if !state.remote_jobs_enabled()
+                && record.has_remote_trace()
+                && record.request.machine.is_none()
+            {
                 let result = remote_jobs_off_result(&record);
                 state.finish_job(&wake, &mut record, result).await;
                 live.lock().expect("job live").remove(&wake.id);
@@ -77,7 +81,11 @@ impl WakeDriver for JobDriver {
             // of its files.
             if record.remote == RemoteStage::Planned {
                 state.give_up_pending_return(&mut record);
-                state.forget_pending_return(&record.job_id);
+            }
+            // A held machine keeps what the job uploaded there: remove it unless files are still to
+            // be collected from it. Also finishes a cleanup an earlier run began.
+            if record.request.machine.is_some() && !record.remote.holds_worker() {
+                state.settle_or_warn(&record).await;
             }
             if record.placement == JobPlacement::Local {
                 let markers = BTreeMap::from([(record.job_id.clone(), record.started_at_ms)]);

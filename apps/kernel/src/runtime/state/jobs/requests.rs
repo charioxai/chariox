@@ -21,13 +21,12 @@ impl KernelRuntimeState {
             if record.state == "finished"
                 && record.placement == JobPlacement::Remote
                 && !record.deleted
-                && self.remote_jobs_enabled()
+                && (self.remote_jobs_enabled() || record.request.machine.is_some())
             {
                 match record.remote {
                     RemoteStage::Finished { .. } if name == "chariox.jobs.cancel" => {
                         self.give_up_pending_return(&mut record);
                         driver.save(&record)?;
-                        self.forget_pending_return(&record.job_id);
                     }
                     RemoteStage::Finished { .. } => {
                         match tokio::time::timeout(
@@ -44,6 +43,12 @@ impl KernelRuntimeState {
                         }
                     }
                     _ => {}
+                }
+                // Retries the removal of the workspace a held machine still keeps for the job.
+                if record.request.machine.is_some() && !record.remote.holds_worker() {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(30), self.settle_or_warn(&record))
+                            .await;
                 }
                 if let (Some(allocation), Some(revision), false) = (
                     &record.allocation_ref,

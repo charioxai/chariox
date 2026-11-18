@@ -181,7 +181,7 @@ impl KernelRuntimeState {
                     // Without its output the command cannot be followed: stop it and its worker.
                     self.stop_held_command(&record).await;
                     self.give_up_pending_return(&mut record);
-                    self.forget_pending_return(&record.job_id);
+                    self.settle_or_warn(&record).await;
                     if let (Some(allocation), Some(revision)) =
                         (&record.allocation_ref, &record.capability_revision)
                     {
@@ -462,12 +462,15 @@ impl KernelRuntimeState {
             save_record(self, record)?;
             return Ok(result);
         }
-        self.forget_pending_return(&record.job_id);
         if record.request.machine.is_some() {
-            // The agent keeps holding the machine: nothing is released.
+            // The agent keeps holding the machine: nothing is released. The settled stage and the
+            // whole result are saved before the uploaded workspace goes, so a restart between the
+            // two finds a finished job whose cleanup is left, never a pending return.
             save_record(self, record)?;
+            self.settle_or_warn(record).await;
             return Ok(result);
         }
+        self.forget_pending_return(&record.job_id);
         record.state = "deleting".into();
         save_record(self, record)?;
         match self
@@ -608,16 +611,14 @@ impl KernelRuntimeState {
         save_record(self, record)?;
         let base = crate::jobs::snapshot(&record.workspace, &record.request.outputs)?;
         let upload = crate::jobs::snapshot(&record.workspace, &[])?;
-        let (remote, root) =
-            Remote::prepare(machine.grant.clone(), record, &upload, cancelled).await?;
-        if *cancelled.borrow() {
-            return Ok(cancelled_result(record));
-        }
-        // From here the worker may come to hold the only copy of the outputs: keep what collecting
-        // them needs before the command can run, so nothing after it can lose them. The worker is
-        // released only once the command's end is read and its files are home, or it is stopped.
+        let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
+        // From here the machine may come to hold the only copy of the outputs, and a held machine
+        // keeps the uploaded workspace until it is removed: keep where it is and what collecting
+        // needs before the first byte goes up, so nothing after it can lose them or leave them
+        // behind. The worker is released only once the command's end is read and its files are
+        // home, or it is stopped; a held machine's workspace is removed then.
         let plan = PendingReturn {
-            root,
+            root: located.root.clone(),
             kernel_id: machine.kernel_id.clone(),
             base,
             uploaded: upload,
@@ -625,6 +626,7 @@ impl KernelRuntimeState {
         plan.save(self, &record.job_id)?;
         record.advance(StageEvent::Plan)?;
         if let Err(error) = save_record(self, record) {
+            // Nothing is uploaded yet, so nothing is left on the machine.
             self.give_up_pending_return(record);
             self.forget_pending_return(&record.job_id);
             return Err(error);
@@ -635,6 +637,17 @@ impl KernelRuntimeState {
                 .lock()
                 .expect("job return grants")
                 .insert(record.job_id.clone(), machine.grant.clone());
+        }
+        let remote = Remote::prepare(
+            machine.grant.clone(),
+            record,
+            &located,
+            &plan.uploaded,
+            cancelled,
+        )
+        .await?;
+        if *cancelled.borrow() {
+            return Err(ledger::error("Job cancelled during workspace upload"));
         }
         let exec_id = remote
             .open(
@@ -805,7 +818,6 @@ impl KernelRuntimeState {
                 result.files_back = files;
                 result.conflicts = conflicts;
                 record.advance(StageEvent::Home)?;
-                self.remove_held_workspace(record, remote, &plan.root).await;
             }
             Err(error) => {
                 let notice = format!(
@@ -901,6 +913,8 @@ fn uncollected_stop(
     output: &mut Output,
     outcome: JobOutcome,
 ) -> Result<JobResult, DaemonError> {
+    // Only a command that was opened can still run on a held machine.
+    let command_opened = matches!(record.remote, RemoteStage::Running { .. });
     state.give_up_pending_return(record);
     let notice = if outcome == JobOutcome::TimeLimit {
         "Time limit reached. Command output is partial and returned files are unavailable.\n"
@@ -908,7 +922,7 @@ fn uncollected_stop(
         "Job cancelled. Command output is partial and returned files are unavailable.\n"
     };
     output.push(state, &record.room_id, notice.as_bytes(), true)?;
-    if record.request.machine.is_some() {
+    if record.request.machine.is_some() && command_opened {
         output.push(
             state,
             &record.room_id,
