@@ -151,3 +151,112 @@ fn a_takeover_by_another_window_answers_the_parked_state_read_at_once() {
         })
     });
 }
+
+/// How a person's control of the shown Tab ends between a window's read and its next wait.
+#[derive(Clone, Copy)]
+enum EndsHold {
+    Return,
+    IdleReclaim,
+}
+
+// A takeover, its return or its idle reclaim that happens after a window got its revision but before that
+// window's next wait is already news at the wait: the wait ends at once instead of parking its ten seconds.
+async fn held_change_between_a_windows_read_and_its_next_wait(
+    name: &'static str,
+    holds_first: bool,
+    ends: Option<EndsHold>,
+) {
+    use crate::session::{EnvironmentActor, EnvironmentActorKind};
+    let workspace = crate::test_support::TestWorktree::new(name);
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let root = std::env::temp_dir().join(format!(
+        "chariox-state-wait-{name}-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    router
+        .runtime_state()
+        .install_kernel_browser_fixture(agent.owner_user_id(), &root);
+    focus(&router, session.id(), agent.id()).await;
+    let state = router.runtime_state();
+    let host = state.kernel_browser_host_for_test();
+    let other_window = || {
+        EnvironmentActor::new(
+            "terminal:other-window",
+            EnvironmentActorKind::Human,
+            "Human",
+        )
+    };
+    let take_over = || {
+        host.request_takeover(agent.owner_user_id(), other_window(), "host-tab-fixture", 1)
+            .unwrap();
+    };
+    if holds_first {
+        take_over();
+    }
+    // This window's last read: its revision names who holds the Tab at that moment.
+    let read = wait(&router, "", 0).await;
+    assert_eq!(read["tabs"][0]["taken_over"], holds_first);
+    let revision = read["revision"].as_str().unwrap().to_string();
+    match ends {
+        None => take_over(),
+        Some(EndsHold::Return) => host
+            .release_input(
+                agent.owner_user_id(),
+                "terminal:other-window",
+                "host-tab-fixture",
+                1,
+            )
+            .unwrap(),
+        Some(EndsHold::IdleReclaim) => assert!(host.reclaim_idle_takeovers_after_for_test(
+            crate::runtime::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT
+        )),
+    }
+    let started = std::time::Instant::now();
+    let changed = wait(&router, &revision, 10_000).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "the wait answers at once, not after its ten seconds"
+    );
+    assert_eq!(changed["tabs"][0]["taken_over"], ends.is_none());
+    assert_ne!(changed["revision"], revision.as_str());
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_takeover_between_a_windows_read_and_its_next_wait_ends_that_wait_at_once() {
+    run_test(|| {
+        Box::pin(held_change_between_a_windows_read_and_its_next_wait(
+            "takeover-before-wait",
+            false,
+            None,
+        ))
+    });
+}
+
+#[test]
+fn a_return_of_control_between_a_windows_read_and_its_next_wait_ends_that_wait_at_once() {
+    run_test(|| {
+        Box::pin(held_change_between_a_windows_read_and_its_next_wait(
+            "return-before-wait",
+            true,
+            Some(EndsHold::Return),
+        ))
+    });
+}
+
+#[test]
+fn an_idle_reclaim_between_a_windows_read_and_its_next_wait_ends_that_wait_at_once() {
+    run_test(|| {
+        Box::pin(held_change_between_a_windows_read_and_its_next_wait(
+            "reclaim-before-wait",
+            true,
+            Some(EndsHold::IdleReclaim),
+        ))
+    });
+}
