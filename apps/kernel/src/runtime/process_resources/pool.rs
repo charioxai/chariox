@@ -207,6 +207,10 @@ impl Pool {
         self.protection.read().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub(super) fn capacity(&self) -> u64 {
+        self.ceiling.saturating_sub(self.margin)
+    }
+
     pub(super) fn memory_emergency(&self) -> bool {
         !self.host || self.under_pressure()
     }

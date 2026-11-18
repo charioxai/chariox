@@ -1,7 +1,7 @@
 use super::*;
 use crate::provider::*;
 
-type Fixture = (
+pub(super) type Fixture = (
     KernelRuntimeState,
     RuntimeProviderRun,
     AgentTaskExecution,
@@ -412,7 +412,7 @@ async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_bu
 
 #[tokio::test]
 async fn offload_job_runtime_budget_starts_after_queue_admission() {
-    let (state, run, task, _worktree) = remote_fixture().await;
+    let (state, run, task, worktree) = remote_fixture().await;
     state
         .set_remote_job_policy(
             &task.room_id,
@@ -421,12 +421,23 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
             Some(crate::local::OffloadPolicy::WhenBusy),
         )
         .unwrap();
+    // The job fits the machine and must wait: another command holds all of its memory.
+    let admission = crate::runtime::process_resources::LaunchAdmission::default();
+    let _busy = admission
+        .reserve_with_memory(
+            "other-job",
+            &["cat".into()],
+            worktree.path(),
+            true,
+            admission.capacity(),
+        )
+        .unwrap();
     let value = state
         .dispatch_job_tool(
             Some(&run),
             "chariox.jobs.run",
             &serde_json::json!({
-                "command":["/bin/true"], "needs":{"memory_gib":u32::MAX}, "timeout_s":1
+                "command":["/bin/true"], "needs":{"memory_gib":1}, "timeout_s":1
             }),
             &task,
         )

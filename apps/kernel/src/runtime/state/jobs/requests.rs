@@ -18,8 +18,10 @@ impl KernelRuntimeState {
                 .ok_or_else(|| ledger::error("job_id required"))?;
             let mut record = driver.own(id, task)?;
             let mut collection_error = None;
+            // Whatever placement the job ended with, a saved allocation receipt keeps its
+            // cleanup owed until the service confirms the deletion.
             if record.state == "finished"
-                && record.placement == JobPlacement::Remote
+                && record.has_remote_trace()
                 && !record.deleted
                 && self.remote_jobs_enabled()
             {
