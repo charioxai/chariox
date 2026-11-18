@@ -1439,3 +1439,57 @@ async fn a_workflow_step_the_limit_failed_needs_no_kept_task_to_stay_in_its_run(
     );
     assert_eq!(team.stop(0), None, "the step arms no stop");
 }
+
+/// Lets the sender tasks a claim spawned run.
+async fn let_senders_run() {
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
+
+#[tokio::test]
+async fn a_manual_resume_that_finds_the_scheduler_holding_the_claim_sends_nothing() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    // The scheduler took the claim; its stop is not stored as going on yet.
+    team.rt()
+        .owned
+        .usage_limit_sends
+        .lock()
+        .unwrap()
+        .insert(team.lanes[0].agent_id.clone());
+
+    team.rt()
+        .resume_stopped_agent_now(&team.agent(0), &team.stop(0).unwrap(), reset)
+        .await
+        .unwrap();
+    let_senders_run().await;
+
+    assert!(!team.has_turn(0), "the claim is the scheduler's alone");
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_manual_resume_decided_on_a_stop_the_scheduler_already_resumed_sends_nothing_more() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    // The person's decision read the armed stop; the scheduler then resumes, and the turn ends.
+    let read_by_the_decision = team.stop(0).unwrap();
+    tick(team.rt(), reset).await;
+    assert!(team.has_turn(0), "the scheduler resumed the agent");
+    finish_the_turn(&team, team.rt(), reset + 1);
+
+    team.rt()
+        .resume_stopped_agent_now(&team.agent(0), &read_by_the_decision, reset + 2)
+        .await
+        .unwrap();
+    let_senders_run().await;
+
+    assert!(
+        !team.has_turn(0),
+        "the same continuation is not submitted a second time"
+    );
+}
