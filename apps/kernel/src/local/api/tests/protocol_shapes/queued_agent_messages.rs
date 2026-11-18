@@ -1,10 +1,10 @@
 //! Local 1011: a Room's session carries the messages other agents queued for an agent's next turn,
 //! and the person cancels or sends one with the queued-prompt requests, by its `agent-message-<n>` id.
-//! Local 1033: a queued message shows a `preview` and `truncated` instead of its whole `prompt`.
+//! Local 1012: a queued message shows a `preview` and `truncated` instead of its whole `prompt`.
 use super::*;
 
 #[test]
-fn queued_agent_messages_protocol_1033_shape_and_hash() {
+fn queued_agent_messages_protocol_1012_shape_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -50,6 +50,6 @@ fn queued_agent_messages_protocol_1033_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "335cdd6d33f022cd0beb78c5f675f87adbaa44611cc36596cf9b62ce78bddf43"
+        "13510532fe47892c414c1f79ad9edd3492ec7916782b36f0d2680abca2767a5a"
     );
 }

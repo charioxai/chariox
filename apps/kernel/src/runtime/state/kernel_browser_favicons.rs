@@ -1,4 +1,4 @@
-//! MP-08/MP-10: protocol 1021 names each Tab's icon by `favicon_hash`, so a Browser state read carries an
+//! MP-08/MP-10: protocol 1012 names each Tab's icon by `favicon_hash`, so a Browser state read carries an
 //! icon's PNG only to a viewer that does not hold it yet (`known_favicons` on `StateWait`).
 use super::kernel_browser_runtime::host_error;
 use crate::error::DaemonError;
