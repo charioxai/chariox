@@ -1814,8 +1814,8 @@ mod pump_stall_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
-mod supervision_step;
 mod slice_auth_inspection;
+mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
