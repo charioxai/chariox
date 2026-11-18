@@ -237,6 +237,7 @@ fn outside_events_snapshot_and_hash() {
 fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
     let session = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

@@ -313,6 +313,7 @@ fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
 
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -401,6 +402,7 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
 
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -455,6 +457,7 @@ fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
     );
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -513,6 +516,7 @@ fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
         ),
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -870,6 +874,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
     );
     let session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",

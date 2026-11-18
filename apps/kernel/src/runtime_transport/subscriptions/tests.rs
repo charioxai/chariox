@@ -407,6 +407,7 @@ fn session_snapshot_event(session_id: &str, alias: &str) -> KernelEvent {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &RuntimeSession::new(
                 session_id,
+                crate::session::ProjectId::test(),
                 Some(alias.into()),
                 "workspace-a",
                 "worktree-a",
@@ -417,6 +418,7 @@ fn session_snapshot_event(session_id: &str, alias: &str) -> KernelEvent {
         ),
         session: Box::new(RuntimeSession::new(
             session_id,
+            crate::session::ProjectId::test(),
             Some(alias.to_string()),
             "workspace-a",
             "worktree-a",

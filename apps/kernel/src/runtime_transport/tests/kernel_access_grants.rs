@@ -68,6 +68,7 @@ fn kernel_access_child_server() {
             {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
+                    crate::session::ProjectId::test(),
                     // A valid alias can collide with another session's ID.
                     // Scoping must use the same ID-first resolver as dispatch.
                     Some(

@@ -48,6 +48,7 @@ fn offload_jobs_protocol_snapshots_and_hashes() {
                 input["SessionState"]["session"] =
                     serde_json::to_value(crate::session::RuntimeSession::new(
                         "room",
+                        crate::session::ProjectId::test(),
                         None,
                         "workspace",
                         "worktree",

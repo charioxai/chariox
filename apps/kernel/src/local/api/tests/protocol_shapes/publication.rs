@@ -275,6 +275,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     }
     let session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -336,6 +337,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     );
     let mut materialized_session = crate::session::RuntimeSession::new(
         "runtime-session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",

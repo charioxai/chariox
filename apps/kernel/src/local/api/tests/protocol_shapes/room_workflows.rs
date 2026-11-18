@@ -9,6 +9,7 @@ fn room_workflows_protocol_439_shapes_are_versioned() {
     );
     let room = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
@@ -71,6 +72,7 @@ fn room_workflows_protocol_439_shapes_are_versioned() {
 fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
     let room = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

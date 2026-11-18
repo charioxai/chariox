@@ -7,15 +7,6 @@ use crate::session::{
 };
 use std::collections::BTreeSet;
 
-fn without_serialized_project_id(session: RuntimeSession) -> RuntimeSession {
-    let mut session_json = serde_json::to_value(&session).expect("session should encode");
-    session_json
-        .as_object_mut()
-        .expect("session should encode as an object")
-        .remove("project_id");
-    serde_json::from_value(session_json).expect("session should decode")
-}
-
 #[test]
 fn creates_gets_and_lists_sessions() {
     let mut service = SessionService::new(&test_config());
@@ -191,7 +182,7 @@ fn hidden_sessions_do_not_get_default_aliases() {
     let hidden = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
         .expect("hidden session should be created");
-    assert_eq!(hidden.project_id(), "");
+    assert!(hidden.project().is_hidden_scope());
     assert!(service
         .list_projects(DEFAULT_LOCAL_USER_ID, true)
         .is_empty());
@@ -217,6 +208,7 @@ fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
 
     let mut hidden = RuntimeSession::new(
         "hidden-runtime",
+        crate::session::ProjectId::new(project.id()).unwrap(),
         None,
         "/repo",
         "worktree-hidden",
@@ -224,7 +216,6 @@ fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
         "daemon-test",
     );
     hidden.set_hidden(true);
-    assert!(hidden.assign_project_id(project.id()));
 
     let mut restored = SessionService::new(&test_config());
     restored.restore_projects(vec![project.clone()]);
@@ -253,6 +244,7 @@ fn default_alias_counts_existing_unaliased_sessions_and_skips_conflicts() {
         .expect("hidden session should not count");
     service.restore_session(RuntimeSession::new(
         "legacy-session",
+        crate::session::ProjectId::test(),
         None,
         "/repo".to_string(),
         "worktree-legacy".to_string(),
@@ -520,25 +512,6 @@ fn visible_session_project_assignment_survives_release_builds() {
             .expect("session project should exist")
             .workspace_id(),
         created.workspace_id()
-    );
-
-    let legacy = RuntimeSession::new(
-        "legacy-session",
-        Some("legacy".to_string()),
-        "workspace-2",
-        "worktree-2",
-        "machine-test",
-        "daemon-test",
-    );
-    let restored = service.restore_session(without_serialized_project_id(legacy));
-
-    assert!(!restored.project_id().is_empty());
-    assert_eq!(
-        service
-            .get_project(restored.project_id())
-            .expect("restored session project should exist")
-            .workspace_id(),
-        restored.workspace_id()
     );
 }
 
@@ -1623,37 +1596,6 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
 }
 
 #[test]
-fn legacy_session_project_migration_uses_repo_label_hint_and_is_restart_stable() {
-    let legacy = RuntimeSession::new(
-        "legacy-session",
-        Some("legacy".to_string()),
-        "/workspace/chariox",
-        "/workspace/chariox",
-        "machine-test",
-        "daemon-test",
-    );
-    let legacy = without_serialized_project_id(legacy);
-
-    let mut first_service = SessionService::new(&test_config());
-    let migrated = first_service
-        .restore_session_with_default_project_name_hint(legacy, Some("mgutierrez09/chariox"));
-    let project = first_service
-        .get_project(migrated.project_id())
-        .expect("migrated default project should exist");
-    assert_eq!(project.name(), "mgutierrez09/chariox");
-    assert_eq!(project.kind(), RuntimeProjectKind::Default);
-
-    let mut restarted_service = SessionService::new(&test_config());
-    restarted_service.restore_projects(first_service.durable_projects());
-    let restored = restarted_service.restore_session(migrated);
-    let restored_project = restarted_service
-        .get_project(restored.project_id())
-        .expect("default project should survive restart");
-    assert_eq!(restored_project.id(), project.id());
-    assert_eq!(restored_project.name(), "mgutierrez09/chariox");
-}
-
-#[test]
 fn project_names_are_unique_for_an_owner_across_workspaces() {
     let mut service = SessionService::new(&test_config());
     let first = service
@@ -1988,15 +1930,15 @@ fn legacy_duplicate_project_names_keep_the_most_populated_project_canonical() {
         ("main-session-2", &main_project),
         ("worktree-session", &worktree_project),
     ] {
-        let mut session = RuntimeSession::new(
+        let session = RuntimeSession::new(
             session_id,
+            crate::session::ProjectId::new(project.id()).unwrap(),
             Some(session_id.to_string()),
             project.workspace_id(),
             project.workspace_id(),
             "machine-test",
             "daemon-test",
         );
-        assert!(session.assign_project_id(project.id()));
         service.restore_session(session);
     }
 
@@ -2211,4 +2153,39 @@ fn mp08_owner19_automatic_assignment_keeps_workspace_membership_bound() {
             .len(),
         32
     );
+}
+
+#[test]
+fn every_session_created_through_create_session_has_a_project_id() {
+    let mut service = SessionService::new(&test_config());
+    let visible = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("visible Room should be created");
+    let hidden = service
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2").with_hidden(true))
+        .expect("hidden backing Room should be created");
+
+    assert!(!visible.project_id().is_empty());
+    assert!(
+        !hidden.project_id().is_empty(),
+        "a hidden backing Room is created with its own scope id, not an empty one"
+    );
+    assert_ne!(visible.project_id(), hidden.project_id());
+}
+
+#[test]
+fn a_stored_session_needs_a_non_empty_project_id() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let stored = serde_json::to_value(&created).expect("session should encode");
+
+    let mut missing = stored.clone();
+    missing.as_object_mut().unwrap().remove("project_id");
+    let mut empty = stored;
+    empty["project_id"] = serde_json::json!("");
+
+    assert!(serde_json::from_value::<RuntimeSession>(missing).is_err());
+    assert!(serde_json::from_value::<RuntimeSession>(empty).is_err());
 }

@@ -229,8 +229,15 @@ mod tests {
     };
 
     fn session_with_agents(agents: Vec<AgentInstance>) -> RuntimeSession {
-        let mut session =
-            RuntimeSession::new("session", None, "/repo", "/repo", "machine", "daemon");
+        let mut session = RuntimeSession::new(
+            "session",
+            crate::session::ProjectId::test(),
+            None,
+            "/repo",
+            "/repo",
+            "machine",
+            "daemon",
+        );
         session.set_agents(agents);
         session
     }

@@ -18,6 +18,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
 | `perf-budget-tighten-only` | `docs/PERFORMANCE_BUDGETS.md`: performance budgets only tighten | bring the number back under the budget, or add `budget raised: <id>: <why>` to a commit message and get it approved in review |
 | `tracked-state` | State, logs and recordings never live in a repository | `git rm` it and keep it under `~/.chariox/dev/<task>/` |
+| `project-id-required` | Rooms always live under a Project: a Room is built with a non-empty `ProjectId`, required in storage and protocol | build the Room with `ProjectId::new` where the id enters the kernel; keep `project_id` required (no `Option`, no default, no empty-then-assign) |
 
 ## Allow lists
 
@@ -40,3 +41,4 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.
 - `perf-budget-tighten-only` compares the ceilings in `perf-budgets/*.json` and `apps/kernel/agent_context_budget.json` with the merge base and reads `budget raised:` lines from the commit messages since it. It cannot tell whether review approved the line; the reviewer line in `AGENTS.md` does. It does not measure anything: each budget's gate does (`docs/PERFORMANCE_BUDGETS.md`).
+- `project-id-required` reads production code under `apps/kernel/src` (comments, literals and test items hidden). `Option<ProjectId>`, `project_id: String::new()` and `assign_project_id` are red anywhere; an optional, `serde(default)` or `skip_serializing_if` `project_id` is red only in `session/` and `local/api/types/session*`, so list filters that take an optional project elsewhere pass. Review after 2026-12-15.

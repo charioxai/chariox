@@ -583,6 +583,7 @@ mod tests {
     fn idle_guard_ignores_attached_native_process_but_rejects_authoritative_work() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

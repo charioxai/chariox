@@ -6,7 +6,15 @@ use crate::durable_state::agent_lifecycle::{
 use sha2::{Digest, Sha256};
 
 fn room_session() -> crate::session::RuntimeSession {
-    crate::session::RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon")
+    crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    )
 }
 
 #[test]

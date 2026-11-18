@@ -116,6 +116,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     };
     let mut mode_session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -186,7 +187,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2310a9554cc05659266f076da039e0e5a445bf7de5957a9634e7e3bb3e33099b"
+        "97ced66c2c17c360eb4e752864f2beea5aace20220b10d6f055321c6708391fe"
     );
 }
 

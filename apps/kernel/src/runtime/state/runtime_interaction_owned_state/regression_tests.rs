@@ -48,6 +48,7 @@ impl Fixture {
         let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             session_id,
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -746,6 +747,7 @@ async fn app_file_export_saved_from_another_session_closes_only_its_presented_pr
         .write()
         .restore_session(RuntimeSession::new(
             answering_session.clone(),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

@@ -367,6 +367,7 @@ mod tests {
         use crate::agent::{AgentInstance, GridPosition};
         let mut session = RuntimeSession::new(
             "private-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "tree",
@@ -578,6 +579,14 @@ mod tests {
     }
 
     fn runtime_session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "kernel")
+        RuntimeSession::new(
+            id,
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        )
     }
 }

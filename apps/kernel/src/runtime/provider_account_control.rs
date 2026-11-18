@@ -379,6 +379,7 @@ mod tests {
     fn account_binding_detection_covers_provider_families_and_agent_owners() {
         let mut session = RuntimeSession::new(
             "session-a",
+            crate::session::ProjectId::test(),
             Some("accounts".to_string()),
             "workspace-a",
             "worktree-a",
@@ -421,6 +422,7 @@ mod tests {
     fn account_binding_detection_covers_saved_starter_and_inactive_substitutes() {
         let mut session = RuntimeSession::new(
             "session-a",
+            crate::session::ProjectId::test(),
             Some("accounts".to_string()),
             "workspace-a",
             "worktree-a",

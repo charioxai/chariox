@@ -162,6 +162,7 @@ mod tests {
     fn snapshot() -> SessionSnapshotProjection {
         let session = crate::session::RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             Some("before".into()),
             "workspace",
             "worktree",

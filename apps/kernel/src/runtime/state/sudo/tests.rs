@@ -371,8 +371,15 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
         "room tools alone must not confer sudo authority"
     );
     let turn = running(&f);
-    let other =
-        crate::session::RuntimeSession::new("sudo-room-tools-other", None, "w", "wt", "m", "k");
+    let other = crate::session::RuntimeSession::new(
+        "sudo-room-tools-other",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state
         .owned
         .session_store
@@ -1090,8 +1097,15 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
         .unwrap();
     assert!(result.ok);
     assert!(result.payload.get("SessionsListed").is_some());
-    let mut other =
-        crate::session::RuntimeSession::new("sudo-router-other", None, "w", "wt", "m", "k");
+    let mut other = crate::session::RuntimeSession::new(
+        "sudo-router-other",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     other.set_alias(Some("sudo-other-alias".into()));
     f.state
         .owned
@@ -1667,7 +1681,15 @@ async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_requ
         .request_kernel_sudo("missing", request.clone())
         .await
         .is_err());
-    let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
+    let other = crate::session::RuntimeSession::new(
+        "ungranted",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
     assert!(f

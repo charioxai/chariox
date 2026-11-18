@@ -275,6 +275,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         serde_json::from_value(run_value).expect("private provider run should decode");
     let mut session_value = serde_json::to_value(crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -315,7 +316,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d0877032eeb00f9cefa0bb33668a1c0c9b3b8c2230d8590948c709e2f7f4b18b"
+        "e2162768ecfac387fa0764aa2673d0f33cd3d5890023df9c8e08b52a5eaa7dca"
     );
 }
 
