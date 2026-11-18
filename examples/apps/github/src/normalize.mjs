@@ -72,7 +72,7 @@ export const reviewComment = c => ({
 
 /** The state of every check on a commit, read as GitHub's merge box reads it. */
 export function checksSummary(runs, statuses) {
-  const failed = runs.filter(r => r.status === 'completed' && ['failure', 'timed_out', 'startup_failure', 'action_required', 'stale'].includes(r.conclusion)).length
+  const failed = runs.filter(r => r.status === 'completed' && ['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required', 'stale'].includes(r.conclusion)).length
     + statuses.filter(s => s.state === 'failure' || s.state === 'error').length;
   const pending = runs.filter(r => r.status !== 'completed').length + statuses.filter(s => s.state === 'pending').length;
   const total = runs.length + statuses.length;

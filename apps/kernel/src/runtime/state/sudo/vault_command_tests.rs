@@ -935,3 +935,60 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
     assert!(!session.contains(SECRET));
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_copy_request_replayed_with_another_source_is_refused() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let entry = |request: &'static str, secret: &'static str| {
+        let f = &f;
+        async move {
+            call(
+                f,
+                CAPTURE,
+                json!({"request_id": request, "argv": printing(secret), "host": "github.com",
+                    "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+            )
+            .await
+            .unwrap()["credential_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let first = entry("first", SECRET).await;
+    let second = entry("second", "ghp_second_entry_value").await;
+    let site = json!({"target":{"kind":"site","origin":"https://api.github.com"}});
+    let copy = |from: &str| {
+        call(
+            &f,
+            COPY_FOR_USE,
+            json!({"request_id":"api","from":from,"use_binding":site}),
+        )
+    };
+    let of_first = copy(&first).await.unwrap();
+    // The same request naming another entry is refused: it is not the copy the request already made.
+    let refused = copy(&second).await.unwrap_err().to_string();
+    assert!(refused.contains("use a new request_id"), "{refused}");
+    // Nor is an entry that does not exist answered with the first copy.
+    assert!(copy("nope").await.is_err());
+    // The same source still gets its copy back, holding the first entry's value.
+    let again = copy(&first).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].clone(), again["created"].clone()),
+        (of_first["credential_id"].clone(), json!(false))
+    );
+    let authorization = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .app_account_authorization(
+            of_first["credential_id"].as_str().unwrap(),
+            "https://api.github.com",
+        )
+        .unwrap();
+    assert_eq!(authorization.as_str(), format!("Bearer {SECRET}"));
+    f.state.shutdown_cleanup().await.unwrap();
+}
