@@ -170,9 +170,8 @@ pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayEr
 
 pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
-        LocalDaemonRequest::ListWaitingRoomSessions(_) => "waiting_room.sessions.list",
-        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
-        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
+        LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
         LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
@@ -260,8 +259,6 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
     }
 }

@@ -329,3 +329,34 @@ fn kwait_nested_background_command_ends_on_replayed_task_notification_native() {
         "the provider's preamble must not hide the completion: {finished:?}"
     );
 }
+
+/// L10-CHILD-BACKGROUND, replayed from a real Claude Code session (paths shortened): a child
+/// launches a helper Agent in the background and ends its turn; Claude's first notification for
+/// the helper says `completed` with a note that the result may be interim, because the helper
+/// stopped with background work of its own. The helper's call is still running.
+#[test]
+fn native_helper_notification_marked_interim_leaves_its_call_running() {
+    const HELPER: &str = include_str!("fixtures/claude-helper-interim-notification.jsonl");
+    const AGENT_CALL: &str = "toolu_01FJw9XhEUMksm8KpyJGRruD";
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-helper-interim-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("session.jsonl").display().to_string();
+    std::fs::write(&transcript, HELPER).unwrap();
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let drain = drain_claude_transcript_file_at(&transcript, &mut cursor, None, 5_000);
+    let snapshots = RecordedSession::snapshots(
+        drain
+            .chunks
+            .into_iter()
+            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+            .collect(),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let calls = of(&snapshots, AGENT_CALL);
+    let last = calls.last().expect("the helper launch is recorded");
+    assert_eq!(last["background"], true, "{last}");
+    assert!(last["finished_at_ms"].is_null(), "{last}");
+}

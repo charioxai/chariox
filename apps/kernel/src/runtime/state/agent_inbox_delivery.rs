@@ -42,20 +42,23 @@ impl KernelRuntimeState {
             })
     }
 
-    /// The prompt carries the message, so it counts as read: a turn that never
-    /// opens its inbox must not hand the row back to pending.
-    pub(super) fn mark_brief_shown(
+    /// The prompt carries these events' text, so they count as read: a turn
+    /// that never opens its inbox must not hand the rows back to pending.
+    pub(super) fn mark_prompt_events_shown(
         &self,
         room: &str,
         agent: &str,
-        sequence: u64,
+        sequences: &[u64],
     ) -> Result<(), DaemonError> {
+        if sequences.is_empty() {
+            return Ok(());
+        }
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::MarkShown {
                 room: room.into(),
                 agent: agent.into(),
-                sequences: vec![sequence],
+                sequences: sequences.to_vec(),
             })?;
         Ok(())
     }
@@ -186,6 +189,14 @@ impl KernelRuntimeState {
         if active.is_some() && (!event.urgent || event.attempted_at_ms.is_some()) {
             return Ok(());
         }
+        if let child_finish_window::Window::Open { left, first } =
+            self.sibling_window(room, agent, &event)
+        {
+            if first {
+                self.deliver_when_window_ends(room, agent, left);
+            }
+            return Ok(());
+        }
         let batch = self.delivery_batch(
             room,
             agent,
@@ -217,10 +228,13 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_read_cursor(&event, work.as_deref())?;
-        let brief = self.parent_brief(agent, &event, &batch);
-        let carries_brief = brief.is_some();
-        let text =
-            brief.unwrap_or_else(|| super::agent_inbox_wake_text::wake_text(&event, &batch, after));
+        let (text, shown) = match self.parent_brief(agent, &event, &batch) {
+            Some(brief) => (brief, vec![event.sequence]),
+            None => {
+                let wake = self.inline_wake(room, agent, &event, &batch, after)?;
+                (wake.text, wake.shown)
+            }
+        };
         let attachments = std::iter::once(&event)
             .chain(&batch)
             .map(|row| {
@@ -259,7 +273,7 @@ impl KernelRuntimeState {
                     active,
                     prompt,
                     work,
-                    carries_brief,
+                    &shown,
                 )
                 .await;
         }
@@ -307,9 +321,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.owned.record_woken_waits(&waiting, &attempt);
-        if carries_brief {
-            self.mark_brief_shown(room, agent, event.sequence)?;
-        }
+        self.mark_prompt_events_shown(room, agent, &shown)?;
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then
             // sent nothing: the row waits for the idle wake instead of the lane.
@@ -525,8 +537,9 @@ impl KernelRuntimeState {
         tasks: &[ledger::AgentTaskExecution],
     ) -> WakeDisposition {
         // A peer event names the turn that created its persistent follow,
-        // not unfinished work whose wake expires when that turn ends.
-        if event.kind == "peer_event" {
+        // not unfinished work whose wake expires when that turn ends. Work the ended turn left
+        // running reports its end to the agent, not to the turn.
+        if event.kind == "peer_event" || event.payload["after_turn"] == true {
             return WakeDisposition::Deliver;
         }
         let mut ids = Vec::new();
@@ -569,6 +582,36 @@ impl KernelRuntimeState {
             return WakeDisposition::Retire;
         }
         WakeDisposition::Deliver
+    }
+    /// What the sender is told when message `sequence` waits for the owner's next prompt to
+    /// `agent`, which the owner stopped: no turn is coming, so it must not wait for an answer.
+    pub(super) fn held_for_stopped_agent_note(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<Option<String>, DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
+        let store = &self.owned.durable_state_store;
+        let waits = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .is_none()
+            && store
+                .agent_tasks(Some(room), Some(agent))?
+                .last()
+                .is_some_and(|task| task.stopped_by_owner())
+            && store
+                .agent_work_inbox(room, agent, 0, None)?
+                .iter()
+                .any(|event| event.sequence == sequence && event.state == "pending");
+        Ok(waits.then(|| {
+            let name = self.agent_notice_name(agent);
+            format!(
+                "{name} was stopped by its owner and runs nothing until the owner's next prompt to it; this message is held until then. Do not wait for an answer."
+            )
+        }))
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.

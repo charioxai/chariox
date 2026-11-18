@@ -26,8 +26,8 @@ pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
 pub(crate) use catalog::claude_provider_catalog_with_environment;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
-pub(crate) use launch_args::claude_args_with_execution_config;
 use launch_args::claude_launch_args;
+pub(crate) use launch_args::{claude_args_with_execution_config, normalized_claude_model};
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::CLAUDE_RUNTIME_FILES_PREFIX;

@@ -317,6 +317,13 @@ impl SliceStore {
                 "slice operation in progress; retry after it completes",
             ));
         }
+        // The worker reads its Room from the environment it is started with, so a slice that is
+        // already up would stay refused by its own controller until the next start.
+        if slice.status != super::super::SliceStatus::Stopped {
+            return Err(binding_error(
+                "slice is not stopped; stop it, bind the Room, then start it so the worker starts with the Room",
+            ));
+        }
         let mut updated = slice.clone();
         updated.environment_session_id = Some(session_id.to_string());
         updated.updated_at_ms = now_ms;

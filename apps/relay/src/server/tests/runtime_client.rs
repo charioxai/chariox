@@ -94,14 +94,16 @@ async fn runtime_client_frames_require_accepted_client_connect() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-1", "machine-1", "Linux", 10),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -189,14 +191,16 @@ async fn runtime_client_frames_reject_empty_identifiers_without_pending_state() 
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-1", "machine-1", "Linux", 10),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -400,18 +404,23 @@ async fn runtime_client_frames_must_match_connected_target() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect");
-    for (socket, daemon_id) in [(&mut daemon_a, "daemon-a"), (&mut daemon_b, "daemon-b")] {
+    for (socket, handshake, daemon_id) in [
+        (&mut daemon_a, &daemon_a_handshake, "daemon-a"),
+        (&mut daemon_b, &daemon_b_handshake, "daemon-b"),
+    ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: test_registration(daemon_id, "machine-1", "Linux", 10),
-                })
+                serde_json::to_string(&signed_register(
+                    &url,
+                    handshake,
+                    test_registration(daemon_id, "machine-1", "Linux", 10),
+                ))
                 .expect("register should serialize")
                 .into(),
             ))

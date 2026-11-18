@@ -293,13 +293,22 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     Ok(())
 }
 
-/// The arguments of a fresh provider child that starts empty-handed. A managed
-/// launch keeps its bubblewrap prefix through the provider program and starts
-/// in the namespace's empty `/tmp` rather than the workspace; an unmanaged one
-/// is just the provider's own arguments.
+/// Where a fresh provider child starts inside a managed launch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreshChildFolder {
+    /// The namespace's empty `/tmp`: the child reads nothing of the workspace.
+    Empty,
+    /// The run's own folder: the child works on the files the person asked about.
+    RunFolder,
+}
+
+/// The arguments of a fresh provider child. A managed launch keeps its bubblewrap prefix through
+/// the provider program and starts in `folder`; an unmanaged one is just the provider's own
+/// arguments and starts where the run does.
 pub(crate) fn fresh_provider_child_args(
     current: &[String],
     provider_args: Vec<String>,
+    folder: FreshChildFolder,
 ) -> Vec<String> {
     let separator = current.iter().position(|arg| arg == "--");
     let Some(separator) = separator.filter(|separator| {
@@ -310,9 +319,11 @@ pub(crate) fn fresh_provider_child_args(
         return provider_args;
     };
     let mut args = current[..current.len().min(separator + 2)].to_vec();
-    if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
-        if let Some(directory) = args.get_mut(chdir + 1) {
-            *directory = "/tmp".to_string();
+    if folder == FreshChildFolder::Empty {
+        if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
+            if let Some(directory) = args.get_mut(chdir + 1) {
+                *directory = "/tmp".to_string();
+            }
         }
     }
     args.extend(provider_args);
@@ -6056,6 +6067,12 @@ printf 'managed account environment probe passed\n'
         let attachment_root = managed_prompt_attachment_root(&request)
             .expect("managed attachment root should prepare")
             .expect("agent-bound launches should have an attachment root");
+        let _cleanup = crate::test_support::TestTempPath::in_shared_directory(
+            attachment_root
+                .parent()
+                .expect("attachment root should have a session parent")
+                .to_path_buf(),
+        );
         let attachment = crate::session::PromptAttachment::new(
             "chariox-cloud://artifact/art-1",
             "text/plain",
@@ -6093,11 +6110,6 @@ printf 'managed account environment probe passed\n'
                 && window[1] == global_root.to_string_lossy()
                 && window[2] == global_root.to_string_lossy()
         }));
-        let _ = std::fs::remove_dir_all(
-            attachment_root
-                .parent()
-                .expect("attachment root should have a session parent"),
-        );
     }
 
     #[cfg(unix)]

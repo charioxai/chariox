@@ -63,7 +63,17 @@ impl DirectFrames {
             return Err("MP-11: native frame channel unavailable".into());
         }
         let path = packets.root().join("frames.sock");
-        let listener = UnixListener::bind(&path).map_err(|_| "MP-11: native frame channel")?;
+        let listener = UnixListener::bind(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidInput {
+                format!(
+                    "MP-11: native frame channel path {} is {} bytes, over the Unix socket limit: set TMPDIR to a shorter directory",
+                    path.display(),
+                    path.as_os_str().len()
+                )
+            } else {
+                format!("MP-11: native frame channel at {}: {error}", path.display())
+            }
+        })?;
         let frames = Arc::new(Self {
             path,
             packets,
@@ -411,6 +421,25 @@ mod unavailable_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    // A long TMPDIR (a kernel started inside deep state) puts frames.sock past the Unix socket
+    // path limit; the controller start logs this reason instead of silently going without.
+    #[test]
+    fn a_frame_channel_past_the_socket_path_limit_names_the_cause_and_the_fix() {
+        let temp = crate::test_support::TestTempDir::new("frames-long");
+        let base = temp.path().join("d".repeat(100));
+        std::fs::create_dir_all(&base).unwrap();
+        let packets = Arc::new(DisplayPackets::create_in(&base).unwrap());
+        let Err(error) = DirectFrames::listen(packets) else {
+            panic!("a socket path over the limit cannot be bound");
+        };
+        assert!(error.contains("over the Unix socket limit"), "{error}");
+        assert!(
+            error.contains("set TMPDIR to a shorter directory"),
+            "{error}"
+        );
+        assert!(error.contains("frames.sock"), "{error}");
+    }
 
     fn channel() -> (Arc<DirectFrames>, Arc<DisplayPackets>) {
         let packets = Arc::new(DisplayPackets::create().unwrap());

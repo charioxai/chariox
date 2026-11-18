@@ -1476,7 +1476,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "chariox.notification_subscribe",
-            serde_json::json!({"source":source,"agent":peer.id()})
+            serde_json::json!({"source":source,"prompt":"Read the run","agent":peer.id()})
         )
         .await
         .is_err());
@@ -1484,7 +1484,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "chariox.notification_subscribe",
-            serde_json::json!({"source":source,"delivery":"steer"})
+            serde_json::json!({"source":source,"prompt":"Read the run","delivery":"steer"})
         )
         .await
         .is_err());
@@ -1492,7 +1492,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "mcp__chariox__chariox_notification_subscribe",
-            serde_json::json!({"source":source}),
+            serde_json::json!({"source":source,"prompt":"Read the run and reply"}),
         )
         .await
         .unwrap();
@@ -1765,6 +1765,7 @@ async fn room_own_schedule() {
     for refused in [
         "trigger add schedule --every 0m",
         "trigger add schedule --every 2x",
+        "trigger add schedule --every 30秒",
         "trigger add schedule --cron '0 9 * * *'",
         "trigger add schedule --cron '0 0 9 * * *' --timezone Mars/Olympus",
         "trigger add schedule --every 2m --cron '0 0 9 * * *'",

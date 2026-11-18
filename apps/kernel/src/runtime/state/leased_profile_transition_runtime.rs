@@ -8,6 +8,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+        while_turn_runs: bool,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         let id = leased_agent_id.to_string();
         let prepared = self
@@ -18,12 +19,15 @@ impl KernelRuntimeState {
                     profile.account_profile,
                     profile.model,
                     profile.effort,
+                    while_turn_runs,
                 )
             })
             .await?;
         let session_id = prepared.leased_agent.backing_session_id.clone();
         let agent_id = prepared.leased_agent.backing_agent_id.clone();
-        let claim = if prepared.changed {
+        // A running turn is neither compacted nor held: its process takes the profile at its next
+        // step boundary and the window stays the provider's to manage.
+        let claim = if prepared.changed && !prepared.while_turn_runs {
             let session = self.owned.session_store.get_session(&session_id)?;
             let claim = self
                 .owned

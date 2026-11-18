@@ -6,7 +6,7 @@ pub const USAGE: &str = "usage: chariox-cli [options]
 
 Options:
   -h, --help                    Print usage and exit
-  --detached                    Open a detached waiting room
+  --detached                    Open the terminal without a session
   --kernel-url URL              Attach to a kernel WebSocket
   --socket PATH                 Attach to a local kernel socket
   --automation-socket PATH      Expose terminal automation

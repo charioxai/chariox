@@ -312,14 +312,9 @@ fn file_signature(path: &Path) -> Option<FileSignature> {
 mod tests {
     use super::ArtifactExternalChangeMonitor;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn test_root(name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("chariox-external-monitor-{name}-{nanos}"));
+    fn test_root(name: &str) -> crate::test_support::TestTempDir {
+        let root = crate::test_support::TestTempDir::new(&format!("external-monitor-{name}"));
         fs::create_dir_all(&root).expect("create test root");
         root
     }

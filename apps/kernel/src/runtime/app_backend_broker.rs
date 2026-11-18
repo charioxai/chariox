@@ -30,6 +30,7 @@ pub(crate) fn broker(
     package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
+    routing_host: super::app_event_routing_broker::RoutingHostSlot,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {
     Ok(Arc::new(build(
         store,
@@ -40,6 +41,7 @@ pub(crate) fn broker(
         package,
         http,
         event_config,
+        routing_host,
     )?))
 }
 #[allow(
@@ -55,6 +57,7 @@ fn build(
     package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
+    routing_host: super::app_event_routing_broker::RoutingHostSlot,
 ) -> Result<BackendBroker, AppWorkerError> {
     let data = process
         .private_data()
@@ -79,7 +82,22 @@ fn build(
             catalog.installation_id().to_owned(),
             package.manifest().capabilities.connections.clone(),
             admission.clone(),
-            event_config,
+            event_config.clone(),
+        ),
+        routing: super::app_event_routing_broker::AppEventRoutingBroker::new(
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            package.manifest().capabilities.event_routing.clone(),
+            routing_host.clone(),
+        ),
+        workspace: super::app_workspace_broker::AppWorkspaceBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            package.manifest().capabilities.workspace.clone(),
+            admission.clone(),
+            event_config.clone(),
+            routing_host.clone(),
         ),
         state: AppStorageBroker::new(
             store.clone(),
@@ -144,6 +162,8 @@ struct BackendBroker {
     http: AppHttpBroker,
     snapshots: super::app_snapshot_broker::AppSnapshotBroker,
     connections: super::app_connection_broker::AppConnectionBroker,
+    routing: super::app_event_routing_broker::AppEventRoutingBroker,
+    workspace: super::app_workspace_broker::AppWorkspaceBroker,
     /// SDK writes share it; a quiescent snapshot holds it alone.
     fence: Arc<tokio::sync::RwLock<()>>,
 }
@@ -187,9 +207,14 @@ impl Broker for BackendBroker {
                 "connections.list" | "connections.action" => {
                     delegate.connections.dispatch(request).await
                 }
-                "host.pick_file" | "host.pick_file_status" | "files.export" => {
-                    delegate.file_grants.dispatch(request).await
+                name if name.starts_with("routing.") => delegate.routing.dispatch(request).await,
+                name if name.starts_with("workspace.") => {
+                    delegate.workspace.dispatch(request).await
                 }
+                "host.pick_file"
+                | "host.pick_file_status"
+                | "host.pick_file_cancel"
+                | "files.export" => delegate.file_grants.dispatch(request).await,
                 "host.clipboard_write" | "host.open_link" => delegate.host.dispatch(request).await,
                 "log.write" => delegate.logs.dispatch(request).await,
                 "validation.request" | "validation.status" => {
@@ -228,6 +253,7 @@ pub(crate) fn fixture_http(
         process,
         package,
         http,
+        Default::default(),
         Default::default(),
     )?;
     broker.http.fixture_network(network);

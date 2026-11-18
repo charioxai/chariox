@@ -38,6 +38,7 @@ fn fixture(
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,
+        offers: vec![],
         job_default_class_id: Some("build".into()),
         job_offers: vec![JobMachineOffer {
             class_id: "build".into(),
@@ -102,8 +103,8 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         passkey_remember_minutes: None,
     };
     assert!(
-        state.interaction_requires_terminal(&answer),
-        "an agent cannot approve its own rental"
+        !state.interaction_person_only(&answer),
+        "an external agent approves a rental for the person"
     );
     let owner = state
         .owned
@@ -225,6 +226,8 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
     let request = ControlPlaneRequest::Acquire {
         capability_revision: "v1".into(),
         request_id: "manual".into(),
+        class_id: None,
+        region: None,
     };
     let room = command.session_id.clone().unwrap();
     let gate_state = state.clone();
@@ -265,4 +268,114 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap_err()
         .to_string()
         .contains("nothing was allocated or charged"));
+}
+
+fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
+    MachineOption {
+        class_id: class_id.into(),
+        region: region.into(),
+        vcpu: 2,
+        ram_gb: 4.0,
+        disk_gb: 51,
+        rate_per_minute: JobMachineRate {
+            amount_micros: 284,
+            currency: "EUR".into(),
+        },
+        available,
+        note: None,
+    }
+}
+
+#[test]
+fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
+    let specs = super::machine_tool_specs();
+    let names: Vec<_> = specs.iter().map(|spec| spec.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "chariox.machines.options",
+            "chariox.machines.acquire",
+            "chariox.machines.status",
+            "chariox.machines.release"
+        ]
+    );
+    let acquire = specs
+        .iter()
+        .find(|spec| spec.name == "chariox.machines.acquire")
+        .unwrap();
+    for field in ["request_id", "class_id", "region"] {
+        assert!(
+            acquire.input_schema["properties"][field].is_object(),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        acquire.input_schema["additionalProperties"],
+        serde_json::json!(false)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_is_asked_about_the_option_the_agent_chose() {
+    let (state, command, _, mut caps, _workspace) = fixture(false);
+    caps.offers = vec![option("agent-vm-s", "auto", true)];
+    let request = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "chosen".into(),
+        class_id: Some("agent-vm-s".into()),
+        region: Some("auto".into()),
+    };
+    let room = command.session_id.clone().unwrap();
+    let gate_state = state.clone();
+    let gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let message = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(&room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                break card.message().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(message.contains("agent-vm-s in auto"), "{message}");
+    assert!(message.contains("EUR per minute"), "{message}");
+    gate.abort();
+}
+
+#[tokio::test]
+async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_listed() {
+    // A retry of an accepted request must reach the service whatever the list says now.
+    let (state, command, _, caps, _workspace) = fixture(false);
+    let request = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "retry".into(),
+        class_id: Some("gone".into()),
+        region: Some("auto".into()),
+    };
+    let room = command.session_id.clone().unwrap();
+    let gate_state = state.clone();
+    let gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let message = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(&room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                break card.message().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(message.contains("Acquire gone in auto"), "{message}");
+    gate.abort();
 }

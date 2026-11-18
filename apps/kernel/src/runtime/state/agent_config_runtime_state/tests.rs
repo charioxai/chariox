@@ -19,6 +19,15 @@ mod remote_profile_active_run;
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
+#[path = "tests/mid_turn_settings.rs"]
+mod mid_turn_settings;
+
+#[path = "tests/self_settings.rs"]
+mod self_settings;
+
+#[path = "tests/usage_limit.rs"]
+mod usage_limit;
+
 #[path = "tests/failure_causes.rs"]
 mod failure_causes;
 
@@ -280,11 +289,11 @@ async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
 }
 
 #[tokio::test]
-async fn agent_config_update_still_blocks_active_prompt_owner() {
+async fn a_running_agent_takes_a_new_directory_without_ending_its_turn() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
 
-    let error = runtime
+    let agent = runtime
         .update_agent_config(
             &session_id,
             &agent_id,
@@ -296,13 +305,13 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
             None,
         )
         .await
-        .expect_err("active prompt ownership should block config update");
+        .expect("a running agent takes a new directory at its next step");
 
-    assert_active_turn_error(error, "update agent config");
+    assert_eq!(agent.workspace_id(), Some("workspace-next"));
 }
 
 #[tokio::test]
-async fn the_person_can_lower_a_running_agent_but_not_raise_it() {
+async fn the_person_can_raise_and_lower_a_running_agent() {
     use crate::provider::{
         AgentExecutionMode::Plan,
         AgentPermissionLevel::{Required, Yolo},
@@ -330,10 +339,10 @@ async fn the_person_can_lower_a_running_agent_but_not_raise_it() {
         .expect("a running agent can be lowered");
     assert_eq!(agent.permission_level_override(), Some(Required));
 
-    let error = update(None, Some(Some(Yolo)))
+    let agent = update(None, Some(Some(Yolo)))
         .await
-        .expect_err("a running agent cannot be raised");
-    assert_active_turn_error(error, "update agent config");
+        .expect("a running agent can be raised: every call reads the level at use");
+    assert_eq!(agent.permission_level_override(), Some(Yolo));
 }
 
 #[tokio::test(start_paused = true)]
@@ -929,11 +938,11 @@ async fn assert_remote_agent_profile_response(
 }
 
 #[tokio::test]
-async fn agent_profile_update_still_blocks_active_prompt_owner() {
+async fn a_running_agent_profile_change_is_accepted_and_its_turn_goes_on() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
 
-    let error = runtime
+    let agent = runtime
         .update_agent_profile(
             &session_id,
             &agent_id,
@@ -944,9 +953,22 @@ async fn agent_profile_update_still_blocks_active_prompt_owner() {
             None,
         )
         .await
-        .expect_err("active prompt ownership should block profile update");
+        .expect("a running agent accepts a profile change");
 
-    assert_active_turn_error(error, "update agent profile");
+    assert_eq!(agent.model(), Some("model-next"));
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_some(),
+        "the change does not end the turn"
+    );
 }
 
 #[tokio::test]
@@ -1326,19 +1348,6 @@ async fn sync_active_prompt(app: &Arc<Mutex<DaemonApp>>, session_id: &str, agent
         .expect("active prompt should sync");
 }
 
-fn assert_active_turn_error(error: DaemonError, operation: &'static str) {
-    match error {
-        DaemonError::LocalTransport {
-            operation: actual,
-            message,
-        } => {
-            assert_eq!(actual, operation);
-            assert!(message.contains("has an active turn"));
-        }
-        other => panic!("expected active turn error, got {other:?}"),
-    }
-}
-
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
     let (
         config_projection,
@@ -1423,3 +1432,5 @@ fn same_execution_profile(
 
 #[path = "tests/profile_compaction.rs"]
 mod profile_compaction;
+#[path = "tests/queue_vault_unlock.rs"]
+mod queue_vault_unlock;

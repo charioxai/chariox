@@ -49,7 +49,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
@@ -70,7 +70,6 @@ impl KernelRuntimeState {
         let timeout = command_timeout(args.timeout_seconds)?;
         let cwd =
             super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
-        let turn = &context;
         let origin = crate::config::vault_use::vault_origin(&args.origin)?;
         let env_target = |name: &str| crate::config::VaultUseTarget::CommandEnvironment {
             name: name.into(),
@@ -79,14 +78,18 @@ impl KernelRuntimeState {
         let stdin_target = crate::config::VaultUseTarget::CommandStdin {
             origin: origin.clone(),
         };
-        for (name, id) in &args.env {
-            self.preflight_workspace_vault_use(&turn.agent_id, id, &env_target(name))?;
-        }
-        if let Some(id) = &args.stdin {
-            self.preflight_workspace_vault_use(&turn.agent_id, id, &stdin_target)?;
-        }
+        let uses = args
+            .env
+            .iter()
+            .map(|(name, id)| (id.as_str(), env_target(name)))
+            .chain(
+                args.stdin
+                    .iter()
+                    .map(|id| (id.as_str(), stdin_target.clone())),
+            )
+            .collect::<Vec<_>>();
         let _unlock = self
-            .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_use_env")
+            .prepare_workspace_vault_uses(&context, &uses, "vault_use_env")
             .await?;
         self.recheck_vault_command_context(&context)?;
         let mut env = Vec::new();

@@ -2,6 +2,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, InboxEvent, Operation};
 use crate::runtime::state::agent_inbox_sender::SenderRelation;
+use crate::runtime::state::decision_holder::DecisionHolder;
 use std::ops::ControlFlow;
 
 /// Events one read returns unless the agent asks for another count.
@@ -25,6 +26,39 @@ pub(in crate::runtime::state) fn bounded_payload(
         end -= 1;
     }
     (serde_json::Value::String(text[..end].to_owned()), true)
+}
+
+/// The sender of an inbox event: what the tree says it is and the name the reader sees.
+pub(in crate::runtime::state) struct EventSender {
+    agent: Option<crate::agent::AgentInstance>,
+    remote: Option<crate::transport::relay_peer::PeerAgentStamp>,
+    kind: &'static str,
+    alias: Option<String>,
+    pub(in crate::runtime::state) name: String,
+    pub(in crate::runtime::state) relation: SenderRelation,
+}
+
+impl EventSender {
+    /// What `chariox.send_agent_message` needs to answer this sender, when its name is not enough:
+    /// the sender is in another room or on another kernel.
+    pub(in crate::runtime::state) fn reply_route(
+        &self,
+        room: &str,
+        event: &InboxEvent,
+    ) -> Option<String> {
+        match (&self.agent, &self.remote) {
+            (Some(agent), _) if agent.session_id() != room => Some(format!(
+                "agent {:?}, room {:?}",
+                event.source_id,
+                agent.session_id()
+            )),
+            (None, Some(stamp)) => Some(format!(
+                "agent {:?}, room {:?}, kernel {:?}",
+                stamp.agent_id, stamp.room_id, stamp.kernel_id
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl KernelRuntimeState {
@@ -80,9 +114,10 @@ impl KernelRuntimeState {
         }))
     }
 
-    /// A decision event needs an answer only while its card is open: pending in this kernel or
-    /// shown in its room. A card that ended without one (its asker stopped, or the kernel that
-    /// held it stopped) leaves nothing to answer, so its event can be acknowledged.
+    /// A decision event needs an answer only while its card is open and its agent holds it: a card
+    /// another holder (or the user) has now, or one that ended without an answer (its asker
+    /// stopped, or the kernel that held it stopped), leaves this agent nothing to answer, so its
+    /// event can be acknowledged.
     fn decision_open(&self, room: &str, event: &InboxEvent) -> bool {
         if !ledger::needs_answer(event) {
             return false;
@@ -90,26 +125,28 @@ impl KernelRuntimeState {
         let Some(card) = event.payload["interaction_id"].as_str() else {
             return true;
         };
-        self.owned.pending_interactions.write().contains_key(card)
-            || self
-                .owned
-                .session_store
-                .get_session(room)
-                .is_ok_and(|session| {
-                    session
-                        .active_interactions()
-                        .iter()
-                        .any(|open| open.id() == card)
-                })
+        if let Some(pending) = self.owned.pending_interactions.write().get(card) {
+            return pending.holder == DecisionHolder::Agent(event.agent_id.clone());
+        }
+        self.owned
+            .session_store
+            .get_session(room)
+            .is_ok_and(|session| {
+                session
+                    .active_interactions()
+                    .iter()
+                    .any(|open| open.id() == card)
+            })
     }
 
-    fn inbox_event_view(
+    /// Who sent `event`, as far as the agent tree and the peer stamps tell.
+    pub(in crate::runtime::state) fn event_sender(
         &self,
         room: &str,
         reader: &crate::agent::AgentInstance,
         agents: &[crate::agent::AgentInstance],
         event: &InboxEvent,
-    ) -> (SenderRelation, serde_json::Value) {
+    ) -> EventSender {
         let agent = self.owned.agent_store.get_agent(&event.source_id).ok();
         let session = self.owned.session_store.get_session(room).ok();
         let is_run = session.is_some_and(|session| {
@@ -127,7 +164,7 @@ impl KernelRuntimeState {
                 _ => None,
             })
             .flatten();
-        let source_kind = if agent.is_some() || remote.is_some() {
+        let kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {
             "workflow_run"
@@ -141,14 +178,40 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|stamp| format!("{}/{}", stamp.kernel_id, stamp.agent_id));
         let name = alias
-            .as_deref()
-            .or(remote_name.as_deref())
-            .unwrap_or(&event.source_id);
+            .clone()
+            .or(remote_name)
+            .unwrap_or_else(|| event.source_id.clone());
         let relation = if remote.is_some() {
             SenderRelation::Peer
         } else {
             SenderRelation::of(reader, agent.as_ref(), agents)
         };
+        EventSender {
+            agent,
+            remote,
+            kind,
+            alias,
+            name,
+            relation,
+        }
+    }
+
+    fn inbox_event_view(
+        &self,
+        room: &str,
+        reader: &crate::agent::AgentInstance,
+        agents: &[crate::agent::AgentInstance],
+        event: &InboxEvent,
+    ) -> (SenderRelation, serde_json::Value) {
+        let EventSender {
+            agent,
+            remote,
+            kind: source_kind,
+            alias,
+            name,
+            relation,
+        } = self.event_sender(room, reader, agents, event);
+        let name = name.as_str();
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");
         summary.truncate(summary.floor_char_boundary(SUMMARY_LIMIT));

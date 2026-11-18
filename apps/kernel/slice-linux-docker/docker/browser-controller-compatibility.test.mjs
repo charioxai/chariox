@@ -111,3 +111,20 @@ test('MP-08/MP-10 Content-Disposition navigation starts a download and keeps the
   const result=await navigateBrowser({connection,sessionId:'s',targetId:'t',documentId:'current',url:'https://example.test/report'});
   assert.equal(result.download_started,true); assert.equal(result.document_id,'current');
 });
+
+test('a failed load that Chrome shows as an error page is the page now; an aborted load stays a failure', async () => {
+  const connection = (committed) => {
+    let navigated = false;
+    return { send: async (method) => {
+      if (method === 'Page.navigate') { navigated = true; return { loaderId: 'next', errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE' }; }
+      return { frameTree: { frame: navigated ? committed : { loaderId: 'current' } } };
+    } };
+  };
+  const navigate = (committed) => navigateBrowser({ connection: connection(committed), sessionId: 's', targetId: 't', documentId: 'current', url: 'https://example.test/status/500' });
+  const page = await navigate({ loaderId: 'next', url: 'chrome-error://chromewebdata/', unreachableUrl: 'https://example.test/status/500' });
+  assert.deepEqual(page, { target_id: 't', document_id: 'next', url: 'https://example.test/status/500' });
+  await assert.rejects(
+    navigate({ loaderId: 'current', url: 'https://example.test/' }),
+    (error) => error instanceof BrowserCompatibilityError && error.code === 'browser_navigation_failed',
+  );
+});

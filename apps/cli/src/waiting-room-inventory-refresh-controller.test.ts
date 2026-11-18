@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord, RoomListSessionSummary } from "./cli-types.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { LocalKernelPresence } from "./local-kernel-presence.js"
@@ -445,9 +445,9 @@ test("MP-08 OWNER-15 pin reordering keeps focus on the same project", async () =
   await harness.controller.refreshNow()
   harness.focusProject(1)
   harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: [], projects: [{ ...older, pinned: true }] })
-  assert.equal(harness.waitingRoomState().projectIndex, 0)
+  assert.equal(harness.startState().projectIndex, 0)
   harness.controller.applyRowsChanged({ inventoryVersion: "v3", structuralVersion: "v3", activityRevision: "v3", sessions: [], removedSessionIds: [], projects: [older] })
-  assert.equal(harness.waitingRoomState().projectIndex, 1)
+  assert.equal(harness.startState().projectIndex, 1)
 })
 
 test("MP-08/MP-10 cold row patches cannot skip full snapshot hydration", async () => {
@@ -721,7 +721,7 @@ function createHarness(options: {
   nowMs?: () => number
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
-  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
+  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: RoomListSessionSummary[]; next_cursor: string | null }>
   getInventory?: () => Promise<WaitingRoomInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
   cachedInventories?: readonly WaitingRoomInventory[]
@@ -735,7 +735,7 @@ function createHarness(options: {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
   let inventoryStatus: "loading" | "ready" | "error" = "loading"
-  let waitingRoomState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium")
+  let startState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium")
   let availableSessions: SessionListEntry[] = []
   let relayStatus: RelayStatusView | null = null
   let remoteMachines: RemoteMachineView[] = []
@@ -758,7 +758,7 @@ function createHarness(options: {
     setInventoryStatus: (status) => {
       inventoryStatus = status
     },
-    getWaitingRoomState: () => waitingRoomState,
+    getWaitingRoomState: () => startState,
     getInventory: async () => {
       inventoryCalls += 1
       if (options.getInventory) {
@@ -802,7 +802,7 @@ function createHarness(options: {
       externalProviderSessionsPage = page
     },
     reconcileWaitingRoom: (state) => {
-      waitingRoomState = state
+      startState = state
       reconcileCount += 1
     },
     warn: (message, fields) => {
@@ -823,8 +823,8 @@ function createHarness(options: {
 
   return {
     controller,
-    focusProject: (projectIndex: number) => { waitingRoomState = { ...waitingRoomState, focus: "project-entry", projectIndex } },
-    waitingRoomState: () => waitingRoomState,
+    focusProject: (projectIndex: number) => { startState = { ...startState, focus: "project-entry", projectIndex } },
+    startState: () => startState,
     inventoryCalls: () => inventoryCalls,
     inventoryStatus: () => inventoryStatus,
     availableSessions: () => availableSessions,
@@ -877,7 +877,7 @@ function inventory(
   }
 }
 
-function session(id: string): WaitingRoomPublicSessionSummary {
+function session(id: string): RoomListSessionSummary {
   return {
     id,
     project_id: "project-default",
@@ -1028,7 +1028,7 @@ test("history paging sends its ordering version and retries an activity change a
       if (cursor === null) return { sessions: [session("stale")], next_cursor: "next" }
       assert.deepEqual(harness.availableSessions().map(row => row.id), ["old"], "an incomplete catalog is not published")
       changed = true
-      throw new LocalIpcError("list sessions", "Session activity changed during listing", "waiting_room_inventory_changed")
+      throw new LocalIpcError("list sessions", "Session activity changed during listing", "room_list_changed")
     }
     return { sessions: [session("new"), session("kept")], next_cursor: null }
   } })

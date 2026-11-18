@@ -235,7 +235,7 @@ fn mp08_mp10_conditional_catalog_snapshot_retains_unchanged_sections() {
 }
 
 // OpenCode lists every models.dev provider (235 providers, 9,173 models on a
-// real kernel: 3.2 MB per waiting room open). Clients offer only connected
+// real kernel: 3.2 MB per Room list open). Clients offer only connected
 // providers, ones reachable on a remote machine, and backends' own providers
 // (a slice account can enable those).
 #[test]

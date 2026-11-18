@@ -40,8 +40,13 @@ path = "../../examples/apps/excalidraw/test/files-drill.rs"
 required-features = ["component-drills"]
 
 [[test]]
-name = "github-events-drill"
-path = "../../examples/apps/github-events/test/component-drill.rs"
+name = "documents-drill"
+path = "../../examples/apps/documents/test/component-drill.rs"
+required-features = ["component-drills"]
+
+[[test]]
+name = "todo-drill"
+path = "../../examples/apps/todo/test/component-drill.rs"
 required-features = ["component-drills"]
 
 [[bin]]

@@ -7,7 +7,7 @@ import { bootstrap } from '../bootstrap.mjs';
 function page() {
   const listeners = [];
   const parent = {};
-  const sandbox = { parent, MessageChannel, addEventListener: (type, listener) => listeners.push([type, listener]) };
+  const sandbox = { parent, MessageChannel, setTimeout, addEventListener: (type, listener) => listeners.push([type, listener]) };
   vm.createContext(sandbox);
   vm.runInContext('(' + bootstrap.toString() + ')();', sandbox);
   const deliver = (source, data, ports) => { for (const [, listener] of listeners) listener({ source, data, ports }); };
@@ -16,9 +16,9 @@ function page() {
 const portMessage = { type: 'chariox.app-view.port' };
 const next = port => new Promise(resolve => { port.onmessage = event => resolve(event.data); });
 
-test('window.chariox is a frozen surface of one function', () => {
+test('window.chariox is a frozen surface of the call and the change feed', () => {
   const { sandbox, chariox } = page();
-  assert.deepEqual(Object.keys(chariox), ['call']);
+  assert.deepEqual(Object.keys(chariox), ['call', 'changes']);
   assert.equal(Object.isFrozen(chariox), true);
   assert.equal(Object.getOwnPropertyDescriptor(sandbox, 'chariox').configurable, false);
   assert.equal(Object.getOwnPropertyDescriptor(sandbox, 'chariox').writable, false);
@@ -86,4 +86,60 @@ test('an answer that is not for a waiting call is ignored', async () => {
   channel.port1.postMessage({ type: 'chariox.app-view.result', id: 0, ok: true, result: 'mine' });
   assert.equal(await call, 'mine');
   channel.port1.close(); channel.port2.close();
+});
+
+// The change feed a page reads: `view_changes` through the same call, waiting up to `waitMs` for a change.
+function feedPage(answers) {
+  const { parent, deliver, chariox } = page();
+  const channel = new MessageChannel();
+  const seen = [];
+  channel.port1.onmessage = event => {
+    seen.push(event.data);
+    const answer = answers.length > 1 ? answers.shift() : answers[0];
+    channel.port1.postMessage({ type: 'chariox.app-view.result', id: event.data.id, ok: true, result: answer });
+  };
+  deliver(parent, portMessage, [channel.port2]);
+  return { chariox, seen, close: () => { channel.port1.close(); channel.port2.close(); } };
+}
+const quiet = { latest: 4, dropped: false, changes: [] };
+
+test('changes reads the feed after a position and returns at once when there is something to apply', async () => {
+  const change = { latest: 5, dropped: false, changes: [{ seq: 5, delta: { x: 1 } }] };
+  const { chariox, seen, close } = feedPage([change]);
+  assert.deepEqual(await chariox.changes(4, 5000), change);
+  assert.deepEqual(seen.map(({ method, input }) => [method, input]), [['view_changes', { since: 4 }]]);
+  close();
+});
+
+test('changes without a wait asks once, and with a wait asks again until a change arrives or the time is up', async () => {
+  const change = { latest: 5, dropped: false, changes: [{ seq: 5, delta: {} }] };
+  const once = feedPage([quiet]);
+  assert.deepEqual(await once.chariox.changes(4), quiet);
+  assert.equal(once.seen.length, 1);
+  once.close();
+  const waiting = feedPage([quiet, quiet, change]);
+  assert.deepEqual(await waiting.chariox.changes(4, 5000), change);
+  assert.equal(waiting.seen.length, 3);
+  waiting.close();
+  const expired = feedPage([quiet]);
+  const started = Date.now();
+  assert.deepEqual(await expired.chariox.changes(4, 1200), quiet);
+  assert.ok(Date.now() - started >= 1100 && expired.seen.length >= 2 && expired.seen.length <= 3);
+  expired.close();
+});
+
+test('a reader that fell behind is told at once, whatever it waits', async () => {
+  const behind = { latest: 300, dropped: true, changes: [{ seq: 173, delta: {} }] };
+  const { chariox, seen, close } = feedPage([behind]);
+  assert.deepEqual(await chariox.changes(0, 5000), behind);
+  assert.equal(seen.length, 1);
+  close();
+});
+
+test('changes refuses a position and a wait that are not numbers', async () => {
+  const { chariox, seen, close } = feedPage([quiet]);
+  await assert.rejects(chariox.changes('4'), error => error.name === 'TypeError');
+  await assert.rejects(chariox.changes(4, -1), error => error.name === 'TypeError');
+  assert.deepEqual(seen, []);
+  close();
 });

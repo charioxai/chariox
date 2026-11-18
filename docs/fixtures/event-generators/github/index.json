@@ -1,0 +1,117 @@
+[
+  {
+    "fixture": "pull-request-opened.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.opened"
+  },
+  {
+    "fixture": "pull-request-synchronize.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.synchronize"
+  },
+  {
+    "fixture": "pull-request-review-requested.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.review_requested"
+  },
+  {
+    "fixture": "pull-request-closed-merged.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.closed"
+  },
+  {
+    "fixture": "pull-request-closed-unmerged.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.closed"
+  },
+  {
+    "fixture": "pull-request-ready-for-review.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.ready_for_review"
+  },
+  {
+    "fixture": "pull-request-reopened.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.reopened"
+  },
+  {
+    "fixture": "pull-request-labeled.json",
+    "github_event": "pull_request",
+    "event_type": "pull_request.labeled"
+  },
+  {
+    "fixture": "pull-request-review-submitted.json",
+    "github_event": "pull_request_review",
+    "event_type": "pull_request_review.submitted"
+  },
+  {
+    "fixture": "pull-request-review-comment-created.json",
+    "github_event": "pull_request_review_comment",
+    "event_type": "pull_request_review_comment.created"
+  },
+  {
+    "fixture": "issue-comment-created-on-pull-request.json",
+    "github_event": "issue_comment",
+    "event_type": "issue_comment.created"
+  },
+  {
+    "fixture": "issue-comment-created-on-issue.json",
+    "github_event": "issue_comment",
+    "event_type": "issue_comment.created"
+  },
+  {
+    "fixture": "issues-opened.json",
+    "github_event": "issues",
+    "event_type": "issues.opened"
+  },
+  {
+    "fixture": "issues-closed.json",
+    "github_event": "issues",
+    "event_type": "issues.closed"
+  },
+  {
+    "fixture": "issues-labeled.json",
+    "github_event": "issues",
+    "event_type": "issues.labeled"
+  },
+  {
+    "fixture": "check-run-completed.json",
+    "github_event": "check_run",
+    "event_type": "check_run.completed"
+  },
+  {
+    "fixture": "check-run-completed-no-pr.json",
+    "github_event": "check_run",
+    "event_type": "check_run.completed"
+  },
+  {
+    "fixture": "check-suite-completed.json",
+    "github_event": "check_suite",
+    "event_type": "check_suite.completed"
+  },
+  {
+    "fixture": "workflow-run-completed.json",
+    "github_event": "workflow_run",
+    "event_type": "workflow_run.completed"
+  },
+  {
+    "fixture": "release-published.json",
+    "github_event": "release",
+    "event_type": "release.published"
+  },
+  {
+    "fixture": "push-default-branch.json",
+    "github_event": "push",
+    "event_type": "push"
+  },
+  {
+    "fixture": "push-feature-branch.json",
+    "github_event": "push",
+    "event_type": "push"
+  },
+  {
+    "fixture": "push-tag.json",
+    "github_event": "push",
+    "event_type": "push"
+  }
+]

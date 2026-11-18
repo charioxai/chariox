@@ -65,6 +65,10 @@ pub struct AgentTreeNode {
     pub needs_user: bool,
     pub deadline_ms: Option<u64>,
     pub created_at_ms: u64,
+    /// The provider usage limit that stopped the node, until it is resumed or left. A sub-agent is
+    /// in no Room agent list, so this is where a client reads the stop it decides on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_stop: Option<crate::agent::UsageLimitStop>,
 }
 
 /// The descendants of `root` in creation order (stable); the client builds the

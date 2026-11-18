@@ -363,6 +363,48 @@ async fn a_finish_steers_a_running_parent() {
     );
 }
 
+/// The wake carries the child's report, and the kernel closes the event the parent no longer has to
+/// read: the parent finishes on the wake alone, with no inbox read or acknowledgement.
+#[tokio::test]
+async fn a_finish_wake_carries_the_childs_report_and_closes_its_event() {
+    let team = team("child-finished-inline", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let event = &child_finished(&team)[0];
+    let prompt_id = event.prompt_id.clone().expect("the wake prompt");
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.parent))
+        .unwrap();
+    let wake = entries
+        .iter()
+        .find(|entry| {
+            entry.merge_key.as_deref()
+                == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
+        })
+        .unwrap_or_else(|| panic!("no steered wake row: {entries:?}"));
+    for expected in [
+        "a sub-agent of yours: a report",
+        "\"success\":true",
+        &team.task.task_id,
+    ] {
+        assert!(
+            wake.text.contains(expected),
+            "missing {expected}: {}",
+            wake.text
+        );
+    }
+    assert!(!wake.text.contains("chariox.events.inbox"), "{}", wake.text);
+    assert_eq!(event.state, "handled", "{event:?}");
+}
+
 /// The steered wake reaches the provider as a user message of the running turn.
 /// The kernel must own it in history: otherwise the transcript observer imports
 /// that message as an external turn and stores the turn's answer a second time.
@@ -392,10 +434,7 @@ async fn a_steering_finish_is_recorded_as_a_kernel_owned_prompt() {
                     == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
         })
         .unwrap_or_else(|| panic!("the steered wake has no kernel-owned prompt row: {entries:?}"));
-    assert!(
-        steer.text.starts_with("Inbox: at least 1 new event"),
-        "{steer:?}"
-    );
+    assert!(steer.text.starts_with("Inbox: 1 new event"), "{steer:?}");
     assert_ne!(
         steer.prompt_origin,
         Some(crate::session::PromptOrigin::External),
@@ -690,4 +729,75 @@ async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     assert_eq!(events[0].payload["success"], false);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
+}
+
+async fn end_kid(family: &Family, kid: &Kid) {
+    let store = &family.runtime.owned.durable_state_store;
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: family.room.clone(),
+            agent: kid.child.clone(),
+            prompt: kid.child_prompt.id().into(),
+            run: kid.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    family
+        .runtime
+        .owned
+        .complete_local_prompt_without_advance(&family.room, &kid.child, Some(&kid.child_run))
+        .unwrap();
+    family
+        .runtime
+        .finish_agent_task_settlement(Some((task, correction)), &kid.child_prompt)
+        .await
+        .unwrap();
+}
+
+fn wake_prompts(family: &Family) -> Vec<Option<String>> {
+    family
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&family.room, &family.parent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "child_finished")
+        .map(|event| event.prompt_id)
+        .collect()
+}
+
+/// AO-IN-02: workers that finish together reach their parent in one wake. A finish that leaves
+/// a sibling working waits a moment for the others instead of waking the parent three times.
+#[tokio::test]
+async fn children_that_finish_together_wake_their_parent_once() {
+    let family = family("child-finished-together", 3, None, false).await;
+    for kid in &family.kids {
+        end_kid(&family, kid).await;
+    }
+    let prompts = wake_prompts(&family);
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert!(
+        prompts[0].is_some() && prompts.iter().all(|prompt| *prompt == prompts[0]),
+        "one wake carries the three finishes: {prompts:?}"
+    );
+}
+
+/// A sibling that keeps working does not hold the parent for ever: the window ends.
+#[tokio::test]
+async fn a_finish_waits_for_its_siblings_only_for_a_moment() {
+    let family = family("child-finished-window", 2, None, false).await;
+    end_kid(&family, &family.kids[0]).await;
+    assert_eq!(wake_prompts(&family), [None], "held for the sibling");
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let prompts = wake_prompts(&family);
+    assert!(
+        prompts[0].is_some(),
+        "the window ended and woke the parent: {prompts:?}"
+    );
 }

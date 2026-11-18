@@ -36,6 +36,39 @@ pub struct ProviderRunBatchLaunchResult {
     pub reused: bool,
 }
 
+/// What the person, or an agent above, decides for an agent stopped by the provider's usage limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum UsageLimitStopAction {
+    /// Resume when usage is back.
+    ResumeWhenBack,
+    /// Leave the agent stopped.
+    NotNow,
+    /// Take back an armed resume.
+    Cancel,
+    /// Move the turn to another account of the same provider and go on now.
+    ContinueOn { account_profile: String },
+}
+
+/// When a settings change takes effect in the agent's provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsApplies {
+    /// The agent was idle, or its provider takes the setting in place.
+    #[default]
+    Now,
+    /// The running turn goes on in a new provider process at its next finished step.
+    AtStepBoundary,
+    /// The provider cannot go on in a new process: the next turn starts with the change.
+    AtTurnEnd,
+}
+
+impl SettingsApplies {
+    pub fn is_now(&self) -> bool {
+        *self == Self::Now
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateAgentConfigRequest {
     pub session_id: String,
@@ -60,6 +93,15 @@ pub struct UpdateAgentConfigRequest {
     pub worktree_id: Option<String>,
     #[serde(default)]
     pub clear_worktree_id: bool,
+    /// What the agent may change about itself without asking; only the person sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_settings: Option<crate::agent::AgentSelfSettings>,
+    /// Settles the agent's usage-limit stop; given alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit: Option<UsageLimitStopAction>,
+    /// Why an agent asked for the change; shown with the change in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +118,9 @@ pub struct UpdateAgentProfileRequest {
     pub effort: Option<String>,
     #[serde(default)]
     pub clear_effort: bool,
+    /// Why an agent asked for the change; shown with the change in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +250,14 @@ impl std::fmt::Debug for SendProviderLoginInputRequest {
             .field("data_base64", &"[REDACTED]")
             .finish()
     }
+}
+
+/// Types the value of one Vault entry into the running API-key login. The
+/// value never leaves the kernel: neither the request nor its answer carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendProviderLoginVaultEntryRequest {
+    pub login_id: String,
+    pub credential_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

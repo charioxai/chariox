@@ -14,7 +14,7 @@ test("detached event subscription waits for kernel selection then follows the re
   let subscriptions = 0
   const failures: string[] = []
   const composition = createCliSessionLifecycleComposition({
-    client: { subscribeToWaitingRoomInventory: async () => {
+    client: { subscribeToRoomList: async () => {
       subscriptions++
       if (!connected) throw new Error("local kernel unavailable")
     } },
@@ -45,7 +45,7 @@ test("detached event subscription waits for kernel selection then follows the re
 test("waiting-room subscription failure retains rows and marks them reconnecting", async () => {
   const calls: string[] = []
   const values = {
-    client: { subscribeToWaitingRoomInventory: async () => { throw new Error("unable to authenticate data") } },
+    client: { subscribeToRoomList: async () => { throw new Error("unable to authenticate data") } },
     options: {}, renderer: {}, appLogger: { error: () => {}, debug: () => {} },
     closingStateController: { isClosing: () => false, setClosing: () => {} },
     supportsKernelEventStream: true,

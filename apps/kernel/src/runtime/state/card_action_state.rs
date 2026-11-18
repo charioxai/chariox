@@ -52,6 +52,29 @@ impl Drop for ActionCard {
 }
 
 impl KernelRuntimeState {
+    /// The agent whose current provider run asks for a card; a stale run asks for nothing.
+    pub(crate) fn card_action_agent(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let refused = |message: &str| DaemonError::LocalTransport {
+            operation: "runtime_tool_request_popup",
+            message: message.into(),
+        };
+        let agent_id = run
+            .agent_instance_id()
+            .ok_or_else(|| refused("provider run is not bound to an agent"))?;
+        let current = self
+            .owned
+            .provider_store
+            .get_run_for_agent(run.session_id(), agent_id)
+            .ok_or_else(|| refused("asking provider run is unavailable"))?;
+        if current.id() != run.id() {
+            return Err(refused("stale provider tool authority"));
+        }
+        self.owned.agent_store.get_agent(agent_id)
+    }
+
     pub(crate) async fn raise_action_card(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -66,18 +89,8 @@ impl KernelRuntimeState {
             return Err(refused("timeout_sec must be at least 1"));
         }
         let timeout_sec = super::tool_dispatch::blocking_popup_timeout_seconds(timeout_sec);
-        let agent_id = run
-            .agent_instance_id()
-            .ok_or_else(|| refused("provider run is not bound to an agent"))?;
-        let current = self
-            .owned
-            .provider_store
-            .get_run_for_agent(run.session_id(), agent_id)
-            .ok_or_else(|| refused("asking provider run is unavailable"))?;
-        if current.id() != run.id() {
-            return Err(refused("stale provider tool authority"));
-        }
-        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let agent = self.card_action_agent(run)?;
+        let agent_id = agent.id();
         let interaction_id = format!("card-action-{:032x}", rand::random::<u128>());
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &interaction_id,

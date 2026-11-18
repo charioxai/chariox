@@ -933,3 +933,48 @@ fn on_demand_full_live_limit_without_an_evictable_victim_fails_promptly() {
     control.lifecycle().shutdown_blocking().unwrap();
     assert!(all_reaped(&observations));
 }
+
+#[test]
+fn an_idle_app_stays_discoverable_and_starts_on_demand_after_enrollment() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lifecycle = Some(Mode::Lifecycle);
+    control.seed_dormant("alice", "installed");
+    assert!(control.is_app_dormant("alice", "installed"));
+
+    store.enroll_app_owner("alice", "bob").unwrap();
+    control.enroll_owner("alice", "bob");
+
+    assert!(control.is_app_dormant("bob", "installed"));
+    assert!(!control.is_app_dormant("alice", "installed"));
+    let discovered = store
+        .current_app_catalogs("bob", &control.dormant_app_catalogs("bob"))
+        .unwrap();
+    assert_eq!(
+        discovered.len(),
+        1,
+        "the idle App's tools stay listed for the enrolled owner"
+    );
+    control
+        .lifecycle()
+        .start_on_demand_blocking("bob", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("bob", "installed").is_some());
+    control
+        .lifecycle()
+        .stop_blocking("bob", "installed")
+        .unwrap();
+    assert!(all_reaped(&observations));
+}

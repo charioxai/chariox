@@ -313,6 +313,17 @@ pub(super) fn compose_command_router(
         metaagent_trace_subscriptions.clone(),
         workspace_coordinator.clone(),
     );
+    // An App's `eventRouting` calls act on the kernel through this handle.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    let routing_host = Arc::new(crate::runtime::app_event_routing_broker::RoutingHost {
+        state: runtime_state.clone(),
+        management: Default::default(),
+    });
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    runtime_state
+        .app_control()
+        .lifecycle()
+        .attach_routing_host(&routing_host);
     if session_projection.list_shared().is_none() {
         session_projection.update_list(runtime_state.list_session_snapshots());
     }
@@ -367,6 +378,8 @@ pub(super) fn compose_command_router(
     }
     kernel_gateway.resume_event_parts();
     CommandRouter {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        _routing_host: routing_host,
         _native_interaction_bridge: native_interaction_bridge,
         app,
         runtime_state,
@@ -379,7 +392,7 @@ pub(super) fn compose_command_router(
         provider_runtime_lanes,
         focus_projection,
         session_projection,
-        waiting_room_session_summaries: Default::default(),
+        room_list_session_summaries: Default::default(),
         agent_runtime_projection,
         history_store,
         operational_history_store,

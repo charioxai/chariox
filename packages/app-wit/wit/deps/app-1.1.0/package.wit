@@ -1,0 +1,108 @@
+/// The additive minor 1.1.0 of the App contract: only items marked
+/// `@since(version = 1.1.0)`. A 1.0.0 component never imports them.
+package chariox:app@1.1.0;
+
+/// An App manages its own inbox routes and event targets inside the one
+/// connection its owner granted, as its signed `capabilities.eventRouting`
+/// allows. No function takes a connection, token, installation or Room: the
+/// kernel adds them. `bind-agent` names no agent unless the person acts.
+// GHA-2: the kernel seam that lets an App configure the existing delivery path.
+@since(version = 1.1.0)
+interface event-routing {
+  use chariox:app/app-types@1.0.0.{json, app-error};
+
+  /// `repository` is the generator's scope name (for example `owner/repo`) and
+  /// must be one of the granted connection's repositories.
+  record route-spec {
+    route-id: string,
+    /// One of the manifest's `eventRouting.incoming` events.
+    event: string,
+    repository: string,
+    source-event-type: string,
+    source-event-version: u32,
+  }
+  record route {
+    route-id: string,
+    event: string,
+    repository: string,
+    source-event-type: string,
+    source-event-version: u32,
+    active: bool,
+    pending: u64,
+    delivered: u64,
+    failed: u64,
+    expired: u64,
+  }
+  record connection-state {
+    generator-id: string,
+    /// Absent until the owner grants a connection to this App.
+    connection-id: option<string>,
+    /// `ready`, or why the connection cannot feed routes.
+    status: string,
+    max-routes: u32,
+    routes: u32,
+  }
+  record authorization { authorization-id: string, url: string }
+  record target {
+    automation-id: string,
+    /// The App's outgoing event it delivers.
+    event: string,
+    /// `agent` or `workflow`.
+    kind: string,
+    agent-id: option<string>,
+    state: string,
+  }
+
+  /// Creates the route or returns the existing one with the same id and spec.
+  ensure-route: async func(spec: route-spec) -> result<route, app-error>;
+  remove-route: async func(route-id: string) -> result<_, app-error>;
+  set-route-active: async func(route-id: string, active: bool) -> result<route, app-error>;
+  list-routes: async func() -> result<list<route>, app-error>;
+
+  connection-status: async func() -> result<connection-state, app-error>;
+  /// One page of the granted connection's repositories, as the generator lists them.
+  connection-resources: async func(query: option<string>, cursor: option<string>, limit: u32) -> result<json, app-error>;
+  /// Starts the generator's authorization; the person approves on the provider's page.
+  start-authorization: async func(return-url: option<string>) -> result<authorization, app-error>;
+
+  /// Delivers `event` to an agent's Room. The agent is the one the invocation
+  /// acts for; naming another needs a person acting in the App window.
+  bind-agent: async func(event: string, agent-id: option<string>) -> result<target, app-error>;
+  bind-workflow: async func(event: string, session-id: string, publication-ref: string, queue-ref: option<string>) -> result<target, app-error>;
+  unbind-target: async func(automation-id: string) -> result<_, app-error>;
+  list-targets: async func() -> result<list<target>, app-error>;
+}
+
+/// An App commits and pushes a Room's worktree as one of the owner's
+/// accounts, as its signed `capabilities.workspace` allows. The kernel holds
+/// the credential: the App names the worktree, the files and the account, and
+/// never sees a token. A call needs a person or an agent whose call a person
+/// approved.
+@since(version = 1.1.0)
+interface workspace {
+  use chariox:app/app-types@1.0.0.{json, app-error};
+
+  /// The worktree's changed files: `{files:[{path,status,additions,deletions}], branch, remote}`. Local facts only: it never asks the remote.
+  changes: async func(worktree: string) -> result<json, app-error>;
+  /// Commits exactly `files` with `message`. On the default branch or a
+  /// detached HEAD the commit moves to a new `chariox/<slug>` branch, and
+  /// `branch` names one instead. `account` lets the kernel ask a private
+  /// `origin` for its default branch. Returns `{commit, branch, createdBranch}`.
+  commit: async func(worktree: string, files: list<string>, message: string, branch: option<string>, account: string) -> result<json, app-error>;
+  /// Pushes the current branch, never the default one and never forced, to
+  /// the worktree's `origin` GitHub repository as `account`.
+  push: async func(worktree: string, account: string) -> result<json, app-error>;
+}
+
+world app {
+  include chariox:app/app@1.0.0;
+  import event-routing;
+  import workspace;
+}
+
+/// Install-time upper bound of the 1.1.0 world (see `admission.wit`).
+world app-admission {
+  include chariox:app/app-admission@1.0.0;
+  import event-routing;
+  import workspace;
+}

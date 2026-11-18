@@ -680,8 +680,18 @@ async fn lowering_the_room_default_hands_the_decision_to_the_user_at_once() {
     );
     assert_eq!(t.panels(), vec![(t.g.clone(), cards(&["perm-room"]))]);
     assert_eq!(t.needs().1, 1, "the user's decision is counted");
-    assert!(t.all_closed(&t.p), "the former holder's event is withdrawn");
-    assert!(t.decision_events(&t.g).is_empty(), "g may not hold it");
+    assert!(
+        t.all_closed(&t.p),
+        "the former holder's event is withdrawn: {:?}",
+        t.decision_events(&t.p)
+    );
+    // p yielded after the steer carried the question, so it moved up to g; g then parked and the
+    // lowered default withdrew it.
+    assert!(
+        t.all_closed(&t.g),
+        "g may not hold it: {:?}",
+        t.decision_events(&t.g)
+    );
     assert!(answer.try_recv().is_err(), "the asker waits for the user");
     t.runtime
         .owned

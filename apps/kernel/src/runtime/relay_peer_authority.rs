@@ -33,6 +33,8 @@ pub(crate) struct RemoteProjectionAuthority {
     pub(crate) peer: RelayPeerAuthority,
     pub(crate) expected_binding: Option<crate::agent::RemoteAgentBinding>,
     pub(crate) expected_prompt_id: Option<String>,
+    /// The worker run of a held background task: its projection is admitted with no active prompt.
+    pub(crate) held_provider_run_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -53,5 +55,6 @@ pub(crate) fn test_projection_authority(worker_id: &str) -> RemoteProjectionAuth
         peer: test_peer_authority(worker_id),
         expected_binding: None,
         expected_prompt_id: None,
+        held_provider_run_id: None,
     }
 }

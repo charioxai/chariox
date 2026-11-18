@@ -41,7 +41,8 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
         LocalDaemonRequest::LockCredentialVault(_) => {
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }
-        LocalDaemonRequest::SetProviderAccountCredential(_) => (
+        LocalDaemonRequest::SetProviderAccountCredential(_)
+        | LocalDaemonRequest::SendProviderLoginVaultEntry(_) => (
             Who::PersonOrOwnerAgent,
             "provider_account_sign_in_owner_only",
             wording::ENROLL,

@@ -25,6 +25,11 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
+    Watcher { watcher: WatcherSummary },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
+    WatcherDryRun { result: WatcherDryRun },
+    WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
@@ -37,6 +42,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
+    OwnerInteractionsListed { interactions: Vec<OwnerInteraction> },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
@@ -91,6 +97,8 @@ pub enum LocalDaemonResponse {
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
+    AppAccounts { installation_id: String, credentials: Vec<AppCredentialSummary>, accounts: Vec<AppAccountSummary>, },
+    AppStanding { installation_id: String, standing: Vec<AppStandingSummary>, },
     /// Protocol 361: the caller's active installations and their configuration.
     AppSet { schema: String, installations: Vec<AppSetInstallation>, },
     /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
@@ -298,9 +306,19 @@ pub enum LocalDaemonResponse {
         query_completed_at_ms: u64,
         kernels: Vec<RelayKernelPresence>,
     },
-    WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
-    WaitingRoomSessionsListed { page: WaitingRoomSessionPage, },
-    WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
+    RoomListSessionsListed { page: RoomListSessionPage, },
+    RoomListSnapshot { snapshot: RoomListSnapshot, },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
+    NotificationSubscriptions {
+        subscriptions: Vec<NotificationSubscriptionRow>,
+        responsibilities: Vec<PersonResponsibilityRow>,
+    },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {
@@ -317,10 +335,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
-    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
+    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, workspace_empty: bool, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
-    WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
     WorkspaceGitOverview { overview: WorkspaceGitOverview, },
     WorkspaceFilesListed { listing: WorkspaceRepoFileListing, },
     WorkspaceFileContent { content: WorkspaceFileContent, },
@@ -355,6 +372,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
+    ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },
@@ -452,7 +470,12 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     SessionConfigUpdated { config: SessionConfigState, session: RuntimeSession, },
-    AgentConfigUpdated { agent: AgentInstance, session: RuntimeSession, },
+    AgentConfigUpdated {
+        agent: AgentInstance,
+        session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "SettingsApplies::is_now")]
+        applies: SettingsApplies,
+    },
     TerminalResized { session_id: String, cols: u16, rows: u16, },
     TerminalInputSent { session_id: String, attachment_id: String, byte_count: usize, },
     TerminalOutput { records: Vec<TerminalOutputRecord>, },
@@ -470,7 +493,12 @@ pub enum LocalDaemonResponse {
     SessionAliasSuggested { workspace_id: String, alias: String, },
     RoomSetupUpdated { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
-    AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
+    AgentProfileUpdated {
+        agent: AgentInstance,
+        session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "SettingsApplies::is_now")]
+        applies: SettingsApplies,
+    },
     AgentSpawned {
         agent: AgentInstance,
         #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>,
@@ -552,6 +580,8 @@ pub enum LocalDaemonResponse {
     WorkflowCodePackageImported { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeSourceExported { export: crate::workflow_code::WorkflowCodeSourceExport, },
     WorkflowAliased { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowResponsibleSet { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowRunAttentionCleared { run: WorkflowRun, session: RuntimeSession, },
     WorkflowsListed { workflows: Vec<WorkflowDefinition>, },
     WorkflowResolved { workflow: WorkflowDefinition, },
     WorkflowPublicationCreated { publication: WorkflowPublicationDefinition, session: RuntimeSession, },

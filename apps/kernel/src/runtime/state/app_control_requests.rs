@@ -37,11 +37,19 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::GetAppLogs(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::SetAppInboxRoutePaused(_)
+            | LocalDaemonRequest::PauseAppAutomation(_)
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
             | LocalDaemonRequest::GrantAppConnection(_)
             | LocalDaemonRequest::RevokeAppConnection(_)
             | LocalDaemonRequest::ListAppConnections(_)
+            | LocalDaemonRequest::GrantAppAccount(_)
+            | LocalDaemonRequest::RevokeAppAccount(_)
+            | LocalDaemonRequest::ListAppAccounts(_)
+            | LocalDaemonRequest::GrantAppStanding(_)
+            | LocalDaemonRequest::RevokeAppStanding(_)
+            | LocalDaemonRequest::ListAppStanding(_)
             | LocalDaemonRequest::RevokeAppFileGrants(_) => {
                 Box::pin(self.execute_app_control_request_selected(command, request))
             }
@@ -151,15 +159,23 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ListAppAutomations(request) => &request.installation_id,
             LocalDaemonRequest::ConfigureAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::DisableAppAutomation(request) => &request.installation_id,
+            LocalDaemonRequest::PauseAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::UninstallApp(request) => &request.installation_id,
             LocalDaemonRequest::GetAppLogs(request) => &request.installation_id,
             LocalDaemonRequest::CreateAppInboxRoute(request) => &request.installation_id,
             LocalDaemonRequest::RemoveAppInboxRoute(request) => &request.installation_id,
+            LocalDaemonRequest::SetAppInboxRoutePaused(request) => &request.installation_id,
             LocalDaemonRequest::ListAppInboxRoutes(request) => &request.installation_id,
             LocalDaemonRequest::TestAppInboxRoute(request) => &request.installation_id,
             LocalDaemonRequest::GrantAppConnection(request) => &request.installation_id,
             LocalDaemonRequest::RevokeAppConnection(request) => &request.installation_id,
             LocalDaemonRequest::ListAppConnections(request) => &request.installation_id,
+            LocalDaemonRequest::GrantAppAccount(request) => &request.installation_id,
+            LocalDaemonRequest::RevokeAppAccount(request) => &request.installation_id,
+            LocalDaemonRequest::ListAppAccounts(request) => &request.installation_id,
+            LocalDaemonRequest::GrantAppStanding(request) => &request.installation_id,
+            LocalDaemonRequest::RevokeAppStanding(request) => &request.installation_id,
+            LocalDaemonRequest::ListAppStanding(request) => &request.installation_id,
             LocalDaemonRequest::RevokeAppFileGrants(request) => &request.installation_id,
             _ => return None,
         };
@@ -170,6 +186,7 @@ impl KernelRuntimeState {
         let scoped_room = match request {
             LocalDaemonRequest::ListAppAutomations(request) => request.session_id.as_deref(),
             LocalDaemonRequest::DisableAppAutomation(request) => request.session_id.as_deref(),
+            LocalDaemonRequest::PauseAppAutomation(request) => request.session_id.as_deref(),
             _ => None,
         };
         if let Some(room_id) = scoped_room {
@@ -367,6 +384,29 @@ impl KernelRuntimeState {
                     automation: summary(&disabled),
                 });
             }
+            LocalDaemonRequest::PauseAppAutomation(request) => {
+                let catalog = self.app_catalog(&owner, &installation).await?;
+                let owned = self.owned.clone();
+                let permit = self.app_control().try_admit()?;
+                let paused = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    owned.deactivate_app_automation(
+                        &owner,
+                        catalog,
+                        request.automation_id,
+                        request.expected_revision,
+                        AutomationStatus::Paused,
+                        budget(),
+                    )
+                })
+                .await
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                .map_err(automation_error)?;
+                return Ok(LocalDaemonResponse::AppAutomation {
+                    installation_id: installation,
+                    automation: summary(&paused),
+                });
+            }
             LocalDaemonRequest::GetAppLogs(request) => {
                 let after = match request.after_sequence.as_deref() {
                     Some(value) => value
@@ -401,6 +441,7 @@ impl KernelRuntimeState {
             }
             request @ (LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::SetAppInboxRoutePaused(_)
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)) => {
                 return self.app_inbox_request(owner, installation, request).await;
@@ -415,6 +456,18 @@ impl KernelRuntimeState {
             LocalDaemonRequest::RevokeAppFileGrants(request) => {
                 return self
                     .revoke_app_file_grants(owner, installation, request)
+                    .await;
+            }
+            request @ (LocalDaemonRequest::GrantAppAccount(_)
+            | LocalDaemonRequest::RevokeAppAccount(_)
+            | LocalDaemonRequest::ListAppAccounts(_)) => {
+                return self.app_account_request(owner, installation, request).await;
+            }
+            request @ (LocalDaemonRequest::GrantAppStanding(_)
+            | LocalDaemonRequest::RevokeAppStanding(_)
+            | LocalDaemonRequest::ListAppStanding(_)) => {
+                return self
+                    .app_standing_request(owner, installation, request)
                     .await;
             }
             LocalDaemonRequest::UninstallApp(request) => {
@@ -545,7 +598,9 @@ impl KernelRuntimeState {
     /// deletes from it instead (`AppControlService::fixture_app_storage`).
     async fn delete_app_storage(
         &self,
-        owner: &str,
+        // The data directory follows the installation alone; only the test
+        // fixture records the owner.
+        #[cfg_attr(not(test), allow(unused_variables))] owner: &str,
         installation: &str,
     ) -> Result<(), AppRequestErrorCode> {
         #[cfg(test)]
@@ -554,14 +609,12 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let database = self.owned.durable_state_store.path().to_owned();
-        let (erase_owner, erase_installation) = (owner.to_owned(), installation.to_owned());
+        let erase_installation = installation.to_owned();
         tokio::task::spawn_blocking(move || {
             use chariox_app_runtime::worker_process::{wasm::storage, WorkerError};
-            storage::delete(&database, &erase_owner, &erase_installation).map_err(|error| {
-                match error {
-                    WorkerError::Storage("app_storage_busy") => AppRequestErrorCode::Busy,
-                    _ => AppRequestErrorCode::StorageUnavailable,
-                }
+            storage::delete(&database, &erase_installation).map_err(|error| match error {
+                WorkerError::Storage("app_storage_busy") => AppRequestErrorCode::Busy,
+                _ => AppRequestErrorCode::StorageUnavailable,
             })
         })
         .await

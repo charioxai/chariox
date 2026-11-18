@@ -6,7 +6,7 @@ import {
   type RuntimeSession,
   type SliceRecord,
   type TerminalOutputRecord,
-  type WaitingRoomPublicSessionSummary,
+  type RoomListSessionSummary,
   type WorkflowRun,
 } from "./cli-types.js"
 import type { KernelEvent } from "./ipc.js"
@@ -27,7 +27,7 @@ type KernelEventSessionMetadataChanged = Extract<KernelEvent, { event: "session_
 type KernelEventRuntimeInteractionsChanged = Extract<KernelEvent, { event: "runtime_interactions_changed" }>
 type KernelEventSessionSnapshot = Extract<KernelEvent, { event: "session_snapshot" }>
 type KernelEventSlicesChanged = Extract<KernelEvent, { event: "slices_changed" }>
-type KernelEventWaitingRoomRowsChanged = Extract<KernelEvent, { event: "waiting_room_rows_changed" }>
+type KernelEventWaitingRoomRowsChanged = Extract<KernelEvent, { event: "room_list_rows_changed" }>
 type KernelEventWorkflowDesignOp = Extract<KernelEvent, { event: "workflow_design_op" }>
 type KernelEventWorkflowRunUpdated = Extract<KernelEvent, { event: "workflow_run_updated" }>
 
@@ -74,7 +74,7 @@ type KernelEventDispatchControllerDeps = {
     inventoryVersion: string
     structuralVersion: string
     activityRevision: string
-    sessions: WaitingRoomPublicSessionSummary[]
+    sessions: RoomListSessionSummary[]
     removedSessionIds: string[]
     sessionsTotal?: number
     sessionsNextCursor?: string | null
@@ -214,6 +214,10 @@ export function createKernelEventDispatchController(
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
         return
+      case "subscription_ended":
+        // Only a relay viewer's lane needs to resume; the daemon socket this client reads ends with its subscription.
+        deps.recordDaemonActivity("kernel_subscription_ended")
+        return
       case "room_workflows_changed":
         // The room workflow composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_room_workflows_changed")
@@ -225,7 +229,7 @@ export function createKernelEventDispatchController(
       case "session_unavailable":
         await deps.handleKernelSessionUnavailable(event.message)
         return
-      case "waiting_room_inventory_changed":
+      case "room_list_changed":
         void deps.refreshWaitingRoomData()
         return
       case "kernel_resource_changed":
@@ -239,7 +243,7 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_remote_machines_changed")
         await applyRemoteMachinesChanged(event)
         return
-      case "waiting_room_rows_changed":
+      case "room_list_rows_changed":
         await applyWaitingRoomRowsChanged(event)
         return
       case "workflow_design_op":
@@ -426,7 +430,7 @@ export function createKernelEventDispatchController(
       inventoryVersion: event.inventory_version,
       structuralVersion: event.structural_version,
       activityRevision: event.activity_revision,
-      sessions: event.sessions as unknown as WaitingRoomPublicSessionSummary[],
+      sessions: event.sessions as unknown as RoomListSessionSummary[],
       removedSessionIds: event.removed_session_ids,
       projects: event.projects as unknown as WaitingRoomProjectSummary[],
       removedProjectIds: event.removed_project_ids,

@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn activity_observation_is_sampled_under_transition_lock() {
         let state_path = test_state_path("serialized-sample");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state =
             ManagedActivityTransitionState::new(store.clone(), Some("kernel-sample".into()));
         state
@@ -626,13 +626,13 @@ mod tests {
         );
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn rapid_busy_idle_cycle_is_durable_before_reporter_polling() {
         let state_path = test_state_path("rapid-cycle");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open state store");
+        let store =
+            DurableKernelStateStore::open(state_path.to_path_buf()).expect("open state store");
         let state =
             ManagedActivityTransitionState::new(store.clone(), Some("kernel-rapid".to_string()));
 
@@ -665,19 +665,18 @@ mod tests {
         );
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn failed_activity_append_preserves_idle_timestamp_across_restart() {
         let state_path = test_state_path("failed-append-restart");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state = ManagedActivityTransitionState::new(
             store.clone(),
             Some("kernel-failed-append".to_string()),
         );
         state.record_transition(0, 0, 1_000).expect("initial idle");
-        let database = rusqlite::Connection::open(&state_path).expect("open failure injector");
+        let database = rusqlite::Connection::open(&*state_path).expect("open failure injector");
         database
             .execute_batch(
                 "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
@@ -698,7 +697,7 @@ mod tests {
             .expect("recover storage");
         drop(database);
 
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("reopen store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("reopen store");
         let state = ManagedActivityTransitionState::new(
             store.clone(),
             Some("kernel-failed-append".to_string()),
@@ -720,13 +719,12 @@ mod tests {
         );
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn restart_trims_committed_journal_prefix_without_replaying_older_activity() {
         let state_path = test_state_path("journal-prefix");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state =
             ManagedActivityTransitionState::new(store.clone(), Some("kernel-prefix".into()));
         state.record_transition(0, 0, 1_000).expect("idle");
@@ -782,13 +780,12 @@ mod tests {
         );
         drop(restored);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn activity_journal_rejects_foreign_kernel_identity() {
         let state_path = test_state_path("foreign-journal");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state = ManagedActivityTransitionState::new(store.clone(), Some("kernel-owner".into()));
         crate::config::write_private_file(
             &state.pending_journal_path(),
@@ -802,15 +799,14 @@ mod tests {
             .contains("identity"));
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn restart_does_not_confuse_same_millisecond_activity_transitions() {
         let state_path = test_state_path("journal-aba");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state = ManagedActivityTransitionState::new(store.clone(), Some("kernel-aba".into()));
-        let database = rusqlite::Connection::open(&state_path).expect("failure injector");
+        let database = rusqlite::Connection::open(&*state_path).expect("failure injector");
         database
             .execute_batch(
                 "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
@@ -869,7 +865,6 @@ mod tests {
         );
         drop(restored);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
@@ -879,7 +874,8 @@ mod tests {
             .enumerate()
         {
             let state_path = test_state_path(&format!("invalid-sequence-{case}"));
-            let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+            let store =
+                DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
             let state =
                 ManagedActivityTransitionState::new(store.clone(), Some("kernel-invalid".into()));
             let observations = sequences
@@ -910,14 +906,13 @@ mod tests {
                 .is_empty());
             drop(state);
             drop(store);
-            remove_test_state(&state_path);
         }
     }
 
     #[test]
     fn recovery_rejects_conflicting_journal_acknowledgement() {
         let state_path = test_state_path("conflicting-ack");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let store = DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
         let state =
             ManagedActivityTransitionState::new(store.clone(), Some("kernel-conflict".into()));
         state
@@ -950,14 +945,14 @@ mod tests {
         );
         drop(restored);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn recovery_rejects_malformed_durable_transition_tail() {
         for (case, sequences) in [vec![2], vec![1, 1], vec![1, 3]].into_iter().enumerate() {
             let state_path = test_state_path(&format!("malformed-durable-{case}"));
-            let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+            let store =
+                DurableKernelStateStore::open(state_path.to_path_buf()).expect("open store");
             for sequence in &sequences {
                 store
                     .append_event(
@@ -986,7 +981,6 @@ mod tests {
             );
             drop(state);
             drop(store);
-            remove_test_state(&state_path);
         }
     }
 
@@ -994,8 +988,8 @@ mod tests {
     fn idle_transition_survives_reporter_and_kernel_state_restart() {
         let state_path = test_state_path("restart");
         {
-            let store =
-                DurableKernelStateStore::open(state_path.clone()).expect("open first state store");
+            let store = DurableKernelStateStore::open(state_path.to_path_buf())
+                .expect("open first state store");
             let state =
                 ManagedActivityTransitionState::new(store, Some("kernel-restart".to_string()));
             state.record_transition(0, 1, 10_000).expect("busy");
@@ -1009,7 +1003,7 @@ mod tests {
             );
         }
         {
-            let store = DurableKernelStateStore::open(state_path.clone())
+            let store = DurableKernelStateStore::open(state_path.to_path_buf())
                 .expect("reopen state store after kernel restart");
             let restored =
                 ManagedActivityTransitionState::new(store, Some("kernel-restart".to_string()));
@@ -1021,13 +1015,13 @@ mod tests {
                 }
             );
         }
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn ordinary_kernel_activity_does_not_touch_durable_state() {
         let state_path = test_state_path("ordinary");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open state store");
+        let store =
+            DurableKernelStateStore::open(state_path.to_path_buf()).expect("open state store");
         let state = ManagedActivityTransitionState::new(store.clone(), None);
         assert_eq!(state.record_transition(0, 1, 1_000).expect("no-op"), None);
         assert!(store
@@ -1036,13 +1030,13 @@ mod tests {
             .is_empty());
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
     #[test]
     fn late_activation_fails_instead_of_inventing_a_transition_time() {
         let state_path = test_state_path("late-activation");
-        let store = DurableKernelStateStore::open(state_path.clone()).expect("open state store");
+        let store =
+            DurableKernelStateStore::open(state_path.to_path_buf()).expect("open state store");
         let state = ManagedActivityTransitionState::new(store.clone(), None);
         let error = state
             .enable_before_activity("kernel-late", 1)
@@ -1056,21 +1050,9 @@ mod tests {
             .is_empty());
         drop(state);
         drop(store);
-        remove_test_state(&state_path);
     }
 
-    fn test_state_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join("chariox-tests").join(format!(
-            "managed-activity-{name}-{}-{}.db",
-            std::process::id(),
-            crate::session::unix_epoch_ms(),
-        ))
-    }
-
-    fn remove_test_state(path: &std::path::Path) {
-        let _ = std::fs::remove_file(path.with_extension("managed-activity.pending.json"));
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
-        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+    fn test_state_path(name: &str) -> crate::test_support::TestTempFile {
+        crate::test_support::TestTempFile::new(&format!("managed-activity-{name}"), "state.db")
     }
 }

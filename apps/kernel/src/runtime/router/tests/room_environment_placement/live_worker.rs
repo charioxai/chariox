@@ -829,7 +829,7 @@ async fn worker_alias_attaches_agent_to_slice() {
     let attached = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
         .await
         .unwrap();
-    let other_claim = dispatch_json(&fixture.home, bind(&fixture.rooms[1], "desktop")).await;
+    let other_claim = dispatch_bind_room(&fixture.home, bind(&fixture.rooms[1], "desktop")).await;
     dispatch_json(
         &fixture.home,
         json!({"DestroyAgent": {

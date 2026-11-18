@@ -241,7 +241,17 @@ impl KernelRuntimeState {
             .owned
             .agent_store
             .get_session_agents(actor.session_id());
-        in_subtree(&actor, &target, &agents)?;
+        // An agent changes its own settings within what the person allowed it; the kernel's
+        // settings gate holds it to that set. Everything else needs the agent to be above.
+        let own_settings = target.id() == actor.id()
+            && match request {
+                LocalDaemonRequest::UpdateAgentProfile(_) => true,
+                LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
+                _ => false,
+            };
+        if !own_settings {
+            in_subtree(&actor, &target, &agents)?;
+        }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
             self.keep_configured_folders_inside_parent(&target, r, &agents)?;
         }

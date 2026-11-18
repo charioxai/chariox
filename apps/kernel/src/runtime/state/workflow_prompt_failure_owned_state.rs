@@ -100,6 +100,7 @@ impl KernelRuntimeOwnedState {
                 run.status(),
                 crate::session::WorkflowRunStatus::Paused
                     | crate::session::WorkflowRunStatus::Stopped
+                    | crate::session::WorkflowRunStatus::Failed
             ) {
                 self.release_workflow_node_workspace_claim(
                     session_id,
@@ -181,14 +182,37 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(WorkflowPromptDispatches::default());
         }
-        self.workflow_fail_provider_prompt_transition(
+        self.workflow_fail_prompt_transition(
             session_id,
             prompt,
             provider_run_id,
+            crate::session::WorkflowFailureKind::ProviderFailure,
             message,
         )?;
         let dispatches = self.workflow_maybe_start_next_queued_prompt(session_id);
         Ok(dispatches)
+    }
+
+    /// Ends a run's step because its agent cannot go on without someone: the run fails with
+    /// the agent's reason and the workflow's queue moves on. A step whose run already ended
+    /// changes nothing.
+    pub(super) fn workflow_fail_prompt_needing_help(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        reason: &str,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        self.workflow_fail_prompt_transition(
+            session_id,
+            prompt,
+            None,
+            crate::session::WorkflowFailureKind::StepNeedsHelp,
+            reason,
+        )?;
+        Ok(self.workflow_maybe_start_next_queued_prompt(session_id))
     }
 
     pub(super) fn workflow_fail_provider_prompt_without_queue_advance(
@@ -201,14 +225,21 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(false);
         }
-        self.workflow_fail_provider_prompt_transition(session_id, prompt, provider_run_id, message)
+        self.workflow_fail_prompt_transition(
+            session_id,
+            prompt,
+            provider_run_id,
+            crate::session::WorkflowFailureKind::ProviderFailure,
+            message,
+        )
     }
 
-    fn workflow_fail_provider_prompt_transition(
+    fn workflow_fail_prompt_transition(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
+        kind: crate::session::WorkflowFailureKind,
         message: &str,
     ) -> Result<bool, DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
@@ -228,6 +259,7 @@ impl KernelRuntimeOwnedState {
                     run.status(),
                     crate::session::WorkflowRunStatus::Paused
                         | crate::session::WorkflowRunStatus::Stopped
+                        | crate::session::WorkflowRunStatus::Failed
                 )
             });
         if already_interrupted {
@@ -247,7 +279,7 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 workflow_run_id,
                 &crate::session::WorkflowFailureEvent::new(
-                    crate::session::WorkflowFailureKind::ProviderFailure,
+                    kind,
                     workflow_node_run_id,
                     Vec::new(),
                     message,
@@ -276,17 +308,20 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         );
-        self.record_notice(
-            session_id,
-            provider_run_id,
-            self.attachment_store
-                .list_session_attachment_ids(session_id),
-            format!(
-                "Workflow run `{}` failed after provider turn failure: {}",
-                workflow_run.id(),
-                message
-            ),
-        );
+        // A step that needs help is told through the run's outcome, not a notice.
+        if kind == crate::session::WorkflowFailureKind::ProviderFailure {
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{}` failed after provider turn failure: {}",
+                    workflow_run.id(),
+                    message
+                ),
+            );
+        }
         Ok(released_claim)
     }
 }
@@ -1351,6 +1386,408 @@ mod tests {
         assert_eq!(
             durable_run.status(),
             crate::session::WorkflowRunStatus::Failed,
+        );
+    }
+
+    /// The step as the Room admitted it.
+    fn admitted_step(fixture: &WorkflowFailureFixture) -> PromptQueueItem {
+        let room = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&room, fixture.prompt.target_agent_id())
+            .expect("the step is the agent's active prompt")
+    }
+
+    /// The agent's step is the active prompt of its Room, and it has a task of its own.
+    async fn running_step_task(
+        fixture: &WorkflowFailureFixture,
+    ) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+        use crate::durable_state::agent_lifecycle::Operation;
+        {
+            let mut app = fixture.runtime.app.lock().await;
+            app.prompt_owner_submit_prepared_prompt(
+                &fixture.session_id,
+                fixture.prompt.clone(),
+                false,
+            )
+            .expect("the step is admitted");
+        }
+        assert!(
+            admitted_step(fixture).workflow_run_id().is_some(),
+            "the step is a workflow step"
+        );
+        let store = &fixture.runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: fixture.session_id.clone(),
+                agent: fixture.prompt.target_agent_id().into(),
+                prompt: admitted_step(fixture).id().into(),
+                run: None,
+                now: 1,
+            })
+            .expect("the step has a task");
+        store
+            .agent_tasks(Some(&fixture.session_id), None)
+            .unwrap()
+            .pop()
+            .expect("the task exists")
+    }
+
+    fn run_json(fixture: &WorkflowFailureFixture) -> serde_json::Value {
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        serde_json::to_value(session.workflow_run(&fixture.workflow_run_id).unwrap()).unwrap()
+    }
+
+    // A run's agent that blocks needs someone, but it raises no card and shows no Blocked row:
+    // the run fails with the agent's own reason and the person is told through the run.
+    #[tokio::test]
+    async fn a_blocked_step_ends_the_run_without_a_card() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+        let fixture = running_workflow_fixture("blocked-step").await;
+        let task = running_step_task(&fixture).await;
+        let Outcome::Task(blocked) = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::BlockForQuestion {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                reason: "Which branch should I release from?".into(),
+            })
+            .unwrap()
+        else {
+            panic!("a task");
+        };
+        assert!(
+            fixture.runtime.owned.run_prompt_of_task(&blocked).is_some(),
+            "the blocked task belongs to the step: {blocked:?}"
+        );
+        fixture
+            .runtime
+            .ensure_task_owner_interaction(blocked)
+            .await
+            .unwrap();
+
+        let session = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        assert!(
+            session.active_interactions().is_empty(),
+            "no card: {:?}",
+            session.active_interactions()
+        );
+        assert!(
+            session
+                .agent_tasks()
+                .iter()
+                .all(|task| task.state != ExecutionState::Blocked),
+            "no Blocked row: {:?}",
+            session.agent_tasks()
+        );
+        let run = run_json(&fixture);
+        assert_eq!(run["status"], "Failed");
+        assert_eq!(run["failure_events"][0]["kind"], "step_needs_help");
+        assert_eq!(
+            run["failure_events"][0]["message"],
+            "Which branch should I release from?"
+        );
+        assert_eq!(run["attention"], true);
+        assert_eq!(run["number"], 1);
+        assert_eq!(
+            run["outcome"],
+            serde_json::json!({"kind": "failed", "reason": "step_needs_help", "detail": "Which branch should I release from?"})
+        );
+        let cancelled = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.state, ExecutionState::Cancelled);
+        assert!(!cancelled.stopped_by_owner(), "the agent's own stop");
+    }
+
+    // The same step asking for a permission is refused at once and ends the run.
+    #[tokio::test]
+    async fn a_permission_asked_by_a_step_is_refused_and_ends_the_run() {
+        let fixture = running_workflow_fixture("permission-step").await;
+        running_step_task(&fixture).await;
+        let agent_id = fixture.prompt.target_agent_id().to_owned();
+        let interaction = crate::session::RuntimeInteraction::new(
+            "permission-1",
+            &agent_id,
+            crate::session::RuntimeInteractionKind::Permission,
+            crate::session::RuntimeInteractionLevel::Warning,
+            Some("Bash".into()),
+            "Run `git push`?",
+            Vec::<crate::session::RuntimeInteractionChoice>::new(),
+            None,
+            Some(300),
+            None,
+        );
+        let answer = fixture
+            .runtime
+            .create_runtime_interaction_with_forwarding(&fixture.session_id, interaction, None)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            answer.status, "timed_out",
+            "the provider is refused at once"
+        );
+        let session = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        assert!(session.active_interactions().is_empty());
+        let run = run_json(&fixture);
+        assert_eq!(run["status"], "Failed");
+        assert_eq!(run["failure_events"][0]["kind"], "step_needs_help");
+        assert_eq!(
+            run["failure_events"][0]["message"],
+            "needs permission: Bash"
+        );
+    }
+
+    // An agent outside any run keeps its card: only workflow steps stop raising them.
+    #[tokio::test]
+    async fn an_agent_outside_a_run_keeps_its_permission_card() {
+        let fixture = running_workflow_fixture("card-outside-run").await;
+        let other = {
+            let mut app = fixture.runtime.app.lock().await;
+            let other = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(&fixture.session_id, "dev-stub")
+                        .with_alias("outsider"),
+                )
+                .unwrap();
+            app.prompt_owner_submit_prepared_prompt(
+                &fixture.session_id,
+                PromptQueueItem::new(
+                    "ordinary",
+                    &fixture.attachment_id,
+                    other.id(),
+                    "ordinary turn",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+            other
+        };
+        let interaction = crate::session::RuntimeInteraction::new(
+            "permission-2",
+            other.id(),
+            crate::session::RuntimeInteractionKind::Permission,
+            crate::session::RuntimeInteractionLevel::Warning,
+            Some("Bash".into()),
+            "Run `git push`?",
+            Vec::<crate::session::RuntimeInteractionChoice>::new(),
+            None,
+            Some(300),
+            None,
+        );
+        let _pending = fixture
+            .runtime
+            .create_runtime_interaction_with_forwarding(&fixture.session_id, interaction, None)
+            .await
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        assert_eq!(session.active_interactions().len(), 1, "the card stays");
+        assert_eq!(run_json(&fixture)["status"], "Running");
+    }
+
+    /// An agent of the Room that answers for the fixture's workflow.
+    async fn make_responsible(fixture: &WorkflowFailureFixture) -> crate::agent::AgentInstance {
+        let responder = {
+            let mut app = fixture.runtime.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(&fixture.session_id, "dev-stub")
+                        .with_alias("responder"),
+                )
+                .unwrap()
+        };
+        fixture
+            .runtime
+            .owned
+            .persist_workflow_runtime_session(&fixture.session_id, "workflow_saved")
+            .unwrap();
+        let room = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let workflow = room.workflows()[0].clone();
+        fixture
+            .runtime
+            .change_workflow_responsible(
+                &room,
+                &workflow,
+                crate::local::WorkflowResponsibleTarget::Agent {
+                    kernel_id: fixture.host_daemon_id.clone(),
+                    room_id: fixture.session_id.clone(),
+                    agent_id: responder.id().into(),
+                },
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        responder
+    }
+
+    /// Every prompt text the agent holds, running or queued.
+    fn prompts_of(fixture: &WorkflowFailureFixture, agent: &str) -> Vec<String> {
+        let room = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        room.active_prompt_for_agent(agent)
+            .into_iter()
+            .chain(room.queued_prompts_for_agent(agent).into_iter().flatten())
+            .map(|prompt| prompt.prompt().to_owned())
+            .collect()
+    }
+
+    async fn pump_notifications(fixture: &WorkflowFailureFixture) {
+        for _ in 0..3 {
+            fixture.runtime.owned.route_workflow_notifications();
+            fixture.runtime.route_agent_notifications().await;
+        }
+    }
+
+    // The run's needs reach its responsible agent as one prompt of its own Room, written by the
+    // kernel from the typed outcome; nothing the run produced is quoted into it.
+    #[tokio::test]
+    async fn a_run_that_needs_help_puts_one_prompt_in_its_responsible_agents_room() {
+        use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+        let fixture = running_workflow_fixture("responsible-prompt").await;
+        let responder = make_responsible(&fixture).await;
+        let task = running_step_task(&fixture).await;
+        let Outcome::Task(blocked) = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::BlockForQuestion {
+                prompt: task.prompt_id.clone(),
+                task: task.task_id,
+                reason: "resend the diff".into(),
+            })
+            .unwrap()
+        else {
+            panic!("a task");
+        };
+        fixture
+            .runtime
+            .ensure_task_owner_interaction(blocked)
+            .await
+            .unwrap();
+        pump_notifications(&fixture).await;
+        pump_notifications(&fixture).await;
+
+        let prompts = prompts_of(&fixture, responder.id());
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(
+            prompts[0].starts_with("workflow-responsible-prompt · Run #1 failed — a step needs help: resend the diff. You are responsible for this workflow."),
+            "{}",
+            prompts[0]
+        );
+        assert!(
+            !prompts[0].contains("run responsible-prompt"),
+            "the run's own input is not quoted: {}",
+            prompts[0]
+        );
+        // The person, not responsible, is not alerted twice over: the agent's workflow raises no
+        // owner alert.
+        let session = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        assert!(session.active_interactions().is_empty());
+    }
+
+    // A run held on a provider limit reaches the responsible once, however often it is saved.
+    #[tokio::test]
+    async fn a_run_waiting_on_a_provider_limit_reaches_its_responsible_once() {
+        let fixture = running_workflow_fixture("responsible-wait").await;
+        let responder = make_responsible(&fixture).await;
+        let room = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let workflow = room.workflows()[0].clone();
+        let run = {
+            let app = fixture.runtime.app.lock().await;
+            let run = app
+                .sessions_mut()
+                .invoke_workflow_endpoint(
+                    &fixture.session_id,
+                    workflow.id(),
+                    workflow.endpoints()[0].id(),
+                    Some("again".into()),
+                )
+                .unwrap();
+            run
+        };
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .hold_workflow_node_run(
+                &fixture.session_id,
+                run.id(),
+                run.node_runs()[0].id(),
+                crate::session::WorkflowNodeWaitingReason::ProviderProfileUsageExhausted,
+            )
+            .unwrap();
+        for _ in 0..2 {
+            fixture
+                .runtime
+                .owned
+                .persist_workflow_runtime_session(&fixture.session_id, "workflow_entry_waiting")
+                .unwrap();
+        }
+        pump_notifications(&fixture).await;
+        pump_notifications(&fixture).await;
+
+        let prompts = prompts_of(&fixture, responder.id());
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(
+            prompts[0].starts_with(
+                "workflow-responsible-wait · Run #2 is waiting on a provider usage limit."
+            ),
+            "{}",
+            prompts[0]
         );
     }
 }

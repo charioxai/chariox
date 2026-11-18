@@ -511,7 +511,7 @@ chariox-cloud
   registry
   official kernel identity
   public server records
-  hosted waiting room and control plane
+  hosted Room list and control plane
 ```
 
 ## Example: Poker Agents

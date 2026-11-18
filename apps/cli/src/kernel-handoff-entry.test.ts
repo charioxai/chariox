@@ -62,3 +62,34 @@ test("MP-08/MP-11 A07 S02/S03: disconnect, replacement and Escape discard typed 
   f.controller.dispose()
  }
 })
+test("a hand-off opens with its owner action selected so Enter acts at once",async()=>{
+ const f=fixture()
+ assert.equal(f.controller.view().selected,0)
+ assert.equal(f.controller.view().choices[0]?.id,HANDOFF_ENTER_CHOICE)
+ f.controller.handleKey(key("return"))
+ assert.notEqual(f.controller.view().handoffEntry,null)
+ f.controller.handlePaste({rawText:"private-fixture-7",preventDefault(){},stopPropagation(){}})
+ f.controller.handleKey(key("return"));await new Promise<void>(r=>queueMicrotask(r))
+ assert.deepEqual(f.actions,[{kind:"enter_value",value:"private-fixture-7"}])
+ f.controller.dispose()
+})
+test("a click hand-off is answered by Enter alone and an ordinary approval still opens unselected",async()=>{
+ const click:RuntimeInteraction={...interaction,id:"handoff-click",kernel_operation_id:"handoff-click",requested_at_ms:1,handoff:{...h,kind:"click"}}
+ const ordinary:RuntimeInteraction={...interaction,id:"ordinary",kernel_operation_id:"ordinary",requested_at_ms:2,handoff:null,choices:[{id:"deny",label:"Deny",reply:"deny"},{id:"allow",label:"Allow",reply:"allow"}]}
+ const actions:HandoffResponseAction[]=[]
+ let current={id:"room",agents:[],active_interactions:[click,ordinary]} as unknown as RuntimeSession
+ const controller=createKernelApprovalController({getSession:()=>current,connected:()=>true,onView(){},onOpen(){},onClose(){},scroll(){},notify(){},applySession(){},showPasskeyPrompt:()=>false,
+ respond:async()=>{throw new Error("generic reply")},respondHandoff:async(_room,id,action)=>{actions.push(action);return {handoff_id:id,status:"completed",action:action.kind}}})
+ controller.show()
+ controller.handleKey(key("right"))
+ assert.equal(controller.view().interaction?.id,"ordinary")
+ assert.equal(controller.view().selected,null)
+ controller.handleKey(key("left"))
+ assert.equal(controller.view().selected,0)
+ controller.handleKey(key("return"));await new Promise<void>(r=>setTimeout(r,0))
+ assert.deepEqual(actions,[{kind:"click"}])
+ current={...current,active_interactions:[ordinary]}
+ controller.sync()
+ assert.equal(controller.view().selected,null)
+ controller.dispose()
+})

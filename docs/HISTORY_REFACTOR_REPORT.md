@@ -198,7 +198,7 @@ The first pass also exposed that fetched blob content replaced the placeholder
 as a collapsed tool entry; the fix now transfers expansion to the inserted
 entry so opening a lazy blob leaves the fetched content open.
 
-Browser drill result: passed through the marketing shell, waiting-room shell, and
+Browser drill result: passed through the marketing shell, Room list shell, and
 terminal `/test` route controls.
 
 Browser relay/kernel smoke result: passed with a local relay, kernel, browser

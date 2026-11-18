@@ -13,7 +13,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { roomListLaunchPlacement } from "@chariox/kernel-client/room-list-runtime-placement"
 import { waitingRoomSessions } from "./waiting-room-session-rows.js"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import {
@@ -51,7 +51,7 @@ export function waitingRoomChoice(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
   const externalProviderSessions = externalProviderSessionPageSessions(remote)
-  const placement = waitingRoomLaunchPlacement(state, remote)
+  const placement = roomListLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
     projectSelectionId: state.projectSelectionId,

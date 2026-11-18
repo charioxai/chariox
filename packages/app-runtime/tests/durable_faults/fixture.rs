@@ -198,6 +198,8 @@ pub fn route() -> InboxRoute {
         source_event_type: "test.b5/message".into(),
         source_event_version: 1,
         active: true,
+        paused: false,
+        app_managed: false,
         source: None,
     }
 }

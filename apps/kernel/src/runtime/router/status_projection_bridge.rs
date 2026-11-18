@@ -4,18 +4,18 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::runtime::daemon_health_projection::DaemonHealthProjectionInput;
 use crate::runtime::projection::DaemonHealthProjection;
-use crate::runtime::waiting_room_control::projected_waiting_room_public_snapshot;
+use crate::runtime::room_list_control::projected_room_list_snapshot;
 
 impl CommandRouter {
-    pub(crate) async fn waiting_room_public_snapshot(
+    pub(crate) async fn room_list_snapshot(
         &self,
         caller_user_id: &str,
         relay_caller: Option<&crate::runtime::command::KernelCaller>,
-    ) -> Result<crate::local::WaitingRoomPublicSnapshot, DaemonError> {
-        projected_waiting_room_public_snapshot(
+    ) -> Result<crate::local::RoomListSnapshot, DaemonError> {
+        projected_room_list_snapshot(
             &self.runtime_state,
             &self.session_projection,
-            &self.waiting_room_session_summaries,
+            &self.room_list_session_summaries,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
             if relay_caller.is_none_or(|caller| self.relay_owner_directory_allowed(caller)) {

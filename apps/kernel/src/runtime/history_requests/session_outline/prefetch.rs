@@ -40,7 +40,7 @@ pub(super) fn prefetch_outline_blobs(
                 .filter(|event| {
                     event_belongs_to_external_import(imports.get(&agent.agent_id), event)
                 })
-                .filter_map(page_entry_from_event)
+                .filter_map(|event| page_entry_from_event(&event))
                 .collect();
                 let page = SessionHistoryBlobContentPage {
                     blob_id: blob.blob_id.clone(),

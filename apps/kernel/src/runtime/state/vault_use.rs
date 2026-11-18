@@ -3,6 +3,7 @@
 use super::*;
 use crate::config::{PaymentCardField, UserCredentialConfig, VaultUseTarget, VaultValueKind};
 use crate::runtime::kernel_access::error;
+use crate::runtime::state::runtime_vault_unlock_state::VaultUnlockGuard;
 
 /// The longest an approved card payment lasts; the asking task ending ends it sooner.
 const VAULT_PAYMENT_APPROVAL_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -78,13 +79,59 @@ pub(super) struct VaultAgentContext {
     pub(super) session_id: String,
     pub(super) owner_user_id: String,
     pub(super) prompt_id: Option<String>,
+    /// Set for a run that executes on a leased worker: its Vault is the home kernel's.
+    pub(super) home: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
 }
+
+impl VaultAgentContext {
+    pub(super) fn actor(&self) -> VaultActor {
+        VaultActor {
+            agent_id: self.agent_id.clone(),
+            session_id: self.session_id.clone(),
+            owner_user_id: self.owner_user_id.clone(),
+            provider_run_id: self.run.id().to_string(),
+        }
+    }
+}
+
+/// Who a change to the Vault is made for: the agent, the Room it answers to and the run that
+/// asked. On a leased worker this is the home agent the run stands for, resolved at the home.
+#[derive(Clone)]
+pub(super) struct VaultActor {
+    pub(super) agent_id: String,
+    pub(super) session_id: String,
+    pub(super) owner_user_id: String,
+    pub(super) provider_run_id: String,
+}
+
+/// What a Vault change repeats after each wait (an unlock, a command): fails when the actor's
+/// run or lease ended meanwhile.
+pub(super) type VaultRecheck<'a> = &'a (dyn Fn() -> Result<(), DaemonError> + Sync);
 
 impl KernelRuntimeState {
     pub(super) fn vault_agent_context(
         &self,
         token: &str,
     ) -> Result<VaultAgentContext, DaemonError> {
+        self.vault_agent_context_for_run(&self.vault_run_for_token(token)?)
+    }
+
+    /// The context for a tool that reaches the Vault. A run on a leased worker keeps its
+    /// workspace there and uses the Vault of the home kernel, which acts for the home agent it
+    /// stands for.
+    pub(super) async fn vault_leased_context(
+        &self,
+        token: &str,
+    ) -> Result<VaultAgentContext, DaemonError> {
+        let run = self.vault_run_for_token(token)?;
+        let home = self.remote_credential_context_for_provider_run(&run).await;
+        self.vault_run_context(&run, home)
+    }
+
+    fn vault_run_for_token(
+        &self,
+        token: &str,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let runs = self
             .owned
             .provider_store
@@ -94,12 +141,20 @@ impl KernelRuntimeState {
                 "Vault operations require one authenticated provider run",
             ));
         };
-        self.vault_agent_context_for_run(run)
+        Ok(run.clone())
     }
 
     pub(super) fn vault_agent_context_for_run(
         &self,
         run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<VaultAgentContext, DaemonError> {
+        self.vault_run_context(run, None)
+    }
+
+    fn vault_run_context(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        home: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
     ) -> Result<VaultAgentContext, DaemonError> {
         let agent_id = run
             .agent_instance_id()
@@ -123,11 +178,19 @@ impl KernelRuntimeState {
         if run.state() == crate::provider::ProviderRunState::Ended
             || agent.session_id() != session.id()
             || agent.owner_user_id() != session.owner_user_id()
-            || self.provider_account_authority_owner_user_id(session.owner_user_id())
-                != crate::session::DEFAULT_LOCAL_USER_ID
         {
             return Err(error(
                 "the provider run no longer belongs to the owner's agent",
+            ));
+        }
+        // A leased agent is owned by whoever the home Room belongs to, and the home kernel
+        // checks that owner before it opens its Vault; this kernel holds no Vault to guard.
+        if home.is_none()
+            && self.provider_account_authority_owner_user_id(session.owner_user_id())
+                != crate::session::DEFAULT_LOCAL_USER_ID
+        {
+            return Err(error(
+                "this Vault operation needs the owner's own kernel: an agent that runs on a slice or another machine reaches the owner's Vault through the chariox.vault tools, and the owner adds or removes Vault entries",
             ));
         }
         Ok(VaultAgentContext {
@@ -135,11 +198,8 @@ impl KernelRuntimeState {
             agent_id: agent_id.into(),
             session_id: session.id().into(),
             owner_user_id: session.owner_user_id().into(),
-            prompt_id: self
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, agent_id)
-                .map(|prompt| prompt.id().to_owned()),
+            prompt_id: prompt.map(|prompt| prompt.id().to_owned()),
+            home,
         })
     }
 
@@ -149,12 +209,11 @@ impl KernelRuntimeState {
         context: &VaultAgentContext,
     ) -> Result<(), DaemonError> {
         self.authorize_current_external_command()?;
-        let current = match context.run.runtime_mcp_auth_token() {
-            Some(token) => self.vault_agent_context(token)?,
-            None => self.vault_agent_context_for_run(
-                &self.owned.provider_store.get_run(context.run.id())?,
-            )?,
+        let run = match context.run.runtime_mcp_auth_token() {
+            Some(token) => self.vault_run_for_token(token)?,
+            None => self.owned.provider_store.get_run(context.run.id())?,
         };
+        let current = self.vault_run_context(&run, context.home.clone())?;
         if current.run.id() != context.run.id()
             || current.agent_id != context.agent_id
             || current.session_id != context.session_id
@@ -204,43 +263,91 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Checks every use and, where the Vault lives, waits for the owner to unlock it before
+    /// the first read. A leased run does both at the home kernel, when it asks for each value.
+    pub(super) async fn prepare_workspace_vault_uses(
+        &self,
+        context: &VaultAgentContext,
+        uses: &[(&str, VaultUseTarget)],
+        operation: &'static str,
+    ) -> Result<Option<VaultUnlockGuard>, DaemonError> {
+        if context.home.is_some() {
+            return Ok(None);
+        }
+        for (id, target) in uses {
+            self.preflight_workspace_vault_use(&context.agent_id, id, target)?;
+        }
+        Ok(Some(
+            self.ensure_vault_unlocked_for_agent(&context.session_id, &context.agent_id, operation)
+                .await?,
+        ))
+    }
+
     pub(super) async fn read_workspace_vault_value(
         &self,
         context: &VaultAgentContext,
         id: &str,
         target: &VaultUseTarget,
     ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
-        self.preflight_workspace_vault_use(&context.agent_id, id, target)?;
+        match &context.home {
+            Some(home) => {
+                self.resolve_remote_home_workspace_secret(home.clone(), id, target)
+                    .await
+            }
+            None => {
+                self.read_agent_workspace_vault_value(
+                    &context.agent_id,
+                    &context.session_id,
+                    id,
+                    target,
+                    || self.recheck_vault_agent(context),
+                )
+                .await
+            }
+        }
+    }
+
+    /// The Vault read for one agent of this kernel: `still_current` is asked again once the
+    /// use is approved, before the value leaves the Vault.
+    pub(super) async fn read_agent_workspace_vault_value(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        id: &str,
+        target: &VaultUseTarget,
+        still_current: impl Fn() -> Result<(), DaemonError>,
+    ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+        self.preflight_workspace_vault_use(agent_id, id, target)?;
         let credential = self.home_runtime_secret_service()?.credential(id)?.clone();
         let approval = self
             .authorize_vault_use(
-                &context.agent_id,
+                agent_id,
                 &credential,
                 target,
                 VaultUseAsk {
-                    agent_id: Some(&context.agent_id),
-                    session_id: Some(&context.session_id),
+                    agent_id: Some(agent_id),
+                    session_id: Some(session_id),
                     ..Default::default()
                 },
             )
             .await?;
-        self.recheck_vault_agent(context)?;
+        still_current()?;
         let service = self
             .home_runtime_secret_service()?
             .with_vault_use_approval(approval);
         let attempt = service.begin_vault_use(
             id,
             &format!(
-                "Use attempted at {} by {}",
-                vault_use_destination(target),
-                context.agent_id
+                "Use attempted at {} by {agent_id}",
+                vault_use_destination(target)
             ),
         )?;
-        let value = zeroize::Zeroizing::new(service.workspace_secret_input_for_target(id, target)?);
+        let value = zeroize::Zeroizing::new(self.with_forwarded_binding_operation(|| {
+            service.workspace_secret_input_for_target(id, target)
+        })?);
         attempt.finish(&format!(
-            "Used at {} by {}",
-            vault_use_destination(target),
-            context.agent_id
+            "Used at {} by {agent_id}",
+            vault_use_destination(target)
         ))?;
         Ok(value)
     }

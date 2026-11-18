@@ -95,9 +95,11 @@ async fn enroll(
     )
     .await
     .map_err(|_| error())?;
-    let profile =
-        crate::runtime::cloud_relay_login_executor::enrolled_profile(config, api_url, response)
-            .map_err(|_| error())?;
+    let profile = crate::runtime::cloud_relay_login_executor::admit_enrolled_profile(
+        config, api_url, response,
+    )
+    .await
+    .map_err(|_| error())?;
     if input
         .user_id
         .as_ref()
@@ -252,9 +254,10 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
                 interval = response.interval_seconds.unwrap_or(interval).clamp(1, 10);
             }
             "approved" => {
-                let profile = crate::runtime::cloud_relay_login_executor::enrolled_profile(
+                let profile = crate::runtime::cloud_relay_login_executor::admit_enrolled_profile(
                     &config, api_url, response,
                 )
+                .await
                 .map_err(|_| error())?;
                 if input
                     .user_id
@@ -286,14 +289,21 @@ fn admit_relay_url(value: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 fn require_explicit_root() -> Result<(), DaemonError> {
-    let root = std::env::var("CHARIOX_HOME").map_err(|_| error())?;
-    if !std::path::Path::new(&root).is_absolute()
-        || root == "/"
-        || crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?.is_some()
-    {
+    require_home_folder(std::env::var("CHARIOX_HOME").ok().as_deref())?;
+    if crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?.is_some() {
         return Err(error());
     }
     Ok(())
+}
+/// The one refusal that names its fix: an agent or person running the command by hand has nothing else to go on.
+fn require_home_folder(root: Option<&str>) -> Result<(), DaemonError> {
+    match root {
+        Some(root) if std::path::Path::new(root).is_absolute() && root != "/" => Ok(()),
+        _ => Err(DaemonError::LocalTransport {
+            operation: "owner-managed bootstrap",
+            message: "owner-managed enrollment needs CHARIOX_HOME set to an absolute state folder other than /; set it and run the command again".into(),
+        }),
+    }
 }
 pub async fn wait_ready() -> Result<(), DaemonError> {
     require_explicit_root()?;
@@ -626,5 +636,22 @@ mod review_contract_tests {
             result.is_ok(),
             "Cloud account ID is distinct from its owner user ID"
         );
+    }
+}
+
+#[cfg(test)]
+mod home_folder_tests {
+    use super::require_home_folder;
+
+    #[test]
+    fn a_missing_or_relative_home_folder_is_refused_with_the_fix() {
+        for root in [None, Some(""), Some("state"), Some("/")] {
+            let message = require_home_folder(root).unwrap_err().to_string();
+            assert!(
+                message.contains("CHARIOX_HOME set to an absolute state folder"),
+                "{message}"
+            );
+        }
+        assert!(require_home_folder(Some("/root/.chariox")).is_ok());
     }
 }

@@ -128,13 +128,13 @@ impl CommandRouter {
             .await;
     }
 
-    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
-        self.runtime_state.waiting_room_change_sequence()
+    pub(crate) fn room_list_change_sequence(&self) -> u64 {
+        self.runtime_state.room_list_change_sequence()
     }
 
-    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_room_list_change_after(&self, sequence: u64) {
         self.runtime_state
-            .wait_for_waiting_room_change_after(sequence)
+            .wait_for_room_list_change_after(sequence)
             .await;
     }
 
@@ -145,6 +145,16 @@ impl CommandRouter {
     pub(crate) fn session_projection_session_change_sequence(&self, session_id: &str) -> u64 {
         self.runtime_state
             .session_projection_session_change_sequence(session_id)
+    }
+
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.runtime_state.person_inbox_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_person_inbox_change_after(sequence)
+            .await;
     }
 
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {

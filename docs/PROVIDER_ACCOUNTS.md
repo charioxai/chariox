@@ -4,7 +4,7 @@ Chariox supports multiple named account profiles for Codex, Claude, and OpenCode
 
 ## User workflow
 
-Open **Provider Accounts** in either waiting room to list, create, link, rename, set a default, refresh, log in, log out, remove, or explicitly delete a managed profile. The launch form selects Provider, Account, Model, and Variant. New agents inherit the selected account unless another profile is chosen.
+Open **Provider Accounts** in either Room list to list, create, link, rename, set a default, refresh, log in, log out, remove, or explicitly delete a managed profile. The launch form selects Provider, Account, Model, and Variant. New agents inherit the selected account unless another profile is chosen.
 
 Changing an existing agent's account uses the same bounded context handoff used for provider/model changes. The active provider run ends, incompatible provider resume state is cleared, and a fresh run starts under the selected profile. Credentials are never hot-mutated in a running provider process.
 
@@ -36,7 +36,7 @@ Use `/provider accounts import-native <provider>` to register the kernel host's 
 
 ## Logins already on the machine
 
-Chariox does not ask for a login the machine already has, and it does not keep a second copy of one. When the kernel starts, and again when a client opens the waiting room (at most once a minute), it looks for the installed `codex`, `claude` and `opencode` CLIs (on `PATH` and in the usual user install directories such as `~/.local/bin` and `~/.opencode/bin`) and asks each CLI about the machine-level login of the default profile. A valid login marks the profile authenticated with its identity, the model catalog is rebuilt and warmed, and every client is told, so the first model picker already lists models.
+Chariox does not ask for a login the machine already has, and it does not keep a second copy of one. When the kernel starts, and again when a client opens the Room list (at most once a minute), it looks for the installed `codex`, `claude` and `opencode` CLIs (on `PATH` and in the usual user install directories such as `~/.local/bin` and `~/.opencode/bin`) and asks each CLI about the machine-level login of the default profile. A valid login marks the profile authenticated with its identity, the model catalog is rebuilt and warmed, and every client is told, so the first model picker already lists models.
 
 Automatic catalog warm-up skips default-origin profiles until they are authenticated. An explicit provider or account catalog request still starts its server on demand. Codex discovery leaves an empty native default unprobed until its native login file exists, so an idle kernel does not keep an unauthenticated app-server alive. A later discovery can find a new CLI login.
 
@@ -98,7 +98,7 @@ Usage meters identify their source, kind, unit, limits/balance where exposed, re
 
 ## Security and deletion
 
-Profile paths and credential values are private kernel state and never appear in waiting-room, Cloud, relay, or protocol projections. Ambient provider API-key variables are scrubbed from managed launches so a named profile cannot silently execute under unrelated environment credentials.
+Profile paths and credential values are private kernel state and never appear in Room list, Cloud, relay, or protocol projections. Ambient provider API-key variables are scrubbed from managed launches so a named profile cannot silently execute under unrelated environment credentials.
 
 Logout, deregistration, and deletion reject profiles with active runs. Removing a profile keeps provider data. Deleting managed data is a separate operation requiring the exact profile ID and is unavailable for linked/default roots.
 
@@ -112,3 +112,9 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 ## Explicit account copy to another kernel
 
 MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+
+## Signing in from a Vault entry
+
+An API-key provider sign-in (OpenCode Go and Zen) takes a Vault entry instead of a pasted key. `provider login <provider> [account-profile] --method opencode_go_api_key --vault <credential_id>` starts the sign-in and sends the entry; Web Provider Accounts offers **Use a Vault entry** next to the paste field, listing the owner's entries for the provider's site. The kernel reads the value, types it into the provider's own login terminal and lets `opencode auth login` finish; the value never reaches a model, the status, history, a log or a tool result, and the login screen stays masked.
+
+The provider-to-site map is one function, `provider_enrollment_vault_origin` (OpenCode: `https://opencode.ai`). The entry must be a secret bound to exactly that site for browser or HTTP use, so an entry the owner created for the site and one `chariox.vault.copy_for_use` made for it both work, with no copy step. An entry for another site is refused with the site it must be bound to. No other Vault use widens: the entry is read only for this sign-in.

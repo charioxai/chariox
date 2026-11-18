@@ -71,9 +71,9 @@ test("terminal command catalog projection filters recursively by surface and exe
       surfaces: ["session"],
       children: [
         catalogNode("session", "/mixed session", "session", "kernel"),
-        catalogNode("waiting", "/mixed waiting", "waiting_room", "kernel"),
-        catalogNode("local", "/mixed local", "waiting_room", "terminal_local"),
-        catalogNode("prompt", "/mixed prompt", "waiting_room", "prompt_prefix"),
+        catalogNode("waiting", "/mixed waiting", "room_list", "kernel"),
+        catalogNode("local", "/mixed local", "room_list", "terminal_local"),
+        catalogNode("prompt", "/mixed prompt", "room_list", "prompt_prefix"),
       ],
     }, {
       id: "empty-group",
@@ -82,11 +82,11 @@ test("terminal command catalog projection filters recursively by surface and exe
       value: "/empty ",
       kind: "group",
       execution_target: "kernel",
-      surfaces: ["waiting_room"],
-      children: [catalogNode("empty-prompt", "/empty prompt", "waiting_room", "prompt_prefix")],
+      surfaces: ["room_list"],
+      children: [catalogNode("empty-prompt", "/empty prompt", "room_list", "prompt_prefix")],
     }],
   }, {
-    surface: "waiting_room",
+    surface: "room_list",
     executionTargets: ["kernel", "terminal_local"],
   })
 
@@ -99,7 +99,7 @@ test("terminal command catalog projection filters recursively by surface and exe
 function catalogNode(
   id: string,
   value: string,
-  surface: "session" | "waiting_room",
+  surface: "session" | "room_list",
   executionTarget: "kernel" | "terminal_local" | "prompt_prefix",
 ) {
   return {

@@ -49,7 +49,7 @@ pub(crate) fn list_workspace_worktrees(
     Ok(worktrees)
 }
 
-pub(crate) fn create_waiting_room_worktree(
+pub(crate) fn create_workspace_worktree(
     workspace_path: &str,
     requested_path: Option<&str>,
     requested_branch: Option<&str>,
@@ -70,7 +70,7 @@ pub(crate) fn create_waiting_room_worktree(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or(resolve_preferred_base_ref(&repo_root)?);
-    let description = std::env::var("CHARIOX_WAITING_ROOM_WORKTREE_DESCRIPTION")
+    let description = std::env::var("CHARIOX_ROOM_LIST_WORKTREE_DESCRIPTION")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {

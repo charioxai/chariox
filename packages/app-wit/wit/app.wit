@@ -142,11 +142,19 @@ interface host {
   use app-types.{app-error};
   record offer { offer-id: string, state: string }
   record pick { multiple: bool, accept: list<string> }
+  /// Where a request for files stands.
+  variant picked { pending(string), granted(list<string>), declined, expired }
   notify: async func(title: string, body: option<string>) -> result<string, app-error>;   // host.notify
   open-link: async func(url: string) -> result<offer, app-error>;                         // host.open_link
   write-clipboard: async func(text: string) -> result<offer, app-error>;                  // host.clipboard_write
   /// Waits for the person's choice; the worker polls host.pick_file_status.
   pick-file: async func(request: pick) -> result<list<string>, app-error>;               // host.pick_file (+ _status)
+  /// Asks the person for files and returns at once with the request's id (`pending`), or
+  /// with the answer when it is already there. The App keeps asking with `await-file`, in
+  /// this call or a later one: the kernel holds the request for ten minutes.
+  request-file: async func(request: pick) -> result<picked, app-error>;                  // host.pick_file
+  /// Waits up to `wait-ms` for the person's choice, then reports where the request stands.
+  await-file: async func(operation-id: string, wait-ms: u32) -> result<picked, app-error>; // host.pick_file_status
 }
 
 // R2/R6, L1/L2, A1: existing kernel protected-effect approvals.

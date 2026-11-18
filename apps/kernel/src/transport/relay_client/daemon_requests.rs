@@ -578,7 +578,7 @@ pub(super) async fn handle_prepared_daemon_request(
 
 /// A reply is never bigger than this once serialized; one that is would hold the relay (and the
 /// client's link) for the whole answer, so the client is told to ask for it in pages.
-const MAX_REPLY_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_REPLY_BYTES: usize = 1024 * 1024;
 /// The answers a caller cannot ask for in pages: a terminal snapshot and a captured image have
 /// no offset, length or cursor, so refusing them at the ceiling would leave no way to get them.
 /// They travel as bounded chunks like any bulk reply and stay below what one transfer carries.
@@ -1001,7 +1001,11 @@ async fn dispatch_on_behalf_of(
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
     // A decision answered through the paired gateway is the external agent's, not a person's.
     // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
-    if matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+    if matches!(
+        request,
+        LocalDaemonRequest::RespondToInteraction(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+    ) {
         caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
     }
     if let Err(error) = router
@@ -1238,12 +1242,23 @@ async fn dispatch_relay_client_request(
             .reserve(&command.command_id, fingerprint)
             .await
         {
-            CommandReservation::Wait(wait_rx) => {
-                return match wait_rx.await {
-                    // A retry's answer window starts when the result exists, not when the retry
-                    // arrived: retries of a command that ran for minutes would each claim an
-                    // expired window and all receive the result at once.
-                    Ok(_) if !command_result_cache.may_answer_retry(&command.command_id) => {
+            CommandReservation::Wait(mut wait_rx) => {
+                // Only a replay of a result that already exists is refused inside the answer
+                // window. Every retry that waited for the original to finish is answered: the
+                // client abandons an attempt that stalled and keeps the newest, so answering one
+                // waiter would leave the live attempt with `duplicate_command_unavailable` after
+                // a slice operation that ran for minutes. Answering opens the window for replays.
+                let ready = wait_rx.try_recv().ok();
+                let replay_of_finished = ready.is_some();
+                let waited = match ready {
+                    Some(cached) => Ok(cached),
+                    None => wait_rx.await,
+                };
+                return match waited {
+                    Ok(_)
+                        if !command_result_cache.may_answer_retry(&command.command_id)
+                            && replay_of_finished =>
+                    {
                         RelayDispatchOutcome::RelayError(relay_error(
                             "duplicate_command_unavailable",
                             "original duplicate command result was unavailable",

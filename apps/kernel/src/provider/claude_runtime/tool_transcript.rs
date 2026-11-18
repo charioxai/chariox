@@ -8,6 +8,8 @@ const PENDING_ENTRIES: usize = 64;
 const PENDING_BYTES: usize = 256 * 1024;
 const IDENTITY_BYTES: usize = 256;
 const MESSAGE_BLOCKS: usize = 64;
+/// Nested background tasks tracked at once.
+const BACKGROUND_TASKS: usize = 64;
 const RESULT_BYTES: usize = 16 * 1024;
 const RESULT_BLOCKS: usize = 256;
 const RESULT_IMAGES: usize = 4;
@@ -152,6 +154,10 @@ pub(super) struct ClaudeToolTranscript {
     /// Launched background commands by tool call id: the call's last snapshot
     /// and the task id Claude names it by. They outlive the turn that started them.
     background: BTreeMap<String, BackgroundCall>,
+    /// Background tasks a helper agent started itself, by task id, with the helper's task id:
+    /// while one runs, the helper's own completion notice is interim.
+    #[serde(default)]
+    nested: BTreeMap<String, String>,
     /// Background calls that ended outside `observe`, waiting to be emitted.
     ended: Vec<Value>,
 }
@@ -202,13 +208,21 @@ impl PendingTool {
 }
 
 /// Claude's Bash and Agent tools keep a command or a helper agent running after
-/// their launch result when the model asked for `run_in_background`.
+/// their launch result when the model asked for `run_in_background`; its Monitor tool keeps
+/// a script running and reports its events unless the model made it persistent, which ends
+/// only with the session.
 pub(crate) fn launches_background_task(name: &str, input: Option<&Value>) -> bool {
-    matches!(name, "Bash" | "Agent" | "Task")
-        && input
-            .and_then(|input| input.get("run_in_background"))
+    let flag = |field: &str| {
+        input
+            .and_then(|input| input.get(field))
             .and_then(Value::as_bool)
             == Some(true)
+    };
+    match name {
+        "Bash" | "Agent" | "Task" => flag("run_in_background"),
+        "Monitor" => !flag("persistent"),
+        _ => false,
+    }
 }
 
 /// A helper agent Claude started in the background whatever the call asked for:
@@ -221,7 +235,7 @@ fn is_async_helper_launch(structured: Option<&Value>) -> bool {
 }
 
 /// The task id a background launch result names: the structured result's
-/// `backgroundTaskId` or a helper agent's `agentId` (the stream's
+/// `backgroundTaskId`, a Monitor's `taskId` or a helper agent's `agentId` (the stream's
 /// `tool_use_result`, the transcript's `toolUseResult`), else the launch text
 /// "Command running in background with ID: <id>. ...".
 pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Option<String> {
@@ -229,6 +243,7 @@ pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Opti
         .and_then(|result| {
             result
                 .get("backgroundTaskId")
+                .or_else(|| result.get("taskId"))
                 .or_else(|| result.get("agentId"))
         })
         .and_then(Value::as_str)
@@ -295,7 +310,16 @@ impl ClaudeToolTranscript {
     /// The snapshots `value` changes; `now_ms` is when the kernel saw it.
     fn observe_at(&mut self, value: &Value, now_ms: u64) -> Vec<Value> {
         let kind = value.get("type").and_then(Value::as_str);
+        self.note_nested_task_start(value);
         if let Some(end) = super::task_notification::finished_background_task(value) {
+            if let Some(task_id) = end.task_id {
+                // A helper agent that stopped with its own background work still running reports
+                // `completed`, and notifies again when that work ends.
+                if self.nested.values().any(|parent| parent == task_id) {
+                    return Vec::new();
+                }
+                self.nested.remove(task_id);
+            }
             return self.finish_background_task(end.tool_use_id, end.task_id, now_ms);
         }
         let message = value.get("message").unwrap_or(value);
@@ -457,6 +481,25 @@ impl ClaudeToolTranscript {
             .map(|call| call.finished(now_ms))
             .into_iter()
             .collect()
+    }
+
+    fn note_nested_task_start(&mut self, value: &Value) {
+        if value.get("type").and_then(Value::as_str) != Some("system")
+            || value.get("subtype").and_then(Value::as_str) != Some("task_started")
+            || self.nested.len() >= BACKGROUND_TASKS
+        {
+            return;
+        }
+        let id = |field: &str| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|id| id.len() <= IDENTITY_BYTES)
+                .map(str::to_string)
+        };
+        if let (Some(task), Some(parent)) = (id("task_id"), id("parent_task_id")) {
+            self.nested.insert(task, parent);
+        }
     }
 
     /// The Claude process that ran the background commands is gone: each one
@@ -685,6 +728,47 @@ mod tests {
         assert_eq!(first_ended[0]["finished_at_ms"], 21_000);
     }
 
+    // Recorded from Claude Code: the Monitor tool keeps a script running past its launch and
+    // reports each event, then the end of the stream, as a task notification.
+    fn monitor_launch(id: &str, persistent: bool) -> Value {
+        let mut input = json!({"command":"sleep 40; echo MONITOR_EVENT_FIRED","description":"drill monitor","timeout_ms":300000});
+        if persistent {
+            input["persistent"] = json!(true);
+        }
+        json!({"type":"assistant","message":{"role":"assistant","content":[{
+            "type":"tool_use","id":id,"name":"Monitor","input":input
+        }]}})
+    }
+
+    fn monitor_launch_result(id: &str, task_id: &str) -> Value {
+        json!({"type":"user","message":{"role":"user","content":[{
+            "tool_use_id":id,"type":"tool_result",
+            "content":format!("Monitor started (task {task_id}, expires in 5m unless the source ends first; you get one notice at expiry \u{2014} re-arm if you still need the watch). You will be notified on each event. Keep working \u{2014} do not poll or sleep.")
+        }]},"tool_use_result":{"taskId":task_id,"timeoutMs":300000,"persistent":false}})
+    }
+
+    #[test]
+    fn a_monitor_runs_past_its_launch_and_its_turn_until_its_stream_ends() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let id = "toolu_01KamQyLbeQDEZ46fKLMXvGg";
+        let launch = transcript.observe_at(&monitor_launch(id, false), 1_000);
+        assert_eq!(launch[0]["background"], true, "{}", launch[0]);
+        let launched = transcript.observe_at(&monitor_launch_result(id, "br087zy1c"), 1_200);
+        assert_eq!(launched[0]["background"], true, "{}", launched[0]);
+        assert!(launched[0]["finished_at_ms"].is_null(), "{}", launched[0]);
+        let ended = transcript.observe_at(&task_notification("br087zy1c", id, "completed"), 41_000);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0]["id"], id);
+        assert_eq!(ended[0]["finished_at_ms"], 41_000);
+    }
+
+    #[test]
+    fn a_persistent_monitor_is_not_held_for_because_it_never_ends() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let launch = transcript.observe_at(&monitor_launch("persistent", true), 1_000);
+        assert!(launch[0].get("background").is_none(), "{}", launch[0]);
+    }
+
     // Recorded from Claude Code (Agent tool with `run_in_background`): the launch result is
     // `async_launched` with the helper's `agentId`, and the end arrives as a task notification.
     fn helper_launch(id: &str, background_flag: bool) -> Value {
@@ -736,6 +820,58 @@ mod tests {
             transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
         assert_eq!(ended[0]["id"], id);
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
+    }
+
+    // Live (orchfix6, stream-json): a helper that stopped with its own background command still
+    // running is reported `completed` by the stream's `task_notification`, which names no note; the
+    // `task_started` of that command names the helper as its parent, and the helper notifies again
+    // when the command ends.
+    #[test]
+    fn a_helper_notification_while_its_own_background_task_runs_does_not_end_the_call() {
+        let started = |task: &str, parent: &str| {
+            json!({"type":"system","subtype":"task_started","task_id":task,"tool_use_id":"nested",
+                "parent_task_id":parent,"task_type":"local_bash","is_backgrounded":true})
+        };
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe_at(&helper_launch("toolu_auto", false), 1_000);
+        transcript.observe_at(&helper_launch_result("toolu_auto", "aauto1"), 1_200);
+        transcript.observe_at(&started("bnested1", "aauto1"), 2_000);
+        assert!(transcript
+            .observe_at(
+                &task_notification("aauto1", "toolu_auto", "completed"),
+                3_000
+            )
+            .is_empty());
+        transcript.observe_at(&task_notification("bnested1", "nested", "completed"), 8_000);
+        let ended = transcript.observe_at(
+            &task_notification("aauto1", "toolu_auto", "completed"),
+            9_000,
+        );
+        assert_eq!(ended[0]["id"], "toolu_auto");
+        assert_eq!(ended[0]["finished_at_ms"], 9_000);
+    }
+
+    // Live (l10orch r1, L10-CHILD-BACKGROUND): Claude reports a helper that stopped with background
+    // work of its own as `completed` with a note that the result may be interim. The same task id
+    // notifies again when the helper finishes; only that one ends the call.
+    #[test]
+    fn a_completed_helper_notification_marked_interim_does_not_end_the_call() {
+        let notification = |note: &str, result: &str| {
+            json!({"type":"user","message":{"role":"user","content":format!(
+                "<task-notification>\n<task-id>aauto1</task-id>\n<tool-use-id>toolu_auto</tool-use-id>\n<status>completed</status>\n<summary>Agent \"helper\" finished</summary>\n{note}<result>{result}</result>\n</task-notification>"
+            )}})
+        };
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe_at(&helper_launch("toolu_auto", false), 1_000);
+        transcript.observe_at(&helper_launch_result("toolu_auto", "aauto1"), 1_200);
+        let interim = notification(
+            "<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>\n",
+            "still waiting",
+        );
+        assert!(transcript.observe_at(&interim, 3_000).is_empty());
+        let ended = transcript.observe_at(&notification("", "HELPERRESULT42"), 9_000);
+        assert_eq!(ended[0]["id"], "toolu_auto");
+        assert_eq!(ended[0]["finished_at_ms"], 9_000);
     }
 
     // Live (l10orch r1): a helper's own background `sleep` left open held the agent for the whole

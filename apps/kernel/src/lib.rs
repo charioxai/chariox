@@ -70,6 +70,7 @@ pub mod slice;
 pub mod slice_provider_auth;
 pub mod terminal;
 pub mod transport;
+pub(crate) mod watcher;
 pub mod web_bot_auth;
 pub mod workflow_code;
 pub(crate) mod workflow_publication_apps;
@@ -85,6 +86,7 @@ pub use error::DaemonError;
 mod lib_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod test_temp_dir;
 
 #[cfg(all(feature = "native-display", target_os = "linux"))]
 pub mod display_native;

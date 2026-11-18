@@ -3,7 +3,9 @@ use super::*;
 mod assessment_sources;
 mod goal_waits;
 mod goal_yields;
+mod open_sources;
 mod owner_wait;
+mod unwaited_timers;
 mod wakeable_agents;
 struct Fixture {
     root: std::path::PathBuf,
@@ -392,17 +394,8 @@ fn a03_timer_is_an_obligation_that_needs_scheduler_proof_of_life() {
         .obligations
         .iter()
         .any(|o| o.id == "t1" && o.kind == "timer" && o.status == "open"));
-    // An armed timer keeps the task from completing until fired or cancelled.
-    f.apply(Operation::Settle {
-        room: "room".into(),
-        agent: "agent".into(),
-        prompt: "p".into(),
-        run: "run".into(),
-        has_answer: true,
-        cancelled: false,
-        now: 30,
-    });
-    assert_ne!(f.task().state, ExecutionState::Done);
+    // Waiting on the timer keeps it armed until it fires or is cancelled.
+    f.wait_on(&["t1"]);
     let verified = f.wakes(Operation::VerifyWakes { now: 40 });
     assert_eq!(verified.len(), 1);
     assert_eq!(f.wake("t1").verified_at_ms, Some(40));
@@ -2007,17 +2000,8 @@ mod driver_sources {
             .obligations
             .iter()
             .any(|o| o.id == "t1" && o.kind == "timer" && o.status == "open"));
-        // An armed timer keeps the task from completing until fired or cancelled.
-        f.apply(Operation::Settle {
-            room: "room".into(),
-            agent: "agent".into(),
-            prompt: "p".into(),
-            run: "run".into(),
-            has_answer: true,
-            cancelled: false,
-            now: 30,
-        });
-        assert_ne!(f.task().state, ExecutionState::Done);
+        // Waiting on the timer keeps it armed until it fires or is cancelled.
+        f.wait_on(&["t1"]);
         let verified = f.wakes(Operation::VerifyWakes { now: 40 });
         assert_eq!(verified.len(), 1);
         assert_eq!(f.wake("t1").verified_at_ms, Some(40));
@@ -3066,36 +3050,6 @@ fn blocked_question_admission_preserves_turn_and_work_boundaries() {
         revision: f.task().revision,
     });
     assert!(arm("interaction", "p").is_err(), "closed tasks cannot ask");
-}
-
-#[test]
-fn kwait_yield_refusal_names_the_uncovered_timer_label_and_cancel_call() {
-    let f = Fixture::new();
-    f.create("wait-a", "timer", Some(1_000), None);
-    f.create("wait-b", "timer", Some(2_000), None);
-    let refusal = f
-        .store
-        .agent_lifecycle(Operation::Yield {
-            task: "p".into(),
-            prompt: "p".into(),
-            registrations: vec!["completion-wait-a".into()],
-            cursor: 0,
-            deadline: Some(5_000),
-            reason: "wait for timers".into(),
-            now: 20,
-        })
-        .unwrap_err()
-        .to_string();
-    for expected in [
-        "wait-b",
-        "timer wait-b",
-        "completion-wait-b",
-        "chariox.events.cancel_wake",
-        "wake_id",
-        "origin_prompt_id",
-    ] {
-        assert!(refusal.contains(expected), "missing {expected}: {refusal}");
-    }
 }
 
 #[test]

@@ -259,7 +259,8 @@ export class MirrorFrames {
       try {
         const origin = await this.origin(stream, entry, parent);
         const boxes = await this.mirror.evaluate(entry.child, `${entry.child.ref}.opaqueBoxes()`);
-        for (const { id, box, distorted, tag, foreign } of boxes) if (!foreign || !stream.frames.has(rebaseId(id, entry.slot))) out.push({ id: rebaseId(id, entry.slot), box: [origin[0] + (origin[2] ?? 1) * box[0], origin[1] + (origin[3] ?? 1) * box[1], (origin[2] ?? 1) * box[2], (origin[3] ?? 1) * box[3]], ...(distorted ? { distorted, tag } : {}) });
+        const place = box => [origin[0] + (origin[2] ?? 1) * box[0], origin[1] + (origin[3] ?? 1) * box[1], (origin[2] ?? 1) * box[2], (origin[3] ?? 1) * box[3]];
+        for (const { id, box, ink, distorted, tag, foreign } of boxes) if (!foreign || !stream.frames.has(rebaseId(id, entry.slot))) out.push({ id: rebaseId(id, entry.slot), box: place(box), ...(ink ? { ink: place(ink) } : {}), ...(distorted ? { distorted, tag } : {}) });
       } catch {}
     }
     return out;

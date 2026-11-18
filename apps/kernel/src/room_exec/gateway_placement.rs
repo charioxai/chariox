@@ -148,10 +148,8 @@ pub(crate) async fn create_target_room(
 async fn target_launch_target(
     grant: &dyn GrantedSend,
     exec_id: &str,
-) -> Result<Option<crate::local::WaitingRoomLaunchTarget>, DaemonError> {
-    let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-        crate::local::GetWaitingRoomPublicSnapshotRequest,
-    );
+) -> Result<Option<crate::local::RoomListLaunchTarget>, DaemonError> {
+    let request = LocalDaemonRequest::GetRoomListSnapshot(crate::local::GetRoomListSnapshotRequest);
     let sent = &request;
     let answer = forward_with_retry(format!("place:{exec_id}:target"), move |id| {
         grant.send(id, sent)
@@ -159,9 +157,7 @@ async fn target_launch_target(
     .await
     .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
     match serde_json::from_value(answer) {
-        Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot }) => {
-            Ok(snapshot.launch_target)
-        }
+        Ok(LocalDaemonResponse::RoomListSnapshot { snapshot }) => Ok(snapshot.launch_target),
         _ => Err(error(
             "exec_target_unreadable",
             "the other kernel answered with something that is not its default Room directory",
@@ -173,7 +169,7 @@ async fn target_launch_target(
 /// that kernel's own default. The home Room's path is never assumed to exist there.
 pub(crate) fn room_location(
     directory: Option<&str>,
-    launch_target: Option<crate::local::WaitingRoomLaunchTarget>,
+    launch_target: Option<crate::local::RoomListLaunchTarget>,
 ) -> Result<(String, String), DaemonError> {
     match (directory, launch_target) {
         (Some(directory), _) => Ok((directory.to_owned(), directory.to_owned())),

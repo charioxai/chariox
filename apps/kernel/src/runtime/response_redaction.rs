@@ -227,18 +227,24 @@ pub(crate) fn redact_response_for_user(
                 session: redact_session(session)?,
             }
         }
-        LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
-            LocalDaemonResponse::AgentConfigUpdated {
-                agent,
-                session: redact_session(session)?,
-            }
-        }
-        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
-            LocalDaemonResponse::AgentProfileUpdated {
-                agent,
-                session: redact_session(session)?,
-            }
-        }
+        LocalDaemonResponse::AgentConfigUpdated {
+            agent,
+            session,
+            applies,
+        } => LocalDaemonResponse::AgentConfigUpdated {
+            agent,
+            session: redact_session(session)?,
+            applies,
+        },
+        LocalDaemonResponse::AgentProfileUpdated {
+            agent,
+            session,
+            applies,
+        } => LocalDaemonResponse::AgentProfileUpdated {
+            agent,
+            session: redact_session(session)?,
+            applies,
+        },
         LocalDaemonResponse::AgentAliased { agent, session } => LocalDaemonResponse::AgentAliased {
             agent,
             session: redact_session(session)?,
@@ -324,6 +330,20 @@ pub(crate) fn redact_response_for_user(
         LocalDaemonResponse::WorkflowAliased { workflow, session } => {
             LocalDaemonResponse::WorkflowAliased {
                 workflow: workflow.redacted_for_user(caller_user_id),
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::WorkflowResponsibleSet { workflow, session } => {
+            LocalDaemonResponse::WorkflowResponsibleSet {
+                workflow: workflow.redacted_for_user(caller_user_id),
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::WorkflowRunAttentionCleared { run, session } => {
+            let workflow = session.workflow(run.workflow_id()).cloned();
+            let run = run.redacted_for_user(workflow.as_ref(), caller_user_id);
+            LocalDaemonResponse::WorkflowRunAttentionCleared {
+                run,
                 session: redact_session(session)?,
             }
         }

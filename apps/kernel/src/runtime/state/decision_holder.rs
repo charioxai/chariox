@@ -85,13 +85,8 @@ pub(crate) fn user_only(
     } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
         Some(UserOnly::Critical)
     } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
-        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may
-        // hold it. Allowing the person's browser again stays the person's.
-        if interaction.choice("allow_browser").is_some() {
-            Some(UserOnly::UserDomain)
-        } else {
-            None
-        }
+        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may hold it.
+        None
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()
@@ -329,6 +324,41 @@ impl KernelRuntimeOwnedState {
             .collect()
     }
 
+    /// Whether `id`'s event for this tenure reached a running task of `agent` other than the
+    /// `settled` one: that task was handed the decision, so another task of the agent ending
+    /// (a long-lived waiting task parking again) does not take it away.
+    fn handed_to_another_running_task(
+        &self,
+        session_id: &str,
+        agent: &str,
+        settled: &str,
+        interaction_id: &str,
+        tenure: u32,
+    ) -> bool {
+        let Ok(events) = self.child_decision_events(session_id, agent, tenure, interaction_id)
+        else {
+            return false;
+        };
+        let Ok(tasks) = self
+            .durable_state_store
+            .agent_tasks(Some(session_id), Some(agent))
+        else {
+            return false;
+        };
+        events
+            .iter()
+            .filter(|event| event.state != "pending")
+            .filter_map(|event| event.target_prompt_id.as_ref().or(event.prompt_id.as_ref()))
+            .any(|prompt| {
+                tasks.iter().any(|task| {
+                    task.task_id != settled
+                        && task.state == ExecutionState::Working
+                        && (&task.prompt_id == prompt
+                            || task.pending_prompt_id.as_ref() == Some(prompt))
+                })
+            })
+    }
+
     /// Withdraws the holder's event once the decision is no longer pending.
     pub(super) fn withdraw_settled_child_decision(
         &self,
@@ -353,6 +383,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent: &str,
         only: Option<&str>,
+        settled: Option<&str>,
     ) -> Result<(usize, Vec<String>), DaemonError> {
         let _mutation =
             self.pending_interactions
@@ -368,12 +399,23 @@ impl KernelRuntimeOwnedState {
             if only.is_some_and(|only| only != id) {
                 continue;
             }
-            moved += 1;
             let mut sessions = self.session_store.write();
             let mut session = sessions.get_session(session_id)?.clone();
             let Some(pending) = self.pending_interactions.write().get(&id).cloned() else {
                 continue;
             };
+            if settled.is_some_and(|task| {
+                self.handed_to_another_running_task(
+                    session_id,
+                    agent,
+                    task,
+                    &id,
+                    pending.holder_tenure,
+                )
+            }) {
+                continue;
+            }
+            moved += 1;
             let Some(interaction) = session
                 .active_interactions()
                 .iter()
@@ -828,12 +870,15 @@ impl KernelRuntimeState {
     }
 
     /// `agent` ended, errored or was cancelled: the decisions it held move up at once.
+    /// `settled` is the task whose end this follows: a decision another running task of the agent
+    /// was handed stays with it. `None` when the agent itself is gone.
     pub(super) async fn move_decisions_up(
         &self,
         session_id: &str,
         agent: &str,
+        settled: Option<&str>,
     ) -> Result<(), DaemonError> {
-        self.move_decisions_up_matching(session_id, agent, None)
+        self.move_decisions_up_matching(session_id, agent, None, settled)
             .await
             .map(|_| ())
     }
@@ -844,9 +889,10 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent: &str,
+        settled: Option<&str>,
     ) -> Result<(), DaemonError> {
         for id in self.owned.decisions_seen_by(session_id, agent) {
-            self.move_decisions_up_matching(session_id, agent, Some(&id))
+            self.move_decisions_up_matching(session_id, agent, Some(&id), settled)
                 .await?;
         }
         Ok(())
@@ -857,8 +903,11 @@ impl KernelRuntimeState {
         session_id: &str,
         agent: &str,
         only: Option<&str>,
+        settled: Option<&str>,
     ) -> Result<usize, DaemonError> {
-        let (moved, announce) = self.owned.move_decisions_up_from(session_id, agent, only)?;
+        let (moved, announce) = self
+            .owned
+            .move_decisions_up_from(session_id, agent, only, settled)?;
         if moved > 0 {
             self.owned.session_snapshot(session_id)?;
             self.owned
@@ -884,7 +933,7 @@ impl KernelRuntimeState {
         }
         Ok(
             match self
-                .move_decisions_up_matching(session_id, holder, Some(interaction_id))
+                .move_decisions_up_matching(session_id, holder, Some(interaction_id), None)
                 .await?
             {
                 0 => ChildDecisionStatus::NotHolder,
@@ -905,7 +954,7 @@ impl KernelRuntimeState {
     ) -> Result<ChildDecisionStatus, DaemonError> {
         let status = self.answer_held_child_decision(session_id, holder, interaction_id, answer)?;
         if status == ChildDecisionStatus::NotHolder {
-            self.move_decisions_up_matching(session_id, holder, Some(interaction_id))
+            self.move_decisions_up_matching(session_id, holder, Some(interaction_id), None)
                 .await?;
         }
         Ok(status)

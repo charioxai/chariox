@@ -316,67 +316,90 @@ fn validate_launch_target_development(
         ManagedContextDevelopmentLaunchTarget::Empty { workspace_path } => {
             validate_destination(Path::new(workspace_path))
         }
-        ManagedContextDevelopmentLaunchTarget::FromSource {
-            project_id,
-            destination_root,
-            primary_repository_id,
-            repositories,
-        } => {
-            validate_identifier(project_id, "launch target project")?;
-            validate_identifier(primary_repository_id, "launch target primary repository")?;
-            validate_destination(Path::new(destination_root))?;
-            if repositories.is_empty() {
+        ManagedContextDevelopmentLaunchTarget::FromSource { projects } => {
+            if projects.is_empty()
+                || projects.len() > crate::managed_context::package::MAX_MANAGED_CONTEXT_PROJECTS
+            {
                 return Err(transfer_error(
-                    "managed context launch target repositories are invalid",
+                    "managed context launch target Projects are invalid",
                 ));
             }
-            let mut primary_count = 0;
-            let mut repository_ids = std::collections::HashSet::new();
-            for repository in repositories {
-                validate_identifier(&repository.repository_id, "launch target repository")?;
-                validate_identifier(&repository.target_directory, "launch target directory")?;
-                let valid_head = match repository.workspace_kind {
-                    crate::managed_context::development::DevelopmentWorkspaceKind::Git => {
-                        matches!(repository.head_sha.len(), 40 | 64)
-                            && repository
-                                .head_sha
-                                .bytes()
-                                .all(|byte| byte.is_ascii_hexdigit())
-                    }
-                    crate::managed_context::development::DevelopmentWorkspaceKind::Directory => {
-                        repository.head_sha.is_empty()
-                    }
-                };
-                if !valid_head {
+            let mut project_ids = std::collections::HashSet::new();
+            for project in projects {
+                if !project_ids.insert(project.project_id.as_str()) {
                     return Err(transfer_error(
-                        "managed context launch target HEAD is invalid",
+                        "managed context launch target contains duplicate Projects",
                     ));
                 }
-                validate_destination(Path::new(&repository.workspace_path))?;
-                if !repository_ids.insert(repository.repository_id.as_str()) {
-                    return Err(transfer_error(
-                        "managed context launch target contains duplicate repositories",
-                    ));
-                }
-                if repository.role
-                    == crate::managed_context::development::DevelopmentRepositoryRole::Primary
-                {
-                    primary_count += 1;
-                    if repository.repository_id != *primary_repository_id {
-                        return Err(transfer_error(
-                            "managed context launch target primary repository does not match",
-                        ));
-                    }
-                }
-            }
-            if primary_count != 1 {
-                return Err(transfer_error(
-                    "managed context launch target must contain one primary repository",
-                ));
+                validate_project_launch_target(project)?;
             }
             Ok(())
         }
     }
+}
+
+fn validate_project_launch_target(
+    project: &crate::local::ManagedContextProjectLaunchTarget,
+) -> Result<(), DaemonError> {
+    let crate::local::ManagedContextProjectLaunchTarget {
+        project_id,
+        destination_root,
+        primary_repository_id,
+        repositories,
+    } = project;
+    validate_identifier(project_id, "launch target project")?;
+    validate_identifier(primary_repository_id, "launch target primary repository")?;
+    validate_destination(Path::new(destination_root))?;
+    if repositories.is_empty() {
+        return Err(transfer_error(
+            "managed context launch target repositories are invalid",
+        ));
+    }
+    let mut primary_count = 0;
+    let mut repository_ids = std::collections::HashSet::new();
+    for repository in repositories {
+        validate_identifier(&repository.repository_id, "launch target repository")?;
+        validate_identifier(&repository.target_directory, "launch target directory")?;
+        let valid_head = match repository.workspace_kind {
+            crate::managed_context::development::DevelopmentWorkspaceKind::Git => {
+                matches!(repository.head_sha.len(), 40 | 64)
+                    && repository
+                        .head_sha
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+            }
+            crate::managed_context::development::DevelopmentWorkspaceKind::Directory => {
+                repository.head_sha.is_empty()
+            }
+        };
+        if !valid_head {
+            return Err(transfer_error(
+                "managed context launch target HEAD is invalid",
+            ));
+        }
+        validate_destination(Path::new(&repository.workspace_path))?;
+        if !repository_ids.insert(repository.repository_id.as_str()) {
+            return Err(transfer_error(
+                "managed context launch target contains duplicate repositories",
+            ));
+        }
+        if repository.role
+            == crate::managed_context::development::DevelopmentRepositoryRole::Primary
+        {
+            primary_count += 1;
+            if repository.repository_id != *primary_repository_id {
+                return Err(transfer_error(
+                    "managed context launch target primary repository does not match",
+                ));
+            }
+        }
+    }
+    if primary_count != 1 {
+        return Err(transfer_error(
+            "managed context launch target must contain one primary repository",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<(), DaemonError> {

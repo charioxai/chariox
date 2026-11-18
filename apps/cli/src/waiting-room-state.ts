@@ -21,7 +21,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { normalizeWaitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { normalizeRoomListLaunchPlacement } from "@chariox/kernel-client/room-list-runtime-placement"
 import {
   waitingRoomPreviewSessions,
   waitingRoomSessions,
@@ -100,7 +100,7 @@ export function normalizeWaitingRoomState(
   const terminals = waitingRoomTerminals(remote)
   const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state.showArchivedProjects))
   const externalSessions = externalProviderSessionPageSessions(remote)
-  const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
+  const placement = normalizeRoomListLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
     projectSelectionId: state.projectSelectionId,

@@ -5,7 +5,7 @@ const MAX_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 30_000;
 const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
 
 impl KernelRuntimeState {
-    pub(crate) fn waiting_room_auxiliary_projection(
+    pub(crate) fn room_list_auxiliary_projection(
         &self,
         owner_user_id: &str,
         request: &crate::local::ListExternalProviderSessionsRequest,
@@ -59,6 +59,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.schedule_watchers();
         // A person's Tab takeover returns to the agent once they stop sending input; an agent waiting for
         // it continues now instead of at the next periodic sweep.
         if self.owned.kernel_browser_host.reclaim_idle_takeovers() {
@@ -269,15 +270,15 @@ impl KernelRuntimeState {
         self.owned.sweep_kernel_operation_interactions(false);
     }
 
-    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
+    pub(crate) fn room_list_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }
 
-    pub(crate) fn record_waiting_room_change(&self) {
+    pub(crate) fn record_room_list_change(&self) {
         self.owned.runtime_projection_changes.record_change();
     }
 
-    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_room_list_change_after(&self, sequence: u64) {
         self.owned
             .runtime_projection_changes
             .wait_for_change_after(sequence)
@@ -292,6 +293,23 @@ impl KernelRuntimeState {
         self.owned
             .session_projection
             .session_change_sequence(session_id)
+    }
+
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.owned.person_inbox_changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.owned
+            .person_inbox_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    /// A notice arrived, a read, snooze or mute changed what an Inbox shows, or a subscription
+    /// changed.
+    pub(crate) fn record_person_inbox_change(&self) {
+        self.owned.person_inbox_changes.record_change();
     }
 
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {

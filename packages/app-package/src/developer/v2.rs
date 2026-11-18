@@ -24,7 +24,14 @@ pub(super) fn generate_manifest(
         publisher: options.publisher,
         app_contract_version: v2::APP_CONTRACT_VERSION_V2,
         resource_policy: crate::RESOURCE_POLICY.into(),
-        world: "chariox:app/app@1.0.0".into(),
+        world: if options.capabilities.event_routing.is_some()
+            || options.capabilities.workspace.is_some()
+        {
+            v2::APP_WORLD_1_1
+        } else {
+            v2::APP_WORLD
+        }
+        .into(),
         required_features: Vec::new(),
         idempotent_tools: Vec::new(),
         runtime: v2::RuntimeV2 {
@@ -66,12 +73,15 @@ fn policy(publisher: TrustedPublisher, limits: &Limits) -> PolicyV2 {
             RequiredFeature::AgentPanel,
             RequiredFeature::Connections,
             RequiredFeature::DirectedEvents,
+            RequiredFeature::CredentialedHttp,
+            RequiredFeature::EventRouting,
+            RequiredFeature::Workspace,
         ]),
         vec![
             SupportedWorld {
                 name: "chariox:app/app".into(),
                 major: 1,
-                minor: 0,
+                minor: 1,
             },
             SupportedWorld {
                 name: "chariox:app/migration".into(),

@@ -36,6 +36,7 @@ test("stdio cancellation interrupts a waiting action without losing the browser"
         case "Runtime.enable":
         case "Network.enable":
         case "Inspector.enable":
+        case "Emulation.setScrollbarsHidden":
         case "Runtime.releaseObject": return {};
         case "Runtime.evaluate": return { result: { value: true } };
         case "Input.dispatchMouseEvent":

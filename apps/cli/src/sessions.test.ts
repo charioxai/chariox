@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
+import { roomListTimestampLabel } from "@chariox/kernel-client/room-list-activity"
 
 import {
   decideBootstrapAction,
@@ -125,7 +125,7 @@ test("formatSessionList routes aggregate stale home-proxy blockers through remot
 test("sessionBrowserTimestamp uses shared waiting-room timestamp labels", () => {
   assert.equal(
     sessionBrowserTimestamp(Date.UTC(2026, 0, 2, 10, 30)),
-    waitingRoomTimestampLabel(Date.UTC(2026, 0, 2, 10, 30)),
+    roomListTimestampLabel(Date.UTC(2026, 0, 2, 10, 30)),
   )
   assert.equal(sessionBrowserTimestamp(null), "-")
 })

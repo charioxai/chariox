@@ -22,9 +22,9 @@ use tokio::time::Instant;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetCredentialVaultStatusRequest, KernelResourceRefusal, KernelResourceWatch,
-    ListAppInstallationsRequest, ListCredentialsRequest, ListProviderAccountProfilesRequest,
-    LocalDaemonRequest,
+    GetCredentialVaultStatusRequest, GetPersonInboxRequest, KernelResourceRefusal,
+    KernelResourceWatch, ListAppInstallationsRequest, ListCredentialsRequest,
+    ListProviderAccountProfilesRequest, LocalDaemonRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
@@ -39,6 +39,8 @@ const UNSIGNALLED_CHANGE_INTERVAL: Duration = Duration::from_secs(10);
 const LEASE_END_GRACE: Duration = Duration::from_millis(50);
 const APP_INSTALLATION_PAGE: u32 = 100;
 const WATCH_INBOX_CAPACITY: usize = 8;
+/// A burst of session changes (a card raised while its turn streams) is read once.
+const PERSON_INBOX_SETTLE: Duration = Duration::from_millis(100);
 
 /// Command types that change a feed resource; reads among them change nothing.
 const CHANGING_COMMANDS: [&str; 8] = [
@@ -126,7 +128,11 @@ enum FeedResource {
     VaultStatus,
     VaultEntries,
     ProviderAccounts,
-    AppInstallations { session_id: Option<String> },
+    AppInstallations {
+        session_id: Option<String>,
+    },
+    /// Changes with the Rooms' pending interactions, which no request signals.
+    PersonInbox,
 }
 
 impl FeedResource {
@@ -146,6 +152,7 @@ impl FeedResource {
             "vault_status" => allow_only(&[]).map(|()| Self::VaultStatus),
             "vault_entries" => allow_only(&[]).map(|()| Self::VaultEntries),
             "provider_accounts" => allow_only(&[]).map(|()| Self::ProviderAccounts),
+            "person_inbox" => allow_only(&[]).map(|()| Self::PersonInbox),
             "app_installations" => {
                 allow_only(&["session_id"])?;
                 let session_id = match params.get("session_id") {
@@ -208,9 +215,8 @@ impl Feed {
                     continue;
                 }
             }
-            match self.read(&resource).await {
-                Ok(data) => {
-                    let revision = revision_of(&data);
+            match self.read_revised(&resource).await {
+                Ok((data, revision)) => {
                     let body = if watch.known_revision.as_deref() == Some(revision.as_str()) {
                         KernelResourceChange::Unchanged {}
                     } else {
@@ -244,10 +250,18 @@ impl Feed {
     /// A snapshot of every watched resource whose projection changed.
     async fn refresh(&mut self) -> Vec<KernelEvent> {
         let resources = self.watched.keys().cloned().collect::<Vec<_>>();
+        self.refresh_resources(resources).await
+    }
+
+    fn watches_person_inbox(&self) -> bool {
+        self.watched.contains_key(&FeedResource::PersonInbox)
+    }
+
+    async fn refresh_resources(&mut self, resources: Vec<FeedResource>) -> Vec<KernelEvent> {
         let mut events = Vec::new();
         for resource in resources {
-            let data = match self.read(&resource).await {
-                Ok(data) => data,
+            let (data, revision) = match self.read_revised(&resource).await {
+                Ok(read) => read,
                 Err(error) => {
                     // The client keeps the copy it holds; the next change or interval reads again.
                     crate::logging::warn_with_fields(
@@ -258,7 +272,6 @@ impl Feed {
                     continue;
                 }
             };
-            let revision = revision_of(&data);
             let Some(watched) = self.watched.get_mut(&resource) else {
                 continue;
             };
@@ -287,6 +300,24 @@ impl Feed {
         Some(Instant::now() + Duration::from_millis(left) + LEASE_END_GRACE)
     }
 
+    /// The resource's data and its revision. The Inbox's revision also moves with every recorded
+    /// change the cards do not show, such as a subscription moved, paused or removed, so every
+    /// client reads its Subscriptions again; the mark is taken before the read, so a change during
+    /// the read wakes the feed once more.
+    async fn read_revised(
+        &mut self,
+        resource: &FeedResource,
+    ) -> Result<(Value, String), DaemonError> {
+        let mark = matches!(resource, FeedResource::PersonInbox)
+            .then(|| self.router.person_inbox_change_sequence());
+        let data = self.read(resource).await?;
+        let revision = match mark {
+            Some(mark) => revision_of(&serde_json::json!([data, mark])),
+            None => revision_of(&data),
+        };
+        Ok((data, revision))
+    }
+
     async fn read(&mut self, resource: &FeedResource) -> Result<Value, DaemonError> {
         match resource {
             FeedResource::VaultStatus => {
@@ -311,6 +342,10 @@ impl Feed {
             FeedResource::AppInstallations { session_id } => {
                 self.read_app_installations(session_id.clone()).await
             }
+            FeedResource::PersonInbox => {
+                self.read_request(LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest))
+                    .await
+            }
         }
     }
 
@@ -322,7 +357,7 @@ impl Feed {
         let mut installations = Vec::new();
         let mut after = None;
         loop {
-            let mut page = self
+            let page = self
                 .read_request(LocalDaemonRequest::ListAppInstallations(
                     ListAppInstallationsRequest {
                         session_id: session_id.clone(),
@@ -330,7 +365,16 @@ impl Feed {
                         limit: Some(APP_INSTALLATION_PAGE),
                     },
                 ))
-                .await?;
+                .await;
+            let mut page = match page {
+                Ok(page) => page,
+                // A Room collaborator owns no Apps on this kernel, and the owner's cannot be opened by anyone
+                // else: the list outside a Room is empty for them, not a refusal a client must treat as a failure.
+                Err(DaemonError::OwnershipAccessDenied { .. }) if session_id.is_none() => {
+                    return Ok(serde_json::json!({ "installations": [] }));
+                }
+                Err(error) => return Err(error),
+            };
             if let Some(Value::Array(rows)) = page.get_mut("installations").map(Value::take) {
                 installations.extend(rows);
             }
@@ -433,6 +477,9 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
     let mut file_watch = None;
     let mut changes = router.kernel_resource_changes().subscribe();
     changes.borrow_and_update();
+    let sessions = Arc::clone(&router);
+    let mut sessions_seen = sessions.session_projection_change_sequence();
+    let mut inbox_seen = sessions.person_inbox_change_sequence();
     let mut feed = Feed {
         router,
         source,
@@ -467,6 +514,15 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
                 events
             }
             Some(event) = file_changes.recv(), if file_watch.is_some() => vec![event],
+            () = sessions.wait_for_session_projection_change_after(sessions_seen), if feed.watches_person_inbox() => {
+                tokio::time::sleep(PERSON_INBOX_SETTLE).await;
+                sessions_seen = sessions.session_projection_change_sequence();
+                feed.refresh_resources(vec![FeedResource::PersonInbox]).await
+            }
+            () = sessions.wait_for_person_inbox_change_after(inbox_seen), if feed.watches_person_inbox() => {
+                inbox_seen = sessions.person_inbox_change_sequence();
+                feed.refresh_resources(vec![FeedResource::PersonInbox]).await
+            }
             changed = changes.changed() => {
                 if changed.is_err() {
                     return;

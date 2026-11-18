@@ -39,6 +39,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
                 dev_room_id: None,
                 installation_id: "todo".into(),
                 events: vec![],
+                standing_permissions: 0,
                 app_id: "com.chariox.todo".into(),
                 generation: "9223372036854775807".into(),
                 active_release: Some(release.clone()),
@@ -549,6 +550,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
                 source_event_type: "dev.chariox.dummy/dummy.test".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
                 connection: None,
                 pending: 1,
                 delivered: 2,
@@ -577,7 +579,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
     );
     assert_eq!(
         digest,
-        "9447b2103c913c1ca4099b2ba6452aa7d137ede5a5f49108d28acafd0271bba1"
+        "271b20ef4f0e931a11279d9f2074bc3f98fae8e5e947f8cf17688e87c94a2689"
     );
     assert!(
         serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
@@ -616,6 +618,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
             source_event_type: "app.mentioned".into(),
             source_event_version: 1,
             active: true,
+            paused: false,
             connection: Some(connection),
             pending: 0,
             delivered: 0,
@@ -634,7 +637,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9702eea10502d2d51589f8492940f498b70f83a0f36f069979c46b9af2c09d0d"
+        "a11c7c98869f875bf570aa5c546b76c58c718b15b7d28087b47586a3454cbe65"
     );
     // A connection names no owner.
     assert!(
@@ -675,6 +678,7 @@ fn app_connection_grants_are_versioned_and_name_no_owner() {
             connection_id: "connection-1".into(),
             granted_at_ms: 5,
             actions: vec!["notification.reply".into()],
+            event_routing: None,
         }],
     };
     for request in &requests {
@@ -1125,6 +1129,7 @@ fn app_summaries_pin_the_signed_display_name_and_icon_fields() {
         dev_room_id: None,
         installation_id: "todo".into(),
         events: vec![],
+        standing_permissions: 0,
         app_id: "com.chariox.todo".into(),
         generation: "1".into(),
         active_release: Some(release.clone()),

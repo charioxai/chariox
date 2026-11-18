@@ -4,7 +4,7 @@
 //! owner; the relay between them is the in-process link.
 use super::*;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// `kernel` answers file requests under its id and name, and the peer agent requests as before.
 fn machine_link(kernel: &Kernel) {
@@ -54,11 +54,8 @@ async fn tool(
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("files-tools-{name}-{:08x}", rand::random::<u32>()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
+fn scratch(name: &str) -> crate::test_support::TestTempDir {
+    crate::test_support::TestTempDir::new(&format!("files-tools-{name}"))
 }
 
 fn plant(path: &Path, size: usize) -> String {
@@ -127,7 +124,7 @@ fn an_agent_lists_reads_copies_and_moves_files_between_machines_and_sees_only_th
             "chariox.files.copy",
             serde_json::json!({
                 "source": {"machine": b.name, "path": on_b.join("logs/data.bin")},
-                "destination": {"folder": on_a},
+                "destination": {"folder": on_a.path()},
             }),
         )
         .await
@@ -163,7 +160,7 @@ fn an_agent_lists_reads_copies_and_moves_files_between_machines_and_sees_only_th
             "chariox.files.copy",
             serde_json::json!({
                 "source": {"machine": b.name, "path": on_b.join("logs/data.bin")},
-                "destination": {"folder": on_a},
+                "destination": {"folder": on_a.path()},
             }),
         )
         .await
@@ -177,7 +174,7 @@ fn an_agent_lists_reads_copies_and_moves_files_between_machines_and_sees_only_th
             "chariox.files.copy",
             serde_json::json!({
                 "source": {"machine": b.name, "path": on_b.join("logs/data.bin")},
-                "destination": {"folder": on_a},
+                "destination": {"folder": on_a.path()},
                 "conflict": "keep_both",
                 "move": true,
             }),

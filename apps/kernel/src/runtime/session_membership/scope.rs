@@ -514,6 +514,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AliasWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetWorkflowResponsible(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClearWorkflowRunAttention(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListWorkflows(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -697,6 +703,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RemoteEnvironmentOperation(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
+        | LocalDaemonRequest::Watcher(_)
         | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
@@ -708,6 +715,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
+        | LocalDaemonRequest::ListOwnerInteractions(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)
@@ -749,6 +757,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppLogs(_)
         | LocalDaemonRequest::CreateAppInboxRoute(_)
         | LocalDaemonRequest::RemoveAppInboxRoute(_)
+        | LocalDaemonRequest::SetAppInboxRoutePaused(_)
+        | LocalDaemonRequest::PauseAppAutomation(_)
         | LocalDaemonRequest::ListAppInboxRoutes(_)
         | LocalDaemonRequest::TestAppInboxRoute(_)
         | LocalDaemonRequest::GrantAppConnection(_)
@@ -757,6 +767,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::PrepareDeploymentApps(_)
         | LocalDaemonRequest::RevokeAppConnection(_)
         | LocalDaemonRequest::ListAppConnections(_)
+        | LocalDaemonRequest::GrantAppAccount(_)
+        | LocalDaemonRequest::RevokeAppAccount(_)
+        | LocalDaemonRequest::ListAppAccounts(_)
+        | LocalDaemonRequest::GrantAppStanding(_)
+        | LocalDaemonRequest::RevokeAppStanding(_)
+        | LocalDaemonRequest::ListAppStanding(_)
         | LocalDaemonRequest::GrantAppFile(_)
         | LocalDaemonRequest::SaveAppFileExport(_)
         | LocalDaemonRequest::CreateSession(_)
@@ -884,9 +900,16 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreSliceBackup(_)
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
-        | LocalDaemonRequest::GetWaitingRoomInventory(_)
-        | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
-        | LocalDaemonRequest::ListWaitingRoomSessions(_)
+        | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::GetPersonInbox(_)
+        | LocalDaemonRequest::SetInboxCardState(_)
+        | LocalDaemonRequest::SetInboxMute(_)
+        | LocalDaemonRequest::ListNotificationSubscriptions(_)
+        | LocalDaemonRequest::UpdateNotificationSubscription(_)
+        | LocalDaemonRequest::RemoveNotificationSubscription(_)
+        | LocalDaemonRequest::TestNotificationSubscription(_)
+        | LocalDaemonRequest::ReadNotificationTrace(_)
+        | LocalDaemonRequest::ListRoomListSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
         | LocalDaemonRequest::ImportExternalProviderSession(_)
@@ -895,15 +918,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListWorkspaceWorktrees(_)
         | LocalDaemonRequest::CreateWorkspaceWorktree(_)
         | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-        | LocalDaemonRequest::CreateWorkspacePullRequest(_)
         | LocalDaemonRequest::GetWorkspaceGitOverview(_)
         | LocalDaemonRequest::ListWorkspaceFiles(_)
         | LocalDaemonRequest::GetWorkspaceFileContent(_)
         | LocalDaemonRequest::RunAgentUtility(_)
         | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)
         | LocalDaemonRequest::CommitWorkspaceChanges(_)
-        | LocalDaemonRequest::PushWorkspaceBranch(_)
-        | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)
         | LocalDaemonRequest::ApproveRemoteMachine(_)
         | LocalDaemonRequest::ForgetRemoteMachine(_)
         | LocalDaemonRequest::CreatePairingInvite(_)
@@ -918,6 +938,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::StartProviderLogin(_)
         | LocalDaemonRequest::GetProviderLoginStatus(_)
         | LocalDaemonRequest::SendProviderLoginInput(_)
+        | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
         | LocalDaemonRequest::CancelProviderLogin(_)
         | LocalDaemonRequest::LogoutProvider(_)
         | LocalDaemonRequest::ListProviderProcesses(_)

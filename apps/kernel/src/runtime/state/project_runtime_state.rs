@@ -5,26 +5,26 @@ impl KernelRuntimeState {
         &self,
         target: &crate::local::ManagedContextLaunchTarget,
         caller_user_id: &str,
-    ) -> Result<(), DaemonError> {
-        let Some(project) = managed_context_project(target, caller_user_id)? else {
-            return Ok(());
-        };
-        let existing = self
-            .owned
-            .session_store
-            .durable_projects()
-            .into_iter()
-            .find(|existing| existing.id() == project.id());
-        install_managed_context_project(
-            existing.as_ref(),
-            project,
+    ) -> Result<(), ManagedContextRegistrationFailure> {
+        let durable = self.owned.session_store.durable_projects();
+        register_managed_context_projects(
+            managed_context_projects(target, caller_user_id)
+                .map_err(ManagedContextRegistrationFailure::RolledBack)?,
+            &durable,
             |project| self.append_project_durable_event("project.created", project),
             |project| {
                 self.owned.session_store.restore_projects(vec![project]);
                 self.owned.runtime_projection_changes.record_change();
             },
-        )?;
-        Ok(())
+            |project| {
+                self.append_project_durable_event("project.deleted", project)?;
+                self.owned
+                    .session_store
+                    .delete_project_record(project.id(), caller_user_id)?;
+                self.owned.runtime_projection_changes.record_change();
+                Ok(())
+            },
+        )
     }
 
     pub(crate) fn remove_managed_context_project(
@@ -32,36 +32,40 @@ impl KernelRuntimeState {
         target: &crate::local::ManagedContextLaunchTarget,
         caller_user_id: &str,
     ) -> Result<bool, DaemonError> {
-        let Some(expected) = managed_context_project(target, caller_user_id)? else {
-            return Ok(false);
-        };
-        let Some(existing) = self
-            .owned
-            .session_store
-            .durable_projects()
+        let mut removed = false;
+        for expected in managed_context_projects(target, caller_user_id)?
             .into_iter()
-            .find(|project| project.id() == expected.id())
-        else {
-            return Ok(false);
-        };
-        install_managed_context_project(Some(&existing), expected, |_| Ok(()), |_| {})?;
-        if !self
-            .owned
-            .session_store
-            .sessions_in_project(existing.id())?
-            .is_empty()
+            .rev()
         {
-            return Err(managed_context_project_error(format!(
-                "managed context Project `{}` has sessions and cannot be rolled back",
-                existing.id()
-            )));
+            let Some(existing) = self
+                .owned
+                .session_store
+                .durable_projects()
+                .into_iter()
+                .find(|project| project.id() == expected.id())
+            else {
+                continue;
+            };
+            install_managed_context_project(Some(&existing), expected, |_| Ok(()), |_| {})?;
+            if !self
+                .owned
+                .session_store
+                .sessions_in_project(existing.id())?
+                .is_empty()
+            {
+                return Err(managed_context_project_error(format!(
+                    "managed context Project `{}` has sessions and cannot be rolled back",
+                    existing.id()
+                )));
+            }
+            self.append_project_durable_event("project.deleted", &existing)?;
+            self.owned
+                .session_store
+                .delete_project_record(existing.id(), caller_user_id)?;
+            self.owned.runtime_projection_changes.record_change();
+            removed = true;
         }
-        self.append_project_durable_event("project.deleted", &existing)?;
-        self.owned
-            .session_store
-            .delete_project_record(existing.id(), caller_user_id)?;
-        self.owned.runtime_projection_changes.record_change();
-        Ok(true)
+        Ok(removed)
     }
 
     pub(crate) async fn list_projects(
@@ -74,7 +78,7 @@ impl KernelRuntimeState {
             .list_projects(caller_user_id, include_archived)
     }
 
-    pub(crate) fn list_waiting_room_projects(
+    pub(crate) fn list_room_list_projects(
         &self,
         caller_user_id: &str,
     ) -> Vec<crate::session::RuntimeProject> {
@@ -340,18 +344,30 @@ fn project_session_is_idle(session: &crate::session::RuntimeSession) -> bool {
         && session.active_interactions().is_empty()
 }
 
-fn managed_context_project(
+fn managed_context_projects(
     target: &crate::local::ManagedContextLaunchTarget,
     caller_user_id: &str,
-) -> Result<Option<crate::session::RuntimeProject>, DaemonError> {
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+) -> Result<Vec<crate::session::RuntimeProject>, DaemonError> {
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+        &target.development
+    else {
+        return Ok(Vec::new());
+    };
+    projects
+        .iter()
+        .map(|project| managed_context_project(project, caller_user_id))
+        .collect()
+}
+
+fn managed_context_project(
+    target: &crate::local::ManagedContextProjectLaunchTarget,
+    caller_user_id: &str,
+) -> Result<crate::session::RuntimeProject, DaemonError> {
+    let crate::local::ManagedContextProjectLaunchTarget {
         project_id,
         repositories,
         ..
-    } = &target.development
-    else {
-        return Ok(None);
-    };
+    } = target;
     let primary = repositories
         .iter()
         .find(|repository| {
@@ -392,7 +408,7 @@ fn managed_context_project(
         crate::session::RuntimeProjectKind::Named,
     );
     project.replace_workspace_ids(workspace_ids);
-    Ok(Some(project))
+    Ok(project)
 }
 
 fn managed_context_project_error(message: impl Into<String>) -> DaemonError {
@@ -400,6 +416,129 @@ fn managed_context_project_error(message: impl Into<String>) -> DaemonError {
         operation: "managed context project",
         message: message.into(),
     }
+}
+
+/// Why a copy's Projects did not all register, and whether the copied files
+/// may still go: the bridge deletes them only when no Project points at them.
+#[derive(Debug)]
+pub(crate) enum ManagedContextRegistrationFailure {
+    /// Every Project this call installed has been taken back.
+    RolledBack(DaemonError),
+    /// Projects stay registered with their files, because an earlier attempt left them or they could not be taken
+    /// back. Boxed to keep the `Result` this travels in small.
+    ProjectsRetained(Box<RetainedProjects>),
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedProjects {
+    pub(crate) error: DaemonError,
+    /// Positions in the selection of the Projects that stay registered.
+    pub(crate) projects: Vec<usize>,
+}
+
+impl ManagedContextRegistrationFailure {
+    pub(crate) fn into_error(self) -> DaemonError {
+        match self {
+            Self::RolledBack(error) => error,
+            Self::ProjectsRetained(retained) => retained.error,
+        }
+    }
+}
+
+/// A copy registers every Project or none: a later failure must not leave an
+/// earlier Project registered while the package rollback deletes its files.
+/// The whole selection is checked first; only a failed write rolls back, and
+/// only the records this call installed. Every one of them is taken back even
+/// when another cannot be. The copied files go only when no Project of the
+/// selection stays registered: that counts the Projects an earlier attempt
+/// left behind (matched from durable state) as well as the ones that cannot
+/// be taken back now, and names them. A retry finds them already registered.
+fn register_managed_context_projects(
+    projects: Vec<crate::session::RuntimeProject>,
+    durable: &[crate::session::RuntimeProject],
+    mut persist: impl FnMut(&crate::session::RuntimeProject) -> Result<(), DaemonError>,
+    mut publish: impl FnMut(crate::session::RuntimeProject),
+    mut retract: impl FnMut(&crate::session::RuntimeProject) -> Result<(), DaemonError>,
+) -> Result<(), ManagedContextRegistrationFailure> {
+    // A Project already registered keeps its files whatever goes wrong before this call writes anything.
+    let registered_before = projects
+        .iter()
+        .enumerate()
+        .filter(|(_, project)| durable.iter().any(|existing| existing.id() == project.id()))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let rejected = |error: DaemonError| {
+        if registered_before.is_empty() {
+            ManagedContextRegistrationFailure::RolledBack(error)
+        } else {
+            ManagedContextRegistrationFailure::ProjectsRetained(Box::new(RetainedProjects {
+                error,
+                projects: registered_before.clone(),
+            }))
+        }
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut fresh = Vec::new();
+    let mut registered_earlier = Vec::new();
+    for (index, project) in projects.into_iter().enumerate() {
+        if !seen.insert(project.id().to_string()) {
+            return Err(rejected(managed_context_project_error(format!(
+                "managed context names Project `{}` twice",
+                project.id()
+            ))));
+        }
+        let existing = durable
+            .iter()
+            .find(|existing| existing.id() == project.id());
+        if install_managed_context_project(existing, project.clone(), |_| Ok(()), |_| {})
+            .map_err(rejected)?
+        {
+            fresh.push((index, project));
+        } else {
+            registered_earlier.push((index, project));
+        }
+    }
+    let mut installed: Vec<(usize, crate::session::RuntimeProject)> = Vec::new();
+    for (index, project) in fresh {
+        if let Err(error) = persist(&project) {
+            let mut retained = registered_earlier
+                .iter()
+                .map(|(index, project)| {
+                    (
+                        *index,
+                        format!("`{}` (registered by an earlier attempt)", project.id()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            retained.extend(installed.iter().rev().filter_map(|(done_index, done)| {
+                retract(done)
+                    .err()
+                    .map(|rollback| (*done_index, format!("`{}` ({rollback})", done.id())))
+            }));
+            if retained.is_empty() {
+                return Err(ManagedContextRegistrationFailure::RolledBack(error));
+            }
+            let descriptions = retained
+                .iter()
+                .map(|(_, description)| description.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ManagedContextRegistrationFailure::ProjectsRetained(Box::new(RetainedProjects {
+                error: DaemonError::ManagedContext {
+                    code: "managed_context_import_unavailable",
+                    operation: "managed context relay import",
+                    message: format!(
+                        "{error}; Projects stay registered with their files until the import is retried: {descriptions}"
+                    ),
+                    retryable: true,
+                },
+                projects: retained.into_iter().map(|(index, _)| index).collect(),
+            })));
+        }
+        publish(project.clone());
+        installed.push((index, project));
+    }
+    Ok(())
 }
 
 fn install_managed_context_project(
@@ -429,9 +568,11 @@ fn install_managed_context_project(
 #[cfg(test)]
 mod tests {
     use super::{
-        install_managed_context_project, managed_context_project, managed_context_project_error,
-        project_session_is_idle,
+        install_managed_context_project, managed_context_project_error, managed_context_projects,
+        project_session_is_idle, register_managed_context_projects,
+        ManagedContextRegistrationFailure, RetainedProjects,
     };
+    use crate::error::DaemonError;
     use crate::session::{
         PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionKind,
         RuntimeInteractionLevel, RuntimeSession,
@@ -491,9 +632,9 @@ mod tests {
     fn managed_context_project_uses_materialized_target_workspace_paths() {
         let target = managed_context_target();
 
-        let project = managed_context_project(&target, "user-1")
+        let project = managed_context_projects(&target, "user-1")
             .expect("build managed Project")
-            .expect("source Project");
+            .remove(0);
 
         assert_eq!(project.id(), "project-1");
         assert_eq!(project.owner_user_id(), "user-1");
@@ -507,11 +648,195 @@ mod tests {
         );
     }
 
+    fn projects_named(ids: &[&str]) -> Vec<crate::session::RuntimeProject> {
+        let mut target = managed_context_target();
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+            &mut target.development
+        else {
+            unreachable!("the fixture imports Projects")
+        };
+        let template = projects[0].clone();
+        *projects = ids
+            .iter()
+            .map(|id| crate::local::ManagedContextProjectLaunchTarget {
+                project_id: (*id).to_string(),
+                ..template.clone()
+            })
+            .collect();
+        managed_context_projects(&target, "user-1").expect("build managed Projects")
+    }
+
+    #[test]
+    fn a_failed_second_registration_rolls_back_only_the_projects_it_installed() {
+        let mut durable = Vec::new();
+        let mut published = Vec::new();
+        let mut retracted = Vec::new();
+        let failure = register_managed_context_projects(
+            projects_named(&["project-1", "project-2"]),
+            &[],
+            |project| {
+                if project.id() == "project-2" {
+                    return Err(managed_context_project_error(
+                        "injected durable write failure",
+                    ));
+                }
+                durable.push(project.id().to_string());
+                Ok(())
+            },
+            |project| published.push(project.id().to_string()),
+            |project| {
+                retracted.push(project.id().to_string());
+                Ok(())
+            },
+        )
+        .expect_err("the second write fails");
+        let ManagedContextRegistrationFailure::RolledBack(error) = failure else {
+            panic!("every installed Project was taken back, so nothing stays registered")
+        };
+        assert!(error.to_string().contains("injected durable write failure"));
+        assert_eq!(durable, ["project-1"]);
+        assert_eq!(published, ["project-1"]);
+        assert_eq!(retracted, ["project-1"]);
+    }
+
+    #[test]
+    fn a_failed_compensation_keeps_the_projects_that_stay_registered() {
+        let mut retracted = Vec::new();
+        let failure = register_managed_context_projects(
+            projects_named(&["project-1", "project-2", "project-3"]),
+            &[],
+            |project| {
+                if project.id() == "project-3" {
+                    return Err(managed_context_project_error(
+                        "injected durable write failure",
+                    ));
+                }
+                Ok(())
+            },
+            |_| {},
+            |project| {
+                retracted.push(project.id().to_string());
+                if project.id() == "project-2" {
+                    return Err(managed_context_project_error("injected delete failure"));
+                }
+                Ok(())
+            },
+        )
+        .expect_err("the third write fails and project-2 cannot be taken back");
+        // One stuck Project does not stop the others from being taken back.
+        assert_eq!(retracted, ["project-2", "project-1"]);
+        let ManagedContextRegistrationFailure::ProjectsRetained(retained) = failure else {
+            panic!("project-2 is still registered, so the copied files must stay")
+        };
+        let RetainedProjects { error, projects } = *retained;
+        assert_eq!(projects, [1], "project-2 is the second of the selection");
+        let message = error.to_string();
+        assert!(
+            message.contains("injected durable write failure"),
+            "{message}"
+        );
+        assert!(message.contains("project-2"), "{message}");
+        assert!(!message.contains("project-1"), "{message}");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                retryable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_retried_copy_registers_only_the_projects_a_retained_attempt_left_out() {
+        let projects = projects_named(&["project-1", "project-2"]);
+        let kept = vec![projects[0].clone()];
+        let mut persisted = Vec::new();
+        register_managed_context_projects(
+            projects,
+            &kept,
+            |project| {
+                persisted.push(project.id().to_string());
+                Ok(())
+            },
+            |_| {},
+            |_| Ok(()),
+        )
+        .expect("the retry finishes the registration");
+        assert_eq!(persisted, ["project-2"]);
+    }
+
+    #[test]
+    fn a_failed_retry_keeps_the_projects_an_earlier_attempt_left_registered() {
+        let projects = projects_named(&["project-1", "project-2"]);
+        // First attempt: project-1 registers, project-2's write fails and
+        // project-1 cannot be taken back.
+        let mut durable = Vec::new();
+        let first = register_managed_context_projects(
+            projects.clone(),
+            &[],
+            |project| {
+                if project.id() == "project-2" {
+                    return Err(managed_context_project_error(
+                        "injected durable write failure",
+                    ));
+                }
+                durable.push(project.clone());
+                Ok(())
+            },
+            |_| {},
+            |_| Err(managed_context_project_error("injected delete failure")),
+        )
+        .expect_err("project-2 fails and project-1 cannot be taken back");
+        assert!(matches!(
+            first,
+            ManagedContextRegistrationFailure::ProjectsRetained(_)
+        ));
+
+        // After a restart only the durable record is left. The retry finds
+        // project-1 registered and installs nothing itself before project-2
+        // fails again: project-1 still points at the copied files.
+        let mut retracted = Vec::new();
+        let retry = register_managed_context_projects(
+            projects,
+            &durable,
+            |_| {
+                Err(managed_context_project_error(
+                    "injected durable write failure",
+                ))
+            },
+            |_| {},
+            |project| {
+                retracted.push(project.id().to_string());
+                Ok(())
+            },
+        )
+        .expect_err("project-2 fails again");
+        assert!(
+            retracted.is_empty(),
+            "project-1 is not this call's to retract"
+        );
+        let ManagedContextRegistrationFailure::ProjectsRetained(retained) = retry else {
+            panic!("project-1 is still registered, so the copied files must stay")
+        };
+        let RetainedProjects { error, projects } = *retained;
+        assert_eq!(projects, [0], "project-1 is the first of the selection");
+        let message = error.to_string();
+        assert!(
+            message.contains("injected durable write failure"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`project-1` (registered by an earlier attempt)"),
+            "{message}"
+        );
+        assert!(!message.contains("`project-2`"), "{message}");
+    }
+
     #[test]
     fn managed_context_project_retries_persistence_before_publish_and_restart() {
-        let project = managed_context_project(&managed_context_target(), "user-1")
+        let project = managed_context_projects(&managed_context_target(), "user-1")
             .expect("build managed Project")
-            .expect("source Project");
+            .remove(0);
         let mut durable_project = None;
         let mut published_project = None;
 
@@ -561,6 +886,7 @@ mod tests {
             context_id: "context-1".to_string(),
             plan_digest: "sha256:plan".to_string(),
             development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                projects: vec![crate::local::ManagedContextProjectLaunchTarget {
                 project_id: "project-1".to_string(),
                 destination_root: "/managed/context-1".to_string(),
                 primary_repository_id: "repository-primary".to_string(),
@@ -584,6 +910,7 @@ mod tests {
                         head_sha: "a".repeat(40),
                     },
                 ],
+                }],
             },
         }
     }

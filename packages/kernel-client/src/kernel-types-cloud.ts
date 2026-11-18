@@ -1,7 +1,7 @@
 import type { ExternalProviderSessionRecord } from "./external-provider-sessions.js"
 import type {
-  WaitingRoomPublicProjectSummary,
-  WaitingRoomPublicSessionSummary,
+  RoomListProjectSummary,
+  RoomListSessionSummary,
 } from "./kernel-types-session.js"
 
 export type RelayStatus = {
@@ -186,12 +186,14 @@ export type SliceRecord = {
 export type SliceDevelopmentSelection =
   | { kind: "empty" }
   | {
-      kind: "source_project"
-      project_id: string
-      repositories: Array<{
-        role: "primary" | "supporting"
-        workspaceId: string
-        worktreeId?: string | null
+      kind: "source_projects"
+      projects: Array<{
+        project_id: string
+        repositories: Array<{
+          role: "primary" | "supporting"
+          workspaceId: string
+          worktreeId?: string | null
+        }>
       }>
     }
 
@@ -369,26 +371,28 @@ export type ProviderAccountSummary = {
   alias?: string | null
 }
 
-export type WaitingRoomGitCredentialSummary = {
+export type RoomListGitCredentialSummary = {
   credentialId: string
   hostname: string
   label: string
 }
 
-export type WaitingRoomSessionPage = {
-  sessions: WaitingRoomPublicSessionSummary[]
+export type RoomListSessionPage = {
+  sessions: RoomListSessionSummary[]
   total: number
   next_cursor: string | null
 }
 
-export type WaitingRoomInventorySnapshot = {
+export type RoomListSnapshot = {
+  schema_version: number
+  generated_at_ms: number
   inventory_version: string
   structural_version: string
   activity_revision: string
-  sessions: WaitingRoomPublicSessionSummary[]
+  sessions: RoomListSessionSummary[]
   sessions_total?: number
   sessions_next_cursor?: string | null
-  projects: WaitingRoomPublicProjectSummary[]
+  projects: RoomListProjectSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]
   remote_kernels?: RelayKernelPresence[]
@@ -404,12 +408,7 @@ export type WaitingRoomInventorySnapshot = {
     worktree_label?: string | null
   } | null
   provider_accounts?: import("./kernel-types-provider.js").ProviderAccountProfile[]
-  git_credentials?: WaitingRoomGitCredentialSummary[]
-}
-
-export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {
-  schema_version: number
-  generated_at_ms: number
+  git_credentials?: RoomListGitCredentialSummary[]
   external_provider_sessions?: ExternalProviderSessionRecord[]
   external_provider_sessions_has_more?: boolean
   external_provider_sessions_next_cursor?: string | null
@@ -504,17 +503,6 @@ export type WorkspaceGitActionResult = {
   message: string
   commit_sha?: string | null
   branch?: string | null
-  generated_at_ms: number
-}
-
-export type WorkspacePullRequestRecord = {
-  workspace_id: string
-  worktree_id: string
-  branch: string
-  base_ref: string
-  url: string
-  title?: string | null
-  draft: boolean
   generated_at_ms: number
 }
 

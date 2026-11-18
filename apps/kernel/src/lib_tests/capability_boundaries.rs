@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn shell_command_capability_runs_through_capability_boundary() {
-    let worktree_root = std::env::temp_dir().join("chariox-shell-app-test");
+    let _tmp = crate::test_support::TestTempDir::new("shell-app-test");
+    let worktree_root = _tmp.join("chariox-shell-app-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -38,8 +39,8 @@ fn shell_command_capability_runs_through_capability_boundary() {
 
 #[test]
 fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
-    let worktree_root = std::env::temp_dir().join("chariox-kernel-app-capability-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("kernel-app-capability-test");
+    let worktree_root = _tmp.join("chariox-kernel-app-capability-test");
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
@@ -167,8 +168,8 @@ fn screenshot_capability_returns_structured_unavailable_result() {
 
 #[test]
 fn transfer_capability_stores_artifact_under_session_root() {
-    let worktree_root = std::env::temp_dir().join("chariox-transfer-app-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("transfer-app-test");
+    let worktree_root = _tmp.join("chariox-transfer-app-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     let source = worktree_root.join("artifact.txt");
     std::fs::write(&source, "artifact").expect("source should exist");
@@ -189,6 +190,12 @@ fn transfer_capability_stores_artifact_under_session_root() {
         ))
         .expect("attachment should attach");
 
+    // The session's artifacts go to a fixed place under the system temp dir.
+    let _artifacts = crate::test_support::TestTempPath::in_shared_directory(
+        std::env::temp_dir()
+            .join("chariox-session-artifacts")
+            .join(session.id()),
+    );
     let _claim = app
         .workspace_coordinator()
         .acquire_worktree_write_claim(

@@ -137,6 +137,9 @@ pub struct RuntimeSession {
     sudo_windows: Vec<crate::local::KernelSudoTurn>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
+    /// Messages from other agents waiting for their recipients' next turn, projected from the inbox; never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queued_agent_messages: Vec<super::QueuedAgentMessage>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
@@ -211,6 +214,12 @@ impl RuntimeSession {
     }
     pub fn room_setup(&self) -> Option<&RoomSetupState> {
         self.room_setup.as_ref()
+    }
+    pub fn queued_agent_messages(&self) -> &[super::QueuedAgentMessage] {
+        &self.queued_agent_messages
+    }
+    pub(crate) fn set_queued_agent_messages(&mut self, messages: Vec<super::QueuedAgentMessage>) {
+        self.queued_agent_messages = messages;
     }
     pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
         &self.agent_wakes
@@ -309,6 +318,7 @@ impl RuntimeSession {
             agent_tasks: Vec::new(),
             sudo_windows: Vec::new(),
             agent_wakes: Vec::new(),
+            queued_agent_messages: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
             trigger_deliveries: Vec::new(),
@@ -510,6 +520,9 @@ impl RuntimeSession {
         }
         for workflow in &mut self.workflows {
             workflow.enroll_local_owner(owner);
+        }
+        for publication in &mut self.workflow_publication_state.workflow_publications {
+            publication.enroll_local_owner(owner);
         }
     }
 
@@ -1078,16 +1091,30 @@ impl RuntimeSession {
     /// Names each agent's card by its asker as the session's agents name it now, so a client
     /// shows who asks without a lookup.
     pub(crate) fn name_interaction_askers(&mut self) {
-        let agents = &self.agents;
-        for interaction in &mut self.active_interactions {
-            let name = interaction.agent_id().and_then(|asker| {
-                agents
-                    .iter()
-                    .find(|agent| agent.id() == asker)
-                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
-            });
-            interaction.set_asker_name(name);
-        }
+        self.active_interactions = self.named_active_interactions();
+    }
+
+    /// The agent's name as the session's agents name it now.
+    pub(crate) fn agent_display_name(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+    }
+
+    /// The active interactions, each named by its asker as the session's agents name it now.
+    pub(crate) fn named_active_interactions(&self) -> Vec<RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .map(|interaction| {
+                let name = interaction
+                    .agent_id()
+                    .and_then(|asker| self.agent_display_name(asker));
+                let mut interaction = interaction.clone();
+                interaction.set_asker_name(name);
+                interaction
+            })
+            .collect()
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.

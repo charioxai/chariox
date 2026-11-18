@@ -110,6 +110,10 @@ pub struct RuntimeProviderRun {
     /// Runtime-only: the failed turn this run reruns on an agent substitute.
     #[serde(skip)]
     turn_substitute: Option<super::TurnSubstitute>,
+    /// Runtime-only: its agent's profile or limit changed while this process ran, so the next
+    /// step boundary or dispatch replaces the process.
+    #[serde(skip)]
+    settings_stale: bool,
     #[serde(skip)]
     metadata_only_discovery: bool,
     #[serde(skip)]
@@ -207,6 +211,7 @@ impl RuntimeProviderRun {
             preparation_base_path,
             read_only_discovery: false,
             turn_substitute: request.turn_substitute.clone(),
+            settings_stale: false,
             metadata_only_discovery: false,
             utility_system_prompt_file: None,
             project_environment_revision: request.project_environment_revision.clone(),
@@ -284,6 +289,7 @@ impl RuntimeProviderRun {
             preparation_base_path: None,
             read_only_discovery: false,
             turn_substitute: None,
+            settings_stale: false,
             metadata_only_discovery: false,
             utility_system_prompt_file: None,
             project_environment_revision: None,
@@ -517,6 +523,14 @@ impl RuntimeProviderRun {
         self.touch_activity();
     }
 
+    pub(crate) fn settings_stale(&self) -> bool {
+        self.settings_stale
+    }
+
+    pub(crate) fn mark_settings_stale(&mut self) {
+        self.settings_stale = true;
+    }
+
     pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {
         self.turn_substitute.as_ref()
     }
@@ -551,6 +565,13 @@ impl RuntimeProviderRun {
         self.runtime_mcp_server_url = None;
         self.runtime_mcp_auth_token = None;
         self.provider_config_overrides.clear();
+        self.keep_only_fresh_child_env();
+        if self.adapter_key() == "claude" {
+            self.pty_args = self.metadata_only_claude_args();
+        }
+    }
+
+    fn keep_only_fresh_child_env(&mut self) {
         self.pty_env.retain(|name, _| {
             matches!(
                 name.as_str(),
@@ -566,9 +587,59 @@ impl RuntimeProviderRun {
                     | "COLORTERM"
             )
         });
-        if self.adapter_key() == "claude" {
-            self.pty_args = self.metadata_only_claude_args();
+    }
+
+    /// A Claude run on its native bridge (headless or a native terminal) has no structured I/O.
+    /// A setup turn the person asked for (publishing a new Room) runs on this ephemeral clone
+    /// instead: a fresh official `claude -p` child in the run's folder, account and model that
+    /// may run only `git` and `gh`, so it never needs an approval it has no way to ask for.
+    /// The clone has its own id so the run's own process resources stay untouched.
+    pub(crate) fn room_commands_claude_clone(&self, hidden_system_context: &str) -> Self {
+        debug_assert_eq!(self.adapter_key(), "claude");
+        let mut clone = self.clone();
+        clone.id = format!("{}-room-commands", self.id);
+        clone.resume_state = ProviderResumeState::default();
+        clone.mcp_servers.clear();
+        clone.runtime_mcp_server_url = None;
+        clone.runtime_mcp_auth_token = None;
+        clone.provider_config_overrides.clear();
+        clone.keep_only_fresh_child_env();
+        let mut args: Vec<String> = [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--permission-mode",
+            "default",
+            "--allowedTools",
+            "Bash(git:*)",
+            "Bash(gh:*)",
+        ]
+        .map(String::from)
+        .into();
+        let model = super::claude::normalized_claude_model(&self.model);
+        if model != "default" {
+            args.extend(["--model".into(), model]);
         }
+        if !hidden_system_context.is_empty() {
+            args.extend([
+                "--append-system-prompt".into(),
+                hidden_system_context.to_string(),
+            ]);
+        }
+        clone.pty_args = super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::RunFolder,
+        );
+        clone
     }
 
     // Metadata utilities own a fresh CLI command. Keep that executable
@@ -606,7 +677,11 @@ impl RuntimeProviderRun {
                 path.display().to_string(),
             ]);
         }
-        super::managed_isolation::fresh_provider_child_args(&self.pty_args, args)
+        super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::Empty,
+        )
     }
 
     /// Only the isolated Claude assessment clone receives this private input file.

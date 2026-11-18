@@ -16,7 +16,7 @@ import type {
 
 test("MP-08/MP-10 machine inventory updates reconcile the current waiting room without a draft", () => {
   for (const method of ["reconcile", "reconcileProjection"] as const) {
-    const currentState = waitingRoomState({ projectSelectionId: "existing:project-one" })
+    const currentState = startState({ projectSelectionId: "existing:project-one" })
     const harness = createHarness({
       currentState,
       attached: true,
@@ -35,9 +35,9 @@ test("MP-08/MP-10 machine inventory updates reconcile the current waiting room w
 })
 
 test("waiting room reconcile controller applies normalized state and refreshes detached UI", () => {
-  const nextState = waitingRoomState({ themeId: "dark" })
+  const nextState = startState({ themeId: "dark" })
   const harness = createHarness({
-    currentState: waitingRoomState({ themeId: "dark" }),
+    currentState: startState({ themeId: "dark" }),
     update: {
       normalizedState: nextState,
       nextProvider: "opencode",
@@ -48,7 +48,7 @@ test("waiting room reconcile controller applies normalized state and refreshes d
     attached: false,
   })
 
-  const reconciled = harness.controller.reconcile(waitingRoomState({ themeId: "dark" }))
+  const reconciled = harness.controller.reconcile(startState({ themeId: "dark" }))
 
   assert.equal(reconciled, nextState)
   assert.equal(harness.state.currentState, nextState)
@@ -67,12 +67,12 @@ test("waiting room reconcile controller applies normalized state and refreshes d
 })
 
 test("waiting room reconcile controller applies derived inventory through the projection setter", () => {
-  const nextState = waitingRoomState({
+  const nextState = startState({
     modelId: "gpt-5.6-sol",
     projectSelectionId: "default",
   })
   const harness = createHarness({
-    currentState: waitingRoomState({
+    currentState: startState({
       modelId: "gpt-5.6-luna",
       projectSelectionId: "existing:project-one",
     }),
@@ -99,9 +99,9 @@ test("waiting room reconcile controller applies derived inventory through the pr
 
 test("waiting room reconcile controller applies and persists theme changes", () => {
   const harness = createHarness({
-    currentState: waitingRoomState({ themeId: "dark" }),
+    currentState: startState({ themeId: "dark" }),
     update: {
-      normalizedState: waitingRoomState({ themeId: "light" }),
+      normalizedState: startState({ themeId: "light" }),
       nextProvider: "opencode",
       nextModel: "gpt-5.4",
       nextEffort: "medium",
@@ -111,7 +111,7 @@ test("waiting room reconcile controller applies and persists theme changes", () 
     attached: true,
   })
 
-  harness.controller.reconcile(waitingRoomState({ themeId: "light" }))
+  harness.controller.reconcile(startState({ themeId: "light" }))
 
   assert.deepEqual(harness.state.savedUiThemes, ["light-resolved"])
   assert.deepEqual(harness.state.mergedUiThemes, ["light-resolved"])
@@ -132,9 +132,9 @@ test("waiting room reconcile controller applies and persists theme changes", () 
 
 test("waiting room reconcile controller persists provider defaults when policy requests it", () => {
   const harness = createHarness({
-    currentState: waitingRoomState({ themeId: "dark" }),
+    currentState: startState({ themeId: "dark" }),
     update: {
-      normalizedState: waitingRoomState({ themeId: "dark" }),
+      normalizedState: startState({ themeId: "dark" }),
       nextProvider: "codex",
       nextModel: "gpt-5.5",
       nextEffort: "high",
@@ -143,7 +143,7 @@ test("waiting room reconcile controller persists provider defaults when policy r
     attached: true,
   })
 
-  harness.controller.reconcile(waitingRoomState({ themeId: "dark" }))
+  harness.controller.reconcile(startState({ themeId: "dark" }))
 
   assert.deepEqual(harness.state.savedProviderPreferences, [{
     provider: "codex",
@@ -239,7 +239,7 @@ function createHarness(options: {
   return { calls, state, controller }
 }
 
-function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState>): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
@@ -261,7 +261,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomStat
 
 for (const method of ["reconcile", "reconcileProjection"] as const) {
   test(`MP-08 / MP-10 / MP-11 machine inventory refresh ${method} uses current state without a launch override`, () => {
-    const current = waitingRoomState({ selectedMachineRef: "machine-local", selectedKernelRef: "kernel-local" })
+    const current = startState({ selectedMachineRef: "machine-local", selectedKernelRef: "kernel-local" })
     const harness = createHarness({ currentState: current, update: { normalizedState: current, nextProvider: "codex", nextModel: "gpt-6.1-sol", nextEffort: "high", shouldPersistProviderPreferences: false }, attached: true })
     // The real derivation consumes nextState before applying an inventory patch.
     const derive = harness.controller[method]

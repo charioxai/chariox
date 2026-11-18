@@ -356,6 +356,22 @@ impl ProviderProcessService {
             .unwrap_or(false)
     }
 
+    pub(crate) fn adapter_resumes_conversation_in_new_process(&self, adapter_key: &str) -> bool {
+        self.registry
+            .resolve(adapter_key)
+            .map(|adapter| adapter.resumes_conversation_in_new_process())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn mark_run_settings_stale(
+        &mut self,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.mark_settings_stale();
+        Ok(run.clone())
+    }
+
     pub(crate) fn update_run_execution_config(
         &mut self,
         run_id: &str,

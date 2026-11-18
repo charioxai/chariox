@@ -102,6 +102,8 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::DeliverWorkflowNotification { .. } => "deliver_workflow_notification",
         RelayPeerRequest::PeerAgentMessage { .. } => "peer_agent_message",
         RelayPeerRequest::PeerAgentCancel { .. } => "peer_agent_cancel",
+        RelayPeerRequest::SetWorkflowResponsible { .. } => "set_workflow_responsible",
+        RelayPeerRequest::ApplyWorkflowResponsible { .. } => "apply_workflow_responsible",
         RelayPeerRequest::SubscribePeerAgent { .. } => "subscribe_peer_agent",
         RelayPeerRequest::UnsubscribePeerAgent { .. } => "unsubscribe_peer_agent",
         RelayPeerRequest::SpawnRoomPeer { .. } => "spawn_room_peer",
@@ -190,6 +192,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         }
         RelayPeerRequest::InvokeHomeCredentialTool { .. } => "invoke_home_credential_tool",
         RelayPeerRequest::ResolveHomeCredentialSecret { .. } => "resolve_home_credential_secret",
+        RelayPeerRequest::CaptureForHomeVault { .. } => "capture_for_home_vault",
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { .. } => "apply_workspace_live_sync_change",
         RelayPeerRequest::ForwardNativeTurnInteraction { .. } => "forward_native_turn_interaction",
         RelayPeerRequest::UpdateNativeInteraction { .. } => "update_native_interaction",

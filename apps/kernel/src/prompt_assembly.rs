@@ -1313,14 +1313,9 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn temp_prompt_root(name: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let index = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir()
-            .join("chariox-prompt-assembly-tests")
-            .join(format!("{}-{}-{index}", name, std::process::id()))
+    fn temp_prompt_root(name: &str) -> crate::test_support::TestTempDir {
+        crate::test_support::TestTempDir::new(&format!("prompt-assembly-{name}"))
     }
 
     #[test]
@@ -1383,7 +1378,8 @@ mod tests {
     #[test]
     fn user_notes_become_hidden_context_and_leave_provider_attachments() {
         use base64::Engine;
-        let root = temp_prompt_root("user-notes");
+        let _dir = temp_prompt_root("user-notes");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let note = PromptAttachment::new(
@@ -1417,13 +1413,13 @@ mod tests {
                 "{expected}"
             );
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08 / MP-10 / MP-11 S01: provider context agrees with the exposed room tools.
     #[test]
     fn mp11_review_runtime_instructions_describe_regular_room_creation() {
-        let root = temp_prompt_root("room-creation-instructions");
+        let _dir = temp_prompt_root("room-creation-instructions");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1450,14 +1446,14 @@ mod tests {
                 .contains("Do not substitute a provider CLI started from Bash"),
             "MP-08/MP-10/MP-11: a requested Room helper must remain a kernel-owned agent"
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// A helper costs a spawn, a brief and a wake (orchbench t4: three ten-line edits cost 4.7x the
     /// same work done inline), so the base tells an orchestrator when delegating pays.
     #[test]
     fn runtime_base_tells_agents_to_do_small_work_themselves() {
-        let root = temp_prompt_root("delegation-guidance");
+        let _dir = temp_prompt_root("delegation-guidance");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1472,14 +1468,14 @@ mod tests {
         let guidance = "Delegate a part to a helper only when it needs about 10 or more tool calls or parallel waiting, even when told to delegate the independent parts; do small edits yourself.";
         assert_eq!(envelope.hidden_base.matches(guidance).count(), 1);
         assert!(RUNTIME_BASE.len() <= 8_000, "{} bytes", RUNTIME_BASE.len());
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// The run base is the same on every turn; only the turn context changes, so a
     /// provider that keeps what it was told needs the base once.
     #[test]
     fn provider_turns_share_one_run_base_and_differ_in_turn_context() {
-        let root = temp_prompt_root("run-base");
+        let _dir = temp_prompt_root("run-base");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let service = PromptAssemblyService::new(registry);
@@ -1506,7 +1502,6 @@ mod tests {
             second.hidden_turn_context(),
             "<chariox-task-context>second</chariox-task-context>"
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     fn claude_run(sub_agent: bool) -> RuntimeProviderRun {
@@ -1533,7 +1528,8 @@ mod tests {
     /// the room-orchestration text is not part of what it starts with.
     #[test]
     fn a_sub_agent_starts_with_the_short_worker_note_instead_of_the_room_text() {
-        let root = temp_prompt_root("sub-agent-base");
+        let _dir = temp_prompt_root("sub-agent-base");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let service = PromptAssemblyService::new(registry);
@@ -1577,14 +1573,14 @@ mod tests {
             worker.hidden_base.len(),
             agent.hidden_base.len()
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// The runtime note every agent's first call pays for. A change that grows
     /// it must raise the committed number with its reason.
     #[test]
     fn hidden_runtime_note_matches_the_committed_context_budget() {
-        let root = temp_prompt_root("note-budget");
+        let _dir = temp_prompt_root("note-budget");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1603,14 +1599,14 @@ mod tests {
             envelope.hidden_base.len(),
             "set apps/kernel/agent_context_budget.json to the measured value"
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// A short command in the shell costs one call; routing it through a job adds a
     /// wake, an unread completion and often a correction turn.
     #[test]
     fn jobs_run_is_offered_only_for_commands_that_take_minutes() {
-        let root = temp_prompt_root("jobs-run-guidance");
+        let _dir = temp_prompt_root("jobs-run-guidance");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let service = PromptAssemblyService::new(registry);
@@ -1640,13 +1636,13 @@ mod tests {
                 "sub_agent={sub_agent}: every heavy command still goes through a job"
             );
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.
     #[test]
     fn mp08_runtime_instructions_say_the_pane_renders_images() {
-        let root = temp_prompt_root("pane-images-instructions");
+        let _dir = temp_prompt_root("pane-images-instructions");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1679,14 +1675,14 @@ mod tests {
             );
         }
         assert!(!envelope.visible_user_prompt.contains("![alt](path)"));
-        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08: as T3 Code tells every provider about its HTML render tool, an agent knows to preview an HTML page and show it
     // with the Chariox visual tools, and what such a page may load.
     #[test]
     fn mp08_runtime_instructions_offer_html_visuals_through_the_visual_tools() {
-        let root = temp_prompt_root("pane-visual-instructions");
+        let _dir = temp_prompt_root("pane-visual-instructions");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1712,23 +1708,71 @@ mod tests {
         }
         assert!(!envelope.hidden_system_context.contains("visualize{"));
         assert!(!envelope.visible_user_prompt.contains("chariox.visual"));
-        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
     // inbox admission and request no reply unless asked.
+    // The person reads status lines in the pane: a tool step such as taking a snapshot is not news to them.
+    #[test]
+    fn runtime_instructions_keep_snapshots_out_of_visible_status_lines() {
+        assert!(RUNTIME_BASE.contains("never contain the word “snapshot”"));
+        assert!(RUNTIME_BASE
+            .contains("never “the snapshot shows an empty field” or “taking a fresh snapshot”"));
+        assert!(!RUNTIME_BASE.contains("take a fresh snapshot, and show a replacement card"));
+    }
+
     #[test]
     fn mp11_review_runtime_instructions_describe_durable_room_messages() {
-        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+        for expected in [
+            "`durable`",
+            "`queued`",
+            "`urgent`",
+            "`reply_requested`",
+            "courtesy",
+        ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
         }
         assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));
         assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
     }
 
+    // AU-03: a step the person does inside a page is one live card, never a chat request plus a Confirm.
+    #[test]
+    fn runtime_instructions_put_a_person_step_on_one_live_card_and_sign_up_through_auth_md() {
+        for expected in [
+            "do not ask them to do it in the chat",
+            "`view.browser_region`",
+            "only a Cancel choice",
+            "it closes by itself when the step is done",
+            "`done_text`",
+            "`chariox.agent_auth_register`",
+        ] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+    }
+
+    /// The number of workers an orchestrator starts decides the cost of a delegation
+    /// (8 workers cost 2.3x the same task in 4): the note and the tool both say one
+    /// worker per independent area.
+    #[test]
+    fn delegation_guidance_caps_workers_at_the_independent_areas() {
+        let description = crate::transport::runtime_tools::agent_run_tool_specs()
+            .remove(0)
+            .description;
+        for text in [RUNTIME_BASE, description.as_str()] {
+            assert!(text.contains("one whole independent area"), "{text}");
+            assert!(
+                text.contains("no more workers than there are independent areas"),
+                "{text}"
+            );
+            assert!(text.contains("never one per file or step"), "{text}");
+        }
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
-        let root = temp_prompt_root("materializes");
+        let _dir = temp_prompt_root("materializes");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
 
         registry
@@ -1768,7 +1812,8 @@ mod tests {
 
     #[test]
     fn prompt_registry_reads_user_edited_templates() {
-        let root = temp_prompt_root("edited");
+        let _dir = temp_prompt_root("edited");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -1788,7 +1833,8 @@ mod tests {
 
     #[test]
     fn prompt_registry_updates_unchanged_bundled_defaults() {
-        let root = temp_prompt_root("updates-defaults");
+        let _dir = temp_prompt_root("updates-defaults");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -1821,7 +1867,8 @@ mod tests {
 
     #[test]
     fn prompt_registry_updates_known_metaagent_legacy_defaults() {
-        let root = temp_prompt_root("updates-metaagent-legacy");
+        let _dir = temp_prompt_root("updates-metaagent-legacy");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -1847,7 +1894,8 @@ mod tests {
 
     #[test]
     fn prompt_registry_updates_known_slice_legacy_defaults() {
-        let root = temp_prompt_root("updates-slice-legacy");
+        let _dir = temp_prompt_root("updates-slice-legacy");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -1877,7 +1925,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_registry_fails_when_required_template_is_missing() {
-        let root = temp_prompt_root("missing");
+        let _dir = temp_prompt_root("missing");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
 
         let error = registry
@@ -1894,7 +1943,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
         let _guard = env_lock::lock();
         let old = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
-        let root = temp_prompt_root("mp08-user-rules");
+        let _dir = temp_prompt_root("mp08-user-rules");
+        let root = _dir.to_path_buf();
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("user-rules.md"), "Prefer clear Project names.").unwrap();
         let registry = PromptTemplateRegistry::new(root.join("prompts"));
@@ -1915,7 +1965,6 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
             .hidden_system_context
             .contains("Prefer clear Project names."));
         assert_eq!(envelope.visible_user_prompt, "Visible request");
-        fs::remove_dir_all(root).unwrap();
         if let Some(old) = old {
             std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);
         }
@@ -1923,7 +1972,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_manifest_records_template_hashes_and_version() {
-        let root = temp_prompt_root("manifest");
+        let _dir = temp_prompt_root("manifest");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -1961,7 +2011,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn scheduled_context_manifest_survives_provider_assembly() {
-        let root = temp_prompt_root("scheduled-manifest");
+        let _dir = temp_prompt_root("scheduled-manifest");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2008,7 +2059,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn metaagent_provider_turn_includes_delegation_template() {
-        let root = temp_prompt_root("metaagent");
+        let _dir = temp_prompt_root("metaagent");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2043,7 +2095,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn normal_provider_turn_excludes_metaagent_delegation_template() {
-        let root = temp_prompt_root("not-metaagent");
+        let _dir = temp_prompt_root("not-metaagent");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2069,7 +2122,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn workflow_turns_include_direct_json_fallback() {
-        let root = temp_prompt_root("native-workflow-fallback");
+        let _dir = temp_prompt_root("native-workflow-fallback");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2106,7 +2160,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_envelope_keeps_hidden_context_out_of_visible_prompt() {
-        let root = temp_prompt_root("hidden");
+        let _dir = temp_prompt_root("hidden");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -2136,7 +2191,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn workspace_live_sync_uses_workspace_template() {
-        let root = temp_prompt_root("workspace-live-sync");
+        let _dir = temp_prompt_root("workspace-live-sync");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2173,7 +2229,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn tracked_workspace_live_sync_uses_tracked_template() {
-        let root = temp_prompt_root("workspace-live-sync-tracked");
+        let _dir = temp_prompt_root("workspace-live-sync-tracked");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2222,7 +2279,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
         let _guard = env_lock::lock();
         std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
         std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
-        let root = temp_prompt_root("slice");
+        let _dir = temp_prompt_root("slice");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2252,7 +2310,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn mcp_skill_continuation_context_uses_registry_template() {
-        let root = temp_prompt_root("mcp-continuation");
+        let _dir = temp_prompt_root("mcp-continuation");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -2280,7 +2339,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn meta_mode_entered_context_uses_registry_template() {
-        let root = temp_prompt_root("meta-mode-transition");
+        let _dir = temp_prompt_root("meta-mode-transition");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
             .materialize_bundled_defaults()
@@ -2308,7 +2368,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_settings_catalog_reads_edits_and_resets_without_exposing_paths() {
-        let root = temp_prompt_root("settings-catalog");
+        let _dir = temp_prompt_root("settings-catalog");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         let settings = registry.list_settings().expect("catalog should load");
         let workflow = settings
@@ -2393,7 +2454,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn every_editable_prompt_is_consumed_by_kernel_loader_and_reset_all_restores_defaults() {
-        let root = temp_prompt_root("settings-all-prompts");
+        let _dir = temp_prompt_root("settings-all-prompts");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         let initial = registry.list_settings().expect("catalog should load");
         assert!(!initial.is_empty(), "the prompt catalog must not be empty");
@@ -2463,7 +2525,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_settings_catalog_does_not_rewrite_unchanged_defaults_state() {
-        let root = temp_prompt_root("settings-catalog-no-rewrite");
+        let _dir = temp_prompt_root("settings-catalog-no-rewrite");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.list_settings().expect("first catalog should load");
         let state_path = root.join(PROMPT_DEFAULTS_STATE_FILE);
@@ -2486,7 +2549,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_settings_reject_missing_required_variables() {
-        let root = temp_prompt_root("required-variables");
+        let _dir = temp_prompt_root("required-variables");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         let current = registry
             .read_setting("workflow/turn")
@@ -2504,7 +2568,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_settings_reject_stale_versioned_updates() {
-        let root = temp_prompt_root("version-conflict");
+        let _dir = temp_prompt_root("version-conflict");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         let current = registry
             .read_setting("workflow/turn")
@@ -2537,7 +2602,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_settings_reject_stale_resets() {
-        let root = temp_prompt_root("reset-version-conflict");
+        let _dir = temp_prompt_root("reset-version-conflict");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         let current = registry
             .read_setting("workflow/turn")
@@ -2565,7 +2631,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
     fn scheduled_prompt_context_uses_the_markdown_catalog() {
         crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
-        let home = temp_prompt_root("configured-scheduled-prompt");
+        let home_dir = temp_prompt_root("configured-scheduled-prompt");
+        let home = home_dir.to_path_buf();
         let root = home.join("prompts");
         let registry = PromptTemplateRegistry::new(root.clone());
         registry
@@ -2593,7 +2660,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn prompt_registry_concurrent_reads_never_observe_partial_updates() {
-        let root = temp_prompt_root("atomic-updates");
+        let _dir = temp_prompt_root("atomic-updates");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         registry
             .materialize_bundled_defaults()
@@ -2631,7 +2699,8 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn protected_prompt_settings_are_read_only_but_resettable() {
-        let root = temp_prompt_root("settings-protected");
+        let _dir = temp_prompt_root("settings-protected");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root);
         let current = registry
             .read_setting("runtime/base")

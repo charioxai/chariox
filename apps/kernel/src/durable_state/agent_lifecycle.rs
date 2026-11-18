@@ -33,6 +33,8 @@ mod child_end_receipt_tests;
 pub(crate) mod created_peers;
 mod delivery_waits;
 #[cfg(test)]
+mod done_parent_binding_tests;
+#[cfg(test)]
 mod fault_tests;
 pub(crate) mod faults;
 mod goal_evidence;
@@ -53,10 +55,14 @@ mod peer_task_follow_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
+#[cfg(test)]
+mod queued_message_tests;
 mod replies;
 #[cfg(test)]
 mod reply_terminal_tests;
 mod settled_waits;
+#[cfg(test)]
+mod steered_turn_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
@@ -89,7 +95,6 @@ pub(crate) use types::{
 };
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
-pub(crate) const LONG_WAIT_MS: u64 = 900_000;
 /// Every wait ends: one without its own deadline times out after 30 minutes, so an agent whose
 /// sources never report still wakes and can tell it is stuck.
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
@@ -483,9 +488,35 @@ impl DurableKernelStateStore {
         work: Option<&str>,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.front")?;
-        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND NOT ({QUEUED_MESSAGE}) AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
+    }
+    /// The messages waiting for their recipient's next turn (every agent of the room with `agent`
+    /// `None`), oldest first: a pending message that is not urgent and that no inbox read has shown yet.
+    pub(crate) fn agent_queued_messages(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.queued_messages")?;
+        let mut q = db.prepare(&format!("SELECT sequence,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND (?2 IS NULL OR agent_id=?2) AND json_valid(payload) AND {QUEUED_MESSAGE} AND NOT EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) ORDER BY sequence LIMIT {INBOX_PAGE}")).map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (seq, agent, source, id, payload) = row.map_err(sql)?;
+            decode_inbox(seq, room, &agent, &source, &id, &payload)
+        })
+        .collect()
     }
     /// Urgent steering is separate from FIFO idle wake admission. Any unresolved
     /// attempt still blocks subsequent delivery, regardless of priority.
@@ -708,25 +739,6 @@ impl DurableKernelStateStore {
         .map(|_| ())
     }
 
-    /// Whether this occurrence of `source` already reached the agent's inbox.
-    pub(crate) fn agent_inbox_has_occurrence(
-        &self,
-        room: &str,
-        agent: &str,
-        source: &str,
-        occurrence: &str,
-    ) -> Result<bool, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.inbox")?;
-        db.query_row(
-            "SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",
-            params![room, agent, source, occurrence],
-            |_| Ok(()),
-        )
-        .optional()
-        .map(|found| found.is_some())
-        .map_err(sql)
-    }
-
     pub(crate) fn agent_work_inbox(
         &self,
         room: &str,
@@ -754,6 +766,34 @@ impl DurableKernelStateStore {
             decode_inbox(seq, room, agent, &source, &id, &payload)
         })
         .collect()
+    }
+
+    /// One inbox row by its sequence, which is global; whether an inbox read has shown it comes with it.
+    pub(crate) fn agent_inbox_event(
+        &self,
+        sequence: u64,
+    ) -> Result<Option<(InboxEvent, bool)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox_event")?;
+        let row: Option<(String, String, String, String, String, bool)> = db
+            .query_row(
+                "SELECT room_id,agent_id,source_id,occurrence_id,payload,EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) FROM agent_inbox WHERE sequence=?1",
+                [sql_integer(sequence)?],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        row.map(|(room, agent, source, id, payload, shown)| {
+            decode_inbox(
+                sql_integer(sequence)?,
+                &room,
+                &agent,
+                &source,
+                &id,
+                &payload,
+            )
+            .map(|event| (event, shown))
+        })
+        .transpose()
     }
 
     /// The recipient's rows for one occurrence id, read through the occurrence index.
@@ -990,10 +1030,11 @@ fn decode_task(
     {
         return Err(error("wait state corrupt; quarantine required"));
     }
+    // Work the turn left running (`outlives_turn`) is supervised after the task ends.
     if t.state == ExecutionState::Done
         && t.obligations
             .iter()
-            .any(AgentObligation::requires_resolution)
+            .any(|o| o.requires_resolution() && !o.outlives_turn())
     {
         return Err(error(
             "done has unfinished obligations; quarantine required",
@@ -1123,6 +1164,8 @@ const SOURCE_TASKS: &str = "rowid IN (\
     WHERE ((r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1) \
     OR (r.source_id=?2 AND json_extract(r.payload,'$.peer')=1) \
     UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
+    UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
+     WHERE state='done' AND terminal_outcome_recorded=0 AND room_id=?1 AND obligated=1 \
     UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
 fn source_tasks(
     tx: &Transaction<'_>,
@@ -1250,6 +1293,25 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
         return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }
     Ok(())
+}
+/// The task a turn began, when the owner has since resumed it: the task is on its Resume continuation.
+fn continued_past(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<Option<AgentTaskExecution>, DaemonError> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT prompt_id,payload FROM agent_tasks WHERE task_id=?1 AND room_id=?2 AND agent_id=?3",
+            params![prompt, room, agent],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    row.filter(|(current, _)| goals::is_owner_resume_prompt_id(current))
+        .map(|(current, payload)| decode_task(prompt, room, agent, &current, &payload))
+        .transpose()
 }
 fn new_admitted_task(
     tx: &Transaction<'_>,
@@ -1452,6 +1514,10 @@ fn get_event(
     let (source,id,payload):(String,String,String)=tx.query_row("SELECT source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",params![room,agent,sql_integer(seq)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
     decode_inbox(sql_integer(seq)?, room, agent, &source, &id, &payload)
 }
+/// SQL predicate: a message that waits for its recipient's next turn. It never starts a turn
+/// and never stands in front of the wakes behind it.
+const QUEUED_MESSAGE: &str = "json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state')='pending' AND COALESCE(json_extract(payload,'$.urgent'),0)=0";
+
 /// SQL predicate: the event is a kernel-correlated wake of task `?3`.
 pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'message' AND (json_extract(payload,'$.payload.task_id')=?3 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?3)))";
 

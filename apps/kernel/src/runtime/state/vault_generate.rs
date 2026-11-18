@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: ordinary, exact-origin Vault generation. Only metadata and password
 //! policy enter the tool; the generated value goes from the kernel CSPRNG
 //! straight into the Vault and the model receives an opaque handle.
-use super::vault_use::VaultAgentContext;
+use super::vault_use::{VaultActor, VaultRecheck};
 use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
 use crate::runtime::kernel_access::error;
@@ -52,7 +52,28 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
+        if let Some(home) = context.home.clone() {
+            return self
+                .forward_vault_tool_to_home(home, VAULT_GENERATE, arguments)
+                .await;
+        }
+        self.generate_in_vault(
+            &context.actor(),
+            &|| self.recheck_vault_agent(&context),
+            arguments,
+        )
+        .await
+    }
+
+    /// Generates for `actor` in the Vault of this kernel: the owner's own, or the home's for an
+    /// agent on a leased worker.
+    pub(super) async fn generate_in_vault(
+        &self,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         let args: GenerateArgs = serde_json::from_value(arguments)
             .map_err(|_| error("invalid Vault generation arguments"))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -70,24 +91,20 @@ impl KernelRuntimeState {
             return Err(error("description must be at most 200 characters"));
         }
         let handle = generated_handle(
-            &context.owner_user_id,
-            &context.session_id,
-            &context.agent_id,
+            &actor.owner_user_id,
+            &actor.session_id,
+            &actor.agent_id,
             &args.request_id,
         );
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             self.record_vault_resource(&existing)?;
-            return committed(&existing, &context, &origin);
+            return committed(&existing, actor, &origin);
         }
         let _unlock = self
-            .ensure_vault_unlocked_for_agent(
-                &context.session_id,
-                &context.agent_id,
-                "vault_generate",
-            )
+            .ensure_vault_unlocked_for_agent(&actor.session_id, &actor.agent_id, "vault_generate")
             .await?;
-        self.recheck_vault_agent(&context)?;
+        recheck()?;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
             id: handle.clone(),
@@ -105,13 +122,14 @@ impl KernelRuntimeState {
                     value_kind: crate::config::VaultValueKind::Secret,
                 }),
                 created_by_kind: Some(GENERATED_KIND.into()),
-                created_by_id: Some(context.agent_id.clone()),
-                session_id: Some(context.session_id.clone()),
+                created_by_id: Some(actor.agent_id.clone()),
+                session_id: Some(actor.session_id.clone()),
                 provider: None,
-                provider_run_id: Some(context.run.id().into()),
+                provider_run_id: Some(actor.provider_run_id.clone()),
                 vault_key: Some(handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
+                copied_from: None,
             }),
         };
         let secret = zeroize::Zeroizing::new(generate_password(args.length, args.symbols));
@@ -123,7 +141,7 @@ impl KernelRuntimeState {
                 credential,
                 secret.as_str(),
                 false,
-                Some(&context),
+                Some(recheck),
             )
             .await;
         match stored {
@@ -135,7 +153,7 @@ impl KernelRuntimeState {
             Err(stored) => match registry.get(&handle)? {
                 Some(existing) => {
                     self.record_vault_resource(&existing)?;
-                    committed(&existing, &context, &origin)
+                    committed(&existing, actor, &origin)
                 }
                 None => Err(stored),
             },
@@ -146,13 +164,13 @@ impl KernelRuntimeState {
 /// Retries preserve creation identity and binding; uses are bound only to the destination.
 fn committed(
     existing: &UserCredentialConfig,
-    context: &VaultAgentContext,
+    actor: &VaultActor,
     origin: &str,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
     if metadata.and_then(|m| m.created_by_kind.as_deref()) != Some(GENERATED_KIND)
-        || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(context.agent_id.as_str())
-        || metadata.and_then(|m| m.session_id.as_deref()) != Some(context.session_id.as_str())
+        || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(actor.agent_id.as_str())
+        || metadata.and_then(|m| m.session_id.as_deref()) != Some(actor.session_id.as_str())
         || existing.allowed_hosts != [origin]
         || existing
             .metadata

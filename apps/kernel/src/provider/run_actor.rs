@@ -18,6 +18,7 @@ mod operation_lanes;
 mod refusal_tests;
 mod runtime_slots;
 mod worker;
+pub(crate) use command_execution::run_room_commands_on_fresh_claude;
 use finished_jobs::push_finished_output_poll;
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,

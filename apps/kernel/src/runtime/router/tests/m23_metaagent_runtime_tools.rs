@@ -190,6 +190,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.vault.generate"
                 || spec.name == "chariox.vault.capture_command"
                 || spec.name == "chariox.vault.use_env"
+                || spec.name == "chariox.vault.copy_for_use"
                 || spec.name == "chariox.vault.capture_file"
                 || spec.name == "chariox.vault.write_file"
                 || spec.name == "chariox.vault.remove_capture"
@@ -204,6 +205,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == crate::transport::runtime_tools::PEEK_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                || spec.name == crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
@@ -304,16 +306,20 @@ mod task_scope;
 mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
+mod workflow_responsible;
 
+mod agents_run;
 mod authority_limit;
 mod decisions;
 mod hidden_subagents;
 mod kernel_ref_placement;
 mod peer_spawn;
+mod person_inbox_notify;
 mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;
 mod room_prompt_dispatch;
+mod self_settings;
 mod subtree;
 
 mod cross_room_cards;

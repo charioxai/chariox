@@ -42,11 +42,14 @@ impl LiveRelay {
                 .unwrap();
         });
         let setup = timeout(Duration::from_secs(10), async {
-            let (mut daemon, _) = connect_async(format!("ws://{address}")).await.unwrap();
-            daemon.send(Message::Text(serde_json::json!({"kind":"daemon_register", "registration": {
-                "auth_token":"local-display-drill", "daemon_id":"live-selkies-kernel",
-                "machine_id":"local-docker", "public_key":"transport-test-key", "capabilities":[]
-            }}).to_string().into())).await.unwrap();
+            let relay_url = format!("ws://{address}");
+            let (mut daemon, handshake) = connect_async(&relay_url).await.unwrap();
+            daemon.send(Message::Text(crate::transport::relay_socket_connect::stand_in_kernel_register(
+                &relay_url, &handshake, serde_json::json!({
+                    "auth_token":"local-display-drill", "daemon_id":"live-selkies-kernel",
+                    "machine_id":"local-docker", "capabilities":[]
+                }),
+            ).into())).await.unwrap();
             daemon.send(Message::Text(serde_json::json!({"kind":"daemon_display_tunnel_register", "registration": {
                 "tunnel_id":"live-selkies", "expires_at_ms": crate::session::unix_epoch_ms() + 60_000,
                 "capabilities":["view", "encrypted_websocket"]

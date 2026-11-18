@@ -295,6 +295,75 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
     }
 }
 
+// Live (orchfix8, 11-16): the kernel expired the process outcome of a blocked task, the resumed
+// turn was told to acknowledge "the reviewed receipt" without a sequence, guessed one that is not
+// in its inbox and the card came back three times.
+#[tokio::test]
+async fn a_resumed_task_is_told_the_sequence_of_an_outcome_the_kernel_expired() {
+    let t = tree(
+        "blocked-expired-receipt",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, "Review the timer outcome before continuing");
+    let store = &t.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: t.room.clone(),
+            source: "wake-blk".into(),
+            occurrence: "timer-fired".into(),
+            success: true,
+            public_answer: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let sequence: u64 = store
+        .agent_inbox(&t.room, &t.c, 0)
+        .unwrap()
+        .iter()
+        .find(|event| event.source_id == "wake-blk")
+        .unwrap()
+        .sequence;
+    store
+        .agent_lifecycle(Operation::Expire {
+            room: t.room.clone(),
+            agent: t.c.clone(),
+            sequence,
+        })
+        .unwrap();
+    let task = store.agent_task(&task.task_id).unwrap().unwrap();
+
+    let text = t
+        .runtime
+        .owned
+        .task_resume_text(&task, &task.reason)
+        .unwrap();
+    assert!(
+        text.contains(&format!(
+            "chariox.events.ack with sequence {sequence} and handled:true"
+        )),
+        "{text}"
+    );
+
+    // The named acknowledgement settles the obligation, so nothing is left to correct.
+    store
+        .agent_lifecycle(Operation::Ack {
+            room: t.room.clone(),
+            agent: t.c.clone(),
+            sequence,
+            handled: true,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let settled = store.agent_task(&task.task_id).unwrap().unwrap();
+    assert!(
+        settled.obligations.iter().all(|o| !o.requires_resolution()),
+        "{:?}",
+        settled.obligations
+    );
+}
+
 #[tokio::test]
 async fn corrupt_completion_registrations_keep_the_parents_cancel_decision() {
     let t = tree(

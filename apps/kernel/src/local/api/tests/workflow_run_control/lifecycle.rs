@@ -1,26 +1,5 @@
 use super::*;
 
-struct WorkflowCollisionDrillWorktree {
-    path: std::path::PathBuf,
-}
-
-impl WorkflowCollisionDrillWorktree {
-    fn create(path: std::path::PathBuf) -> Self {
-        std::fs::create_dir_all(&path).expect("collision drill worktree should exist");
-        Self { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for WorkflowCollisionDrillWorktree {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
 #[test]
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
     run_workflow_run_lifecycle_large_stack_test(
@@ -946,16 +925,8 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
     // alpha handoff can bind to a provider run while the promoted beta
     // delivery holds the shared agent.
     let shared_agent = harness.spawn_workflow_test_agent(session.id(), "audit-shared-agent");
-    let alpha_worktree = WorkflowCollisionDrillWorktree::create(
-        crate::test_support::test_workspace_root()
-            .join("chariox-collision-drill-alpha")
-            .join(session.id()),
-    );
-    let beta_worktree = WorkflowCollisionDrillWorktree::create(
-        crate::test_support::test_workspace_root()
-            .join("chariox-collision-drill-beta")
-            .join(session.id()),
-    );
+    let alpha_worktree = crate::test_support::TestWorktree::new("collision-drill-alpha");
+    let beta_worktree = crate::test_support::TestWorktree::new("collision-drill-beta");
     let alpha_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "audit-alpha-agent",
@@ -1514,23 +1485,17 @@ fn local_request_api_runs_independent_workflows_concurrently_inner() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let first_worktree = crate::test_support::test_workspace_root()
-        .join("chariox-independent-workflow-first")
-        .join(session.id());
-    let second_worktree = crate::test_support::test_workspace_root()
-        .join("chariox-independent-workflow-second")
-        .join(session.id());
-    std::fs::create_dir_all(&first_worktree).expect("first worktree should exist");
-    std::fs::create_dir_all(&second_worktree).expect("second worktree should exist");
+    let first_worktree = crate::test_support::TestWorktree::new("independent-workflow-first");
+    let second_worktree = crate::test_support::TestWorktree::new("independent-workflow-second");
     let first_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "independent-first",
-        Some(&first_worktree.to_string_lossy()),
+        Some(&first_worktree.path().to_string_lossy()),
     );
     let second_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "independent-second",
-        Some(&second_worktree.to_string_lossy()),
+        Some(&second_worktree.path().to_string_lossy()),
     );
     harness.launch_workflow_test_provider(session.id(), first_agent.id());
     harness.launch_workflow_test_provider(session.id(), second_agent.id());

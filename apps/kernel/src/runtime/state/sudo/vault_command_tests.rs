@@ -2,7 +2,7 @@
 //! use as env/stdin through the real MCP router and real child processes.
 //! Live provider acceptance is the separate drill.
 use super::tests::{fixture, Fixture};
-use super::vault_tests::{call, elevated, names, owner_unlocks, unlock};
+use super::vault_tests::{call, elevated, names, owner_unlocks, unlock, vault_path};
 use super::*;
 use serde_json::{json, Value};
 
@@ -11,6 +11,7 @@ const CAPTURE: &str = "chariox.vault.capture_command";
 const USE_ENV: &str = "chariox.vault.use_env";
 const CAPTURE_FILE: &str = "chariox.vault.capture_file";
 const WRITE_FILE: &str = "chariox.vault.write_file";
+const COPY_FOR_USE: &str = "chariox.vault.copy_for_use";
 const SECRET: &str = "sk_test_51CaptureValue9f8e7d";
 
 fn printing(text: &str) -> Value {
@@ -604,6 +605,63 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
+// "Just this once" lasts a minute; a capture command may run four. The unlock stays open
+// while the command runs, so the value it prints is stored, and the Vault locks after.
+#[tokio::test]
+async fn a_once_only_unlock_stays_open_until_a_long_capture_is_stored() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault_path(&f),
+        super::tests::PASSKEY,
+        crate::secret::VaultUnlockLease::SingleUse,
+    )
+    .unwrap();
+    let started = workspace(&f).join("once-started");
+    let release = workspace(&f).join("once-release");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+            started.display(),
+            release.display()
+        )
+    ]);
+    let status = || crate::secret::chariox_encrypted_vault_status(vault_path(&f)).unwrap();
+    let running = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let open_until = status().expires_at_ms.expect("a once-only unlock expires");
+        std::fs::write(&release, "go").unwrap();
+        open_until
+    };
+    let (captured, open_until) = tokio::join!(
+        capture(&f, "once-only", argv, json!({"kind":"stdout"})),
+        running
+    );
+    let captured = captured.unwrap();
+    assert!(
+        open_until >= crate::session::unix_epoch_ms() + 4 * 60_000,
+        "the unlock outlasts the longest capture command"
+    );
+    assert!(
+        !status().unlocked,
+        "the once-only unlock ends with the store"
+    );
+    unlock(&f);
+    assert_eq!(
+        stored(&f, captured["credential_id"].as_str().unwrap()).as_str(),
+        SECRET
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: the user Stop path must settle Vault children.
 #[tokio::test]
 async fn r10_cancel_prompt_settles_vault_command_before_side_effect() {
@@ -842,4 +900,226 @@ async fn overlapping_capture_retry_retains_ownership_after_tool_drop() {
     );
     assert_eq!(stored_value.as_str(), SECRET);
     assert_eq!(retried["created"], false);
+}
+
+#[tokio::test]
+async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    assert!(names(&f).iter().any(|name| name == COPY_FOR_USE));
+    // The owner's `git push` entry: one command environment at github.com.
+    let pushed = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push", "argv": printing(SECRET), "host": "github.com",
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let from = pushed["credential_id"].as_str().unwrap().to_string();
+    let site = |origin: &str| json!({"target":{"kind":"site","origin":origin}});
+    let copied = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap();
+    assert!(!copied.to_string().contains(SECRET), "{copied}");
+    let to = copied["credential_id"].as_str().unwrap().to_string();
+    assert_ne!(to, from);
+    // The copy is bound to one HTTP destination and sends the value as `Bearer`.
+    let service = f.state.home_runtime_secret_service().unwrap();
+    assert_eq!(
+        service
+            .app_account_authorization(&to, "https://api.github.com")
+            .unwrap()
+            .as_str(),
+        format!("Bearer {SECRET}")
+    );
+    for origin in [
+        "https://api.example.com",
+        "https://github.com",
+        "http://api.github.com",
+    ] {
+        assert!(
+            service.app_account_authorization(&to, origin).is_err(),
+            "{origin}"
+        );
+    }
+    // The original keeps its own single use.
+    assert!(service
+        .validate_app_account(&from, "https://api.github.com")
+        .is_err());
+    assert_eq!(stored(&f, &from).as_str(), SECRET);
+    // A retry names the same entry; a new request makes a second one.
+    let again = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            again["credential_id"].as_str().unwrap(),
+            again["created"].clone()
+        ),
+        (to.as_str(), json!(false))
+    );
+    assert!(call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":from,"use_binding":site("https://api.example.com")}),
+    )
+    .await
+    .is_err());
+    // A retry that names another source is a different request, not the committed copy.
+    let other = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push-other", "argv": printing(SECRET), "host": "github.com",
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let other = other["credential_id"].as_str().unwrap();
+    let swapped = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":other,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        swapped.to_string().contains("request_id already names"),
+        "{swapped}"
+    );
+    // Refused: plain HTTP, an entry that does not exist, a missing binding.
+    for refused in [
+        json!({"request_id":"plain","from":from,"use_binding":site("http://api.github.com")}),
+        json!({"request_id":"missing","from":"nope","use_binding":site("https://api.github.com")}),
+        json!({"request_id":"nobinding","from":from}),
+    ] {
+        assert!(
+            call(&f, COPY_FOR_USE, refused.clone()).await.is_err(),
+            "{refused}"
+        );
+    }
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(!session.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_copy_request_replayed_with_another_source_is_refused() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let entry = |request: &'static str, secret: &'static str| {
+        let f = &f;
+        async move {
+            call(
+                f,
+                CAPTURE,
+                json!({"request_id": request, "argv": printing(secret), "host": "github.com",
+                    "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+            )
+            .await
+            .unwrap()["credential_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let first = entry("first", SECRET).await;
+    let second = entry("second", "ghp_second_entry_value").await;
+    let site = json!({"target":{"kind":"site","origin":"https://api.github.com"}});
+    let copy = |from: &str| {
+        call(
+            &f,
+            COPY_FOR_USE,
+            json!({"request_id":"api","from":from,"use_binding":site}),
+        )
+    };
+    let of_first = copy(&first).await.unwrap();
+    // The same request naming another entry is refused: it is not the copy the request already made.
+    let refused = copy(&second).await.unwrap_err().to_string();
+    assert!(refused.contains("use a new request_id"), "{refused}");
+    // Nor is an entry that does not exist answered with the first copy.
+    assert!(copy("nope").await.is_err());
+    // The same source still gets its copy back, holding the first entry's value.
+    let again = copy(&first).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].clone(), again["created"].clone()),
+        (of_first["credential_id"].clone(), json!(false))
+    );
+    let authorization = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .app_account_authorization(
+            of_first["credential_id"].as_str().unwrap(),
+            "https://api.github.com",
+        )
+        .unwrap();
+    assert_eq!(authorization.as_str(), format!("Bearer {SECRET}"));
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_http_points_to_a_copy_not_a_change_of_kind() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id": handle, "url": "https://api.example.com/", "timeout_ms": 5000}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("chariox.vault.copy_for_use"),
+        "{refused}"
+    );
+    assert!(!refused.contains("change Kind"), "{refused}");
+    assert!(!refused.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_browser_fill_points_to_a_new_password_not_a_copy() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .validate_browser_secret_input_for_target_url(handle, "https://api.example.com/login")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("new Password entry")
+            && refused.contains("chariox.vault.generate"),
+        "{refused}"
+    );
+    assert!(!refused.contains("copy_for_use"), "{refused}");
+    assert!(!refused.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
 }

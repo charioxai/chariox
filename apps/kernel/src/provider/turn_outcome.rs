@@ -4,7 +4,8 @@
 //! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
 //! reports the kind and retryability, preserving the harness's explicit
 //! retryability when it supplies one. Native diagnostics go to the kernel log.
-//! It never retries, backs off or tracks usage limits; the provider's
+//! It never retries or backs off a failed turn itself; a usage-limit stop is
+//! recorded and resumed by the kernel (`usage_limit_runtime`), and the provider's
 //! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
 //! `retryable` only; `reason` is for people.
 
@@ -181,14 +182,26 @@ impl TurnOutcome {
     /// The transcript line every client shows. Adapter diagnostics enter only
     /// through classification; kernel-authored reasons can name a missing workspace.
     pub fn notice(&self) -> String {
+        self.notice_with(self.recovery())
+    }
+
+    /// The line of a usage-limit turn the kernel resumes by itself, in place of asking the person
+    /// to send the request again. `reset` is the clock time the resume is due, when the provider
+    /// named one.
+    pub fn notice_resuming(&self, reset: Option<&str>) -> String {
+        match reset {
+            Some(at) => self.notice_with(&format!("Resumes automatically at {at}.")),
+            None => self.notice_with("Resumes automatically when usage is back."),
+        }
+    }
+
+    fn notice_with(&self, recovery: &str) -> String {
         let reason = if self.reason.is_empty() {
             format!("{}.", self.kind.headline())
         } else {
             self.reason.clone()
         };
-        format!("{reason} {}", self.recovery())
-            .trim_end()
-            .to_string()
+        format!("{reason} {recovery}").trim_end().to_string()
     }
 
     /// A kernel-authored explanation, such as a removed workspace or worker.

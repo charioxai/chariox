@@ -28,6 +28,13 @@ pub(super) enum RouteContract {
     Inherited(InboxSource),
 }
 
+/// Who created a route: the owner, or the App through its `eventRouting` seam.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RouteOrigin {
+    Owner,
+    App,
+}
+
 impl KernelRuntimeState {
     pub(super) async fn app_inbox_request(
         &self,
@@ -37,14 +44,29 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
         match request {
             LocalDaemonRequest::CreateAppInboxRoute(request) => {
-                self.create_app_inbox_route(&owner, &installation, request, RouteContract::Catalog)
-                    .await?;
+                self.create_app_inbox_route(
+                    &owner,
+                    &installation,
+                    request,
+                    RouteContract::Catalog,
+                    RouteOrigin::Owner,
+                )
+                .await?;
             }
             LocalDaemonRequest::RemoveAppInboxRoute(request) => {
                 self.inbox(AppInboxOperation::RemoveRoute {
                     owner: owner.clone(),
                     installation: installation.clone(),
                     route_id: request.route_id,
+                })
+                .await?;
+            }
+            LocalDaemonRequest::SetAppInboxRoutePaused(request) => {
+                self.inbox(AppInboxOperation::SetRoutePaused {
+                    owner: owner.clone(),
+                    installation: installation.clone(),
+                    route_id: request.route_id,
+                    paused: request.paused,
                 })
                 .await?;
             }
@@ -93,6 +115,7 @@ impl KernelRuntimeState {
         installation: &str,
         request: CreateAppInboxRouteRequest,
         contract: RouteContract,
+        origin: RouteOrigin,
     ) -> Result<(), AppRequestErrorCode> {
         let (_, catalog) = self.incoming_catalog(owner, installation).await?;
         if catalog.version(&request.event_name).is_none() {
@@ -120,6 +143,8 @@ impl KernelRuntimeState {
             source_event_type: request.source_event_type,
             source_event_version: request.source_event_version,
             active: true,
+            paused: false,
+            app_managed: origin == RouteOrigin::App,
             source: request.connection.map(|connection| InboxSource {
                 generator_id: connection.generator_id,
                 connection_id: connection.connection_id,
@@ -383,6 +408,7 @@ fn summary((route, counts): (InboxRoute, InboxCounts)) -> AppInboxRouteSummary {
         source_event_type: route.source_event_type,
         source_event_version: route.source_event_version,
         active: route.active,
+        paused: route.paused,
         connection: route.source.map(|source| crate::local::AppInboxConnection {
             generator_id: source.generator_id,
             connection_id: source.connection_id,

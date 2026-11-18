@@ -57,14 +57,14 @@ impl FailingTurn {
             .unwrap();
     }
 
-    fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {
+    pub(super) fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {
         self.runtime
             .owned
             .provider_store
             .get_run_for_agent(&self.session_id, &self.agent_id)
     }
 
-    fn notices(&self) -> Vec<String> {
+    pub(super) fn notices(&self) -> Vec<String> {
         self.runtime
             .owned
             .terminal_stream
@@ -172,7 +172,7 @@ impl FailingTurn {
             .append_operational_history_entry(&entry, None, None, None);
     }
 
-    fn provider_inputs(&self, provider_run_id: &str) -> String {
+    pub(super) fn provider_inputs(&self, provider_run_id: &str) -> String {
         self.runtime
             .owned
             .terminal_stream
@@ -203,12 +203,32 @@ impl FailingTurn {
 }
 
 pub(super) async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
-    failing_turn_with(substitutes, false, "dev-stub").await
+    failing_turn_with(
+        substitutes,
+        false,
+        "dev-stub",
+        crate::config::DaemonConfig::for_tests(),
+    )
+    .await
 }
 
 /// A turn on a `provider` run the test drives by hand, without a substitute.
 pub(super) async fn failing_turn_on(provider: &str) -> FailingTurn {
-    failing_turn_with(&[], false, provider).await
+    failing_turn_with(
+        &[],
+        false,
+        provider,
+        crate::config::DaemonConfig::for_tests(),
+    )
+    .await
+}
+
+/// `failing_turn_on` in a Room whose agents have the Room agent tools, so the turn is an
+/// admitted agent task and every dispatch of it revalidates that task.
+pub(super) async fn failing_task_turn_on(provider: &str) -> FailingTurn {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    failing_turn_with(&[], false, provider, config).await
 }
 
 /// An agent on `provider` and `PRIMARY_MODEL` with `substitutes` (provider,
@@ -218,14 +238,14 @@ async fn failing_turn_with(
     substitutes: &[(&str, &str, Option<&str>)],
     workflow: bool,
     provider: &str,
+    config: crate::config::DaemonConfig,
 ) -> FailingTurn {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-turn-substitute-{:016x}",
         rand::random::<u64>()
     ));
     std::fs::create_dir_all(&worktree).unwrap();
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             worktree.to_string_lossy(),
@@ -607,7 +627,13 @@ async fn unavailable_substitute_accounts_are_skipped_in_order() {
 
 #[tokio::test]
 async fn a_failed_workflow_turn_reruns_without_failing_its_workflow_run() {
-    let turn = failing_turn_with(&[("dev-stub", SUBSTITUTE_A, None)], true, "dev-stub").await;
+    let turn = failing_turn_with(
+        &[("dev-stub", SUBSTITUTE_A, None)],
+        true,
+        "dev-stub",
+        crate::config::DaemonConfig::for_tests(),
+    )
+    .await;
     let workflow_run_id = turn
         .active_prompt()
         .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))

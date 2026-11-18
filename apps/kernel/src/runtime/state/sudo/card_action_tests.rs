@@ -95,6 +95,63 @@ async fn action_card_refuses_a_browser_view_instead_of_ignoring_it() {
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
 
+// A read of the asking agent's own Room asks nothing of the person: the agent gets the answer at once.
+#[tokio::test]
+async fn a_read_of_the_agents_own_room_runs_without_a_card() {
+    let f = fixture_with_options(None, true);
+    let reads = [
+        serde_json::json!({"ListAgents": {"session_id": f.request.session_id}}),
+        serde_json::json!({"GetSessionState": {"session_id": f.request.session_id}}),
+    ];
+    for read in reads {
+        let result = tokio::time::timeout(Duration::from_secs(5), raise(&f, "Look around", read))
+            .await
+            .expect("a read of the agent's own Room waited for the person")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ran"], true, "{result}");
+        assert_eq!(result["status"], "answered", "{result}");
+        assert!(result.get("response").is_some(), "{result}");
+    }
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+// A read that reaches past the agent's Room (another Room, every Room, a name lookup across
+// Rooms, the daemon) is the person's to allow, like the writes a card carries: it waits for the
+// passkey card, and Cancel returns nothing.
+#[tokio::test]
+async fn a_read_beyond_the_agents_room_waits_for_the_persons_card() {
+    let f = fixture_with_options(None, true);
+    let other_room = {
+        let mut app = f.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "other-workspace",
+                "other-worktree",
+            ))
+            .unwrap()
+            .0
+    };
+    let other = other_room.id().to_string();
+    let reads = [
+        serde_json::json!({"ListSessions": null}),
+        serde_json::json!({"GetSessionState": {"session_id": other}}),
+        serde_json::json!({"ListAgents": {"session_id": other}}),
+        serde_json::json!({"ListSessionMembers": {"session_id": other}}),
+        serde_json::json!({"ResolveSession": {"session_ref": other}}),
+        serde_json::json!({"GetDaemonHealth": null}),
+    ];
+    for read in reads {
+        let call = raise(&f, "Look around", read.clone());
+        let prompt = card(&f).await;
+        answer(&f, &prompt, "cancel", None).await.unwrap();
+        let result = call.await.unwrap().unwrap();
+        assert_eq!(result["ran"], false, "{read}: {result}");
+        assert_eq!(result["status"], "cancelled", "{read}: {result}");
+        assert!(result.get("response").is_none(), "{read}: {result}");
+    }
+}
+
 #[tokio::test]
 async fn an_action_card_describes_the_request_in_the_kernels_words_and_cancel_runs_nothing() {
     let f = fixture_with_options(None, true);

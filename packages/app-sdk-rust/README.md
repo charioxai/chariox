@@ -14,6 +14,23 @@ revision. The two Todo operations use durable state and optimistic checks; a
 concurrent write may return the host's conflict error instead of losing data.
 
 
+## Name and icon
+
+`displayName` and `icon` in `app.json` give the App the name and logo that every client shows
+(the Desktop tile, lists). The template's `bundle/ui/icon.svg` is the example: an original SVG
+of at most 32 KiB (or a PNG up to 512 by 512) listed in the bundle; `pack` refuses scripts and
+outside references. An App without them is shown under its app id with a letter tile.
+
+## Serving a view to an agent
+
+`view::View::declare(include_str!("ui-actions.json"))` takes the signed `ui-actions` document once.
+Call `register()` in `Guest::register` and `serve(tool, input, state)` first in `call_tool`: it
+answers the view's registration, state and (after `with_changes()`) change feed, and returns `None`
+for the App's own tools. Commit a change with `view::transact_with_change(tx, delta)`; it adds the
+change to the App's transaction, keeps the last 128 and refuses a change over 8 KiB. The tools it
+registers (`view_actions`, `view_state`, `view_changes`) must be listed in the manifest `tools`.
+See `packages/app-view-host/fixture/guest`.
+
 ## Browser UI handlers
 
 This SDK dispatches backend WIT handlers. Browser UI actions receive

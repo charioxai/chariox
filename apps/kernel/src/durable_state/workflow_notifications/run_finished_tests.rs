@@ -27,9 +27,10 @@ fn run_source(f: &Fixture, w: &str) -> WorkflowNotificationSource {
                 exit_node_id: RUN_FINISHED_NODE.into(),
                 enabled: true,
                 available: true,
-                name: String::new(),
+                name: naming::workflow_name(&workflow),
                 exit_ordinal: 0,
                 display_name: String::new(),
+                options: Vec::new(),
             },
             workflow_json: encode(&workflow).unwrap(),
         }))
@@ -216,5 +217,173 @@ fn an_exit_node_named_like_the_run_source_keeps_its_own_source_and_output() {
     let run_body: serde_json::Value =
         serde_json::from_str(&outputs[&run.source_id]).expect("the run source reports the run");
     assert_eq!(run_body["status"], "Completed");
+    cleanup(f);
+}
+
+/// A run holding its entry node on a named thing: it neither ended nor stopped.
+fn hold_run(f: &mut Fixture, w: &str, id: &str, reason: crate::session::WorkflowNodeWaitingReason) {
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    if session.workflow_run(id).is_none() {
+        let node = crate::session::WorkflowNodeRun::new(
+            format!("{id}-node-run"),
+            "node",
+            "agent",
+            0,
+            crate::session::WorkflowNodeRunStatus::Ready,
+        );
+        let mut run = crate::session::WorkflowRun::new(
+            id,
+            w,
+            "endpoint",
+            "node",
+            Some(PROMPT.into()),
+            None,
+            vec![node],
+            vec![],
+        );
+        run.set_status(WorkflowRunStatus::Waiting);
+        session.create_workflow_run(run);
+    }
+    let run = session.workflow_run_mut(id).unwrap();
+    run.node_runs_mut()[0].set_waiting_reason(reason);
+    f.sessions.restore_session(session);
+    f.persist();
+}
+
+fn occurrences(f: &Fixture, source: &WorkflowNotificationSource) -> Vec<String> {
+    let db = f.store.lock_connection("test").unwrap();
+    let mut q = db
+        .prepare("SELECT occurrence_id FROM workflow_notification_occurrences WHERE source_id=?1 ORDER BY rowid")
+        .unwrap();
+    let rows = q.query_map([&source.source_id], |r| r.get(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn a_finished_run_carries_its_number_workflow_name_and_typed_outcome() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let (b, _, bp) = f.workflow("subscriber");
+    let source = run_source(&f, &a);
+    f.attach(&source, &b, &bp);
+    end_run(
+        &mut f,
+        &a,
+        "run-failed",
+        WorkflowRunStatus::Failed,
+        Some("provider down"),
+    );
+    let body: serde_json::Value = serde_json::from_str(
+        f.candidates(false)
+            .into_iter()
+            .next()
+            .expect("the run is announced")
+            .1
+            .output
+            .message(),
+    )
+    .unwrap();
+    assert_eq!(body["number"], 1);
+    assert_eq!(body["workflow_name"], "reviewer");
+    assert_eq!(
+        body["outcome"],
+        serde_json::json!({"kind": "failed", "reason": "provider_failure", "detail": "provider down"})
+    );
+    cleanup(f);
+}
+
+#[test]
+fn a_run_entering_waiting_on_a_named_thing_notifies_once_per_node_and_reason() {
+    use crate::session::WorkflowNodeWaitingReason::{
+        ProviderProfileUnauthenticated, ProviderProfileUsageExhausted,
+    };
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let source = run_source(&f, &a);
+    hold_run(&mut f, &a, "run-held", ProviderProfileUsageExhausted);
+    hold_run(&mut f, &a, "run-held", ProviderProfileUsageExhausted);
+    f.persist();
+    assert_eq!(
+        occurrences(&f, &source).len(),
+        1,
+        "the same hold is one occurrence however often the run is written"
+    );
+    hold_run(&mut f, &a, "run-held", ProviderProfileUnauthenticated);
+    assert_eq!(
+        occurrences(&f, &source).len(),
+        2,
+        "another reason is another need"
+    );
+    cleanup(f);
+}
+
+#[test]
+fn the_person_is_alerted_once_for_a_run_that_needs_them_and_an_agent_responsible_is_not() {
+    use crate::session::WorkflowNodeWaitingReason::ProviderProfileUsageExhausted;
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let (b, _, _) = f.workflow("handled");
+    let session = f.sessions.get_session(&f.session).unwrap();
+    let alert = match f
+        .store
+        .notify(NotificationOperation::Register(SourceAdmission {
+            source: WorkflowNotificationSource {
+                kind: NotificationSourceKind::OwnerAction,
+                source_id: "owner-action".into(),
+                owner_user_id: "local".into(),
+                kernel_id: session.host_daemon_id().into(),
+                session_id: f.session.clone(),
+                workflow_id: "owner_action".into(),
+                exit_node_id: "blocked".into(),
+                enabled: true,
+                available: true,
+                name: "Agent needs your action".into(),
+                exit_ordinal: 0,
+                display_name: "Agent needs your action".into(),
+                options: Vec::new(),
+            },
+            workflow_json: String::new(),
+        }))
+        .unwrap()
+    {
+        NotificationOutcome::Source(source) => source,
+        other => panic!("{other:?}"),
+    };
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    session.workflow_mut(&b).unwrap().set_responsible(
+        crate::session::WorkflowResponsible::Agent {
+            kernel_id: "daemon-test".into(),
+            room_id: f.session.clone(),
+            agent_id: "agent".into(),
+            label: "agent".into(),
+        },
+        None,
+    );
+    f.sessions.restore_session(session);
+
+    end_run(
+        &mut f,
+        &a,
+        "run-one",
+        WorkflowRunStatus::Failed,
+        Some("provider down"),
+    );
+    f.persist();
+    hold_run(&mut f, &a, "run-two", ProviderProfileUsageExhausted);
+    end_run(
+        &mut f,
+        &b,
+        "run-three",
+        WorkflowRunStatus::Failed,
+        Some("provider down"),
+    );
+    assert_eq!(
+        occurrences(&f, &alert),
+        vec![
+            "run-run-one-failed:ProviderFailure".to_owned(),
+            "run-run-two-waiting:node:ProviderProfileUsageExhausted".to_owned()
+        ],
+        "one alert per person-owned run and need; none for the agent's workflow"
+    );
     cleanup(f);
 }

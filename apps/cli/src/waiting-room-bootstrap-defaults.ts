@@ -36,7 +36,7 @@ export async function readWaitingRoomConfiguredDefaults(
   let report!: () => void
   const liveReport = new Promise<void>(resolve => { report = resolve })
   const dispose = client.onKernelEvent?.(event => {
-    if (event.event === "waiting_room_rows_changed") { reported = true; report() }
+    if (event.event === "room_list_rows_changed") { reported = true; report() }
   })
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {

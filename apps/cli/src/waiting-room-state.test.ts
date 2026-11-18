@@ -35,7 +35,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   ]
 
   const normalized = normalizeWaitingRoomState(
-    waitingRoomState({
+    startState({
       focus: "session",
       sessionIndex: 5,
       machineIndex: 3,
@@ -64,7 +64,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   assert.equal(normalized.sliceSelectionId, "slice-1")
 
   const headedSliceCreate = normalizeWaitingRoomState(
-    waitingRoomState({
+    startState({
       sliceSelectionId: "new:headed",
       sliceDisplayMode: "headless",
     }),
@@ -75,7 +75,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   assert.equal(headedSliceCreate.sliceDisplayMode, "headed")
 
   const withoutSessions = normalizeWaitingRoomState(
-    waitingRoomState({ focus: "join-sessions", sessionIndex: 3 }),
+    startState({ focus: "join-sessions", sessionIndex: 3 }),
     [],
     catalog,
   )
@@ -86,7 +86,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
 test("waiting room state normalization clamps stale unattached agent indexes", () => {
   const catalog = fallbackProviderCatalog()
   const normalizedHigh = normalizeWaitingRoomState(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    startState({ focus: "external-session", externalSessionIndex: 99 }),
     [],
     catalog,
     undefined,
@@ -99,7 +99,7 @@ test("waiting room state normalization clamps stale unattached agent indexes", (
     },
   )
   const normalizedLow = normalizeWaitingRoomState(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: -4 }),
+    startState({ focus: "external-session", externalSessionIndex: -4 }),
     [],
     catalog,
     undefined,
@@ -118,7 +118,7 @@ test("waiting room state normalization clamps stale unattached agent indexes", (
   assert.equal(normalizedLow.externalSessionIndex, 0)
 })
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

@@ -16,7 +16,7 @@ impl KernelRuntimeState {
         public_answer: Option<&serde_json::Value>,
     ) -> Result<(), DaemonError> {
         // The agent no longer holds decisions: they move up before anyone is told it finished.
-        self.move_decisions_up(&task.room_id, &task.agent_id)
+        self.move_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
             .await?;
         let child = self.owned.agent_store.get_agent(&task.agent_id)?;
         let Some(parent_id) = child.parent_agent_id() else {
@@ -32,6 +32,23 @@ impl KernelRuntimeState {
             .agent_deadline(&task.room_id, &task.agent_id)?
             .is_some_and(|deadline| deadline.state == crate::local::AgentDeadlineState::Reached);
         let outcome = self.owned.finished_task_outcome(task, failure);
+        // A blocked `chariox.agents.run` call takes the end in place of the inbox event.
+        if self
+            .owned
+            .agent_run_waiters
+            .claim(
+                child.id(),
+                super::agent_run_waiters::WorkerEnd {
+                    task: task.clone(),
+                    outcome: outcome.clone(),
+                    deadline_reached,
+                    public_answer: public_answer.cloned(),
+                },
+            )
+            .await
+        {
+            return Ok(());
+        }
         let mut event = ledger::occurrence(
             &task.room_id,
             parent.id(),
@@ -45,6 +62,10 @@ impl KernelRuntimeState {
                 "success": task.state == ExecutionState::Done,
                 "outcome": outcome,
                 "deadline_reached": deadline_reached,
+                "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {
+                    crate::agent::UsageLimitStopState::Armed { at_ms } => Some(at_ms),
+                    _ => None,
+                }),
                 "public_answer": public_answer,
             }),
         );

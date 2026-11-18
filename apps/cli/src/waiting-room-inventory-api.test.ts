@@ -10,7 +10,7 @@ for (const reason of ["Cloud enrollment is required", "Cloud peer directory is u
     const targets = [{ kernel_id: "other" }]
     let discoveries = 0
     const client = { send: async (request: Record<string, unknown>) => {
-      if ("GetWaitingRoomPublicSnapshot" in request) return { WaitingRoomPublicSnapshot: { snapshot: {
+      if ("GetRoomListSnapshot" in request) return { RoomListSnapshot: { snapshot: {
         schema_version: 1, inventory_version: "v1", structural_version: "s1", activity_revision: "a1",
         relay_status: { connected: true, daemon_id: "local", machine_id: "machine", capabilities: ["provider_account_copy_pull_v1"] },
         provider_accounts: accounts, sessions, remote_kernels: targets,

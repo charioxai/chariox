@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let stage = std::cell::Cell::new("connect");
     let operation = async {
-        let (mut socket, _) =
+        let (mut socket, handshake) =
             connect_async(chariox_relay::frame_transport::transport_url(url)).await?;
         // Same temporary peer registration namespace used by the kernel's peer
         // client. Identity, signing scope and keys come from the product loader.
@@ -73,9 +73,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             return Err("probe must use the product temporary peer namespace".into());
         }
+        let challenge = chariox_relay::registration_proof::offered_challenge(&handshake)
+            .ok_or("relay offered no registration challenge")?;
+        let proof = chariox_relay::registration_proof::prove(
+            &relay_crypto::decode_private_key(&config.relay_private_key)?,
+            &chariox_relay::registration_proof::dialed_address(url)?,
+            &registration,
+            challenge,
+        );
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })?.into(),
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration,
+                    proof,
+                })?
+                .into(),
             ))
             .await?;
         stage.set("send_peer_request");

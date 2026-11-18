@@ -62,7 +62,7 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
         || lower.contains("chariox.load_kernel_browser")
         || lower.contains("grant state changed")
     {
-        return "Browser access ended. Allow browser access to continue.".into();
+        return "The browser was interrupted. Resume to continue.".into();
     }
     if ["retained obligations", "attributed result", "condition_met"]
         .iter()
@@ -106,7 +106,7 @@ mod tests {
             public_task_failure_reason(
                 "chariox.load_kernel_browser failed: user_domain_not_granted"
             ),
-            "Browser access ended. Allow browser access to continue."
+            "The browser was interrupted. Resume to continue."
         );
         assert_eq!(
             public_task_failure_reason(

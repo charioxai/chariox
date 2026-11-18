@@ -130,7 +130,8 @@ async fn proxied_session_requests_are_handled_through_relay() {
         LocalDaemonResponse::SessionAttached { attachment } if attachment.session_id() == created_session_id
     ));
 
-    let schema_path = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("relay-validate-schema");
+    let schema_path = _tmp.join(format!(
         "chariox-relay-validate-schema-{}.json",
         std::process::id()
     ));

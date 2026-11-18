@@ -81,7 +81,7 @@ test("kernel event dispatch refreshes waiting-room inventory asynchronously", as
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
-    event: "waiting_room_inventory_changed",
+    event: "room_list_changed",
     inventory_version: "v2",
   })
 
@@ -92,7 +92,7 @@ test("kernel event dispatch applies waiting-room row patches without refreshing 
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
-    event: "waiting_room_rows_changed",
+    event: "room_list_rows_changed",
     inventory_version: "v2",
     structural_version: "structure-v2",
     activity_revision: "activity-v2",

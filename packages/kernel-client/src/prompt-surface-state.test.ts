@@ -13,7 +13,7 @@ import type {
   WorkflowPromptWorkflowLike,
 } from "./workflow-prompt-state.js"
 
-test("derivePromptPlaceholder uses waiting-room placeholder while detached", () => {
+test("derivePromptPlaceholder uses room-list placeholder while detached", () => {
   assert.equal(
     derivePromptPlaceholder({
       attached: false,

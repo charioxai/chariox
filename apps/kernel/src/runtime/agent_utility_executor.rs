@@ -367,6 +367,20 @@ async fn run_utility(
             )
             .await;
     }
+    if provider_run.adapter_key() == "claude"
+        && policy == ProviderUtilityExecutionPolicy::RoomCommands
+        && admission.is_none()
+        && stop.is_none()
+    {
+        return runtime_state
+            .run_room_commands_on_native_claude(
+                provider_run,
+                prompt.visible_user_prompt,
+                prompt.hidden_system_context,
+                timeout,
+            )
+            .await;
+    }
     let native_interaction_bridge = policy
         .asks_the_person_for_approvals()
         .then(|| runtime_state.provider_native_interaction_bridge())

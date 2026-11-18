@@ -692,7 +692,9 @@ async fn refusing_relay() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         while let Ok((stream, _)) = listener.accept().await {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
                 let _ = socket.next().await;
                 let refusal = chariox_relay::protocol::RelayEnvelope::Close {
                     reason: "relay token does not allow requested action".into(),

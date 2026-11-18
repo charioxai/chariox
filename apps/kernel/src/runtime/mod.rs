@@ -5,6 +5,7 @@ pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 mod agent_tree_projection;
 pub(crate) mod agent_utility_executor;
+mod app_approved_operations;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -15,6 +16,8 @@ pub(crate) mod app_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_dev_push;
 pub(crate) mod app_event_pump;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_routing_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -47,6 +50,7 @@ pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+mod app_workspace_broker;
 pub(crate) mod bounded_process;
 pub(crate) mod browser_artifact;
 pub(crate) mod browser_controller_action;
@@ -121,6 +125,7 @@ pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub(crate) mod perf_timing;
+pub(crate) mod person_inbox;
 pub mod process_health;
 pub(crate) mod process_resources;
 pub mod projection;
@@ -134,6 +139,7 @@ pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
 mod provider_login_input;
 mod provider_login_terminal;
+mod provider_login_vault_entry;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;
 pub(crate) mod provider_usage_refresh;
@@ -143,6 +149,11 @@ pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub(crate) mod resource_telemetry;
 pub(crate) mod response_redaction;
+pub(crate) mod room_list_activity;
+pub(crate) mod room_list_control;
+mod room_list_launch_directory;
+pub(crate) mod room_list_projection;
+pub(crate) mod room_list_sessions;
 pub(crate) mod room_tab_outline;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
@@ -163,11 +174,6 @@ pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
 pub(crate) mod user_domain_access;
-pub(crate) mod waiting_room_activity;
-pub(crate) mod waiting_room_control;
-mod waiting_room_launch_directory;
-pub(crate) mod waiting_room_public_projection;
-pub(crate) mod waiting_room_sessions;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
 pub(crate) mod workspace_command_executor;

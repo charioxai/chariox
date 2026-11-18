@@ -47,6 +47,7 @@ pub(crate) use admission::WaitReason;
 pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
+pub(crate) use projection::same_to_clients;
 pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::Waiting;
 pub(crate) use projection::{for_session, keys_for_session};
@@ -534,9 +535,12 @@ impl PreparedDomain {
                         }
                         false
                     }
+                    // The sampler has just resumed: the tree says nothing, so
+                    // read again next tick.
+                    Err(sampling::SamplingError::Pending) => false,
                     // A signal ended `ps` (a hot reload ends the children the
-                    // kernel leaves behind while a sample runs): the tree
-                    // says nothing, so read again next tick.
+                    // kernel leaves behind while a sample runs): the same.
+                    #[cfg(not(target_os = "linux"))]
                     Err(sampling::SamplingError::Ended) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(

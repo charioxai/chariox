@@ -14,8 +14,7 @@ import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 // mask inputs change; staleness still follows the live protection policy's identity.
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
 export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
-import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
-import { losslessRegion } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, halvePixels, maskPixels, regionPixels } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
@@ -23,6 +22,7 @@ import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 const LAYOUT_MOVED = /mirror layout changed during observation/;
 const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
+import { FontSubsets } from './kernel-browser-font-subset.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
@@ -30,9 +30,14 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+// A font sent as a subset is checked against the document's characters at most this often.
+const FONT_REFRESH_MS = 1000;
 const MOVED = Symbol('document moved');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// Stills (base64 PNG) in one packet; with its resources and body the packet stays under one relay reply (MAX_REPLY_BYTES,
+// 1 MiB): a larger reply is refused on every retry and the viewer stays on its old frame (vimeo, browserfidelity r3).
+const STILL_PACKET_BYTES = 512 * 1024;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
 // clicking so an echo never waits behind more than one slice on the socket.
@@ -119,7 +124,7 @@ function dataUrlBytes(url) {
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.
-export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)), 0);
+export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box, ink }) => { const [x, y, w, h] = ink ?? box; return sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)); }, 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
 export const regionOverBudget = (boxes, viewport) => regionArea(boxes, viewport) > 0.6 * viewport.width * viewport.height;
 
@@ -181,7 +186,7 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // text came out that way is kept as its source text. Escapes outside strings (`.content-\[\'\'\]`) are not quotes,
 // and an unterminated last chunk is kept (CSS closes it at the end of the sheet). A copy with fewer rules than the
 // source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
-const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const out=serialize(text);if(count(out)!==count(text))throw new Error('mirror2:css_incomplete');return out};`;
+const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const sheetOf=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet};const dump=sheet=>{let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const rules=text=>dump(sheetOf(text));const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=(text,sheet)=>{const out=sheet?dump(sheet):rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const sheet=sheetOf(text),out=serialize(text,sheet);if(count(out)!==sheet.cssRules.length)throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
@@ -194,7 +199,7 @@ export class ParsedSheets {
   }
 }
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.fontSubsets = new FontSubsets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
@@ -323,6 +328,9 @@ export class Mirror2 {
     if (command.known_sheets !== undefined && (!Array.isArray(command.known_sheets) || command.known_sheets.length > 128 || command.known_sheets.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror sheet dictionary');
     // A viewer lists its retained sheets with a reset credit and again only when the list changes: a reset the kernel starts itself uses the last list.
     if (command.known_sheets !== undefined || command.after_sequence === 0) stream.knownSheets = command.known_sheets ?? [];
+    // The same for the fonts it keeps across documents: a retained font is named, not sent again.
+    if (command.known_fonts !== undefined && (!Array.isArray(command.known_fonts) || command.known_fonts.length > 128 || command.known_fonts.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror font dictionary');
+    if (command.known_fonts !== undefined || command.after_sequence === 0) stream.knownFonts = new Set(command.known_fonts ?? []);
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
     // A queued credit's wait starts when its predecessor is answered (expired
@@ -360,9 +368,11 @@ export class Mirror2 {
     // A live resize can land while a packet is observed: that packet describes the old size. The viewer gets the
     // reset at the new size on this same credit instead of an error that retires its mirror mid-drag. A drag can
     // retire each replacement too, so keep observing until the credit's own deadline or cancellation.
+    // A navigation that commits while the credit waits ends its document, not the subscription: the same credit
+    // goes on with the new document (its preview or reset) instead of an error the viewer would answer by ending the subscription.
     const observe = async () => {
       for (;;) {
-        try { return await build(); } catch (error) { if (!LAYOUT_MOVED.test(error?.message ?? '') || signal?.aborted || Date.now() >= hard) throw error; }
+        try { return await build(); } catch (error) { if (!(LAYOUT_MOVED.test(error?.message ?? '') || error?.code === 'stale_document_reference') || signal?.aborted || Date.now() >= hard) throw error; }
       }
     };
     const run = stream.chain.then(observe);
@@ -495,20 +505,24 @@ export class Mirror2 {
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
-        await this.markClosedHosts(world, snap);
-        // Sheets this CSSOM cannot read come through CDP.
+        // The sheets and the closed roots with the child frames do not depend on each other: they overlap, as they cost the page's
+        // main thread and the CDP round trips in turn (a page full of custom elements took 0.5 s to inspect before its sheets began).
         const sheetsAt = timestamp();
-        const sheetOps = await this.sheetOps(world, snap.sheets, true);
+        const sheetsDone = this.sheetOps(world, snap.sheets, true).then(ops => { this.host.timing?.('mirror2_sheets', sheetsAt); return ops; });
+        const framesDone = (async () => {
+          await this.markClosedHosts(world, snap);
+          const framesAt = timestamp();
+          // Cross-origin frames: child DOM under the owner, or an opaque region.
+          const attached = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
+          this.host.timing?.('mirror2_frames', framesAt);
+          return attached;
+        })();
+        const [sheetOps, frames] = await Promise.all([sheetsDone, framesDone]);
         // A pruned sheet's full text follows on a quiet packet; a viewer that retains it gets it by reference now.
         const known = new Set(stream.knownSheets ?? []);
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
         stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
-        this.host.timing?.('mirror2_sheets', sheetsAt);
-        const framesAt = timestamp();
-        // Cross-origin frames: child DOM under the owner, or an opaque region.
-        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
-        this.host.timing?.('mirror2_frames', framesAt);
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
@@ -551,6 +565,7 @@ export class Mirror2 {
       // its positive native-font requirements still fence the paint handover.
       // Legacy viewers retain first-packet fonts; other resource bytes follow resourcesRide.
       const fontsAt = timestamp();
+      if (!reset) await this.refreshFonts(stream, world);
       resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.resourcesRide(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
@@ -565,7 +580,7 @@ export class Mirror2 {
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
-        if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
+        if (this.empty(stream, source)) { await this.refreshFonts(stream, world); resources = await this.materialize(world, stream, null, more.loaded); }
       }
     } catch (error) {
       assertNotCancelled(signal);
@@ -593,6 +608,7 @@ export class Mirror2 {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
       stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
       if (this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) sheets.push(...await this.dueSheets(world, stream, replaced));
+      sheets = this.sheetsWithinBudget(stream, sheets);
     }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -715,6 +731,16 @@ export class Mirror2 {
     } while (budget > 0 && this.sheetsDue(stream));
     return sheets;
   }
+  // The CSS watch reports every cross-origin sheet of a document at once (2.5 MB of text on a large site's first delta): a packet carries
+  // them up to its byte budget (the first always), the rest waits for the quiet credits that follow, so the viewer applies them in steps.
+  sheetsWithinBudget(stream, sheets) {
+    let budget = this.packetBytes(stream); const now = [];
+    for (const op of sheets) {
+      if (now.length && budget <= 0) (stream.deferredSheets ??= []).push({ op: 'css', id: op.id, css: op.css });
+      else { now.push(op); budget -= op.css.length; }
+    }
+    return now;
+  }
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
@@ -728,6 +754,29 @@ export class Mirror2 {
   // same-document reset (lost base) does not send them again.
   register(stream, source) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
+    if (source?.ops?.length) stream.fontsDirty = true;
+  }
+  // A font sent as a subset follows the document: once the page shows a character the subset lacks, the face is cut again
+  // and sent again under its key (the viewer styles the new bytes in place). Checked after DOM changes, at most once per
+  // FONT_REFRESH_MS, and only for faces whose bytes the viewer already holds whole. Returns whether a face is due again.
+  async refreshFonts(stream, main) {
+    if (!stream.fontsDirty || Date.now() - (stream.fontsCheckedAt ?? 0) < FONT_REFRESH_MS) return false;
+    const cut = [...stream.resources.values()].filter(entry => entry.whole), ready = cut.filter(entry => entry.sent);
+    stream.fontsDirty = ready.length < cut.length; stream.fontsCheckedAt = Date.now();
+    const characters = new Map(); let due = false;
+    for (const entry of ready) {
+      const world = entry.slot ? stream.frameSlots.get(entry.slot)?.child : main;
+      if (!world) continue;
+      if (!characters.has(world)) characters.set(world, this.evaluate(world, `${world.ref}.textCodePoints()`));
+      const body = await this.subsetFont(world, entry.whole, () => characters.get(world));
+      if (body === entry.shown) continue;
+      const mime_type = mirrorResourceType(body, 'font');
+      if (!mime_type) continue;
+      entry.resource = { key: entry.key, resource_id: createHash('sha256').update(body).digest('hex'), mime_type, data_base64: body.toString('base64') };
+      entry.sent = false; entry.offset = 0; entry.shown = body; due = true;
+      if (body === entry.whole) entry.whole = null;
+    }
+    return due;
   }
   tilesDue(stream) { return (stream.tileKeys !== '' || stream.tilesPending) && Date.now() - stream.tilesAt >= TILE_REFRESH_MS && !this.recentInput(stream); }
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
@@ -802,6 +851,7 @@ export class Mirror2 {
             body ??= await this.cached(world, entry.url).catch(() => null);
           }
         }
+        if (body && entry.kind === 'font') { const whole = body; body = await this.subsetFont(world, whole); if (body !== whole) Object.assign(entry, { whole, shown: body }); }
         let mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind === 'sprite' ? 'image' : entry.kind) : null;
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
         if (entry.kind === 'sprite') { const clean = mime_type === 'image/svg+xml' ? await this.evaluate(world, `${world.ref}.sprite(${JSON.stringify(body.toString('utf8'))})`).catch(() => null) : null; body = typeof clean === 'string' ? Buffer.from(clean, 'utf8') : null; if (!body) mime_type = null; }
@@ -822,6 +872,12 @@ export class Mirror2 {
           continue;
         }
       }
+      // A font the viewer kept from an earlier document is named by its digest; its bytes stay with the viewer.
+      if (entry.kind === 'font' && stream?.knownFonts?.has(entry.resource.resource_id.slice(0, 24))) {
+        entry.sent = true; entry.sentAt = stream.issued + 1;
+        out.push({ key: entry.key, resource_id: entry.resource.resource_id, mime_type: entry.resource.mime_type, data_base64: '', retained: true });
+        continue;
+      }
       // Within the budget whole; otherwise the next slice (offset/total in base64 characters).
       const data = entry.resource.data_base64, offset = entry.offset ?? 0, room = budget - bytes;
       let end = data.length;
@@ -831,7 +887,20 @@ export class Mirror2 {
     }
     return out;
   }
-  async cached(world, url) {
+  // MP-10 first-visit bytes: a large face travels as the glyphs the page can show. A face the subsetter does not read
+  // (WOFF 1, a collection) travels whole, and the timing event says so.
+  async subsetFont(world, body, characters = async () => this.evaluate(world, `${world.ref}.textCodePoints()`)) {
+    const at = timestamp();
+    try {
+      const subset = await this.fontSubsets.subset(body, characters);
+      this.host.timing?.event?.('mirror2_font_subset', { whole_bytes: body.length, subset_bytes: subset?.length ?? 0, ms: Math.round(timestamp() - at) });
+      return subset ?? body;
+    } catch (error) {
+      this.host.timing?.event?.('mirror2_font_subset', { whole_bytes: body.length, subset_bytes: 0, error: String(error?.message ?? error).slice(0, 120) });
+      return body;
+    }
+  }
+  async cached(world, url, limit = RESOURCE_BYTES) {
     const { resource } = await world.connection.send('Network.loadNetworkResource', { frameId: world.frame.id, url, options: { disableCache: false, includeCredentials: false } }, world.sessionId);
     if (!resource?.success || !resource.stream || resource.httpStatusCode && (resource.httpStatusCode < 200 || resource.httpStatusCode >= 300)) { if (resource?.stream) await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); return null; }
     const chunks = []; let size = 0;
@@ -839,7 +908,7 @@ export class Mirror2 {
       for (;;) {
         const chunk = await world.connection.send('IO.read', { handle: resource.stream, size: 1 << 20 }, world.sessionId);
         const part = chunk.base64Encoded ? Buffer.from(chunk.data, 'base64') : Buffer.from(chunk.data, 'utf8');
-        size += part.length; if (size > RESOURCE_BYTES) return null;
+        size += part.length; if (size > limit) return null;
         chunks.push(part); if (chunk.eof) break;
       }
     } finally { await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); }
@@ -847,11 +916,18 @@ export class Mirror2 {
   }
   // `firstPaint` (a reset): a large sheet travels as the rules the document uses now, its full text as `full`.
   async sheetOps(world, sheets = [], firstPaint = false) {
-    const ops = [];
+    const ops = [], reads = new Map();
+    // A page may link one sheet several times (github.com: a 330 KB sheet six times). A first paint prunes it against its
+    // root, so only links of the top document share a read; a later change carries the full text, the same for every root.
+    const read = sheet => {
+      const key = firstPaint && !sheet.top ? sheet.id : sheet.url;
+      if (!reads.has(key)) reads.set(key, this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null));
+      return reads.get(key);
+    };
     for (let at = 0; at < sheets.length; at += 4) {
       const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
         // An unreadable sheet keeps its last copy; an incomplete one is never published (the stream selects video).
-        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
+        const text = await read(sheet).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
         if (text === null) return [];
         const [css, used] = Array.isArray(text) ? text : [text, null];
         return [typeof used === 'string' && used.length < css.length ? { op: 'css', id: sheet.id, css: used, full: css } : { op: 'css', id: sheet.id, css }];
@@ -881,6 +957,10 @@ export class Mirror2 {
       const requested = href.split('#')[0];
       const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
+      // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
+      // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's
+      // retained copy never matched.
+      text ??= (await this.cached(world, requested, 16 * 1024 * 1024).catch(() => null))?.toString('utf8');
       if (text === undefined) {
         // A document's own sheet can be missing from its resource tree (Stripe's 3.6 MB login sheet); its frame still has it.
         const frameId = (await frames()).get(requested) ?? world.frame?.id; if (!frameId) return false;
@@ -940,16 +1020,19 @@ export class Mirror2 {
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
+    // A lease captures the browser's native window: a headless browser (always on macOS) has none, so the still stays.
     const viewport = this.host.pageSize(tab.tab_id);
-    if (!boxes.length || regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || this.host.chromium?.display && regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
-    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
+    // A still that does not fit what is left of the packet's budget, even at the lowest density, follows at the next refresh.
+    let budget = STILL_PACKET_BYTES;
+    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); };
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
-      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
+      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${budget})`, true).catch(() => null);
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
@@ -958,20 +1041,25 @@ export class Mirror2 {
     }
     if (!shots.length) return out;
     boxes = shots;
-    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
-    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
+    // A closed root's still covers what its content paints (ink), placed relative to its host's box.
+    const area = b => b.ink ?? b.box;
+    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[1]))));
+    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => area(b)[0] + area(b)[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => area(b)[1] + area(b)[3]))));
     if (x1 <= x0 || y1 <= y0) return [];
     const clip = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scale: 1 };
     const masks = await captureRegionMasks(world.connection, world.sessionId);
     const captured = await this.host.screenshot(tab, clip);
     const protectedRegions = await masks.afterCapture({ width: viewport.width * scale, height: viewport.height * scale });
     const frame = maskPixels(decodePng(captured.data_base64, scale), protectedRegions.map(r => [r.x - clip.x * scale, r.y - clip.y * scale, r.width, r.height]));
-    for (const { id, box } of boxes) {
-      const left = Math.max(box[0], x0), top = Math.max(box[1], y0), right = Math.min(box[0] + box[2], x1), bottom = Math.min(box[1] + box[3], y1);
+    for (const b of boxes) {
+      const { id, box } = b, [ax, ay, aw, ah] = area(b);
+      const left = Math.max(ax, x0), top = Math.max(ay, y0), right = Math.min(ax + aw, x1), bottom = Math.min(ay + ah, y1);
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;
-      send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: losslessRegion(frame, x, y, w, h).data_base64 });
+      let still = regionPixels(frame, x, y, w, h), data;
+      while ((data = encodePng(still.width, still.height, still.pixels)).length > budget && (still.width > 1 || still.height > 1)) still = halvePixels(still);
+      if (data.length <= budget) send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: data });
     }
     return out;
   }

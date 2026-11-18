@@ -108,14 +108,14 @@ async fn fixture() -> Fixture {
             .await
             .unwrap();
     });
-    let (mut daemon, _) = connect_async(&url).await.unwrap();
+    let (mut daemon, daemon_handshake) = connect_async(&url).await.unwrap();
     daemon
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "kernel", "machine", "Linux", 1, "daemon",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_handshake,
+                test_registration_with_token("kernel", "machine", "Linux", 1, "daemon"),
+            ))
             .unwrap()
             .into(),
         ))
@@ -176,7 +176,9 @@ async fn mp10_combined_connect_routes_one_ordinary_535_subscription_without_a_cl
     let mut client = client(&f, true).await;
     client
         .send(Message::Text(
-            packet("full", "public-key-kernel").to_string().into(),
+            packet("full", &test_public_key("kernel"))
+                .to_string()
+                .into(),
         ))
         .await
         .unwrap();
@@ -194,7 +196,9 @@ async fn mp10_combined_connect_routes_one_ordinary_535_subscription_without_a_cl
     // A repeated combined connect is not a token-renewal or second resume path.
     client
         .send(Message::Text(
-            packet("full", "public-key-kernel").to_string().into(),
+            packet("full", &test_public_key("kernel"))
+                .to_string()
+                .into(),
         ))
         .await
         .unwrap();
@@ -204,17 +208,17 @@ async fn mp10_combined_connect_routes_one_ordinary_535_subscription_without_a_cl
 #[tokio::test]
 async fn mp11_combined_connect_preserves_capability_pin_realm_target_action_and_expiry_refusals() {
     for (token, pin, combined) in [
-        ("full", "wrong-pin", true),
-        ("full", "public-key-kernel", false),
-        ("connect-only", "public-key-kernel", true),
-        ("foreign", "public-key-kernel", true),
-        ("wrong-target", "public-key-kernel", true),
-        ("expired", "public-key-kernel", true),
+        ("full", "wrong-pin".to_string(), true),
+        ("full", test_public_key("kernel"), false),
+        ("connect-only", test_public_key("kernel"), true),
+        ("foreign", test_public_key("kernel"), true),
+        ("wrong-target", test_public_key("kernel"), true),
+        ("expired", test_public_key("kernel"), true),
     ] {
         let f = fixture().await;
         let mut client = client(&f, combined).await;
         client
-            .send(Message::Text(packet(token, pin).to_string().into()))
+            .send(Message::Text(packet(token, &pin).to_string().into()))
             .await
             .unwrap();
         let reply = next(&mut client).await;

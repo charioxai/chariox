@@ -31,7 +31,16 @@ impl KernelRuntimeState {
         provider_run: &RuntimeProviderRun,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        if !crate::provider::provider_run_uses_claude_permission_prompt_tool(provider_run) {
+        // Full access is the person's consent. A process launched below it keeps the prompt tool
+        // after the level is raised: the current level answers it, so the person never sees a card.
+        let full_access = provider_run.execution_mode()
+            == crate::provider::AgentExecutionMode::Build
+            && provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo;
+        let claude_print = provider_run.adapter_key() == "claude"
+            && crate::provider::provider_run_uses_structured_prompt_io(provider_run);
+        if !(crate::provider::provider_run_uses_claude_permission_prompt_tool(provider_run)
+            || full_access && claude_print)
+        {
             return Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
@@ -61,6 +70,12 @@ impl KernelRuntimeState {
                     operation: OPERATION,
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
+        if full_access {
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({ "behavior": "allow", "updatedInput": args.input }),
+            });
+        }
         if provider_run.execution_mode() == crate::provider::AgentExecutionMode::Plan
             && args.tool_name == "ExitPlanMode"
         {

@@ -24,6 +24,12 @@ pub struct SendAgentMessageArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromoteAgentMessageArgs {
+    /// The `message_id` a queued send answered.
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionAgentArgs {
     pub agent: String,
 }
@@ -56,7 +62,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. Default non-urgent messages queue behind busy turns; idle/waiting receivers wake. Set urgent to steer the exact running turn. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. A message waits in the receiver's queue and is delivered in its next turn, whatever starts that turn, unless you set urgent to true, which steers the running turn or starts one if the receiver is idle. A queued message can be promoted to urgent with chariox.promote_agent_message, or by sending it again with the same idempotency_key and urgent true. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message", "origin_prompt_id"],
@@ -108,11 +114,26 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     },
-                    "urgent": { "type": "boolean", "default": false, "description": "Inject into the exact running turn when supported; uncertainty stays pinned." },
+                    "urgent": { "type": "boolean", "default": false, "description": "Steer the receiver's running turn, or start a turn if it is idle. When false, the message is queued for the receiver's next turn and never starts or steers one." },
                     "reply_requested": { "type": "boolean", "default": false, "description": "Request one correlated reply. Default messages require no courtesy response." },
                     "idempotency_key": {
                         "type": "string",
                         "description": "Optional stable key for safely retrying the same send without creating another prompt."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: PROMOTE_AGENT_MESSAGE_TOOL.to_string(),
+            description: "Make a message you sent urgent after it queued: the same message steers the receiver's running turn, or starts a turn if the receiver is idle, and is delivered once. Only the sender can promote it. A message that was already delivered is left as it is and the result says so.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["message_id"],
+                "properties": {
+                    "message_id": {
+                        "type": "string",
+                        "description": "The message_id the queued send returned."
                     }
                 },
                 "additionalProperties": false
@@ -135,6 +156,10 @@ pub fn canonical_agent_messaging_tool_name(tool_name: &str) -> Option<&'static s
         | "chariox_send_agent_message"
         | "mcp__chariox__send_agent_message"
         | "mcp__chariox__chariox_send_agent_message" => Some(SEND_AGENT_MESSAGE_TOOL),
+        PROMOTE_AGENT_MESSAGE_TOOL
+        | "chariox_promote_agent_message"
+        | "mcp__chariox__promote_agent_message"
+        | "mcp__chariox__chariox_promote_agent_message" => Some(PROMOTE_AGENT_MESSAGE_TOOL),
         _ => None,
     }
 }

@@ -4,7 +4,7 @@ import type {
   PasskeyPromptClosure,
   ProviderAccountSummary,
   SliceRecord,
-  WaitingRoomPublicSessionSummary,
+  RoomListSessionSummary,
   WorkflowDesignOpForwarded,
   WorkflowRun,
 } from "./kernel-types.js"
@@ -129,7 +129,7 @@ export type KernelEvent =
     }>
   }
   | {
-    event: "waiting_room_inventory_changed"
+    event: "room_list_changed"
     inventory_version: string
   }
   | {
@@ -141,7 +141,7 @@ export type KernelEvent =
     body: { unchanged: Record<string, never> } | { snapshot: { data: unknown } }
   }
   | {
-    event: "waiting_room_rows_changed"
+    event: "room_list_rows_changed"
     sessions_total?: number
     sessions_next_cursor?: string | null
     inventory_version: string
@@ -156,9 +156,9 @@ export type KernelEvent =
       directory?: string | null
       worktree_label?: string | null
     } | null
-    projects: import("./kernel-types-session.js").WaitingRoomPublicProjectSummary[]
+    projects: import("./kernel-types-session.js").RoomListProjectSummary[]
     removed_project_ids: string[]
-    sessions: WaitingRoomPublicSessionSummary[]
+    sessions: RoomListSessionSummary[]
     removed_session_ids: string[]
   }
   | {
@@ -182,6 +182,10 @@ export type KernelEvent =
   }
   | {
     event: "heartbeat"
+    session_id: string
+  }
+  | {
+    event: "subscription_ended"
     session_id: string
   }
   | {

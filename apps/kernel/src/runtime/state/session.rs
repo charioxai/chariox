@@ -98,6 +98,7 @@ impl KernelRuntimeOwnedState {
                 })
                 .collect(),
         );
+        session.set_queued_agent_messages(self.queued_agent_messages_of(session_id)?);
         session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
             self.durable_state_store
                 .agent_wakes(Some(session_id), None)?,
@@ -453,7 +454,11 @@ impl KernelRuntimeOwnedState {
             })?;
         self.cancel_owned_agent_wakes(session_id, None);
         for agent in self.agent_store.get_session_agents(session_id) {
-            self.announce_agent_gone(session_id, agent.id());
+            self.announce_agent_gone(
+                session_id,
+                agent.id(),
+                super::agent_gone_announcement::AgentGone::RoomEnded,
+            );
         }
         self.withdraw_agent_interactions(session_id, None)?;
 

@@ -2155,17 +2155,17 @@ mod tests {
         }
     }
 
-    fn unlocked_test_vault(name: &str, lease: VaultUnlockLease) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-{name}-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+    fn unlocked_test_vault(
+        name: &str,
+        lease: VaultUnlockLease,
+    ) -> (crate::test_support::TestTempDir, PathBuf) {
+        let dir = crate::test_support::TestTempDir::new(name);
+        let path = dir.join("vault.json");
         create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
         unlock_existing_chariox_encrypted_vault(&path, "correct horse battery", lease)
             .unwrap()
             .expect("the passphrase opens the test Vault");
-        path
+        (dir, path)
     }
 
     // A hot reload keeps the Vault unlocked with the same lease: what the new
@@ -2173,7 +2173,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn handed_over_unlock_opens_the_vault_with_its_lease() {
-        let path = unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
         let store = CharioxEncryptedCredentialVaultStore::new(&path);
         store.set_secret("svc", "key", "value").unwrap();
         let before = chariox_encrypted_vault_status(&path).unwrap();
@@ -2194,8 +2195,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn handed_over_unlock_keeps_single_use_and_no_expiry() {
-        let single = unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
-        let shutdown = unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
+        let (_dir_single, single) =
+            unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
+        let (_dir_shutdown, shutdown) =
+            unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
         let body = hand_over_vault_unlocks().unwrap();
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
         adopt_vault_unlocks(&body).unwrap();
@@ -2210,8 +2213,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn status_says_when_the_unlock_is_just_this_once() {
-        let single = unlocked_test_vault("status-single", VaultUnlockLease::SingleUse);
-        let minutes = unlocked_test_vault("status-minutes", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_single, single) =
+            unlocked_test_vault("status-single", VaultUnlockLease::SingleUse);
+        let (_dir_minutes, minutes) =
+            unlocked_test_vault("status-minutes", VaultUnlockLease::TtlMinutes(30));
         let wire = |path: &PathBuf| {
             serde_json::to_value(chariox_encrypted_vault_status(path).unwrap()).unwrap()
         };
@@ -2230,7 +2235,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn expired_unlock_is_not_handed_over() {
-        let path = unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
         expire_chariox_encrypted_vault_for_test(&path);
         let body = hand_over_vault_unlocks().unwrap();
         lock_chariox_encrypted_vault(&path).unwrap();
@@ -2241,7 +2247,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn malformed_handed_over_unlocks_restore_nothing() {
-        let path = unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
         let body = hand_over_vault_unlocks().unwrap();
         lock_chariox_encrypted_vault(&path).unwrap();
         let cut = &body[..body.len() - 1];

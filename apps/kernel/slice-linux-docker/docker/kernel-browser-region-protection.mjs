@@ -72,10 +72,10 @@ export class NativeRegionProtection {
   }
 }
 
-export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
+// The display audience decides what a person's view shows; a model capture passes masked=true.
+export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true,masked=host.protection.display_masked!==false){
   const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;let frame;
   {
-    const masked=host.protection.display_masked!==false;
     const {protected_regions=[],...captured}=await host.screenshot(tab,null,masked,'png',optimizeForSpeed,masked);
     frame={...captured,[displayMaskRegions]:protected_regions,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
   }

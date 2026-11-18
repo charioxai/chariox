@@ -811,20 +811,20 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     const deferredRestore = typeof deferredWebBotAuthRestoreUrl === "string" ? navigationUrl(deferredWebBotAuthRestoreUrl) : null;
     const targetUrl = deferredRestore ? "about:blank" : navigationUrl(url);
-    const signFirstNavigation = browser.webBotAuth?.byTab.has(tabId) === true;
-    const canAttachFetch = signFirstNavigation && typeof browser.ensureTargetSession === "function";
-    const { targetId } = await connection.send("Target.createTarget", { url: canAttachFetch ? "about:blank" : targetUrl, ...(background ? { background: true } : {}) });
+    const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
     if (deferredRestore) this.webBotAuthRestoreUrls.set(tabId, { url: deferredRestore, projectId: webBotAuthProjectId });
     this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
     try {
-      if (canAttachFetch) {
-        const sessionId = await browser.ensureTargetSession(connection, targetId);
-        await browser.attachWebBotAuth(tabId, targetId, sessionId);
-        if (targetUrl !== "about:blank") await connection.send("Page.navigate", { url: targetUrl }, sessionId);
-      }
+      // The page session is configured (no scrollbar gutter, signed first request) before the first document loads:
+      // a setting that arrives after the first layout leaves that document as it was.
+      const sessionId = await browser.ensureTargetSession(connection, targetId);
+      if (browser.webBotAuth?.byTab.has(tabId) === true) await browser.attachWebBotAuth(tabId, targetId, sessionId);
+      // Open answers once the Tab exists, as it did when Chrome created the target at its URL: a slow or failing load
+      // shows in the Tab's state, never as a failed open.
+      if (targetUrl !== "about:blank") connection.send("Page.navigate", { url: targetUrl }, sessionId).catch(() => {});
     } catch (error) {
       this.tabs.delete(tabId);
       if (browser.closePageTarget) await browser.closePageTarget(connection, targetId).catch(() => {});
@@ -1152,6 +1152,9 @@ export class KernelBrowserHost {
       stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
       return {generation:this.generation,parked:Boolean(stream.parked)};
     }
+    // A Tab display is a crop of the browser's own display. A browser without one would answer with a CDP display at the
+    // viewer's layout size, which no viewer accepts as a Tab display: it says once that it never can.
+    if(command.op==='display_subscribe'&&command.tab_display===true&&!this.chromium.desktop?.binding?.())throw Error('MP-08: region video needs the browser\'s own display');
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     // The visible-page adapter attests H.264; an offer without it (no decoder, VP8/VP9 only) takes the CDP display below.
     if(command.op==='display_subscribe'&&!command.target&&command.codecs?.includes?.('avc1.420033')&&this.chromium.desktop?.binding?.()){

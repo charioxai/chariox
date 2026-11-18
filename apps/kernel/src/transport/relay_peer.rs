@@ -119,7 +119,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 114 integrates the 102 agent-model/leased-watcher union, main's
 /// identity-preserving renewal and the native display binary-event transport
 /// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
-/// waiting-room and Room workflow contracts (#974). Generated consumers follow
+/// room-list and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
 /// MP-08/MP-10/MP-11: allocated 133 carries the local 525 resumption union.
 /// MP-08/MP-10/MP-11: allocated 136 carries the local 528 Browser state fields.
@@ -218,8 +218,17 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// private authenticated job targets and durable job operations, and the machine resource-protection
 /// configuration in kernel responses.
 /// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
-/// with its interaction between kernels of one owner.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 447;
+/// with its interaction between kernels of one owner; 448 carries `target_kind` in a remote folder listing,
+/// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
+/// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
+/// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger; 449 carries the
+/// options a notification source declares and the options and `once` a subscription picks, lets a slice agent
+/// resolve a Vault value for its own workspace (`workspace` injection) and capture into, generate in, copy within
+/// and remove from the home Vault (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of
+/// `InvokeHomeCredentialTool`), and has the relay admit a kernel registration only with the kernel identity key's
+/// signature over the connection's challenge (`DaemonRegister.proof`).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -321,11 +330,16 @@ pub struct RelayManagedContextImportReceipt {
 pub enum RelayManagedDevelopmentContextImportReceipt {
     Empty,
     FromSource {
-        project_id: String,
-        destination_root: String,
-        primary_repository_id: String,
-        repositories: Vec<RelayManagedContextImportedRepository>,
+        projects: Vec<RelayManagedContextImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedProject {
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<RelayManagedContextImportedRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,9 +550,36 @@ impl std::fmt::Debug for RemoteRoomComputerObservationResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
-    Browser { target_url: String },
+    Browser {
+        target_url: String,
+    },
     Computer,
     Pty,
+    /// A value for a file or a command in the leased worker's workspace.
+    Workspace {
+        target: crate::config::VaultUseTarget,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HomeVaultCapture {
+    /// Before the worker runs its command or reads its file: the home answers a retry with the
+    /// committed entry, otherwise unlocks its Vault and keeps it so until the value arrives.
+    Prepare {
+        request_id: String,
+        host: String,
+        use_binding: crate::config::VaultUseBinding,
+    },
+    /// The value the worker captured, for the home to store in its Vault.
+    Store {
+        request_id: String,
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        use_binding: crate::config::VaultUseBinding,
+        secret: RemoteCredentialSecretInput,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -889,6 +930,26 @@ pub enum RelayPeerRequest {
         sender: PeerAgentStamp,
         target: PeerAgentAddress,
         caller_authority: PeerCallerAuthority,
+    },
+    /// An agent on the sending kernel reads, or changes, who answers for a workflow of a room
+    /// here: it takes the workflow, or hands over one it is responsible for. No `responsible`
+    /// reads.
+    SetWorkflowResponsible {
+        protocol_version: u32,
+        sender: PeerAgentStamp,
+        room: String,
+        workflow_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        responsible: Option<crate::local::WorkflowResponsibleTarget>,
+    },
+    /// The kernel that holds a workflow asks the kernel of its responsible agent to keep, or
+    /// drop, the trigger that carries the workflow's runs to that agent.
+    ApplyWorkflowResponsible {
+        protocol_version: u32,
+        action: ResponsibleTriggerAction,
+        workflow: crate::session::ResponsibleForWorkflow,
+        source: crate::local::WorkflowNotificationSource,
+        agent: PeerAgentAddress,
     },
     SubscribePeerAgent {
         protocol_version: u32,
@@ -1328,6 +1389,12 @@ pub enum RelayPeerRequest {
         credential_id: String,
         injection: RemoteCredentialSecretInjection,
     },
+    /// A Vault capture on a leased worker: the worker runs the command or reads the file in its
+    /// workspace and the home kernel unlocks the Vault before and stores the value after.
+    CaptureForHomeVault {
+        context: RemoteExtensionInvocationContext,
+        capture: HomeVaultCapture,
+    },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
@@ -1418,9 +1485,26 @@ impl RelayPeerRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsibleTriggerAction {
+    Attach,
+    Detach,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    /// The workflow as it stands after its responsible changed.
+    WorkflowResponsibleChanged {
+        protocol_version: u32,
+        workflow: crate::session::WorkflowDefinition,
+    },
+    /// The agent's trigger is kept or dropped; `label` is the agent's name for an attach.
+    WorkflowResponsibleApplied {
+        protocol_version: u32,
+        label: String,
+    },
     ProjectEnvironmentRead {
         source_label: String,
         record: Option<crate::project_environment::ProjectEnvironmentRecord>,
@@ -1739,6 +1823,10 @@ pub enum RelayPeerResponse {
         credential_id: String,
         secret_input: RemoteCredentialSecretInput,
     },
+    /// The home's answer to the first half of a capture: the entry a retry already committed.
+    HomeVaultCapturePrepared {
+        committed: Option<crate::transport::runtime_tools::RuntimeToolResult>,
+    },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,
     },
@@ -1796,6 +1884,18 @@ pub struct RelayProjectedCompletion {
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<crate::provider::TurnOutcome>,
+}
+
+/// A worker's completion record for a turn the provider started itself, such as its notification
+/// about an ended background call. A drain scopes every completion to the prompt its leased agent
+/// last answered, so the record is told by its id alone; it never completes a home prompt.
+pub const LEASED_NOTIFICATION_COMPLETION_PREFIX: &str = "notification-complete:";
+
+impl RelayProjectedCompletion {
+    pub fn is_notification_end(&self) -> bool {
+        self.message_id
+            .starts_with(LEASED_NOTIFICATION_COMPLETION_PREFIX)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1888,6 +1988,25 @@ mod tests {
             serde_json::from_value::<RelayPeerRequest>(snapshot)
                 .expect("request should deserialize"),
             request
+        );
+    }
+
+    #[test]
+    fn a_notification_end_is_told_by_its_id_whatever_prompt_the_drain_scopes_it_to() {
+        let completion =
+            |message_id: &str, home_prompt_id: Option<&str>| RelayProjectedCompletion {
+                message_id: message_id.into(),
+                completed_at_ms: 1,
+                home_prompt_id: home_prompt_id.map(str::to_owned),
+                provider_termination: None,
+                failure: None,
+            };
+        let id = format!("{LEASED_NOTIFICATION_COMPLETION_PREFIX}run-1:2");
+        assert!(completion(&id, None).is_notification_end());
+        assert!(completion(&id, Some("home-prompt-1")).is_notification_end());
+        assert!(
+            !completion("prompt-complete:home-prompt-1", Some("home-prompt-1"))
+                .is_notification_end()
         );
     }
 
@@ -2475,6 +2594,7 @@ mod workflow_notification_shapes {
                     name: "Reviewer".into(),
                     display_name: "Reviewer-2".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             },
             RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },

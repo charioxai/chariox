@@ -2,6 +2,7 @@
 //! pool, environment proxy, ambient cookie jar, or implicit redirect/retry.
 mod body;
 mod progress;
+pub(super) mod scrub;
 
 use super::{
     dns::DnsConfig, limits::LifetimeLease, policy::ApprovedTarget, HttpError, Result, CHUNK_BYTES,
@@ -164,7 +165,7 @@ impl HttpTransport {
         admitted: Instant,
     ) -> Result<()> {
         let result = self
-            .perform(&target, &mut exchange, &mut stopped, &lease, admitted)
+            .perform_following(&target, &mut exchange, &mut stopped, &lease, admitted)
             .await;
         if let Err(error) = result {
             if let Some(headers) = exchange.headers.take() {
@@ -180,7 +181,10 @@ impl HttpTransport {
         result
     }
 
-    async fn perform(
+    /// One exchange, and the one more a redirect to a host the signed route
+    /// declares asks for. The redirected exchange has its own connection and
+    /// connect deadline, and is bound by the same lifetime.
+    async fn perform_following(
         &self,
         target: &ApprovedTarget,
         exchange: &mut Exchange,
@@ -188,7 +192,29 @@ impl HttpTransport {
         lease: &LifetimeLease,
         admitted: Instant,
     ) -> Result<()> {
-        let initial_deadline = admitted + Duration::from_secs(30);
+        let Some(next) = self
+            .perform(target, exchange, stopped, lease, admitted, admitted)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.perform(&next, exchange, stopped, lease, admitted, Instant::now())
+            .await?;
+        Ok(())
+    }
+
+    /// Returns the redirected target when the answer was a redirect the route
+    /// allows; nothing of that answer has been handed on then.
+    async fn perform(
+        &self,
+        target: &ApprovedTarget,
+        exchange: &mut Exchange,
+        stopped: &mut watch::Receiver<bool>,
+        lease: &LifetimeLease,
+        admitted: Instant,
+        connecting: Instant,
+    ) -> Result<Option<ApprovedTarget>> {
+        let initial_deadline = connecting + Duration::from_secs(30);
         let lifetime = admitted + STREAM_LIFETIME;
         let addresses = crate::outbound_dial::interleave_families(
             self.dns
@@ -269,7 +295,7 @@ async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stopped: &mut watch::Receiver<bool>,
     progress: progress::Progress,
     lifetime: Instant,
-) -> Result<()> {
+) -> Result<Option<ApprovedTarget>> {
     let mut builder = http1::Builder::new();
     builder
         .max_headers(64)
@@ -309,7 +335,7 @@ impl Exchange {
         mut sender: http1::SendRequest<UploadBody>,
         target: &ApprovedTarget,
         phase: &AtomicU8,
-    ) -> Result<()> {
+    ) -> Result<Option<ApprovedTarget>> {
         if matches!(*target.method(), hyper::Method::GET | hyper::Method::HEAD)
             && !self.upload.is_end_stream()
         {
@@ -328,6 +354,18 @@ impl Exchange {
             )
             .map_err(|_| HttpError::Invalid)?,
         );
+        // The kernel's own header, after the App's: it names the destination's
+        // account, which the App can only ask for.
+        if let Some(authorization) = target.sent_authorization() {
+            let mut value = hyper::header::HeaderValue::from_str(authorization)
+                .map_err(|_| HttpError::Invalid)?;
+            value.set_sensitive(true);
+            request.headers_mut().insert(header::AUTHORIZATION, value);
+            request.headers_mut().insert(
+                header::USER_AGENT,
+                hyper::header::HeaderValue::from_static("chariox-app"),
+            );
+        }
         request.headers_mut().insert(
             header::ACCEPT_ENCODING,
             hyper::header::HeaderValue::from_static("identity"),
@@ -351,11 +389,28 @@ impl Exchange {
         if response.status().as_u16() == 101 {
             return Err(HttpError::Invalid);
         }
+        // A redirect the route allows is followed before anything is handed on.
+        if response.status().is_redirection() {
+            if let Some(next) = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| target.redirected(location))
+            {
+                return Ok(Some(next));
+            }
+        }
+        let scrub = target.authorization().map(scrub::boundary);
+        let cap = if scrub.is_some() {
+            scrub::ANSWER_BYTES
+        } else {
+            MAX_RESPONSE_BYTES
+        };
         if response
             .body()
             .size_hint()
             .upper()
-            .is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES)
+            .is_some_and(|bytes| bytes > cap)
         {
             return Err(HttpError::Limit);
         }
@@ -372,14 +427,18 @@ impl Exchange {
             if matches!(
                 name.as_str(),
                 "set-cookie" | "proxy-authenticate" | "proxy-authorization"
-            ) {
+            ) || (scrub.is_some() && !scrub::answer_header(name.as_str()))
+            {
                 continue;
             }
             // Header values are Latin-1 bytes, not arbitrary UTF-8. Preserve
             // their byte values in the bounded SDK string representation.
+            let text: String = value.as_bytes().iter().map(|b| char::from(*b)).collect();
             headers.push((
                 name.to_string(),
-                value.as_bytes().iter().map(|b| char::from(*b)).collect(),
+                scrub
+                    .as_ref()
+                    .map_or(text.clone(), |scrub| scrub.scrub(&text)),
             ));
         }
         let head = ResponseHead {
@@ -392,7 +451,38 @@ impl Exchange {
             .ok_or(HttpError::Invalid)?
             .send(Ok(head))
             .map_err(|_| HttpError::Cancelled)?;
-        self.download(response.into_body()).await
+        match scrub {
+            Some(scrub) => self.download_scrubbed(response.into_body(), &scrub).await,
+            None => self.download(response.into_body()).await,
+        }?;
+        Ok(None)
+    }
+    /// An account's answer is read whole (at most `ANSWER_BYTES`), scrubbed,
+    /// and only then handed on, so the credential cannot straddle two chunks.
+    async fn download_scrubbed(
+        &self,
+        mut body: Incoming,
+        scrub: &crate::secret::HttpSecretBoundary,
+    ) -> Result<()> {
+        let mut answer = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| HttpError::Network)?;
+            if let Ok(bytes) = frame.into_data() {
+                if (answer.len() + bytes.len()) as u64 > scrub::ANSWER_BYTES {
+                    return Err(HttpError::Limit);
+                }
+                answer.extend_from_slice(&bytes);
+            }
+        }
+        // The answer to an account's call is text: JSON, a diff, a log.
+        let answer = String::from_utf8(answer).map_err(|_| HttpError::Invalid)?;
+        for chunk in scrub.scrub(&answer).as_bytes().chunks(CHUNK_BYTES) {
+            self.chunks
+                .send(Ok(Bytes::copy_from_slice(chunk)))
+                .await
+                .map_err(|_| HttpError::Cancelled)?;
+        }
+        Ok(())
     }
     async fn download(&self, mut body: Incoming) -> Result<()> {
         let mut received = 0u64;

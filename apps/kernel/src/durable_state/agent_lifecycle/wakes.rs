@@ -294,6 +294,43 @@ fn settle_source(
     }
 }
 
+fn handle_cancel_receipt(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> {
+    tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![wake.room_id,wake.agent_id,wake.id,format!("{}-cancelled",wake.id)]).map_err(sql)?;
+    Ok(())
+}
+
+/// A turn that ends without waiting leaves no use for the timers it armed: they are dropped
+/// without a receipt to read. Waiting on a timer is how an agent keeps it. Returns
+/// whether any timer was dropped, so the caller reloads the task.
+pub(super) fn drop_unwaited_timers(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    let mut dropped = false;
+    for id in task
+        .obligations
+        .iter()
+        .filter(|o| o.kind == "timer" && o.needs_live_source())
+        .map(|o| &o.id)
+    {
+        let mut wake = load_wake(tx, id)?;
+        if wake.task_id != task.task_id || wake.state != "scheduled" {
+            continue;
+        }
+        let mut t = load(tx, &task.task_id)?;
+        if let Some(o) = t.obligations.iter_mut().find(|o| &o.id == id) {
+            o.status = "cancelled".into();
+        }
+        t.revision += 1;
+        save(tx, &t)?;
+        cancel_settle(tx, &mut wake, now)?;
+        handle_cancel_receipt(tx, &wake)?;
+        dropped = true;
+    }
+    Ok(dropped)
+}
+
 fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result<(), DaemonError> {
     cancel_settle_because(tx, wake, now, None)
 }
@@ -521,6 +558,16 @@ fn confirm_start(
     save_wake(tx, wake)
 }
 
+/// A cancelled task cancels its wakes; so does a Stop of a Done task for the work it retained.
+fn stop_cancels_wake(task: &AgentTaskExecution, wake: &str) -> bool {
+    task.state == ExecutionState::Cancelled
+        || (task.state == ExecutionState::Done
+            && task
+                .obligations
+                .iter()
+                .any(|o| o.id == wake && o.dispatch_state == "cancel_requested"))
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::CreateWake {
@@ -599,17 +646,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Wakes(vec![]));
             }
             wake.matched_at_ms = Some(now);
-            let e = event(
-                tx,
-                occurrence(
-                    &wake.room_id,
-                    &wake.agent_id,
-                    &wake.id,
-                    &format!("{}-match", wake.id),
-                    "process_output_matched",
-                    serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
-                ),
-            )?;
+            let mut matched = occurrence(
+                &wake.room_id,
+                &wake.agent_id,
+                &wake.id,
+                &format!("{}-match", wake.id),
+                "process_output_matched",
+                serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
+            );
+            if load(tx, &wake.task_id)?.state == ExecutionState::Done {
+                matched.payload["after_turn"] = true.into();
+            }
+            let e = event(tx, matched)?;
             record_fire(tx, &mut wake, &e, now)?;
             Ok(Outcome::Wakes(vec![wake]))
         }
@@ -750,7 +798,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             )?;
             Ok(Outcome::Wakes(vec![wake]))
         }
-        Operation::CancelOwnerTimer { id, room, owner } => {
+        Operation::CancelOwnerWake { id, room, owner } => {
             let mut wake = load_wake(tx, &id)?;
             let mut task = load(tx, &wake.task_id)?;
             if wake.room_id != room
@@ -758,25 +806,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 || task.owner_user_id != owner
                 || owner.is_empty()
             {
-                return Err(error("stale or foreign owner timer cancellation"));
-            }
-            if wake.kind != "timer" {
-                return Err(error("this owner control cancels timers; cancel the owning task to stop another wake source"));
+                return Err(error("stale or foreign owner wake cancellation"));
             }
             if terminal(&wake) && wake.state != "cancelled" {
                 return Err(error(format!(
-                    "timer already ended as {}; reload its current state",
-                    wake.state
+                    "{} already ended as {}; reload its current state",
+                    wake.kind, wake.state
                 )));
             }
-            if !terminal(&wake) {
-                // Settle while the obligation is open: its source receipt must
-                // survive even when the agent unsubscribed from the timer.
-                cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
-                task = load(tx, &wake.task_id)?;
+            if !terminal(&wake) && wake.state != "cancelling" {
+                // A watched process settles on its physical exit; any other source settles now,
+                // while the obligation is open, so its source receipt survives even when the
+                // agent unsubscribed from it.
+                let physical = wake.kind == "process" && wake.state != "scheduled";
+                if physical {
+                    wake.state = "cancelling".into();
+                    save_wake(tx, &wake)?;
+                } else {
+                    cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+                    task = load(tx, &wake.task_id)?;
+                }
                 if let Some(obligation) = task.obligations.iter_mut().find(|o| o.id == id) {
-                    obligation.status = "cancelled".into();
-                    obligation.dispatch_state = "cancelled".into();
+                    if physical {
+                        obligation.dispatch_state = "cancel_requested".into();
+                    } else {
+                        obligation.status = "cancelled".into();
+                        obligation.dispatch_state = "cancelled".into();
+                    }
                 }
                 task.revision += 1;
                 save(tx, &task)?;
@@ -805,7 +861,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         "wake cancellation requires the owning agent and room",
                     ));
                 }
-            } else if caller.task_id != wake.task_id || t.state != ExecutionState::Cancelled {
+            } else if caller.task_id != wake.task_id || !stop_cancels_wake(&t, &id) {
                 return Err(error(
                     "only the owning turn or task cancellation cancels a wake",
                 ));
@@ -856,11 +912,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // The owning turn asked for this cancellation, so its receipt
                     // needs no handling (a successor turn's wake-up still does).
                     if caller.task_id == t.task_id {
-                        tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![wake.room_id,wake.agent_id,wake.id,format!("{}-cancelled",wake.id)]).map_err(sql)?;
+                        handle_cancel_receipt(tx, &wake)?;
                     }
                 }
                 None => {
-                    if t.state != ExecutionState::Cancelled {
+                    if !stop_cancels_wake(&t, &id) {
                         return Err(error(
                             "only the owning turn or task cancellation cancels a wake",
                         ));

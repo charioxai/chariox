@@ -32,6 +32,7 @@ COPY fixtures fixtures
 COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
 COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs
 COPY apps/kernel/src/local/api/tests/protocol_shapes apps/kernel/src/local/api/tests/protocol_shapes
+COPY apps/kernel/src/agent_move/protocol-639-241.json apps/kernel/src/agent_move/protocol-639-241.json
 COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build

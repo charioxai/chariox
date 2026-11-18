@@ -233,6 +233,7 @@ impl KernelRuntimeState {
                 publisher_id: release.publisher_id(),
                 publisher_name,
                 action_name,
+                preview: None,
             })
         })
         .await
