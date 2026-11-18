@@ -19,8 +19,8 @@ if(existingRoot)assert.equal(existingRoot,'/root/.chariox/dev/vault-drill-kernel
 assert.match(origin ?? '',/^https:\/\/pr[0-9]+-(?:vflag[a-z0-9]*|gmailprep)\.val\.51-255-87-178\.sslip\.io$/)
 assert.ok(path.isAbsolute(evidence ?? '')&&path.isAbsolute(binaryDir ?? ''))
 const expected=process.env.VFLAG_EXPECT ?? 'green'
-assert.ok(['green','encoding-red','grant-red'].includes(expected))
-const recoverBrowser=process.env.VFLAG_RECOVER_BROWSER==='1'||expected==='grant-red'
+assert.ok(['green','encoding-red'].includes(expected))
+const recoverBrowser=process.env.VFLAG_RECOVER_BROWSER==='1'
 const requestEncoding=process.env.VFLAG_ENCODING ?? 'json'
 const segmented=process.env.VFLAG_SEGMENTED==='1'
 assert.ok(['json','urlencoded'].includes(requestEncoding))
@@ -116,28 +116,15 @@ try {
       row.retired_card_id=previous.id
       await fixture.send({KernelBrowser:{command:{op:'revoke_grants',agent_id:agentId}}})
       await waitFor(async()=>!((await state()).active_interactions??[]).some(item=>item.id===previous.id),'the revoked card retires without pretending to verify')
+      // Every agent has the kernel browser: the agent loads it again itself, no card asks the owner.
       await waitFor(async()=>{
         const snapshot=await state()
-        return (snapshot.active_interactions??[]).some(item=>item.choices?.some(choice=>choice.id==='allow_browser'))
-          || snapshot.agent_tasks?.some(task=>task.agent_id===agentId&&['blocked','done'].includes(task.state))
-      },'the agent requests browser approval after its card retires',180_000)
-      if(expected==='grant-red') {
-        const blocked=(await state()).active_interactions??[]
-        assert.equal(blocked.some(item=>item.choices?.some(choice=>choice.id==='allow_browser')),false,'old path has no in-place browser approval')
-        await page.screenshot({path:path.join(evidence,cell.id+'-grant-recovery-stuck.png')})
-        row.status='EXPECTED RED';row.retired_card_recovery_stuck=true;await save();await fixture.send({EndSession:{session_id:sessionId}});break
-      }
-      const allow=page.getByRole('button',{name:'Allow browser',exact:true})
-      await allow.waitFor({timeout:30_000})
-      await page.screenshot({path:path.join(evidence,cell.id+'-allow-browser.png')})
-      await allow.click()
-      await waitFor(async()=>{
-        live=((await state()).active_interactions??[]).find(item=>item.id!==previous.id&&item.title==='Verification '+tag&&item.view?.browser_region)
+        assert.equal((snapshot.active_interactions??[]).some(item=>item.choices?.some(choice=>choice.id==='allow_browser')),false,'no browser approval card')
+        live=(snapshot.active_interactions??[]).find(item=>item.id!==previous.id&&item.title==='Verification '+tag&&item.view?.browser_region)
         return !!live
-      },'approval continues the task and raises a fresh live card',300_000)
+      },'the agent reloads the browser and raises a fresh live card',300_000)
       assert.equal(live.view.browser_region.tab_id,previous.view.browser_region.tab_id,'recovery uses the same tab')
-      row.browser_access_restored_in_place=true;row.fresh_card_after_retirement=true
-      assert.equal(await allow.count(),0,'the resolved browser block disappears')
+      row.browser_reloaded_without_card=true;row.fresh_card_after_retirement=true
     }
 
     assert.equal(live.timeout_sec ?? null,null,'an owner verification card has no automatic expiry')

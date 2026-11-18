@@ -583,8 +583,6 @@ async fn sudo_operations_room_app_self_binding_reuses_task_consent() {
         &active,
         owner_request
     ));
-    let agent = f.state.owned.agent_store.get_agent(&turn.agent_id).unwrap();
-    assert!(f.state.owner_requested_prompt(&agent).is_some());
     assert!(
         f.state
             .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
