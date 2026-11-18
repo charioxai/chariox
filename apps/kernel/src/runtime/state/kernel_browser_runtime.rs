@@ -767,6 +767,20 @@ impl KernelRuntimeState {
                 }
             }
         }
+        // A person's input is answered by the frame it causes. The Tab state the host returned has
+        // already reconciled the kernel's ledger; the reply keeps only what a client reads (the
+        // generation, and the Chrome window a band input left), so no Tab list with every favicon
+        // queues ahead of the input's frame on the viewer's link.
+        if input_at.is_some() {
+            let mut reply = serde_json::json!({ "generation": result["generation"] });
+            if let Some(window) = result
+                .get("chrome_window")
+                .filter(|window| !window.is_null())
+            {
+                reply["chrome_window"] = window.clone();
+            }
+            result = reply;
+        }
         Ok(result)
     }
     /// MD-2/MD-5: appviews retains admission; observations use the same protection.

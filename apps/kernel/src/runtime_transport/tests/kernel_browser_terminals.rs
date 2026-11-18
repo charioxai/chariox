@@ -480,7 +480,35 @@ async fn mdnotes_two_local_connections_child() {
         );
         // A can act again after refreshing its own receipt; failed stale input
         // must not be repaired by B's state refresh or a cached response.
-        success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);
+        let refreshed = success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);
+        // A person's display input is answered by the frame it causes: its reply
+        // carries the generation, never the Tab state (every Tab's favicon).
+        let document_id = refreshed["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shown| shown["tab_id"] == tab.as_str())
+            .unwrap()["document_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let typed = state
+            .kernel_browser_display_request(
+                &caller_a,
+                Display::Input {
+                    binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
+                        tab_id: tab.clone(),
+                        generation,
+                        document_id,
+                    },
+                    input: KernelBrowserInput::Text {
+                        text: "MD-N5-display".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(typed, serde_json::json!({ "generation": generation }));
         success(
             request(
                 &mut a.0,
