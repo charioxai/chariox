@@ -1068,6 +1068,16 @@ impl KernelBrowserHost {
                 }
             }
             ledger.project_tabs(payload);
+            if method == "host.browser"
+                && matches!(
+                    request_params["op"].as_str(),
+                    Some("mirror_subscribe" | "display_subscribe")
+                )
+                && request_params["target"]["kind"] != "browser_window"
+            {
+                let viewer = browser_actor(admission, &request_params);
+                ledger.viewer_shows_tab(&viewer.actor_id);
+            }
         }
         if result.is_ok() && !opened_by_agents.is_empty() {
             let mut state = self
@@ -1188,6 +1198,15 @@ impl KernelBrowserHost {
                 Arc::new(Mutex::new(model))
             })
             .clone())
+    }
+    /// The Tabs the person of `user` holds by takeover, by controller Tab id.
+    pub(crate) fn person_held_tabs(
+        &self,
+        user: &str,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        let model = self.actor_model(user)?;
+        let model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        Ok(model.person_held_tabs())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from
     /// the one taken at `after` (the host's signal count). `None`: no browser is running, nothing to wait for.

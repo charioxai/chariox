@@ -42,6 +42,9 @@ pub(crate) struct KernelBrowserActors {
     takeover_input: BTreeMap<String, Instant>,
     /// Human actors whose viewer went away while holding a Tab takeover.
     orphaned_takeovers: BTreeSet<String>,
+    /// Human actors whose connection shows a Tab (a display or the person's input): only they continue a takeover.
+    /// Any other connection of the person, such as a local terminal, is connected but looks at no Tab.
+    viewers: BTreeSet<String>,
 }
 
 /// Internal display seam: the adapter must derive the user/actor from its caller.
@@ -73,6 +76,7 @@ impl Default for KernelBrowserActors {
             desktop_viewers: BTreeMap::new(),
             takeover_input: BTreeMap::new(),
             orphaned_takeovers: BTreeSet::new(),
+            viewers: BTreeSet::new(),
         }
     }
 }
@@ -681,6 +685,7 @@ impl KernelBrowserActors {
         }
     }
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
+        self.viewers.remove(actor_id);
         self.desktop_viewers
             .retain(|_, (actor, _)| actor != actor_id);
         let keeps_takeover = self.is_human(actor_id) && self.ledger.owns_tab(actor_id);
@@ -716,23 +721,30 @@ impl KernelBrowserActors {
         self.pointer_tabs.remove(actor_id);
     }
 
-    /// An authenticated viewer of the person connected, possibly under a new identity: it continues
-    /// the Tab takeovers whose viewer went away, until the person goes idle.
+    /// An authenticated connection of the person came up, possibly under a new identity. It holds no Tab
+    /// until it shows one (`viewer_shows_tab`); a renewed connection ends its own orphan deadline.
     pub(crate) fn viewer_connected(&mut self, actor: EnvironmentActor) {
         let actor_id = actor.actor_id.clone();
         if self.register(actor).is_ok() {
-            self.adopt_orphaned_takeovers(&actor_id);
+            self.reconnect(&actor_id);
         }
     }
 
-    /// A viewer of the person that is still connected: it continues a takeover whose own viewer left,
-    /// so a takeover is only orphaned when no viewer of the person is left.
+    /// The person's connection shows a Tab: it continues the Tab takeovers whose viewer went away, until the
+    /// person goes idle.
+    pub(crate) fn viewer_shows_tab(&mut self, actor_id: &str) {
+        self.adopt_orphaned_takeovers(actor_id);
+    }
+
+    /// A connection of the person that shows a Tab and is still connected: it continues a takeover whose own
+    /// viewer left, so a takeover is only orphaned when no viewer of the person is left.
     fn live_viewer_other_than(&self, actor_id: &str) -> Option<String> {
         self.actors
             .iter()
             .find(|(id, actor)| {
                 id.as_str() != actor_id
                     && actor.kind == EnvironmentActorKind::Human
+                    && self.viewers.contains(id.as_str())
                     && !self.orphaned_takeovers.contains(id.as_str())
             })
             .map(|(id, _)| id.clone())
@@ -749,6 +761,7 @@ impl KernelBrowserActors {
         if !self.is_human(actor_id) {
             return;
         }
+        self.viewers.insert(actor_id.into());
         self.reconnect(actor_id);
         let orphans = self
             .orphaned_takeovers
@@ -834,6 +847,7 @@ impl KernelBrowserActors {
         }
         self.takeover_input.remove(actor_id);
         if self.orphaned_takeovers.remove(actor_id) {
+            self.viewers.remove(actor_id);
             self.actors.remove(actor_id);
             self.seen.remove(actor_id);
         }
@@ -860,7 +874,7 @@ impl KernelBrowserActors {
         }
     }
     /// The Tabs a person drives after Take over, by controller Tab id: a viewer that reloads reads this back.
-    fn person_held_tabs(&self) -> std::collections::BTreeSet<String> {
+    pub(crate) fn person_held_tabs(&self) -> std::collections::BTreeSet<String> {
         self.ledger
             .ownership()
             .into_iter()
@@ -1207,10 +1221,12 @@ mod tests {
             model.takeover_input.insert("terminal:old".into(), last);
             if already_connected {
                 model.viewer_connected(human("terminal:new"));
+                model.viewer_shows_tab("terminal:new");
             }
             model.disconnect("terminal:old");
             if !already_connected {
                 model.viewer_connected(human("terminal:new"));
+                model.viewer_shows_tab("terminal:new");
             }
             assert_eq!(model.takeover_input.get("terminal:new"), Some(&last));
             assert!(model.begin(agent(), &input("host-tab-a")).is_err());
