@@ -1574,7 +1574,7 @@ mod other_turns;
 mod reparent;
 mod restored;
 mod tenure;
-// An owner-only card a sub-agent raises at any depth (here: approve renting a machine) is
+// An owner-only card a sub-agent raises at any depth (here: approve acquiring a machine) is
 // one card of the Room: no agent above holds it, and the Room state every client reads
 // lists it with its asker and the top parent whose pane shows it.
 #[tokio::test]
@@ -1604,7 +1604,7 @@ async fn a_sub_agents_owner_card_is_listed_for_the_person_in_its_top_parents_pan
         .unwrap();
     assert!(
         t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty(),
-        "renting a machine stays the person's decision"
+        "acquiring a machine stays the person's decision"
     );
     let response = t
         .runtime
