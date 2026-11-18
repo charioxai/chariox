@@ -714,6 +714,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
+        | LocalDaemonRequest::ListOwnerInteractions(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)

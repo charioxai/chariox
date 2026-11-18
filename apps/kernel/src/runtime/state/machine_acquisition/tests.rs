@@ -103,8 +103,8 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         passkey_remember_minutes: None,
     };
     assert!(
-        state.interaction_requires_terminal(&answer),
-        "an agent cannot approve its own rental"
+        !state.interaction_person_only(&answer),
+        "an external agent approves a rental for the person"
     );
     let owner = state
         .owned

@@ -23,7 +23,10 @@ impl CommandRouter {
         // These public routes are human frontend channels; agents use the
         // focus-admitted MCP seam. Refuse before generic session-grant lookup
         // so expired/foreign grants cannot flatten the same admission denial.
+        // An external agent answers the person's cards outside any Room too.
         if !command.is_terminal_caller()
+            && !(matches!(request, LocalDaemonRequest::AnswerUserDomainInteraction(_))
+                && command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent))
             && matches!(
                 request,
                 LocalDaemonRequest::KernelBrowser(_)
@@ -389,6 +392,7 @@ impl CommandRouter {
             request,
             LocalDaemonRequest::ListKernelAccessGrants(_)
                 | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+                | LocalDaemonRequest::ListOwnerInteractions(_)
         ) {
             return Ok(None);
         }
@@ -397,7 +401,7 @@ impl CommandRouter {
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
         ) {
             return Err(error(
-                "only a Chariox terminal or local grant holder can list or revoke access grants",
+                "only a Chariox terminal or local grant holder can list cards or access grants, or revoke grants",
             ));
         }
         let owner = command_caller_user_id(command);
@@ -406,6 +410,11 @@ impl CommandRouter {
                 LocalDaemonResponse::KernelAccessGrantsListed {
                     grants: self.runtime_state.list_kernel_access(&owner),
                     sudo_turns: self.runtime_state.list_sudo_turns(&owner),
+                }
+            }
+            LocalDaemonRequest::ListOwnerInteractions(_) => {
+                LocalDaemonResponse::OwnerInteractionsListed {
+                    interactions: self.runtime_state.list_owner_interactions(&owner),
                 }
             }
             LocalDaemonRequest::RevokeKernelAccessGrant(request) => {

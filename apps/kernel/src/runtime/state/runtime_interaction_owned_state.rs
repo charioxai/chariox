@@ -539,6 +539,7 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if !terminal_answer
+            && !self.answers_for_person(answerer)
             && choice_id == "allow_browser"
             && super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
         {
@@ -546,7 +547,10 @@ impl KernelRuntimeOwnedState {
                 "Allow browser access from your Chariox terminal",
             ));
         }
-        if super::owner_context_review::is_owner_context_review(&interaction) && !terminal_answer {
+        if super::owner_context_review::is_owner_context_review(&interaction)
+            && !terminal_answer
+            && !self.answers_for_person(answerer)
+        {
             return Err(interaction_error(
                 "Only the owner's Chariox terminal can answer this review",
             ));

@@ -1001,7 +1001,11 @@ async fn dispatch_on_behalf_of(
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
     // A decision answered through the paired gateway is the external agent's, not a person's.
     // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
-    if matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+    if matches!(
+        request,
+        LocalDaemonRequest::RespondToInteraction(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+    ) {
         caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
     }
     if let Err(error) = router

@@ -4097,6 +4097,26 @@ Workflow trigger and deployment direction:
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
 
+  Protocol 1023: a grant holder answers the person's cards for them. `RespondToInteraction`
+  from a local grant holder, from the same agent forwarded through the person's gateway, or
+  from an agent driving a Room through reach settles any open card of the person, in any of
+  their Rooms and from any agent depth, except the cards the person keeps for every choice:
+  secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
+  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
+  Those are refused with
+  `kernel_access_human_only` and stay open; outside events carry them as pointers and every
+  other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
+  answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
+  `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
+  answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
+  CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
+  (both take `--kernel NAME`).
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term. These terms apply to
