@@ -591,4 +591,6 @@ pub use workspace::*;
 /// lists the person's open cards with why the person keeps one (`person_only`).
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
 /// an App confirmation card carries the exact input the kernel will run (`AppConfirmationFrame.input`).
+/// 1033: a queued agent message in a session carries a `preview` (its first 200 characters) and `truncated`
+/// instead of the whole `prompt`, and a session lists at most the next ten per agent.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

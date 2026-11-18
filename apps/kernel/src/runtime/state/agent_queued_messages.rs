@@ -6,6 +6,10 @@ use crate::session::{PromptQueueItem, PromptStatus, QueuedAgentMessage};
 
 /// What one stripe shows of a message.
 const TEXT_LIMIT: usize = 4000;
+/// What a session shows of a queued message: its start.
+const PREVIEW_LIMIT: usize = 200;
+/// How many queued messages of one agent a session shows: the next ones to be delivered.
+const SHOWN_PER_AGENT: usize = 10;
 
 /// What the sender is told when its message queues.
 pub(crate) fn queued_note(agent: &str) -> String {
@@ -18,15 +22,24 @@ impl KernelRuntimeOwnedState {
         &self,
         room: &str,
     ) -> Result<Vec<QueuedAgentMessage>, DaemonError> {
-        Ok(self
-            .durable_state_store
-            .agent_queued_messages(room, None)?
+        let mut shown = std::collections::HashMap::<&str, usize>::new();
+        let queued = self.durable_state_store.agent_queued_messages(room, None)?;
+        Ok(queued
             .iter()
-            .map(|event| QueuedAgentMessage {
-                id: QueuedAgentMessage::id_for(event.sequence),
-                agent_id: event.agent_id.clone(),
-                sender: self.queued_message_sender(event),
-                prompt: bounded_text(event),
+            .filter(|event| {
+                let count = shown.entry(event.agent_id.as_str()).or_default();
+                *count += 1;
+                *count <= SHOWN_PER_AGENT
+            })
+            .map(|event| {
+                let text = redacted_text(event);
+                QueuedAgentMessage {
+                    id: QueuedAgentMessage::id_for(event.sequence),
+                    agent_id: event.agent_id.clone(),
+                    sender: self.queued_message_sender(event),
+                    preview: text.chars().take(PREVIEW_LIMIT).collect(),
+                    truncated: text.chars().nth(PREVIEW_LIMIT).is_some(),
+                }
             })
             .collect())
     }
@@ -64,12 +77,13 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-fn bounded_text(event: &InboxEvent) -> String {
+fn redacted_text(event: &InboxEvent) -> std::borrow::Cow<'_, str> {
     let text = event.payload["message"].as_str().unwrap_or_default();
     crate::secret_redaction::redact_secrets(text)
-        .chars()
-        .take(TEXT_LIMIT)
-        .collect()
+}
+
+fn bounded_text(event: &InboxEvent) -> String {
+    redacted_text(event).chars().take(TEXT_LIMIT).collect()
 }
 
 fn queued_item(event: &InboxEvent, status: PromptStatus) -> PromptQueueItem {

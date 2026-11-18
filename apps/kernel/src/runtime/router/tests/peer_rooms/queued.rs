@@ -70,7 +70,8 @@ fn a_message_to_an_idle_agent_queues_and_starts_no_turn() {
         assert_eq!(stripe.len(), 1);
         assert_eq!(stripe[0].agent_id, idle.id());
         assert_eq!(stripe[0].sender, "sender");
-        assert_eq!(stripe[0].prompt, "compare notes on the parser");
+        assert_eq!(stripe[0].preview, "compare notes on the parser");
+        assert!(!stripe[0].truncated);
         assert_eq!(states(&rooms, idle.id()).await, vec!["pending"]);
     });
 }
@@ -276,5 +277,48 @@ fn a_promotion_after_the_person_cancelled_says_so() {
                 .message_was_delivered(&rooms.peer_room, idle.id())
                 .await
         );
+    });
+}
+
+/// A Room whose agents queue many long messages still answers its state in a small read: the session
+/// shows a preview of the first few per agent, and the recipient reads the whole text from its inbox.
+#[test]
+fn many_long_queued_messages_keep_the_session_state_small() {
+    run_peer_test("queued-bounded", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_idle(&rooms).await;
+        for (index, agent) in std::iter::repeat_n(["idle", "peer"], 35)
+            .flatten()
+            .enumerate()
+        {
+            let message = format!("{index:02} {}", "x".repeat(3997));
+            send_to(&rooms, agent, serde_json::json!({ "message": message })).await;
+        }
+        let request = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+            session_id: rooms.peer_room.clone(),
+        });
+        let command = KernelCommand::from_local_request("cmd-queued-bounded", None, None, &request);
+        let response = rooms
+            .router
+            .dispatch(command, request)
+            .await
+            .expect("the room state");
+        let bytes = serde_json::to_vec(&response).unwrap().len();
+        let response = serde_json::to_value(&response).unwrap();
+        let queued = response["SessionState"]["session"]["queued_agent_messages"]
+            .as_array()
+            .expect("the queued messages");
+        assert!(bytes < 32_000, "the session state is {bytes} bytes");
+        for agent in [idle.id(), rooms.peer.id()] {
+            let shown: Vec<_> = queued
+                .iter()
+                .filter(|message| message["agent_id"] == agent)
+                .collect();
+            assert_eq!(shown.len(), 10, "{agent} shows its next ten messages");
+            assert!(shown[0]["preview"].as_str().unwrap().starts_with("0"));
+            assert_eq!(shown[0]["preview"].as_str().unwrap().chars().count(), 200);
+            assert_eq!(shown[0]["truncated"], true);
+        }
+        assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 35);
     });
 }
