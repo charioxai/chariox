@@ -31,6 +31,7 @@
  {"path":"apps/kernel/src/runtime/router/managed_context_bridge.rs","count":4,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime/router/status_projection_bridge.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime/session_actor/lane_runtime.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
+ {"path":"apps/kernel/src/runtime/state/app_control_requests.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime/state/kernel_browser_runtime.rs","count":2,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime/state/mod.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime/state/wake_driver.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
@@ -43,6 +44,7 @@
  {"path":"apps/kernel/src/runtime/workspace_coordinator.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/runtime_transport/outbound.rs","count":6,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/transport/relay_client/connection_state.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
+ {"path":"apps/kernel/src/transport/relay_client/daemon_requests.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/transport/relay_client/peer_client.rs","count":1,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"},
  {"path":"apps/kernel/src/transport/runtime_tools/workspace_live_sync_tools.rs","count":14,"why":"allowed before this check existed; delete the unused item or make it used when touching the file"}
 ]
