@@ -67,7 +67,18 @@ pub(crate) async fn execute(
                 &ControlPlaneRequest::Capabilities {},
             ),
         )
-        .await?;
+        .await
+        // A Cloud code on an acquire's error is the service's answer to that acquire, and some
+        // codes tell the kernel the request holds nothing. This answer is not about the request,
+        // so it passes on without its code.
+        .map_err(|error| DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: "control_plane_offer_unavailable".into(),
+            retryable: true,
+            message: format!(
+                "The connected service did not return its machine offer, so nothing was requested; retry: {error}"
+            ),
+        })?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
             return Err(unavailable(
                 "control_plane_binding_invalid",

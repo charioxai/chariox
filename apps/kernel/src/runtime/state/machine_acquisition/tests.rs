@@ -379,3 +379,28 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     assert!(message.contains("Acquire gone in auto"), "{message}");
     gate.abort();
 }
+
+#[test]
+fn the_service_request_id_is_scoped_to_the_kernel_and_agent() {
+    let id = super::choice::service_request_id("kernel", "agent", "R1");
+    assert!(id.len() <= 128, "{id}");
+    assert!(id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    assert_eq!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "other", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("other", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "r1")
+    );
+}
