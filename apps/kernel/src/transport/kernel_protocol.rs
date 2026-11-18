@@ -185,7 +185,7 @@ pub(crate) enum KernelEvent {
     },
     ProviderRunChanged {
         session_id: String,
-        provider_run: Option<PublicProviderRun>,
+        provider_run: Option<Box<PublicProviderRun>>,
     },
     SessionMetadataChanged {
         session_id: String,
@@ -753,7 +753,10 @@ pub(crate) fn provider_run_changed_event(
     }
     Some(KernelEvent::ProviderRunChanged {
         session_id: snapshot.session.id().to_string(),
-        provider_run: snapshot.provider_run.as_ref().map(PublicProviderRun::from),
+        provider_run: snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| Box::new(PublicProviderRun::from(run))),
     })
 }
 

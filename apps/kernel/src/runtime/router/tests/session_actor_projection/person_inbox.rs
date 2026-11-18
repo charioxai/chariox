@@ -215,7 +215,7 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
     let (noticed, cards) = next_snapshot(&mut events).await;
     assert_eq!(
         cards,
-        [card_id.clone()],
+        [card_id.as_str()],
         "a notice wakes the watched Inbox at once"
     );
 
