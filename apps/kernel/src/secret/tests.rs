@@ -127,6 +127,7 @@ fn credential_handles_do_not_include_internal_vault_metadata() {
             vault_key: Some("gmail-password-vault-key".to_string()),
             created_at_ms: Some(1),
             updated_at_ms: Some(2),
+            copied_from: None,
         }),
     }]);
 

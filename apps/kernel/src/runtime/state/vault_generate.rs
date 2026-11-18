@@ -112,6 +112,7 @@ impl KernelRuntimeState {
                 vault_key: Some(handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
+                copied_from: None,
             }),
         };
         let secret = zeroize::Zeroizing::new(generate_password(args.length, args.symbols));

@@ -28,6 +28,7 @@ const ready = next => {
   if (api) return;
   api = next;
   storage = persistence(chariox, api, loaded, feedHead);
+  storage.recover().catch(report);
   // Excalidraw installs its default actions after calling excalidrawAPI.
   queueMicrotask(() => { for (const [name, handler, key, shift] of [
     ['loadScene', 'open_file', 'o', false],
@@ -40,6 +41,9 @@ const ready = next => {
   });
   });
 };
+
+// A window that goes away writes the edit it is still holding for the save.
+addEventListener('pagehide', () => storage?.flushDraft());
 
 // A dropped browser file must be imported by a kernel grant as well.
 document.addEventListener('drop', event => {
@@ -72,6 +76,7 @@ createRoot(document.getElementById('root')).render(
       // Notices, selection and other UI state do not change the saved scene.
       if (text === previousScene) return;
       previousScene = text;
+      storage.keepDraft();
       clearTimeout(timer);
       timer = setTimeout(() => storage.save().then(() => { automaticSaveError = undefined; }).catch(reportAutomaticSave), 300);
     }}>
