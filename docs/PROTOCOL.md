@@ -701,10 +701,15 @@ Resource pane_feed, params { session_id, agent_id }             // kernel_resour
     provider sign-in are not; the terminal shows `open_elsewhere` instead.
   - `open_elsewhere`: `Open in Chariox: <link>`, or with no Cloud pairing a line naming the Room
     and agent. Every answer is the usual `RespondToInteraction`; first answer wins.
-- `stripes`: `{ id, kind, text, at_ms }` in the kernel's words: queued prompts (`Queued`), a
-  stopped task, `/goal · STATE`, `Blocked` (a task blocked on its owner with no card), armed wakes
-  (`/wait-in`, `/wait-every`, `Waiting`) and `Usage limit`. `at_ms` is a deadline or next run; a
-  client counts down to it in its own clock.
+- `stripes`: `{ id, kind, text, detail, at_ms }` in the kernel's words, in this order: commands
+  of the agent the kernel holds for memory or disk (`Queued`, "cargo build · waiting for memory,
+  2nd in line"), queued prompts (`Queued`), triggers (`Schedule`, `HTTP`, `Notification`, with
+  `detail` "3 fired · 1 skipped", `Done` or `Offline`), a stopped task (`Task` or `/goal`, `detail`
+  `Stopped`), `/goal · STATE`, `Blocked` (a task blocked on its owner with no card), armed wakes
+  (`/wait-in`, `/wait-every`, `Waiting`), metaagent tasks (`/meta · STATE`, `Blocked`, `Plan`,
+  `Completed`, `/meta · queued`), workflow runs (`Workflow`: "Run #4 waiting on Claude usage
+  limit" for a run its person must look at, else the run's prompt) and `Usage limit`. `at_ms` is
+  a deadline or next run; a client counts down to it in its own clock. Clients derive no stripe.
 - `notices`: the person's unread notices from this agent, newest first.
 - `link`: `<paired Cloud origin>/terminal?session=<Room>&agent=<agent>`, none with no pairing.
   The web client finds the Room in the person's lists; the link carries no card content.

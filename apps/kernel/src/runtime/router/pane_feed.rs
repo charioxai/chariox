@@ -28,6 +28,7 @@ impl CommandRouter {
         let LocalDaemonResponse::SessionState {
             session,
             agent_activity,
+            processes,
             ..
         } = state
         else {
@@ -55,6 +56,7 @@ impl CommandRouter {
             &PaneFeedSources {
                 session: &session,
                 activity: &agent_activity,
+                processes: &processes,
                 inbox: &cards,
                 cloud_origin: cloud_origin.as_deref(),
             },

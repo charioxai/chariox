@@ -122,6 +122,7 @@ pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub(crate) mod pane_feed;
+pub(crate) mod pane_feed_stripes;
 pub(crate) mod perf_timing;
 pub(crate) mod person_inbox;
 pub mod process_health;
