@@ -237,8 +237,12 @@ async fn fixture() -> Fixture {
     target.host_machine_id = "owner-target-machine".into();
     target.user_config_path = root.join("target-config.toml");
     std::fs::write(&target.user_config_path, b"# target configuration\n").unwrap();
-    target.user_config.history.operational.path =
-        Some(root.join("target-operational.db").display().to_string());
+    // A secret database needs a folder of its own: the agents' confinement hides that folder.
+    target.user_config.history.operational.path = Some(
+        root.join("target-operational/operational.db")
+            .display()
+            .to_string(),
+    );
     target.user_config.artifacts.operational.root =
         Some(root.join("target-artifacts").display().to_string());
     target.user_config.artifacts.operational.index_path =
