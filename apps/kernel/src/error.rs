@@ -24,34 +24,8 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
         "leased_backing_session_refused" => {
             "this session backs a leased agent; use its home session on the kernel that holds the lease"
         }
-        _ => "external request failed; details are available only in the host terminal",
+        _ => "the kernel refused this request without a reason; update the kernel and try again",
     }
-}
-
-/// A session alias the caller chose that cannot be used: the kernel's own sentence names
-/// only what the caller sent and the session that holds the alias. Only that exact shape
-/// qualifies, so no other text can ride on these codes.
-pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
-    matches!(code, "session_alias_conflict" | "invalid_session_alias")
-        && message.starts_with("session alias `")
-}
-
-const STEER_UNRECORDED_SUFFIX: &str =
-    "` was delivered but its event was not recorded; do not send it again";
-
-/// The steer a provider holds whose event was not recorded: the kernel's own sentence
-/// names only the steer id it generated. Only that exact shape qualifies.
-pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
-    code == "prompt_steer_event_unrecorded"
-        && message
-            .strip_prefix("steer `")
-            .and_then(|rest| rest.strip_suffix(STEER_UNRECORDED_SUFFIX))
-            .is_some_and(|id| {
-                !id.is_empty()
-                    && id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            })
 }
 
 #[derive(Debug, Error)]
@@ -93,10 +67,14 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
-    /// MP-08 / MP-11: preserve mapped executor semantics for external grants
-    /// and sudo without retaining any diagnostic values or source error.
-    #[error("{}", external_request_failure_message(.code))]
-    ExternalRequestFailed { code: String, retryable: bool },
+    /// MP-08 / MP-11: preserve mapped executor semantics for external grants and sudo.
+    /// `message` is the kernel's own text with secret-shaped values cut out.
+    #[error("{message}")]
+    ExternalRequestFailed {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]

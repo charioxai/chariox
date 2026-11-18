@@ -29,25 +29,6 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
-/// Codes whose message this module writes itself, so the grant holder reads them in full.
-pub(crate) fn is_public_code(code: &str) -> bool {
-    matches!(
-        code,
-        "file_path_invalid"
-            | "file_not_found"
-            | "file_permission_denied"
-            | "file_not_a_file"
-            | "file_too_large"
-            | "file_chunk_too_large"
-            | "file_offset_mismatch"
-            | "file_hash_mismatch"
-            | "file_exists"
-            | "file_io_failed"
-            | "file_staging_untrusted"
-            | "file_state_protected"
-    )
-}
-
 fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -597,28 +578,6 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
-    // EA2-45: the refusal names the staging file and what to do, so the agent must read it.
-    #[test]
-    fn every_code_this_module_raises_with_its_own_message_is_public() {
-        for code in [
-            "file_path_invalid",
-            "file_not_found",
-            "file_permission_denied",
-            "file_not_a_file",
-            "file_too_large",
-            "file_chunk_too_large",
-            "file_offset_mismatch",
-            "file_hash_mismatch",
-            "file_exists",
-            "file_io_failed",
-            "file_staging_untrusted",
-            "file_state_protected",
-        ] {
-            assert!(is_public_code(code), "{code}");
-        }
-        assert!(!is_public_code("kernel_request_failed"));
-    }
-
     use super::*;
 
     // These tests run with nothing protected; the guard has its own tests.

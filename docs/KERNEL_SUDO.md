@@ -261,9 +261,9 @@ local grant or sudo MCP caller. Credential read and mutation replies redact
 literal injection values. Raw MCP/connector configuration, native login
 output/codes, pairing/Cloud admission credentials and enrollment callbacks
 are withheld; inspect those through the host terminal. An operation can complete
-while its reply is withheld; check host-terminal state before retrying. Executor failures use
-a value-free error because parser/provider diagnostics can echo secrets. Exact
-constant refusal, expiry and revocation diagnostics remain available.
+while its reply is withheld; check host-terminal state before retrying. An executor
+failure keeps its code, retry flag and the kernel's own words, so the caller and the owner
+can act on the reason; only secret-shaped text is cut out of the message.
 This preserves normal workspace/history authority and is not a file sandbox.
 
 ## MP-08 / MP-10 / MP-11: remembered proof across clients
