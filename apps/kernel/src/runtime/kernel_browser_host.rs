@@ -1038,6 +1038,20 @@ impl KernelBrowserHost {
                 }
             }
             ledger.project_tabs(payload);
+            // The same lock hold as the projection: the digest and the `taken_over` marks are one snapshot.
+            if request_params["state_wait"] == true {
+                payload["_control"] = ledger.person_control().into();
+            }
+            if method == "host.browser"
+                && matches!(
+                    request_params["op"].as_str(),
+                    Some("mirror_subscribe" | "display_subscribe")
+                )
+                && request_params["target"]["kind"] != "browser_window"
+            {
+                let viewer = browser_actor(admission, &request_params);
+                ledger.viewer_shows_tab(&viewer.actor_id);
+            }
         }
         if result.is_ok() && !opened_by_agents.is_empty() {
             let mut state = self
@@ -1126,6 +1140,12 @@ impl KernelBrowserHost {
                 Arc::new(Mutex::new(model))
             })
             .clone())
+    }
+    /// Who holds which Tabs of `user`'s person by takeover, as the digest a state read carries.
+    pub(crate) fn person_control(&self, user: &str) -> Result<String, String> {
+        let model = self.actor_model(user)?;
+        let model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        Ok(model.person_control())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from
     /// the one taken at `after` (the host's signal count). `None`: no browser is running, nothing to wait for.

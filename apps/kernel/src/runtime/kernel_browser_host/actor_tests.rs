@@ -1778,6 +1778,7 @@ fn mp10_replacement_viewer_lease_recovers_takeover_until_the_person_goes_idle() 
     }
     drop(first);
     let second = host.lease_terminal("alice", "terminal:b");
+    model.lock().unwrap().viewer_shows_tab("terminal:b");
     let ownership =
         |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
     // The replacement watches before the person reaches the idle timeout.
@@ -1810,6 +1811,7 @@ fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() 
     let first = host.lease_terminal("alice", "terminal:a");
     let second = host.lease_terminal("alice", "terminal:b");
     let model = host.actor_model("alice").unwrap();
+    model.lock().unwrap().viewer_shows_tab("terminal:b");
     {
         let mut model = model.lock().unwrap();
         model
@@ -1983,4 +1985,77 @@ done
     let (input, state) = early.expect("input and state waited behind the save");
     assert_eq!(input.unwrap()["input_completed"], true);
     assert_eq!(state.unwrap()["generation"], 1);
+}
+
+// A local terminal of the person is connected but shows no Tab: only a connection that shows the Tab holds its takeover.
+#[test]
+fn a_connection_that_shows_no_tab_never_holds_the_persons_takeover() {
+    let root = crate::test_support::TestWorktree::new("takeover-viewers-show-the-tab");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"display_subscribe"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"subscription_id":"native-crop"}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let show_tab = |viewer: &str| {
+        host.protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1,"observed_by":viewer}),
+            policy.clone(),
+        )
+        .unwrap()
+    };
+    let holder = |host: &KernelBrowserHost| {
+        host.actor_snapshot("alice").unwrap()["input_ownership"][0]["actor_id"].clone()
+    };
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let input = json!({"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"text","text":"x"}});
+    let web = host.lease_terminal("alice", "terminal:web");
+    let _terminal = host.lease_terminal("alice", "terminal:local");
+    show_tab("terminal:web");
+    let model = host.actor_model("alice").unwrap();
+    model
+        .lock()
+        .unwrap()
+        .takeover(
+            EnvironmentActor::new("terminal:web", EnvironmentActorKind::Human, "Person"),
+            "host-tab-a",
+            1,
+        )
+        .unwrap();
+    drop(web);
+    assert_eq!(
+        holder(&host),
+        "terminal:web",
+        "the local terminal looks at no Tab: the takeover waits for a viewer that shows it"
+    );
+    assert!(model.lock().unwrap().begin(agent(), &input).is_err());
+    // A connection that comes up later is no viewer either; the one that shows the Tab continues the takeover.
+    let _local_again = host.lease_terminal("alice", "terminal:local-two");
+    assert_eq!(holder(&host), "terminal:web");
+    let _replacement = host.lease_terminal("alice", "terminal:web-two");
+    assert_eq!(holder(&host), "terminal:web");
+    show_tab("terminal:web-two");
+    assert_eq!(holder(&host), "terminal:web-two");
+    assert!(model.lock().unwrap().begin(agent(), &input).is_err());
+    host.shutdown().unwrap();
 }
