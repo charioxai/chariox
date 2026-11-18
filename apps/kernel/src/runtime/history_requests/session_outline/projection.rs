@@ -763,7 +763,7 @@ mod tests {
     // merged both calls into one row and moved the sentence below it.
     #[test]
     fn tool_blobs_are_one_per_call_and_never_span_inline_text() {
-        let events = vec![
+        let events = [
             command_event(1, "call-3", "running", "cat README.md"),
             command_event(2, "call-3", "completed", "cat README.md"),
             transcript_event(3, TerminalOutputKind::ProviderOutput, "msg-1", "Read it."),
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn an_imported_codex_call_preview_keeps_the_tool_name_of_the_call() {
-        let events = vec![
+        let events = [
             provider_tool_event_with_text(
                 1,
                 "function_call-call_1",
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn a_tool_blob_preview_leaves_out_result_images() {
-        let events = vec![provider_tool_event_with_text(
+        let events = [provider_tool_event_with_text(
             1,
             "call-img",
             serde_json::json!({
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn a_tool_blob_preview_counts_the_pictures_its_result_returned() {
-        let events = vec![
+        let events = [
             provider_tool_event_with_text(
                 1,
                 "call-chart",
@@ -921,7 +921,7 @@ mod tests {
 
     #[test]
     fn reasoning_blobs_are_one_per_thought_with_its_first_line() {
-        let events = vec![
+        let events = [
             transcript_event(
                 1,
                 TerminalOutputKind::ProviderReasoning,
