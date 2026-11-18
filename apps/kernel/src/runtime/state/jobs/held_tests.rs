@@ -259,11 +259,17 @@ enum Fault {
     CleanupDown,
     /// The workspace removal runs on the machine but its reply never comes back.
     LoseCleanupReply,
+    /// The machine's kernel refuses to open the removal command, once. Its gateway ledger keeps
+    /// that answer under the command id.
+    TargetRefusesRemoval,
 }
 
 /// The held machine's kernel with the faults of a real machine and relay.
 struct Machine {
     kernel: Arc<super::tests::Worker>,
+    /// The machine's gateway ledger: a state-changing request is answered from it by command id.
+    ledger: crate::runtime::kernel_gateway::ledger::GatewayLedger,
+    _ledger_dir: crate::test_support::TestWorktree,
     fault: std::sync::Mutex<Fault>,
     chunks: std::sync::atomic::AtomicUsize,
     /// Told when a fault was reached.
@@ -273,8 +279,13 @@ struct Machine {
 
 impl Machine {
     fn stand_in(kernel_id: &str, home: &Path, fault: Fault) -> Arc<Self> {
+        let ledger_dir = crate::test_support::TestWorktree::new("held-machine-ledger");
         let machine = Arc::new(Self {
             kernel: worker_kernel(home),
+            ledger: crate::runtime::kernel_gateway::ledger::GatewayLedger::open(
+                ledger_dir.path().join("ledger.jsonl"),
+            ),
+            _ledger_dir: ledger_dir,
             fault: fault.into(),
             chunks: 0.into(),
             reached: Default::default(),
@@ -295,6 +306,60 @@ impl Machine {
         tokio::time::timeout(Duration::from_secs(30), self.reached.notified())
             .await
             .expect("the machine never reached the fault");
+    }
+}
+
+impl Machine {
+    /// What the machine's gateway does with a state-changing request: run it once under its
+    /// command id and answer every later request with that id from the ledger.
+    async fn through_ledger(
+        &self,
+        id: String,
+        request: &LocalDaemonRequest,
+        refuse: bool,
+    ) -> Result<serde_json::Value, crate::runtime::kernel_gateway::GatewayError> {
+        use crate::room_exec::gateway_placement::GrantedSend;
+        use crate::runtime::kernel_gateway::{ledger::Failure, ledger::Settled, GatewayError};
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            id.clone(),
+            crate::runtime::command::KernelCommandSource::RelayClient,
+            crate::runtime::command::KernelCaller::for_relay_request(None),
+            None,
+            None,
+            request,
+        );
+        let fingerprint =
+            crate::runtime_transport::command_cache::CommandFingerprint::for_app_control(
+                &command, request,
+            );
+        let run = async {
+            if refuse {
+                self.set(Fault::None);
+                return Err(Failure {
+                    code: "open_refused".into(),
+                    message: "the machine refused to open the command".into(),
+                    retryable: false,
+                });
+            }
+            self.kernel
+                .send(id.clone(), request)
+                .await
+                .map_err(|error| Failure {
+                    code: error.code().into(),
+                    message: error.transport_error().message,
+                    retryable: false,
+                })
+        };
+        match self.ledger.run(&id, fingerprint, run).await {
+            Settled::Done(Ok(value)) => Ok(value),
+            Settled::Done(Err(failure)) => Err(GatewayError::Remote {
+                name: "held".into(),
+                code: failure.code,
+                message: failure.message,
+                retryable: failure.retryable,
+            }),
+            _ => Err(outage()),
+        }
     }
 }
 
@@ -335,9 +400,14 @@ impl crate::room_exec::gateway_placement::GrantedSend for Machine {
             if cleanup && fault == Fault::CleanupDown {
                 return Err(outage());
             }
-            let reply = self.kernel.send(id, request).await;
             let removal = matches!(request, LocalDaemonRequest::RoomTerminal(room)
                 if matches!(&room.operation, crate::local::RoomTerminalOperation::ExecOpen { command } if command.first().map(String::as_str) == Some("/bin/rm")));
+            let reply = if crate::runtime::kernel_gateway::ledger::is_repeatable(request) {
+                self.kernel.send(id, request).await
+            } else {
+                self.through_ledger(id, request, removal && fault == Fault::TargetRefusesRemoval)
+                    .await
+            };
             if removal && fault == Fault::LoseCleanupReply {
                 self.set(Fault::None);
                 self.reached.notify_one();
@@ -405,7 +475,7 @@ fn plan_saved(state: &KernelRuntimeState, job_id: &str) -> bool {
 }
 
 /// The home kernel restarted: its grants are gone, the saved records are what it recovers from.
-fn restart(state: &KernelRuntimeState, job_id: &str) {
+fn restart(state: &KernelRuntimeState, job_id: &str, recover_wake: bool) {
     state
         .job_wake_driver
         .as_ref()
@@ -414,7 +484,9 @@ fn restart(state: &KernelRuntimeState, job_id: &str) {
         .lock()
         .unwrap()
         .remove(job_id);
-    super::return_tests::recover_job(state, job_id);
+    if recover_wake {
+        super::return_tests::recover_job(state, job_id);
+    }
 }
 
 fn two_gets(kernel: &str) -> Vec<(&'static str, u16, serde_json::Value)> {
@@ -545,7 +617,7 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
     assert!(uploaded_copy(home.path(), &id).exists());
     assert!(plan_saved(&state, &id));
     machine.set(Fault::None);
-    restart(&state, &id);
+    restart(&state, &id, true);
     let status = finished(&state, &run, &task, &id).await;
     served(service).await;
     assert!(
@@ -611,7 +683,7 @@ async fn a_kernel_restart_while_a_held_machine_cleans_up_keeps_the_finished_resu
         .expect("the result is saved before the workspace goes");
     assert_eq!(result.files_back, ["held.bin"]);
     assert_eq!(result.outcome, JobOutcome::Completed);
-    restart(&state, &id);
+    restart(&state, &id, true);
     let status = finished(&state, &run, &task, &id).await;
     served(service).await;
     assert_eq!(status["result"]["outcome"], "completed", "{status}");
@@ -651,4 +723,94 @@ async fn a_held_machine_that_could_not_clean_up_is_cleaned_when_the_job_is_check
     assert_eq!(status["result"]["outcome"], "completed");
     assert!(!uploaded_copy(home.path(), id).exists());
     assert!(!plan_saved(&state, id));
+}
+
+#[tokio::test]
+async fn a_removal_the_machine_refused_runs_again_when_the_job_is_checked_again() {
+    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-refused-clean-home");
+    Machine::stand_in(
+        "held-kernel-refused",
+        home.path(),
+        Fault::TargetRefusesRemoval,
+    );
+    let service = service(&state, two_gets("held-kernel-refused")).await;
+    let value = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"machine":"held-1","wait_s":50}),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    let id = value["job_id"].as_str().unwrap();
+    assert_eq!(value["result"]["outcome"], "completed", "{value}");
+    assert!(
+        uploaded_copy(home.path(), id).exists(),
+        "the machine refused the removal"
+    );
+    assert!(plan_saved(&state, id));
+    // The machine's gateway keeps its answer to the first removal under that attempt's command
+    // ids, so only a retry with ids of its own runs.
+    let status = job_status(&state, &run, &task, "chariox.jobs.status", id).await;
+    assert_eq!(status["result"]["outcome"], "completed");
+    assert!(
+        !uploaded_copy(home.path(), id).exists(),
+        "the retry was answered with the first attempt's failure"
+    );
+    assert!(!plan_saved(&state, id));
+}
+
+#[tokio::test]
+async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
+    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-startup-clean-home");
+    let machine = Machine::stand_in("held-kernel-startup", home.path(), Fault::CleanupDown);
+    let service = service(
+        &state,
+        vec![
+            ("get", 200, held_machine("ready", "held-kernel-startup")),
+            ("get", 200, held_machine("ready", "held-kernel-startup")),
+            ("get", 200, held_machine("ready", "held-kernel-startup")),
+        ],
+    )
+    .await;
+    let value = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"machine":"held-1","wait_s":50}),
+    )
+    .await
+    .unwrap();
+    let id = value["job_id"].as_str().unwrap();
+    assert!(uploaded_copy(home.path(), id).exists(), "cleanup was down");
+    assert!(plan_saved(&state, id));
+    // The completion was delivered and the wake ended, so recovery of active wakes will not see it.
+    let wake = state
+        .owned
+        .durable_state_store
+        .agent_wake(&saved(&state, id).wake_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !matches!(wake.state.as_str(), "starting" | "running" | "cancelling"),
+        "the wake is {}",
+        wake.state
+    );
+    machine.set(Fault::None);
+    let id = id.to_owned();
+    restart(&state, &id, false);
+    state
+        .recover_driver_wakes(crate::session::unix_epoch_ms())
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while uploaded_copy(home.path(), &id).exists() || plan_saved(&state, &id) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the restart left the workspace on the held machine");
+    served(service).await;
 }

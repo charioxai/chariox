@@ -23,6 +23,17 @@
 //!
 //! A machine that is released or no longer held while a removal is owed has lost its disk: the plan
 //! is forgotten. A machine that is only unreachable keeps the plan.
+//!
+//! Who retries a removal that is owed (plan on disk), and with which command ids:
+//! - a job whose wake is still active (Planned, Running): `JobDriver::recover` at startup;
+//! - a job that already finished (Settled, plan kept): `JobDriver::reconcile_ended` at startup, which
+//!   `recover` cannot do because the finished wake is no longer active, and `chariox.jobs.status`;
+//! - a job whose files are still to be collected (Finished): nobody until `chariox.jobs.status`
+//!   collects or `chariox.jobs.cancel` gives them up, because the files are at stake.
+//!
+//! The machine's gateway answers a repeated state-changing command id from its ledger, failures
+//! included, so every removal attempt draws fresh ids (`Remote::remove_workspace`); the ids of one
+//! attempt stay fixed so the transport's retry of a lost reply is not run twice.
 use super::super::job_compute::JobMachine;
 use super::super::machine_acquisition::acquisition_error;
 use super::execute::{cancelled_result, Output};

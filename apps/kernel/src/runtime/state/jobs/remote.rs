@@ -189,18 +189,17 @@ impl Remote {
         }
     }
     /// Deletes the job's uploaded workspace, in a room of its own so it works when the job's rooms
-    /// are not at hand any more.
+    /// are not at hand any more. The machine's gateway keeps the answer of every state-changing
+    /// request under its command id, so each attempt names its own: a retry after a failure would
+    /// otherwise be answered with the old failure and never run. Within one attempt the ids stay
+    /// the same, so the gateway's own retry of a lost reply is still answered, not run twice.
     pub(super) async fn remove_workspace(&self, root: &str) -> Result<(), DaemonError> {
         let malformed = || ledger::error("Job workspace path is malformed");
         let (job_dir, _) = root.rsplit_once('/').ok_or_else(malformed)?;
         let (jobs_dir, _) = job_dir.rsplit_once('/').ok_or_else(malformed)?;
-        let room = create_target_room(
-            &*self.grant,
-            &format!("{}:cleanup", self.job_id),
-            Some(jobs_dir),
-        )
-        .await?;
-        Self::new(self.grant.clone(), room, self.job_id.clone())
+        let attempt = format!("{}:cleanup:{:032x}", self.job_id, rand::random::<u128>());
+        let room = create_target_room(&*self.grant, &attempt, Some(jobs_dir)).await?;
+        Self::new(self.grant.clone(), room, attempt)
             .utility(
                 vec!["/bin/rm".into(), "-rf".into(), "--".into(), job_dir.into()],
                 "cleanup",

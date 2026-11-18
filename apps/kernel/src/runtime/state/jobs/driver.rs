@@ -43,14 +43,9 @@ impl WakeDriver for JobDriver {
         let Ok(mut record) = self.read(id) else {
             return Recovery::Lost("job record missing".into());
         };
-        let (Some(driver), Some(router)) = (
-            self.this.get().and_then(std::sync::Weak::upgrade),
-            self.router.get().and_then(std::sync::Weak::upgrade),
-        ) else {
+        let Some(state) = self.recovery_state() else {
             return Recovery::Lost("job service unavailable".into());
         };
-        let mut state = self.state.with_job_router((*router).clone());
-        state.job_wake_driver = Some(driver);
         let wake = wake.clone();
         let (cancel, cancelled) = watch::channel(false);
         self.live
@@ -152,6 +147,40 @@ impl WakeDriver for JobDriver {
         });
         Recovery::Reattached
     }
+    fn reconcile_ended(&self) {
+        let Some(state) = self.recovery_state() else {
+            return;
+        };
+        let jobs = state
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root()
+            .join("jobs");
+        let Ok(entries) = std::fs::read_dir(&jobs) else {
+            return;
+        };
+        // A plan on disk is what is left to clean; only settled held-machine jobs are cleaned here
+        // (one whose files are still to be collected keeps its plan for chariox.jobs.status).
+        let owed: Vec<Record> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("return.json").is_file())
+            .filter_map(|entry| self.read(entry.file_name().to_str()?).ok())
+            .filter(|record| {
+                record.state == "finished"
+                    && record.request.machine.is_some()
+                    && !record.remote.holds_worker()
+            })
+            .collect();
+        if owed.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            for record in owed {
+                state.settle_or_warn(&record).await;
+            }
+        });
+    }
     fn liveness(&self, wake: &AgentWake) -> Liveness {
         if self.live.lock().expect("job live").contains_key(&wake.id) {
             Liveness::Live
@@ -178,6 +207,19 @@ fn remote_jobs_off_result(record: &Record) -> JobResult {
         },
         duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
         outcome: JobOutcome::MachineLost,
+    }
+}
+
+impl JobDriver {
+    /// A state that holds this driver and the job gateway, for work a restart resumes.
+    fn recovery_state(&self) -> Option<KernelRuntimeState> {
+        let (driver, router) = (
+            self.this.get().and_then(std::sync::Weak::upgrade)?,
+            self.router.get().and_then(std::sync::Weak::upgrade)?,
+        );
+        let mut state = self.state.with_job_router((*router).clone());
+        state.job_wake_driver = Some(driver);
+        Some(state)
     }
 }
 
