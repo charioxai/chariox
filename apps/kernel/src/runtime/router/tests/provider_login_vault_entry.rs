@@ -30,9 +30,9 @@ printf 'Login successful\n'
 /// the test to say go, so a status poll lands while only part of it is out.
 const FRAGMENTED_OPENCODE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 1.19.0; exit 0; fi
-if [ "$1" = auth ] && [ "$2" = list ]; then exit 0; fi
-[ "$1" = auth ] && [ "$2" = login ] || exit 90
 dir=$(dirname "$0")
+if [ "$1" = auth ] && [ "$2" = list ]; then [ -e "$dir/listfail" ] && exit 5; exit 0; fi
+[ "$1" = auth ] && [ "$2" = login ] || exit 90
 stty -echo 2>/dev/null
 printf 'Enter your API key\n'
 IFS= read -r key
@@ -445,4 +445,55 @@ async fn a_key_echo_cut_short_by_the_login_ending_is_masked_at_the_end() {
     let shown = screen(&status);
     assert!(!shown.contains(&KEY[..4]), "{shown:?}");
     assert!(shown.contains("echo: **********"), "{shown:?}");
+}
+
+/// Starts the fragmenting login and stops it with part of the key echoed.
+async fn fragmented_login_stopped_mid_echo(fixture: &Fixture) -> String {
+    let entry = fixture.owner_entry(OPENCODE_SITE).await;
+    let login_id = fixture.start("opencode_go_api_key").await;
+    fixture.vault_entry(&login_id, &entry).await.unwrap();
+    fixture.release("sent1", "go2").await;
+    fixture.release("sent2", "").await;
+    fixture.assert_no_key_start_shown(&login_id).await;
+    login_id
+}
+
+#[tokio::test]
+async fn a_key_echo_cut_short_by_the_login_timing_out_is_masked_before_the_timeout_note() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::with_program(
+        crate::config::CredentialVaultBackend::ProcessMemory,
+        FRAGMENTED_OPENCODE,
+    );
+    let login_id = fragmented_login_stopped_mid_echo(&fixture).await;
+    fixture
+        .router
+        .runtime_state
+        .provider_login_process_store()
+        .backdate_start_for_test(&login_id, 11 * 60 * 1000);
+    let status = fixture.status(&login_id).await;
+    let shown = screen(&status);
+    assert_eq!(status.state, ProviderLoginProcessState::Failed);
+    assert!(shown.contains("timed out"), "{shown:?}");
+    assert!(!shown.contains(&KEY[..4]), "{shown:?}");
+}
+
+#[tokio::test]
+async fn a_key_echo_cut_short_by_a_failed_account_check_is_masked_before_the_failure_note() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::with_program(
+        crate::config::CredentialVaultBackend::ProcessMemory,
+        FRAGMENTED_OPENCODE,
+    );
+    std::fs::write(fixture.root.join("truncate"), "").unwrap();
+    std::fs::write(fixture.root.join("listfail"), "").unwrap();
+    let login_id = fragmented_login_stopped_mid_echo(&fixture).await;
+    std::fs::write(fixture.root.join("go3"), "").unwrap();
+    let status = fixture.until_finished(&login_id).await;
+    let shown = screen(&status);
+    assert_eq!(status.state, ProviderLoginProcessState::Failed);
+    assert!(shown.contains("validation failed"), "{shown:?}");
+    assert!(!shown.contains(&KEY[..4]), "{shown:?}");
 }

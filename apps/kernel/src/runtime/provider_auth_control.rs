@@ -419,10 +419,10 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))
                 .await;
         }
-        runtime_state.provider_login_process_store().append_output(
+        runtime_state.provider_login_process_store().append_note(
             owner_user_id,
             &request.login_id,
-            std::iter::once(b"Provider login timed out after 10 minutes.\n".to_vec()),
+            "Provider login timed out after 10 minutes.\n",
             now_ms,
         )?;
         let login = runtime_state.provider_login_process_store().set_state(
@@ -742,10 +742,10 @@ fn append_provider_login_refresh_failure(
     operation: crate::runtime::state::ProviderAuthProcessOperation,
     error: &DaemonError,
 ) -> Result<crate::local::ProviderLoginStatus, DaemonError> {
-    runtime_state.provider_login_process_store().append_output(
+    runtime_state.provider_login_process_store().append_note(
         owner_user_id,
         login_id,
-        std::iter::once(provider_auth_refresh_failure_message(operation, error).into_bytes()),
+        &provider_auth_refresh_failure_message(operation, error),
         crate::session::unix_epoch_ms(),
     )
 }

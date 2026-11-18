@@ -317,14 +317,20 @@ impl ProviderLoginProcessRecord {
             .unwrap_or(0)
     }
 
+    /// The echo can no longer be completed, so what was held back is masked.
+    /// Kernel text goes after the screen only once this has run: behind it the
+    /// held-back bytes would no longer be the end of the output.
+    fn mask_pending_secret_tail(&mut self) {
+        let held_back = self.pending_secret_tail();
+        let end = self.output.len();
+        self.output[end - held_back..].fill(b'*');
+    }
+
     fn set_state(&mut self, state: ProviderLoginProcessState, now_ms: u64) {
         self.state = state;
         self.updated_at_ms = now_ms;
         if state != ProviderLoginProcessState::Running {
-            // The echo can no longer be completed: what was held back is masked.
-            let tail = self.pending_secret_tail();
-            let end = self.output.len();
-            self.output[end - tail..].fill(b'*');
+            self.mask_pending_secret_tail();
             self.typed_secret = None;
             if let Some(login) = self.setup_token.as_mut() {
                 if login.vault_prompt.take().is_some() {
@@ -521,6 +527,13 @@ impl ProviderLoginProcessStore {
         record.message = None;
         record.updated_at_ms = now_ms;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn backdate_start_for_test(&self, login_id: &str, by_ms: u64) {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = records.get_mut(login_id).expect("login exists");
+        record.started_at_ms = record.started_at_ms.saturating_sub(by_ms);
     }
 
     /// Notes that a Vault value was typed into the login and cuts it out of
@@ -720,6 +733,23 @@ impl ProviderLoginProcessStore {
                 record.append_projected_output(&chunk);
             }
         }
+        record.updated_at_ms = now_ms;
+        Ok(record.status())
+    }
+
+    /// Adds text the kernel writes itself (a timeout, a failed check) below the
+    /// login screen, after masking an echo that was still arriving.
+    pub fn append_note(
+        &self,
+        owner_user_id: &str,
+        login_id: &str,
+        note: &str,
+        now_ms: u64,
+    ) -> Result<ProviderLoginStatus, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        record.mask_pending_secret_tail();
+        record.append_projected_output(note.as_bytes());
         record.updated_at_ms = now_ms;
         Ok(record.status())
     }
