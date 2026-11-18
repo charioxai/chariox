@@ -194,6 +194,14 @@ async fn one_app_whose_release_cannot_be_read_does_not_take_the_other_sources_wi
     let rig = rig().await;
     let good = app_event_source(&rig);
     let store = &rig.runtime.owned.durable_state_store;
+    // Active, but its release was never staged: the catalog cannot be read.
+    crate::durable_state::app_state::fixture_copy_installation(
+        store,
+        "local",
+        "ghost",
+        "deployment-ghost",
+        crate::durable_state::app_state::fixture_inbox_package_version("2.0.0", 0),
+    );
     store
         .app_inbox(AppInboxOperation::CreateRoute {
             route: InboxRoute {
