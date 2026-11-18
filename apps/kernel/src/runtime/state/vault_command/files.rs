@@ -185,7 +185,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_workspace_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
@@ -206,15 +206,16 @@ impl KernelRuntimeState {
         }
         let mode = file_mode(args.mode.as_deref())?;
         let path = new_workspace_file(&context.run, &args.path)?;
-        let turn = &context;
         let target = crate::config::VaultUseTarget::File {
             path: path.to_string_lossy().into_owned(),
         };
-        for id in args.values.values() {
-            self.preflight_workspace_vault_use(&turn.agent_id, id, &target)?;
-        }
+        let uses = args
+            .values
+            .values()
+            .map(|id| (id.as_str(), target.clone()))
+            .collect::<Vec<_>>();
         let _unlock = self
-            .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_write_file")
+            .prepare_workspace_vault_uses(&context, &uses, "vault_write_file")
             .await?;
         self.recheck_vault_command_context(&context)?;
         let mut content = Zeroizing::new(args.template.clone());

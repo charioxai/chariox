@@ -756,6 +756,8 @@ mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+#[cfg(test)]
+mod vault_leased_run_tests;
 
 mod capability_grant_runtime;
 mod workflow;

@@ -1115,6 +1115,41 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
     .await;
     assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
 
+    // The Vault is the home owner's: a Vault fill by the worker's provider reaches
+    // the home Vault as the home agent, whose Room names the credential.
+    let fill = worker_router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &worker_token,
+            "chariox.vault.write_file",
+            serde_json::json!({
+                "path": "vault-fill.txt",
+                "template": "{{TOKEN}}",
+                "values": {"TOKEN": "not-registered"},
+            }),
+        )
+        .await
+        .expect_err("the home Vault holds no such credential");
+    assert!(
+        fill.to_string()
+            .contains("unknown credential `not-registered`"),
+        "the fill must be answered by the home Vault, got: {fill}"
+    );
+    // A tool that stores into the Vault has no worker-side Vault to act on.
+    let generate = worker_router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &worker_token,
+            "chariox.vault.remove_capture",
+            serde_json::json!({"credential_id": "not-registered"}),
+        )
+        .await
+        .expect_err("a worker agent cannot change the owner's Vault entries");
+    assert!(
+        !generate.to_string().contains("no longer belongs"),
+        "the refusal must say what to do instead: {generate}"
+    );
+
     // A terminal the user opened on the home kernel names no worker. The
     // provider addresses it by asking for the home kernel, without naming
     // any home agent of the Room.

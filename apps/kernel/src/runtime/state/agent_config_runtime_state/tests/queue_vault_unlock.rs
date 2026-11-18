@@ -1,0 +1,205 @@
+//! An expired Vault unlock ends the queued prompt that asked for it;
+//! it never leaves the agent idle behind a prompt that nobody can start.
+use super::*;
+
+/// An agent whose launch needs a locked Vault: its Project holds a secret and the Vault is
+/// encrypted behind a passphrase nobody gives.
+async fn agent_behind_a_locked_vault(
+    label: &str,
+) -> (
+    crate::test_support::TestWorktree,
+    Arc<Mutex<DaemonApp>>,
+    KernelRuntimeState,
+    String,
+    String,
+) {
+    let root = crate::test_support::TestWorktree::new(label);
+    let vault = root.path().join("vault.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, "queue passphrase").unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.unlock_policy =
+        crate::config::CredentialVaultUnlockPolicy::Ttl;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    crate::project_environment::ProjectEnvironmentStore::new(
+        &runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root(),
+    )
+    .save(
+        session.project_id(),
+        0,
+        crate::project_environment::ProjectEnvironmentRecord {
+            schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
+            secrets: vec!["SYNTHETIC_TOKEN".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (root, app, runtime, session_id, agent_id)
+}
+
+fn queue_prompts(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    prompts: Vec<crate::session::PromptQueueItem>,
+) {
+    let session = runtime.owned.session_store.get_session(session_id).unwrap();
+    for prompt in prompts {
+        runtime
+            .owned
+            .prompt_state_owner
+            .submit_prepared_prompt(&session, prompt, true)
+            .unwrap();
+    }
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, agent_id);
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(session_id, agent_id, active, queued)
+        .unwrap();
+}
+
+/// An agent with two queued prompts whose launch needs a locked Vault.
+async fn two_queued_prompts_behind_a_locked_vault(
+    label: &str,
+) -> (
+    crate::test_support::TestWorktree,
+    Arc<Mutex<DaemonApp>>,
+    KernelRuntimeState,
+    String,
+    String,
+) {
+    let (root, app, runtime, session_id, agent_id) = agent_behind_a_locked_vault(label).await;
+    let prompts = [("head-a", "first request"), ("head-b", "second request")]
+        .map(|(id, text)| {
+            crate::session::PromptQueueItem::new(
+                id,
+                "attachment-1",
+                &agent_id,
+                text,
+                crate::session::PromptStatus::Queued,
+            )
+        })
+        .to_vec();
+    queue_prompts(&runtime, &session_id, &agent_id, prompts);
+    (root, app, runtime, session_id, agent_id)
+}
+
+fn assert_queue_ended_idle(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    started: Option<crate::session::PromptQueueItem>,
+) {
+    let session = runtime.owned.session_store.get_session(session_id).unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, agent_id);
+    assert!(started.is_none() && active.is_none());
+    assert!(
+        queued.is_empty(),
+        "a refused Vault unlock left {} prompts queued behind an idle agent",
+        queued.len()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on() {
+    let (_root, app, runtime, session_id, agent_id) =
+        two_queued_prompts_behind_a_locked_vault("queue-vault-unlock-timeout").await;
+    // Nobody answers either unlock card: each prompt asks once and times out.
+    let started = runtime
+        .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+        .await;
+    assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
+    drop(app);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_vault_unlock_fails_the_workflow_run_whose_step_was_queued() {
+    let (_root, app, runtime, session_id, agent_id) =
+        agent_behind_a_locked_vault("queue-vault-unlock-workflow").await;
+    let (run_id, node_run_id) = {
+        let mut sessions = runtime.owned.session_store.write();
+        let workflow = sessions
+            .create_workflow(&session_id, Some("vault-step".to_string()))
+            .unwrap();
+        let node = sessions
+            .add_workflow_node(&session_id, workflow.id(), &agent_id)
+            .unwrap();
+        let endpoint = sessions
+            .create_workflow_endpoint(&session_id, workflow.id(), node.id(), Some("entry".into()))
+            .unwrap();
+        let run = sessions
+            .invoke_workflow_endpoint(
+                &session_id,
+                workflow.id(),
+                endpoint.id(),
+                Some("needs the vault".into()),
+            )
+            .unwrap();
+        let node_run_id = run.node_runs()[0].id().to_string();
+        sessions
+            .prepare_workflow_turn(
+                &session_id,
+                run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "needs the vault".into(),
+                None,
+                None,
+            )
+            .unwrap();
+        (run.id().to_string(), node_run_id)
+    };
+    queue_prompts(
+        &runtime,
+        &session_id,
+        &agent_id,
+        vec![crate::session::PromptQueueItem::new(
+            "step-prompt",
+            "attachment-1",
+            &agent_id,
+            "needs the vault",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(&run_id, &node_run_id)],
+    );
+
+    // Nobody answers the unlock card: the step's prompt ends, and the run it served with it.
+    let started = runtime
+        .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+        .await;
+
+    assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let run = session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == run_id)
+        .expect("the run is still recorded");
+    assert_eq!(
+        run.status(),
+        crate::session::WorkflowRunStatus::Failed,
+        "a workflow step that waited on an unlock nobody gave must fail its run, not hang"
+    );
+    drop(app);
+}
