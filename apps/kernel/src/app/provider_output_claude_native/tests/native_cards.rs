@@ -359,7 +359,7 @@ fn a_multi_select_question_collects_every_choice_before_it_answers() {
 }
 
 #[test]
-fn the_questions_of_one_call_share_one_deadline() {
+fn a_question_waits_for_the_person_with_no_deadline_of_its_own() {
     let fixture = fixture(crate::provider::AgentPermissionLevel::Required);
     let mut event = question_event("default");
     event["tool_input"]["questions"]
@@ -373,7 +373,7 @@ fn the_questions_of_one_call_share_one_deadline() {
         }));
     let bridge = ScriptedBridge::new(
         &[("option-0", "Red"), ("option-1", "Small")],
-        std::time::Duration::from_millis(1_100),
+        std::time::Duration::ZERO,
     );
 
     resolve_scripted(&fixture, &bridge, &event);
@@ -381,15 +381,13 @@ fn the_questions_of_one_call_share_one_deadline() {
     let response = hook_response(&fixture);
     let cards = bridge.interactions.lock().unwrap();
     assert_eq!(cards.len(), 2);
-    assert_eq!(
-        cards[0].timeout_sec(),
-        Some(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS)
-    );
-    assert!(
-        cards[1].timeout_sec().unwrap() < crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
-        "the second card gets only what the first left of the hook's wait: {:?}",
-        cards[1].timeout_sec()
-    );
+    for card in cards.iter() {
+        assert_eq!(
+            card.timeout_sec(),
+            None,
+            "nobody may see the agent that asked, so no deadline answers for the person"
+        );
+    }
     assert_eq!(
         response["updatedInput"]["answers"]["Large or small?"],
         "Small"

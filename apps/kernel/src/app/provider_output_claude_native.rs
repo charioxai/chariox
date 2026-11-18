@@ -71,8 +71,7 @@ use permission::{
     write_claude_question_answers, write_claude_workspace_trust_selection_marker,
 };
 use question::{
-    ask_claude_question, claude_question_updated_input, claude_questions, QuestionBatchDeadline,
-    QuestionOutcome,
+    ask_claude_question, claude_question_updated_input, claude_questions, QuestionOutcome,
 };
 use readiness::{
     CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
@@ -1720,7 +1719,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let request_id = request_id.to_string();
         let event = event.clone();
         std::thread::spawn(move || {
-            let deadline = QuestionBatchDeadline::starting_now();
             let mut answers = Vec::with_capacity(questions.len());
             for (index, question) in questions.iter().enumerate() {
                 let outcome = ask_claude_question(
@@ -1730,7 +1728,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     &agent_id,
                     origin.clone(),
                     question,
-                    &deadline,
                 );
                 match outcome {
                     Ok(QuestionOutcome::Answered(answer)) => {
@@ -1741,15 +1738,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             &context_file,
                             &request_id,
                             "The turn was stopped in Chariox.",
-                        );
-                        return;
-                    }
-                    Ok(QuestionOutcome::Unanswered) => {
-                        write_claude_permission_response(
-                            &context_file,
-                            &request_id,
-                            false,
-                            "The person did not answer the question.",
                         );
                         return;
                     }

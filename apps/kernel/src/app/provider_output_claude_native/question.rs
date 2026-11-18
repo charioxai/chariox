@@ -1,10 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: Claude's `AskUserQuestion` call, shown as the
 //! kernel-owned question card, answered through the waiting permission hook.
-use std::time::{Duration, Instant};
-
 use serde_json::Value;
 
-use super::claude_card_withdrawn;
 use crate::provider::ProviderNativeInteractionBridge;
 use crate::session::{
     NativeInteractionOrigin, RuntimeInteraction, RuntimeInteractionChoice,
@@ -15,8 +12,6 @@ pub(super) const CLAUDE_QUESTION_TOOL: &str = "AskUserQuestion";
 const OTHER_ANSWER_ID: &str = "other";
 const OTHER_ANSWER_MAX_CHARS: usize = 4000;
 const DONE_ID: &str = "done";
-/// A card open for less than this could not be read and answered.
-const SHORTEST_CARD: Duration = Duration::from_secs(5);
 
 pub(super) struct ClaudeQuestion {
     pub(super) question: String,
@@ -74,32 +69,10 @@ fn non_empty(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The hook waits for all the answers of one call at once, so the cards of a
-/// batch share one deadline inside that wait: each gets only what is left.
-pub(super) struct QuestionBatchDeadline(Instant);
-
-impl QuestionBatchDeadline {
-    pub(super) fn starting_now() -> Self {
-        Self(
-            Instant::now()
-                + Duration::from_secs(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS),
-        )
-    }
-
-    /// How long the next card may stay open, in whole seconds rounded up;
-    /// none when too little is left.
-    fn card_timeout(&self, now: Instant) -> Option<Duration> {
-        let left = self.0.saturating_duration_since(now);
-        let left = Duration::from_secs(left.as_secs() + u64::from(left.subsec_nanos() > 0));
-        (left >= SHORTEST_CARD).then_some(left)
-    }
-}
-
 pub(super) enum QuestionOutcome {
     Answered(String),
-    /// Nobody answered before the deadline.
-    Unanswered,
-    /// The card closed because its turn was stopped.
+    /// The card closed unanswered: a question has no deadline, so only a
+    /// stopped turn closes it.
     Withdrawn,
 }
 
@@ -112,22 +85,12 @@ pub(super) fn ask_claude_question(
     agent_id: &str,
     origin: Option<NativeInteractionOrigin>,
     question: &ClaudeQuestion,
-    deadline: &QuestionBatchDeadline,
 ) -> Result<QuestionOutcome, crate::error::DaemonError> {
     let mut chosen = Vec::<String>::new();
     for round in 0.. {
-        let Some(timeout) = deadline.card_timeout(Instant::now()) else {
-            return Ok(QuestionOutcome::Unanswered);
-        };
-        let interaction = claude_question_interaction(
-            format!("{card_id}-{round}"),
-            agent_id,
-            question,
-            &chosen,
-            timeout.as_secs(),
-        )
-        .with_native_origin(origin.clone());
-        let closes_at = Instant::now() + timeout;
+        let interaction =
+            claude_question_interaction(format!("{card_id}-{round}"), agent_id, question, &chosen)
+                .with_native_origin(origin.clone());
         let resolution = bridge.request_blocking(session_id, interaction)?;
         let reply = resolution
             .reply
@@ -145,10 +108,7 @@ pub(super) fn ask_claude_question(
                     break;
                 }
             }
-            _ if claude_card_withdrawn(&resolution, closes_at) => {
-                return Ok(QuestionOutcome::Withdrawn)
-            }
-            _ => return Ok(QuestionOutcome::Unanswered),
+            _ => return Ok(QuestionOutcome::Withdrawn),
         }
     }
     Ok(QuestionOutcome::Answered(chosen.join(", ")))
@@ -159,7 +119,6 @@ fn claude_question_interaction(
     agent_id: &str,
     question: &ClaudeQuestion,
     chosen: &[String],
-    timeout_sec: u64,
 ) -> RuntimeInteraction {
     let mut message = question.question.clone();
     for option in &question.options {
@@ -207,7 +166,7 @@ fn claude_question_interaction(
             Some(1),
             Some(OTHER_ANSWER_MAX_CHARS),
         )),
-        Some(timeout_sec),
+        None,
         None,
     )
 }
@@ -226,26 +185,4 @@ pub(super) fn claude_question_updated_input(event: &Value, answers: &[(String, S
             .collect(),
     );
     input
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_card_gets_only_what_is_left_of_the_batch_and_none_near_its_end() {
-        let now = Instant::now();
-        let deadline = QuestionBatchDeadline(now + Duration::from_secs(12));
-        assert_eq!(deadline.card_timeout(now), Some(Duration::from_secs(12)));
-        assert_eq!(
-            deadline.card_timeout(now + Duration::from_secs(8)),
-            None,
-            "four seconds is too short to read and answer a card"
-        );
-        assert_eq!(
-            deadline.card_timeout(now + Duration::from_millis(1_500)),
-            Some(Duration::from_secs(11))
-        );
-        assert_eq!(deadline.card_timeout(now + Duration::from_secs(20)), None);
-    }
 }

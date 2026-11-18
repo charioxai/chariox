@@ -278,7 +278,9 @@ if (eventName === "UserPromptSubmit") {
     : null
   if (responseFile) {
     // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-    const deadline = Date.now() + 330000
+    // A question has no deadline: nobody may see the agent that asked, so only
+    // the answer or Claude's own hook timeout ends the wait.
+    const deadline = input.tool_name === "AskUserQuestion" ? Infinity : Date.now() + 330000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         try {
