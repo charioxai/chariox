@@ -536,9 +536,10 @@ impl PreparedDomain {
                         false
                     }
                     // A signal ended `ps` (a hot reload ends the children the
-                    // kernel leaves behind while a sample runs): the tree
-                    // says nothing, so read again next tick.
-                    Err(sampling::SamplingError::Ended) => false,
+                    // kernel leaves behind while a sample runs), or the sampler
+                    // has just resumed: the tree says nothing, so read again
+                    // next tick.
+                    Err(sampling::SamplingError::Ended | sampling::SamplingError::Pending) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(
                             "process_resources.monitor",
