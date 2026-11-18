@@ -388,6 +388,21 @@ already admitted work and identify it to callers; known rejections are
 recorded separately. Obligation settlement, waits and recovery remain the
 following lifecycle PR's responsibility.
 
+### 3.6.2 Agents never reach the kernel's state
+
+Every process the kernel starts for an agent (provider runs, kernel jobs and
+watched commands, terminals an agent opens) runs where the kernel's secrets
+are out of reach: its state folder (database, relay credential, every
+provider profile), Vault, credentials, machine identity, relay pairing and
+history. On Linux a Bubblewrap mount namespace covers them with empty folders;
+on macOS a Seatbelt profile denies them. What the launch names as the agent's
+own stays reachable: its working folder, its provider profile, its scratch
+folder and program, and, read-only, the kernel registry and local sign-in
+token the chariox CLI uses. A kernel that cannot confine (no `bwrap`, or user
+namespaces denied to it) refuses to start the process with a message that
+says how to fix it; nothing runs unconfined. A person's own terminal is not
+confined.
+
 ### 3.7 Workspace Coordination
 
 If Chariox is to orchestrate multiple top-level agents without relying on a human to manually clean up merge conflicts, workspace coordination must be kernel-owned.
