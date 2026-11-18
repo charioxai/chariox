@@ -219,7 +219,7 @@ impl KernelRuntimeState {
             return Ok(promotion_result(first.sequence, &promotion));
         }
         let payload = if first.urgent {
-            serde_json::json!({"status":"durable","sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
+            serde_json::json!({"status":"steering","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
         } else {
             serde_json::json!({"status":"queued","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":false,"reply_requested":first.reply_requested,"note":queued_note(target_name)})
         };

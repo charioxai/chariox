@@ -1138,9 +1138,15 @@ then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Timer acknowledgements and repeated continuations do not limit
 automatic wakes. Fifteen minutes waiting without progress
-produces a notice. Unconfirmed provider delivery blocks within two minutes and
-requires reconciliation of the original receipt; uncertainty never permits
-blind replay. Damaged ledger/source rows are retained and quarantined.
+produces a notice. A delivery a kernel restart or a lost turn interrupted is settled
+by the kernel before each sweep, never by a person: when the receiving turn took the
+event (a queued or running prompt, or a task of its own) it is accepted; otherwise the
+same event and sequence return to pending with a fresh refusal budget (receipt state
+`recovered`) and the normal inbox path delivers it to a later turn at most once. A
+steer is always put back. Damaged ledger/source rows are retained and quarantined; a
+damaged interrupted row is skipped and logged without stopping the pass. A task whose
+only open work is finished sources with an unacknowledged outcome ends done after the
+one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
 window. Repeated refusals while idle have a separate bounded escalation clock;
 an active recipient turn clears that clock. Unsupported or refused steering
@@ -1149,7 +1155,10 @@ Steer rejections do not start the idle-refusal clock; idle refusals start it at
 receipt time. A damaged refusal clock is retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
-`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+`chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
+with the message id (`status` `queued`, or `steering` for an urgent one); delivery runs
+on the kernel's own account afterwards, so a busy receiver or a change to the sender
+never fails or duplicates it. Nonurgent
 messages wait behind active work; idle/yielded receivers wake. Urgent messages
 use the existing exact-turn steer path, with rejected/unsupported steering
 retained for a later wake and uncertainty pinned. Explicitly stopped receivers

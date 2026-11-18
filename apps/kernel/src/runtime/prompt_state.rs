@@ -122,6 +122,11 @@ impl PromptStateKey {
     }
 }
 
+/// What a submission that refuses to queue says when the agent already has a turn: the caller
+/// keeps its work and starts it at the next possible point. Nobody shows it to a sender.
+pub(crate) const TARGET_BUSY_MESSAGE: &str =
+    "target agent is busy; retry when its provider is ready";
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
@@ -530,7 +535,7 @@ impl PromptStateOwner {
             if !allow_queue {
                 return Err(DaemonError::LocalTransport {
                     operation: "send agent message",
-                    message: "target agent is busy; retry when its provider is ready".to_string(),
+                    message: TARGET_BUSY_MESSAGE.to_string(),
                 });
             }
             let pending_prompt_id = if prompt.durable_operation_id().is_some() {

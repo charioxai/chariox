@@ -1009,11 +1009,6 @@ fn a03_teardown_settles_inflight_uncertain_delivery_before_timeout() {
     teardown_settles_inflight_deliveries("uncertain");
 }
 
-#[test]
-fn a03_teardown_settles_inflight_blocked_delivery() {
-    teardown_settles_inflight_deliveries("blocked");
-}
-
 fn teardown_settles_inflight_deliveries(state: &str) {
     for agent in [Some("agent"), None] {
         let f = Fixture::new();
@@ -1039,13 +1034,6 @@ fn teardown_settles_inflight_deliveries(state: &str) {
                 sequence,
                 state: state.into(),
                 now: 1_002,
-            });
-        } else if state == "blocked" {
-            f.apply(Operation::Sweep {
-                now: 1_001 + DELIVERY_TIMEOUT_MS,
-                vault_wait_recipients: Vec::new(),
-                busy_recipients: vec![],
-                held_work: Vec::new(),
             });
         }
         assert_eq!(f.inbox()[0].state, state);
@@ -2472,11 +2460,6 @@ mod driver_sources {
         teardown_settles_inflight_deliveries("uncertain");
     }
 
-    #[test]
-    fn a03_teardown_settles_inflight_blocked_delivery() {
-        teardown_settles_inflight_deliveries("blocked");
-    }
-
     fn teardown_settles_inflight_deliveries(state: &str) {
         for agent in [Some("agent"), None] {
             let f = Fixture::new();
@@ -2502,13 +2485,6 @@ mod driver_sources {
                     sequence,
                     state: state.into(),
                     now: 1_002,
-                });
-            } else if state == "blocked" {
-                f.apply(Operation::Sweep {
-                    now: 1_001 + DELIVERY_TIMEOUT_MS,
-                    vault_wait_recipients: Vec::new(),
-                    busy_recipients: vec![],
-                    held_work: Vec::new(),
                 });
             }
             assert_eq!(f.inbox()[0].state, state);

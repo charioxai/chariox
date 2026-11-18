@@ -702,22 +702,15 @@ impl KernelRuntimeState {
             }
             return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
-            self.owned.record_notice_for_agent(
-                target_room,
-                None,
-                Some(target.id()),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(target_room),
-                format!(
-                    "Event {} is durable and pending: {}",
-                    event.sequence,
-                    crate::secret_redaction::redact_secrets(&error.to_string())
-                ),
-            );
-        }
-        let mut payload = serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
+        // The message is stored; the sender never waits for the receiver's provider to take it.
+        // The receiver reads it at its next possible point and a following sender gets the
+        // delivery event then.
+        self.spawn_agent_inbox_delivery(
+            target_room.to_owned(),
+            target.id().to_owned(),
+            event.sequence,
+        );
+        let mut payload = serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
         if let Some(note) =
             self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
         {
@@ -725,6 +718,28 @@ impl KernelRuntimeState {
             payload["note"] = note.into();
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+    /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
+    /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
+    fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
+        let state = self.as_kernel();
+        tokio::spawn(async move {
+            if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
+                state.owned.record_notice_for_agent(
+                    &room,
+                    None,
+                    Some(&agent),
+                    state
+                        .owned
+                        .attachment_store
+                        .list_session_attachment_ids(&room),
+                    format!(
+                        "Event {sequence} is durable and pending: {}",
+                        crate::secret_redaction::redact_secrets(&error.to_string())
+                    ),
+                );
+            }
+        });
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.
@@ -1308,6 +1323,8 @@ impl KernelRuntimeState {
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
+        // Before any task is judged: a delivery the kernel can settle is not unresolved work.
+        self.settle_interrupted_deliveries(now)?;
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }

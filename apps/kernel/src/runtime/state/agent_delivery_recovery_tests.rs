@@ -115,54 +115,186 @@ async fn refused_start_ends_with_a_typed_failure_and_the_next_message_starts_a_t
     assert!(f.child_is_running());
 }
 
+impl Fixture {
+    /// A delivery attempt whose provider receipt never came, as a restart leaves it.
+    fn lost_receipt(&self, label: &str, prompt: &str) -> InboxEvent {
+        let lost = self.message(label, true, false);
+        let store = &self.runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        store
+            .agent_lifecycle(Operation::Attempt {
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                sequence: lost.sequence,
+                prompt: prompt.into(),
+                target: None,
+                run: None,
+                now,
+                work: None,
+                through: lost.sequence,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Receipt {
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                sequence: lost.sequence,
+                state: "uncertain".into(),
+                now,
+            })
+            .unwrap();
+        lost
+    }
+
+    async fn sweep_settling_after_delivery_window(&self) {
+        let now = crate::session::unix_epoch_ms() + DELIVERY_TIMEOUT_MS + 1_000;
+        self.runtime.settle_interrupted_deliveries(now).unwrap();
+        self.sweep_after_delivery_window();
+    }
+}
+
+/// The turn never started: the kernel sends the same event again, with no card for a person.
 #[tokio::test]
-async fn resume_on_an_unconfirmed_delivery_card_delivers_the_message_again() {
+async fn an_interrupted_delivery_before_its_turn_started_is_sent_again_without_a_card() {
     let f = Fixture::with_child_provider("dev-stub");
+    let lost = f.lost_receipt("receipt-never-came", "lost-prompt");
+
+    f.sweep_settling_after_delivery_window().await;
+
+    assert_eq!(f.state_of(lost.sequence), "pending");
+    assert_eq!(
+        f.blocked_delivery_tasks(),
+        0,
+        "no card asks the owner about the delivery"
+    );
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+    assert_eq!(f.state_of(lost.sequence), "accepted");
+    assert!(f.child_is_running());
+    assert_eq!(
+        f.child_inbox()
+            .iter()
+            .filter(|e| e.sequence == lost.sequence)
+            .count(),
+        1,
+        "the same event, not a copy"
+    );
+}
+
+/// One damaged row must not stop the lifecycle pass for the rest.
+#[tokio::test]
+async fn a_damaged_interrupted_delivery_row_does_not_stop_the_lifecycle_pass() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let good = f.lost_receipt("receipt-never-came", "lost-prompt");
+    f.runtime.owned.durable_state_store.agent_ledger_sql_for_test(&format!(
+        "INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES('{}','{}','x','damaged','{{\"state\":\"submitting\",\"prompt_id\":\"p\",\"attempted_at_ms\":1}}')",
+        f.room, f.child
+    ));
+
+    // Both attempts began long ago, as after a restart; the pass runs at the real time.
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_ledger_sql_for_test(&format!(
+        "UPDATE agent_inbox SET payload=json_set(payload,'$.attempted_at_ms',1) WHERE sequence={}",
+        good.sequence
+    ));
+    f.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        f.state_of(good.sequence),
+        "pending",
+        "the other delivery is settled"
+    );
+}
+
+/// The earlier busy refusal used up the budget before the restart: the recovered delivery gets
+/// its retry first, with the refusal budget measured from its recovery.
+#[tokio::test]
+async fn a_recovered_delivery_is_retried_before_an_old_refusal_budget_fails_it() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let lost = f.lost_receipt("receipt-never-came", "lost-prompt");
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_ledger_sql_for_test(&format!(
+            "INSERT INTO agent_inbox_refusals VALUES({}, 1)",
+            lost.sequence
+        ));
+
+    f.sweep_settling_after_delivery_window().await;
+
+    assert_eq!(f.state_of(lost.sequence), "pending");
+    assert_eq!(f.blocked_delivery_tasks(), 0);
+}
+
+/// A batch settles through its lead's receipt: the companions are found settled, not settled twice.
+#[tokio::test]
+async fn batch_companions_of_an_interrupted_delivery_settle_once() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let lead = f.message("batch-lead", true, false);
+    let companion = f.message("batch-companion", true, false);
     let store = &f.runtime.owned.durable_state_store;
-    let lost = f.message("receipt-never-came", true, false);
-    let now = crate::session::unix_epoch_ms();
     store
         .agent_lifecycle(Operation::Attempt {
             room: f.room.clone(),
             agent: f.child.clone(),
-            sequence: lost.sequence,
-            prompt: "lost-prompt".into(),
+            sequence: lead.sequence,
+            prompt: "batch-prompt".into(),
             target: None,
             run: None,
-            now,
+            now: crate::session::unix_epoch_ms(),
             work: None,
-            through: lost.sequence,
+            through: companion.sequence,
         })
         .unwrap();
-    let Outcome::Event(_) = store
-        .agent_lifecycle(Operation::Receipt {
+
+    let now = crate::session::unix_epoch_ms() + DELIVERY_TIMEOUT_MS + 1_000;
+    f.runtime.settle_interrupted_deliveries(now).unwrap();
+    f.runtime.settle_interrupted_deliveries(now).unwrap();
+
+    assert_eq!(f.state_of(lead.sequence), "pending");
+    assert_eq!(f.state_of(companion.sequence), "pending");
+}
+
+/// The turn already took the event: it is delivered, and nothing sends it a second time.
+#[tokio::test]
+async fn an_interrupted_delivery_its_turn_took_is_delivered_without_a_card() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let lost = f.lost_receipt("receipt-lost-after-turn", "took-prompt");
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: f
+                .runtime
+                .owned
+                .session_store
+                .get_session(&f.room)
+                .unwrap()
+                .owner_user_id()
+                .into(),
             room: f.room.clone(),
             agent: f.child.clone(),
-            sequence: lost.sequence,
-            state: "uncertain".into(),
-            now,
+            prompt: "took-prompt".into(),
+            run: Some("run-1".into()),
+            now: crate::session::unix_epoch_ms(),
         })
-        .unwrap()
-    else {
-        panic!("event")
-    };
-    f.sweep_after_delivery_window();
-    assert_eq!(f.state_of(lost.sequence), "blocked");
-    let card = store
-        .agent_tasks(Some(&f.room), Some(&f.child))
-        .unwrap()
-        .into_iter()
-        .find(|t| t.task_id.starts_with("delivery-"))
-        .expect("the owner is asked about the unconfirmed delivery");
+        .unwrap();
 
-    f.runtime
-        .resolve_agent_task_owner_action(
-            &card,
-            super::agent_task_owner_resolution::OwnerTaskAction::Resume,
-        )
-        .await;
+    f.sweep_settling_after_delivery_window().await;
 
-    assert_eq!(f.state_of(lost.sequence), "acknowledged");
+    assert_eq!(f.state_of(lost.sequence), "accepted");
+    assert_eq!(
+        f.blocked_delivery_tasks(),
+        0,
+        "no card asks the owner about the delivery"
+    );
     assert!(f.child_is_running());
 }
 

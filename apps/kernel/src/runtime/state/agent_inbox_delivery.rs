@@ -410,6 +410,13 @@ impl KernelRuntimeState {
                         }
                     }
                 }
+                // The agent took a turn between the check and the start: the event stays pending
+                // and goes into its next turn. Not a failed start, and nobody is told to retry.
+                Err(DaemonError::LocalTransport { message, .. })
+                    if message == crate::runtime::prompt_state::TARGET_BUSY_MESSAGE =>
+                {
+                    self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
+                }
                 Err(e) => {
                     if let DaemonError::VaultUnlock {
                         code: "vault_unlock_declined" | "vault_unlock_timed_out",

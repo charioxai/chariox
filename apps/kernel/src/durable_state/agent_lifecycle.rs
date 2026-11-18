@@ -26,12 +26,12 @@ mod unread_steers;
 mod worker_stops;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
+mod audit;
 #[cfg(test)]
 mod blocked_intent_tests;
 #[cfg(test)]
 mod child_end_receipt_tests;
 pub(crate) mod created_peers;
-mod delivery_waits;
 #[cfg(test)]
 mod done_parent_binding_tests;
 #[cfg(test)]
@@ -43,7 +43,6 @@ mod goal_tests;
 pub(crate) mod goals;
 #[cfg(test)]
 mod message_reply_tests;
-mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
 mod outside_tests;
@@ -158,8 +157,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     worker_stops::initialize(db)?;
-    workflow_tasks::initialize(db)?;
-    migration::migrate(db)
+    workflow_tasks::initialize(db)
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
@@ -552,6 +550,53 @@ impl DurableKernelStateStore {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
+    }
+    /// Deliveries whose provider receipt never came and whose attempt began before
+    /// `before_ms`: the kernel settles each itself. A leased worker settles its own
+    /// (`leased:` runs), and a quarantined receipt carries no prompt.
+    pub(crate) fn agent_interrupted_deliveries(
+        &self,
+        before_ms: u64,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.interrupted_deliveries")?;
+        let mut q = db.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') AND json_extract(payload,'$.prompt_id') IS NOT NULL AND COALESCE(json_extract(payload,'$.provider_run_id'),'') NOT LIKE 'leased:%' AND COALESCE(json_extract(payload,'$.attempted_at_ms'),0) < ?1 ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map([sql_integer(before_ms)?], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(sql)?;
+        let mut events = vec![];
+        for row in rows {
+            // One damaged row never stops the lifecycle pass: it stays as it is, where the
+            // sweep's quarantine of corrupt deliveries reports it with its reason.
+            let decoded =
+                row.map_err(sql)
+                    .and_then(|(sequence, room, agent, source, id, payload)| {
+                        decode_inbox(sequence, &room, &agent, &source, &id, &payload)
+                    });
+            match decoded {
+                Ok(event) => events.push(event),
+                Err(error) => crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "interrupted delivery row is damaged; left for quarantine",
+                    serde_json::json!({"error": error.to_string()}),
+                ),
+            }
+        }
+        Ok(events)
+    }
+    /// Runs raw SQL against the ledger: tests damage and age rows the way a crash does.
+    #[cfg(test)]
+    pub(crate) fn agent_ledger_sql_for_test(&self, sql_text: &str) {
+        let db = Connection::open(&self.path).unwrap();
+        db.execute_batch(sql_text).unwrap();
     }
     /// Steers into a leased turn whose outcome is still unconfirmed, as
     /// `(room, agent, steer id)`: a restart must ask their workers again.

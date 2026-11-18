@@ -356,7 +356,10 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             state,
             now,
         } => {
-            if !matches!(state.as_str(), "accepted" | "rejected" | "uncertain") {
+            if !matches!(
+                state.as_str(),
+                "accepted" | "rejected" | "uncertain" | "recovered"
+            ) {
                 return Err(error("invalid delivery receipt"));
             }
             let mut e = get_event(tx, &room, &agent, sequence)?;
@@ -380,7 +383,16 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                     }
                 }
             }
-            e.state = if state == "rejected" {
+            // "recovered": the kernel's own restart, not the agent, spent the time since an
+            // earlier busy refusal, so the retry starts with a full refusal budget.
+            if state == "recovered" {
+                tx.execute(
+                    "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
+                    [sql_integer(e.sequence)?],
+                )
+                .map_err(sql)?;
+            }
+            e.state = if matches!(state.as_str(), "rejected" | "recovered") {
                 "pending".into()
             } else {
                 state

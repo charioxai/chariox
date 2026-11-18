@@ -503,7 +503,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     e.attempted_at_ms
                 };
-                if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
+                if e.state == "pending"
                     && (clock_quarantined
                         || deadline_start.is_some_and(|at| {
                             // Receipt time can advance during Sweep's awaited pre-work.
@@ -513,18 +513,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
                         }))
                 {
-                    // Refused before any provider I/O: nothing is unconfirmed, so it ends as
-                    // failed and cannot fence the recipient's later wakes and messages.
-                    let undelivered =
-                        e.state == "pending" && e.submit_epoch.is_none() && !clock_quarantined;
+                    // A delivery with a provider attempt but no receipt is settled by the
+                    // kernel before this sweep (`settle_interrupted_deliveries`). What is
+                    // left refused before any provider I/O: nothing is unconfirmed, so it
+                    // ends as failed and cannot fence the recipient's later wakes.
                     let reason = if clock_quarantined {
                         format!("Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel", e.sequence)
-                    } else if undelivered {
-                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
                     } else {
-                        format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel", e.sequence)
+                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
                     };
-                    if undelivered {
+                    if !clock_quarantined {
                         super::delivery_failure::fail_undelivered(tx, &mut e)?;
                     } else {
                         e.state = "blocked".into();
@@ -545,11 +543,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             }
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
-                            t.reason = if clock_quarantined || undelivered {
-                                reason.clone()
-                            } else {
-                                format!("Unconfirmed delivery {}: owner must reconcile the original attempt", e.sequence)
-                            };
+                            t.reason = reason.clone();
                             t.revision += 1;
                             save(tx, &t)?;
                             changed.push(t);
@@ -566,7 +560,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
         Operation::CancelTask {
@@ -650,7 +643,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .and_then(|n| n.parse::<u64>().ok());
                 if let Some(own) = own {
                     let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
-                    if matches!(event.state.as_str(), "blocked" | "uncertain" | "failed") {
+                    if event.state == "failed" {
                         super::delivery_failure::send_again(tx, &mut event, now)?;
                         t.state = ExecutionState::Done;
                         t.reason = "Delivery sent again".into();
@@ -721,7 +714,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "goal.owner_resume",
                         &t.task_id,

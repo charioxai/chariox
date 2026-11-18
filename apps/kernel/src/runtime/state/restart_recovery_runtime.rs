@@ -101,7 +101,7 @@ impl KernelRuntimeState {
             .unwrap_or_else(|error| {
                 crate::logging::warn_with_fields(
                     "durable_state.recovery",
-                    "could not list unconfirmed leased inbox steers; the delivery sweep blocks them for the owner",
+                    "could not list unconfirmed leased inbox steers; their workers are not asked again until the next restart",
                     serde_json::json!({"error": error.to_string()}),
                 );
                 Vec::new()
