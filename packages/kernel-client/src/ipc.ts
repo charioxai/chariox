@@ -90,8 +90,9 @@ const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // The kernel answers one replay of a finished command per ten seconds and tells the others
 // `duplicate_command_unavailable`. A command that ran past the retry deadline is still owed its
-// result, so its replays continue for three of those windows, counted once from the original
-// deadline: a kernel that keeps refusing must not keep the request alive.
+// result, so its replays continue for three of those windows, counted once from the first refusal
+// (never earlier than the original deadline): a command that ran longer than the retry deadline
+// gets its first refusal late, and a kernel that keeps refusing must not keep the request alive.
 const KERNEL_DUPLICATE_ANSWER_RETRY_MS = 30_000
 // The kernel runs these again when they are replayed: they carry no request id
 // its ledgers deduplicate, and it keeps them out of its command-result cache
@@ -737,7 +738,7 @@ export class LocalIpcClient {
     let retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
-    const originalRetryUntilMs = retryUntilMs
+    let duplicateAnswerSettled = false
     const replayAfterWrite = !runsAgainOnReplay(request)
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
     const relayBinding: { socket: WebSocket | null; request: ReturnType<typeof normalizeRelayRequest> | null } = { socket: null, request: null }
@@ -814,7 +815,10 @@ export class LocalIpcClient {
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
         const resultWindowClosed = error instanceof LocalIpcError && error.code === "duplicate_command_unavailable"
-        if (resultWindowClosed && lane === "control") retryUntilMs = originalRetryUntilMs + this.duplicateAnswerRetryMs
+        if (resultWindowClosed && lane === "control" && !duplicateAnswerSettled) {
+          duplicateAnswerSettled = true
+          retryUntilMs = Math.max(retryUntilMs, Date.now() + this.duplicateAnswerRetryMs)
+        }
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
