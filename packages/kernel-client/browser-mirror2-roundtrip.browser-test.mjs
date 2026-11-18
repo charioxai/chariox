@@ -25,7 +25,7 @@ before(async()=>{
   browser=await chromium.launch({executablePath:process.env.MIRROR_LAB_CHROME??'/opt/google/chrome/chrome',headless:true,chromiumSandbox:true});
 });
 after(async()=>{await browser?.close();if(viewerServer)await new Promise(r=>viewerServer.close(r));if(scratch)await rm(scratch,{recursive:true,force:true});});
-async function roundtrip(html,child,run){
+async function roundtrip(html,child,run,{dpr=1}={}){
   const root=await mkdtemp(path.join(scratch,'source-'));
   const childSource=html.includes('CHILDPORT')?createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(child);}):null;
   if(childSource)await new Promise(r=>childSource.listen(0,'127.0.0.1',r));
@@ -38,7 +38,7 @@ async function roundtrip(html,child,run){
     const evaluate=async expression=>{const tab=host.tabs.get(opened.tab_id);const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);const reply=await connection.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},sessionId);assert(!reply.exceptionDetails,'MP-10: source fixture evaluation');return reply.result.value;};
     for(let i=0;i<200&&!(await evaluate("location.pathname==='/source'&&document.readyState==='complete'").catch(()=>false));i++)await new Promise(r=>setTimeout(r,25));
     await host.request({op:'state'});
-    const {subscription_id}=await host.request({op:'mirror_subscribe',tab_id:opened.tab_id,generation:opened.generation,device_scale_factor:1,wire:2});
+    const {subscription_id}=await host.request({op:'mirror_subscribe',tab_id:opened.tab_id,generation:opened.generation,device_scale_factor:dpr,wire:2});
     let compression=Buffer.alloc(0),base;
     // The product client restores the compact delta's binding and unchanged header.
     const next=async(reset=false)=>{
@@ -59,7 +59,7 @@ async function roundtrip(html,child,run){
       }
       base=packet;return packet;
     };
-    context=await browser.newContext({viewport:{width:1400,height:900}});await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:viewerUrl});page=await context.newPage();await page.goto(viewerUrl);
+    context=await browser.newContext({viewport:{width:1400,height:900},deviceScaleFactor:dpr});await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:viewerUrl});page=await context.newPage();await page.goto(viewerUrl);
     const actions=[],errors=[];
     await page.exposeFunction('sourceAction',async action=>{actions.push(action);try{return await host.request({op:'input',tab_id:opened.tab_id,generation:opened.generation,document_id:host.tabs.get(opened.tab_id).document_id,input:{kind:'mirror',subscription_id,sequence,action}});}catch(error){errors.push(error.message);throw error;}});
     await page.evaluate(async()=>{window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('viewer'),action=>window.sourceAction(action));await window.r.ready();});
@@ -127,6 +127,23 @@ for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: 
     let large=await next();for(let i=0;i<4&&large.fallback!=='region_area';i++)large=await next();
     assert.equal(large.fallback,'region_area','MP-11: the same closed region obeys the opaque-area video handoff');
   }));
+
+// Review 5956294075: a closed root's content can paint outside its host's box (a fixed consent banner in a 0x0 or small host).
+for(const [size,box] of [['0x0',''],['20x20','width:20px;height:20px']])for(const dpr of [1,2])test(`MP-10: a ${size} closed host's banner is visible and clickable in the viewer at DPR${dpr}`,()=>roundtrip(
+  `<!doctype html><style>body{margin:0;height:3000px}</style><p>page</p><div id="h" style="position:fixed;z-index:9;${box}"></div><script>h.attachShadow({mode:"closed"}).innerHTML=\'<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)"><b onclick="window.clicked=1" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b></div>\'</script>`,
+  '',async({page,next,apply,evaluate})=>{
+    const painted=()=>page.evaluate(()=>{const h=window.r.frame.contentDocument.getElementById('h');return !!h&&(h.style.backgroundImage.startsWith('url(')||!!h.querySelector('[data-chariox-region-ink]'));});
+    for(let i=0;i<10&&!await painted();i++)await apply(await next());
+    assert(await painted(),'MP-10: the closed host carries its still');
+    const frame=await page.evaluate(()=>{const r=window.r.frame.getBoundingClientRect();return {x:r.x,y:r.y};});
+    const pixel=async(x,y)=>{const png=(await page.screenshot({clip:{x:frame.x+x,y:frame.y+y,width:1,height:1},scale:'css'})).toString('base64');
+      return page.evaluate(async png=>{const img=new Image();img.src=`data:image/png;base64,${png}`;await img.decode();const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(0,0,1,1).data.slice(0,3)];},png);};
+    assert.deepEqual(await pixel(300,300),[255,0,0],'MP-10: the banner outside its host is visible');
+    assert.deepEqual(await pixel(110,205),[0,0,255],'MP-10: the banner button is visible');
+    await page.mouse.click(frame.x+110,frame.y+205);
+    for(let i=0;i<80&&!await evaluate('window.clicked===1');i++)await page.waitForTimeout(25);
+    assert.equal(await evaluate('window.clicked===1'),true,'MP-08: a click on the banner reaches its button in the kernel');
+  },{dpr}));
 
 // MP-08/MP-10/MP-11: review a44f1afce F1, layout and pixels belong to the same opaque box.
 for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves author position, display and transform across class/style deltas`,()=>roundtrip(

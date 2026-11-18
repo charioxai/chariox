@@ -9,6 +9,7 @@ import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-sel
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import { Mirror2Navigation } from './browser-mirror2-navigation.js'
+import { isTileInk, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -927,7 +928,7 @@ export class BrowserMirror2Renderer {
         }
         const keep = new Set(desired)
         // Forgotten before removal: a detached iframe no longer exposes its document.
-        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
+        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && !isTileInk(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
@@ -975,6 +976,8 @@ export class BrowserMirror2Renderer {
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
+    const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
+    paintTileInk(element, tile, outside ? url : null); if (outside) return
     const style = element.style
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
