@@ -290,8 +290,11 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     target.user_config_path = root.join("target-config.toml");
     let target_config_canary = b"# MP-08/MP-11: target runtime configuration is preserved.\n";
     std::fs::write(&target.user_config_path, target_config_canary).unwrap();
-    target.user_config.history.operational.path =
-        Some(root.join("target-operational.db").display().to_string());
+    target.user_config.history.operational.path = Some(
+        root.join("target-home/.chariox/target-operational.db")
+            .display()
+            .to_string(),
+    );
     target.user_config.artifacts.operational.root =
         Some(root.join("target-artifacts").display().to_string());
     target.user_config.artifacts.operational.index_path =

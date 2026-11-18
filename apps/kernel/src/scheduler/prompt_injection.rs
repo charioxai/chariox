@@ -847,6 +847,7 @@ fn workflow_node_instruction_reference(
     workflow_node_run_id: &str,
     node_id: &str,
 ) -> Option<String> {
+    validate_workflow_node_run(app, session_id, workflow_run_id, workflow_node_run_id)?;
     let workflow_run = app
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)
@@ -855,43 +856,13 @@ fn workflow_node_instruction_reference(
         .sessions()
         .resolve_workflow_ref(session_id, workflow_run.workflow_id())
         .ok()?;
-    let node = workflow.node(node_id);
-    let root = workflow_runtime_artifact_root(
-        app,
+    crate::workflow_node_instructions::node_instruction_file(
+        app.config(),
         session_id,
         workflow_run_id,
-        workflow_node_run_id,
-        "workflow-instructions",
-    )?;
-    let filename = format!("node-{node_id}.md");
-    let path = root.join(filename);
-    if !path.exists() || node.and_then(|node| node.instructions()).is_some() {
-        if let Err(error) = std::fs::create_dir_all(&root) {
-            tracing::debug!(
-                ?error,
-                "Failed to create workflow instruction directory at {:?}",
-                root
-            );
-            return None;
-        }
-        let content = node
-            .and_then(|node| node.instructions())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| {
-                format!(
-                    "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
-                )
-            });
-        if let Err(error) = std::fs::write(&path, content) {
-            tracing::debug!(
-                ?error,
-                "Failed to write workflow instruction file at {:?}",
-                path
-            );
-            return None;
-        }
-    }
-    Some(path.to_string_lossy().to_string())
+        node_id,
+        workflow.node(node_id).and_then(|node| node.instructions()),
+    )
 }
 
 fn workflow_node_control_contents(

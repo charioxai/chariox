@@ -340,9 +340,9 @@ mod tests {
         let expected_program = executable.to_string_lossy().into_owned();
 
         assert_eq!(
-            launch.pty_program.as_deref(),
-            Some(expected_program.as_str()),
-            "ordinary Path-1 must keep the selected provider executable as the child program"
+            confined(&launch).0,
+            expected_program,
+            "ordinary Path-1 must keep the selected provider executable as the confined program"
         );
         assert_eq!(launch.working_directory.as_ref(), Some(&working_directory));
         assert_eq!(
@@ -477,16 +477,14 @@ mod tests {
         let _ = fs::remove_file(&executable);
 
         let expected_program = executable.to_string_lossy().to_string();
-        assert_eq!(
-            launch_result.pty_program.as_deref(),
-            Some(expected_program.as_str())
-        );
+        let (program, args) = confined(&launch_result);
+        assert_eq!(program, expected_program);
         assert_eq!(launch_result.working_directory, Some(PathBuf::from("/tmp")));
-        assert_eq!(launch_result.pty_args[0], "serve");
-        assert_eq!(launch_result.pty_args[1], "--hostname");
-        assert_eq!(launch_result.pty_args[2], "127.0.0.1");
-        assert_eq!(launch_result.pty_args[3], "--port");
-        let port = launch_result.pty_args[4]
+        assert_eq!(args[0], "serve");
+        assert_eq!(args[1], "--hostname");
+        assert_eq!(args[2], "127.0.0.1");
+        assert_eq!(args[3], "--port");
+        let port = args[4]
             .parse::<u16>()
             .expect("port argument should be numeric");
         let endpoint = format!("http://127.0.0.1:{port}");
@@ -562,9 +560,9 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let launch = result.expect("ordinary Path-1 adapter launch should resolve");
         assert_eq!(
-            launch.pty_program.as_deref(),
-            Some(expected_program.as_str()),
-            "ordinary Path-1 must keep the provider executable as the child program"
+            confined(&launch).0,
+            expected_program,
+            "ordinary Path-1 must keep the provider executable as the confined program"
         );
 
         for name in controls {
@@ -627,6 +625,16 @@ mod tests {
         fs::create_dir_all(&temp).expect("fixture temp directory should exist");
         for provider in ["codex", "claude"] {
             write_fake_adapter_executable(&bin.join(provider));
+        }
+        // The launch confines the provider with the machine's Bubblewrap.
+        #[cfg(target_os = "linux")]
+        {
+            let bubblewrap = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join("bwrap"))
+                .find(|candidate| candidate.is_file())
+                .expect("this test needs bubblewrap installed");
+            std::os::unix::fs::symlink(bubblewrap, path.join("bwrap"))
+                .expect("fixture PATH should reach bubblewrap");
         }
 
         let test_binary = std::env::current_exe().expect("test binary path should resolve");
@@ -805,6 +813,16 @@ mod tests {
         assert!(launch.pty_args.windows(3).any(|window| {
             window == ["--bind", selected_text.as_str(), selected_text.as_str()]
         }));
+    }
+
+    /// The provider program and its arguments inside the kernel state confinement.
+    fn confined(launch: &crate::provider::ProviderLaunchResult) -> (&str, &[String]) {
+        let program = crate::provider::state_confinement::confinement_prefix_len(&launch.pty_args)
+            .expect("an ordinary launch keeps the kernel's state out of reach");
+        (
+            launch.pty_args[program - 1].as_str(),
+            &launch.pty_args[program..],
+        )
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {

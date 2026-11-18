@@ -725,8 +725,9 @@ fn terminal_pairing_link_adds_terminal_to_room_list() {
 fn room_list_offers_vault_logins_to_context_transfer() {
     crate::test_support::isolated_env_test!();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
-    let vault =
+    let vault_folder =
         std::env::temp_dir().join(format!("chariox-room-list-vault-{}", rand::random::<u64>()));
+    let vault = vault_folder.join("vault.json");
     let states = |backend: crate::config::CredentialVaultBackend| {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.credential_vault.backend = backend;
@@ -794,5 +795,5 @@ fn room_list_offers_vault_logins_to_context_transfer() {
         crate::account_profile::ProviderAccountContextTransfer::Unavailable
     );
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
-    let _ = std::fs::remove_file(&vault);
+    let _ = std::fs::remove_dir_all(&vault_folder);
 }

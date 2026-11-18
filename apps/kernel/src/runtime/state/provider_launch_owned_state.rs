@@ -1764,7 +1764,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
             .with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
@@ -1772,9 +1772,9 @@ mod tests {
         config.user_config.credential_vault.unlock_policy =
             crate::config::CredentialVaultUnlockPolicy::Always;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -1963,7 +1963,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
             .with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
@@ -1971,9 +1971,9 @@ mod tests {
         config.user_config.credential_vault.unlock_policy =
             crate::config::CredentialVaultUnlockPolicy::Always;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -2119,7 +2119,7 @@ mod tests {
         }
         std::env::set_var("CHARIOX_CLAUDE_BIN", &claude_fixture);
 
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
             .with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
@@ -2127,9 +2127,9 @@ mod tests {
         config.user_config.credential_vault.unlock_policy =
             crate::config::CredentialVaultUnlockPolicy::Always;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

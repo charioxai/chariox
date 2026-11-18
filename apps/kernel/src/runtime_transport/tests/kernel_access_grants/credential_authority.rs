@@ -46,7 +46,7 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
-    let before = std::fs::read(kernel.root.join("vault.json")).unwrap();
+    let before = std::fs::read(kernel.root.join("vault/vault.json")).unwrap();
     kernel.control("vault-manage").await;
     kernel.control("vault-check").await;
     let status = std::fs::read(kernel.root.join("vault-status")).unwrap();
@@ -93,7 +93,7 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
     assert_eq!(wait_file(&kernel, "vault-result").await, b"cancelled");
     kernel.control("vault-check").await;
     assert!(status == std::fs::read(kernel.root.join("vault-status")).unwrap());
-    assert!(before == std::fs::read(kernel.root.join("vault.json")).unwrap());
+    assert!(before == std::fs::read(kernel.root.join("vault/vault.json")).unwrap());
     assert!(
         holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))["error"]
             .is_null()
