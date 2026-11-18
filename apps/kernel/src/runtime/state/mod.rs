@@ -52,6 +52,7 @@ mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
 use crate::local::SettingsApplies;
+pub(crate) use agent_model_choice::Source as ModelSource;
 use agent_self_settings_gate as agent_self_settings;
 pub(crate) use agent_settings_change::SettingsContext;
 use agent_settings_change::SettingsOrigin;

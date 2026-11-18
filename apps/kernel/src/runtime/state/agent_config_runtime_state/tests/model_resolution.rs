@@ -76,6 +76,17 @@ pub(super) async fn seed_account_catalog(
     provider_name: &str,
     profile_id: &str,
 ) {
+    seed_account_models(app, owner, provider_name, profile_id, &[]).await;
+}
+
+/// The same, with `extra` models listed too: the ones a fixture runs an agent on.
+pub(crate) async fn seed_account_models(
+    app: &Arc<Mutex<DaemonApp>>,
+    owner: &str,
+    provider_name: &str,
+    profile_id: &str,
+    extra: &[&str],
+) {
     let family = crate::provider::canonical_provider_family(provider_name).unwrap();
     let request = crate::local::GetProviderCatalogRequest {
         provider: Some(provider_name.to_string()),
@@ -83,10 +94,28 @@ pub(super) async fn seed_account_catalog(
         ..Default::default()
     };
     let key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(owner, &request);
+    let mut catalog = catalog_for(provider_name);
+    for id in extra {
+        match id.split_once('/') {
+            // OpenCode lists a model under its backend: `backend/model`.
+            Some((backend, model_id)) => {
+                catalog
+                    .all
+                    .push(provider(backend, &[(model_id, &["low", "high"])]));
+                catalog.connected.push(backend.to_string());
+            }
+            None => {
+                for info in &mut catalog.all {
+                    info.models
+                        .insert(id.to_string(), model(id, &["low", "high"]));
+                }
+            }
+        }
+    }
     app.lock()
         .await
         .provider_catalog_projection_store()
-        .update_scoped(&key, catalog_for(provider_name));
+        .update_scoped(&key, catalog);
 }
 
 #[tokio::test]
@@ -96,6 +125,7 @@ async fn an_account_switch_keeps_the_model_the_new_account_offers() {
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let first = registry.create_managed(owner, "codex", "First").unwrap();
     let second = registry.create_managed(owner, "codex", "Second").unwrap();
+    seed_account_catalog(&app, owner, "codex", &first.profile_id).await;
     runtime
         .update_agent_profile(
             &session,
@@ -133,6 +163,7 @@ async fn an_account_switch_replaces_a_model_the_new_account_lacks() {
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let first = registry.create_managed(owner, "codex", "First").unwrap();
     let second = registry.create_managed(owner, "codex", "Second").unwrap();
+    seed_account_models(&app, owner, "codex", &first.profile_id, &["retired-model"]).await;
     runtime
         .update_agent_profile(
             &session,
@@ -170,7 +201,14 @@ async fn a_new_agent_and_a_new_room_get_the_account_default() {
     let profile = registry.create_managed(owner, "claude", "Work").unwrap();
     seed_account_catalog(&app, owner, "claude-p", &profile.profile_id).await;
     let (model, effort) = runtime
-        .resolve_new_agent_selection(owner, "claude-p", Some(&profile.profile_id), None, None)
+        .resolve_new_agent_selection(
+            owner,
+            "claude-p",
+            Some(&profile.profile_id),
+            None,
+            crate::runtime::state::ModelSource::Kept,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(model.as_deref(), Some("claude-sonnet-5-5"));
@@ -193,6 +231,16 @@ async fn a_new_agent_and_a_new_room_get_the_account_default() {
         .unwrap();
     assert_eq!(defaults.model.as_deref(), Some("claude-sonnet-5-5"));
     assert_eq!(defaults.effort.as_deref(), Some("high"));
+}
+
+/// The stable account a stored `default` selector stands for; catalogs are read under that id.
+async fn registry_account(app: &Arc<Mutex<DaemonApp>>, owner: &str, selector: &str) -> String {
+    app.lock()
+        .await
+        .provider_account_profile_registry()
+        .get(owner, "codex", selector)
+        .expect("stored agent account")
+        .profile_id
 }
 
 async fn stored_codex_agent_without_model(
@@ -220,7 +268,8 @@ async fn start_up_gives_a_stored_agent_without_model_its_account_default() {
         .find(|a| a.id() == agent)
         .unwrap();
     assert!(stored.model().is_none() && stored.effort().is_none());
-    seed_account_catalog(&app, owner, "codex", stored.provider_account_profile()).await;
+    let account = registry_account(&app, owner, stored.provider_account_profile()).await;
+    seed_account_catalog(&app, owner, "codex", &account).await;
 
     runtime.resolve_stored_agent_models().await;
 
@@ -236,8 +285,15 @@ async fn start_up_gives_a_stored_agent_without_model_its_account_default() {
 
 #[tokio::test]
 async fn start_up_leaves_an_agent_that_already_has_model_and_variant_as_it_is() {
-    let (_app, runtime, session, agent) = stored_codex_agent_without_model().await;
+    let (app, runtime, session, agent) = stored_codex_agent_without_model().await;
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let stored = runtime
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id() == agent)
+        .unwrap();
+    let account = registry_account(&app, owner, stored.provider_account_profile()).await;
+    seed_account_models(&app, owner, "codex", &account, &["retired-model"]).await;
     runtime
         .update_agent_profile(
             &session,
