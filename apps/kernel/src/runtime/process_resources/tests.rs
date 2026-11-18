@@ -877,10 +877,13 @@ fn a_linux_watch_lists_its_work_without_ps() {
 /// The sampler reads the process table five times a second while watches
 /// read it. Reading every stat file at every tick cost a kernel seconds of CPU
 /// a minute on a host of thousands of processes, so a process it already read
-/// is not read again.
+/// is not read again. The bound counts the processes this test starts, not
+/// the host's: a small PID namespace lists only a few.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_sampler_reads_a_process_it_knows_no_more() {
+    const STARTED: u64 = 64;
+    const TICKS: u64 = 10;
     fn sampler_reads() -> u64 {
         std::fs::read_dir("/proc/self/task")
             .unwrap()
@@ -899,26 +902,34 @@ fn the_sampler_reads_a_process_it_knows_no_more() {
             .sum()
     }
     sampling::warm_up().unwrap();
-    let processes = std::fs::read_dir("/proc")
-        .unwrap()
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.parse::<u32>().is_ok())
+    let mut started = (0..STARTED)
+        .map(|_| {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
         })
-        .count() as u64;
+        .collect::<Vec<_>>();
+    // The sampler ticks on its own every 200 ms; the next tick reads the new
+    // processes once.
+    let _ = sampling::process_rows(std::process::id());
+    std::thread::sleep(Duration::from_millis(500));
     let before = sampler_reads();
-    let until = std::time::Instant::now() + Duration::from_secs(2);
-    while std::time::Instant::now() < until {
+    for _ in 0..TICKS {
+        std::thread::sleep(Duration::from_millis(200));
         let _ = sampling::process_rows(std::process::id());
-        std::thread::sleep(Duration::from_millis(50));
     }
     let reads = sampler_reads() - before;
+    for child in &mut started {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // Reading the started processes again at every tick is at least
+    // STARTED reads a tick; what a tick reads anyway (/proc/uptime, a process
+    // the host started meanwhile) is a few.
     assert!(
-        reads < processes,
-        "the sampler made {reads} reads in 2 s (about 10 ticks) on a host of {processes} processes"
+        reads < TICKS * STARTED / 2,
+        "the sampler made {reads} reads in {TICKS} ticks with {STARTED} processes it had read"
     );
 }
 
