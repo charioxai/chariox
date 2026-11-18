@@ -95,9 +95,11 @@ async fn enroll(
     )
     .await
     .map_err(|_| error())?;
-    let profile =
-        crate::runtime::cloud_relay_login_executor::enrolled_profile(config, api_url, response)
-            .map_err(|_| error())?;
+    let profile = crate::runtime::cloud_relay_login_executor::admit_enrolled_profile(
+        config, api_url, response,
+    )
+    .await
+    .map_err(|_| error())?;
     if input
         .user_id
         .as_ref()
@@ -252,9 +254,10 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
                 interval = response.interval_seconds.unwrap_or(interval).clamp(1, 10);
             }
             "approved" => {
-                let profile = crate::runtime::cloud_relay_login_executor::enrolled_profile(
+                let profile = crate::runtime::cloud_relay_login_executor::admit_enrolled_profile(
                     &config, api_url, response,
                 )
+                .await
                 .map_err(|_| error())?;
                 if input
                     .user_id
