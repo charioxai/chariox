@@ -233,6 +233,8 @@ impl KernelRuntimeState {
                 publisher_id: release.publisher_id(),
                 publisher_name,
                 action_name,
+                // The card writes the input it is asked about.
+                input: String::new(),
                 preview: None,
             })
         })

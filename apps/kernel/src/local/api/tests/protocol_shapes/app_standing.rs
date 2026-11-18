@@ -28,7 +28,7 @@ fn app_standing_contract_snapshot() {
         let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
-    let frame = json!({"installation_id":"github","app_id":"com.chariox.github","app_name":"GitHub","publisher_id":"com.chariox","publisher_name":"Chariox","action_name":"merge_pull_request",
+    let frame = json!({"installation_id":"github","app_id":"com.chariox.github","app_name":"GitHub","publisher_id":"com.chariox","publisher_name":"Chariox","action_name":"merge_pull_request","input":"{\n  \"number\": 7\n}",
         "preview":[{"label":"Repository","value":"charioxai/drill"},{"label":"Method","value":"squash"}]});
     let parsed: AppConfirmationFrame = serde_json::from_value(frame.clone()).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), frame);

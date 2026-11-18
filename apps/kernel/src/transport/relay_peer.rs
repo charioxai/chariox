@@ -230,6 +230,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of `InvokeHomeCredentialTool`).
 /// 450 has the relay admit a kernel registration only with the kernel identity key's signature over the
 /// connection's challenge (`DaemonRegister.proof`); 449 is taken by another lane.
+/// 449 carries the confirmation card's `input` in `app_confirmation`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

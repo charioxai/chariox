@@ -15,6 +15,7 @@ fn frame() -> AppConfirmationFrame {
         publisher_id: "com.chariox".into(),
         publisher_name: "Chariox".into(),
         action_name: "pay".into(),
+        input: String::new(),
         preview: None,
     }
 }
@@ -104,7 +105,17 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
             .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
-        assert_eq!(card.app_confirmation(), Some(&frame()));
+        let shown = card
+            .app_confirmation()
+            .expect("the card has the kernel's frame");
+        assert_eq!(
+            AppConfirmationFrame {
+                input: String::new(),
+                ..shown.clone()
+            },
+            frame()
+        );
+        assert_eq!(shown.input, "{\n  \"amount\": 1200\n}");
         let region = &card
             .view()
             .expect("the preview is the card's protected region")
@@ -121,7 +132,7 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
         );
         assert_eq!(card.default_on_timeout(), Some("cancel"));
         assert!(
-            card.message().contains(r#"Input: {"amount":1200}"#),
+            card.message().ends_with("Input:\n{\n  \"amount\": 1200\n}"),
             "{}",
             card.message()
         );
@@ -324,13 +335,19 @@ async fn a_backend_served_view_asks_on_a_card_with_the_apps_rows_and_no_app_tab(
     );
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
-        assert_eq!(card.app_confirmation(), Some(&with_rows));
+        let shown = card.app_confirmation().unwrap();
+        assert_eq!(shown.preview, with_rows.preview);
+        assert_eq!(
+            serde_json::from_str::<Value>(&shown.input).unwrap(),
+            input,
+            "the card states the input the call carries"
+        );
         assert!(card.view().is_none(), "no App Tab, no protected region");
         assert_eq!(
             card.choices().iter().map(|c| c.id()).collect::<Vec<_>>(),
             ["confirm", "cancel"]
         );
-        assert!(card.message().contains("Input: "), "{}", card.message());
+        assert!(card.message().contains("Input:\n"), "{}", card.message());
         rig.runtime
             .resolve_runtime_interaction(&rig.session, card.id(), "confirm", None)
             .await
@@ -520,4 +537,68 @@ fn a_backend_preview_is_bounded_plain_rows_and_nothing_else() {
             "{bad}"
         );
     }
+}
+
+/// The input the card states for `input`, asked in a backend-served view, then cancelled.
+async fn card_input_for(input: Value) -> (String, String) {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, with_rows, &input);
+    let (_declined, shown) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+            .await
+            .unwrap();
+        (
+            card.app_confirmation().unwrap().input.clone(),
+            card.message().to_owned(),
+        )
+    });
+    shown
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_card_states_the_exact_input_in_stable_pretty_json() {
+    let input = json!({"b": [1, {"z": true, "a": null}], "a": "é", "amount": 1200});
+    let (shown, message) = card_input_for(input.clone()).await;
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap(), input);
+    assert!(
+        shown.starts_with("{\n  \"a\": \"é\",\n  \"amount\": 1200,\n  \"b\": ["),
+        "sorted keys, two-space indent: {shown}"
+    );
+    assert!(message.ends_with(&format!("Input:\n{shown}")), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_card_preserves_agent_supplied_input_under_secret_shaped_keys_and_values() {
+    let secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let input = json!({"note": "pay the invoice", "password": "hunter2", "header": format!("Bearer {secret}")});
+    let (shown, message) = card_input_for(input.clone()).await;
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap(), input);
+    for text in [&shown, &message] {
+        assert!(
+            text.contains("hunter2") && text.contains(secret) && !text.contains("[redacted"),
+            "{text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversize_input_is_cut_with_the_count_of_what_is_left_out() {
+    let input = json!({"text": "é".repeat(5000)});
+    let whole = serde_json::to_string_pretty(&input).unwrap();
+    let (shown, _) = card_input_for(input).await;
+    let (kept, note) = shown.rsplit_once("\n… ").expect("a note ends the cut text");
+    assert!(
+        whole.starts_with(kept) && kept.len() <= 4096,
+        "{}",
+        kept.len()
+    );
+    assert_eq!(note, format!("{} more bytes", whole.len() - kept.len()));
 }

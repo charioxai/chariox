@@ -3434,6 +3434,9 @@ Workflow trigger and deployment direction:
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
   kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
   credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
+- protocol 1012 / relay peer 449 (provisional, APP-CONFIRM-03): `AppConfirmationFrame.input`, the exact input
+  the kernel runs when the person confirms (sorted pretty JSON, cut with a "N more bytes" note
+  past 4096 bytes), written by the kernel and required in every `app_confirmation`.
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
@@ -7669,15 +7672,18 @@ A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` 
 the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
 `choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
 
-- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
-  written by the kernel from the verified release (all six present, none other). A client frames the
-  preview with these words and never with text the App supplied.
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name, input}`,
+  written by the kernel from the verified release and the call (all seven present, none other). A client
+  frames the preview with the six words and never with text the App supplied. `input` is the exact input the
+  kernel runs on Confirm, formatted once by the kernel: sorted-key pretty JSON, secret-shaped values and
+  secret-named fields masked as `[redacted:<kind>]`, and cut at 4096 bytes with a final `… N more bytes` line.
+  A client shows it beside the App's preview and never rebuilds it.
 - `app_confirmation.preview`: for an App whose backend serves its view and so has no Tab, the rows its
   backend answered (`[{label, value}]`, at most 12, plain text); the card then carries no `view`, and a client
   that shows the rows offers Confirm.
 - `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
   App's Tab, shown through the existing protected card region. A client that cannot show it offers no
-  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+  Confirm; the card's `message` repeats `input` for clients that read text.
 
 Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
 in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
