@@ -7670,7 +7670,7 @@ folder, is gone from it, or whose record names another path fails with `file_not
 folder restores on its own: its place is the folder's recorded place plus the path inside it (Linux; macOS renames it from
 its trash path). The kernel reads where an item is from its position, never from folder names below the trash folder:
 the trash folder (the home trash, or `.Trash-$uid` / `.Trash/$uid` at the top of a filesystem; on macOS `~/.Trash` or
-`.Trashes/$uid` at the top of a volume), then `files/`, the entry with the record, and the path inside it, whose folders may
+`.Trashes/$uid` at the mount point of the item's volume, wherever it is mounted), then `files/`, the entry with the record, and the path inside it, whose folders may
 have any names (`files`, `info`, `.Trash-$uid`). A `trash_path` that is not absolute or has a `..` part, and the trash folder
 itself, fail with `file_not_in_trash`; a folder of the user's own named `.Trash` or `.Trash-$uid` below the top of a
 filesystem is not a trash.

@@ -25,13 +25,33 @@ const TRASH_SCRIPT: &str = r#"function run(argv) {
 
 const OSASCRIPT: &str = "/usr/bin/osascript";
 
+type MountOf = Box<dyn Fn(&Path) -> std::io::Result<PathBuf> + Send + Sync>;
+
 pub(super) struct Trash {
     home: PathBuf,
     uid: u32,
     osascript: PathBuf,
+    /// The mount point of the volume a path is on; a test says where its volumes are mounted.
+    mount_of: MountOf,
+}
+
+/// The mount point of the volume `path` is on, as the system reports it: a volume may be mounted at any
+/// folder, not only in `/Volumes`.
+#[cfg(target_os = "macos")]
+fn mount_point(path: &Path) -> std::io::Result<PathBuf> {
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stat` has room for one `statfs`.
+    if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: statfs succeeded, so it filled `stat`, and `f_mntonname` is NUL-terminated.
+    let name = unsafe { std::ffi::CStr::from_ptr(stat.assume_init_ref().f_mntonname.as_ptr()) };
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
 }
 
 impl Trash {
+    #[cfg(target_os = "macos")]
     pub(super) fn from_env() -> Result<Self, DaemonError> {
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             fail(
@@ -43,16 +63,19 @@ impl Trash {
         Ok(Self::new(home, unsafe { libc::geteuid() }))
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) fn new(home: PathBuf, uid: u32) -> Self {
-        Self::running(home, uid, OSASCRIPT.into())
+        Self::running(home, uid, OSASCRIPT.into(), Box::new(mount_point))
     }
 
-    /// The system call goes through `osascript`; a test names its own stand-in program.
-    fn running(home: PathBuf, uid: u32, osascript: PathBuf) -> Self {
+    /// The system call goes through `osascript`, and mount points come from the system; a test names
+    /// its own stand-in program and mounts.
+    fn running(home: PathBuf, uid: u32, osascript: PathBuf, mount_of: MountOf) -> Self {
         Self {
             home,
             uid,
             osascript,
+            mount_of,
         }
     }
 
@@ -61,22 +84,18 @@ impl Trash {
         self.trash_folder_of(path).is_some()
     }
 
-    /// The trash folder `path` is or lies in: `~/.Trash`, or `.Trashes/$uid` at the top of the startup
-    /// volume or of a volume mounted in `/Volumes`. Read from the position, so a folder of the user's
-    /// own named `.Trashes` elsewhere is not a trash.
+    /// The trash folder `path` is or lies in: `~/.Trash`, or `.Trashes/$uid` at the mount point of the
+    /// volume `path` is on, wherever it is mounted. A folder of the user's own named `.Trashes` below
+    /// that mount point is not a trash.
     fn trash_folder_of(&self, path: &Path) -> Option<PathBuf> {
-        let volume = path
-            .strip_prefix("/Volumes")
-            .ok()
-            .and_then(|rest| rest.components().next())
-            .map(|name| Path::new("/Volumes").join(name));
-        let volume_trashes = [Some(PathBuf::from("/")), volume]
-            .into_iter()
-            .flatten()
-            .map(|top| top.join(".Trashes").join(self.uid.to_string()));
-        std::iter::once(self.home.join(".Trash"))
-            .chain(volume_trashes)
-            .find(|folder| path.starts_with(folder))
+        let home_trash = self.home.join(".Trash");
+        if path.starts_with(&home_trash) {
+            return Some(home_trash);
+        }
+        // The volume of the folder that holds `path`, so a link in a trash is not followed to another one.
+        let volume = (self.mount_of)(path.parent()?).ok()?;
+        let folder = volume.join(".Trashes").join(self.uid.to_string());
+        path.starts_with(&folder).then_some(folder)
     }
 
     pub(super) fn move_to(&self, path: &Path) -> Result<PathBuf, DaemonError> {
@@ -182,6 +201,20 @@ fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), DaemonError> {
 mod tests {
     use super::*;
 
+    /// A Trash of uid 501 on a machine whose startup volume is at `/` and other volumes at `mounts`.
+    fn on_machine(home: &Path, osascript: PathBuf, mounts: &[&Path]) -> Trash {
+        let mounts: Vec<PathBuf> = mounts.iter().map(|mount| mount.to_path_buf()).collect();
+        let mount_of = move |path: &Path| {
+            Ok(mounts
+                .iter()
+                .filter(|mount| path.starts_with(mount))
+                .max_by_key(|mount| mount.components().count())
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from("/")))
+        };
+        Trash::running(home.to_path_buf(), 501, osascript, Box::new(mount_of))
+    }
+
     #[test]
     fn the_trashed_path_keeps_every_character_of_the_name() {
         let home = PathBuf::from("/Users/me");
@@ -209,7 +242,7 @@ mod tests {
         let program = dir.join("osascript");
         std::fs::write(&program, format!("#!/bin/sh\n{printing}\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Trash::running(PathBuf::from("/Users/me"), 501, program).move_to(path)
+        on_machine(Path::new("/Users/me"), program, &[]).move_to(path)
     }
 
     #[test]
@@ -243,28 +276,54 @@ mod tests {
     #[test]
     fn the_macos_trash_knows_its_folders_and_puts_back_only_what_is_in_them() {
         let home = PathBuf::from("/Users/me");
-        let trash = Trash::new(home.clone(), 501);
+        let mounts = [Path::new("/Volumes/Data"), Path::new("/mnt/data")];
+        let trash = on_machine(&home, OSASCRIPT.into(), &mounts);
         assert!(trash.holds(&home.join(".Trash/a.txt")));
         assert!(trash.holds(Path::new("/Volumes/Data/.Trashes/501/a.txt")));
+        assert!(trash.holds(Path::new("/mnt/data/.Trashes/501/a.txt")));
         assert!(!trash.holds(Path::new("/Volumes/Data/.Trashes/502/a.txt")));
         assert!(trash.holds(Path::new("/.Trashes/501/a.txt")));
         assert!(!trash.holds(&home.join("Documents/a.txt")));
-        // A folder of the user's own named like a trash, below the top of a volume, is not one.
+        // A folder named like a trash below the mount point of its volume is not one.
         assert!(!trash.holds(&home.join("work/.Trashes/501/a.txt")));
         assert!(!trash.holds(Path::new("/Volumes/Data/work/.Trashes/501/a.txt")));
+        assert!(!trash.holds(Path::new("/mnt/.Trashes/501/a.txt")));
+        assert!(!trash.holds(Path::new("/Volumes/.Trashes/501/a.txt")));
         // Only an item in a trash folder is put back, never the folder itself.
         for not_an_item in [
             home.join("Documents/a.txt"),
             home.join("work/.Trashes/501/a.txt"),
             home.join(".Trash"),
             PathBuf::from("/Volumes/Data/.Trashes/501"),
+            PathBuf::from("/mnt/data/.Trashes/501"),
+            PathBuf::from("/mnt/.Trashes/501/a.txt"),
         ] {
             let outside = trash.restore(&not_an_item, &home.join("a.txt"));
             assert!(
-                matches!(outside, Err(DaemonError::MachineRequest { ref code, .. }) if code == "file_not_in_trash"),
+                matches!(outside, Err(DaemonError::MachineRequest { ref code, ref message })
+                    if code == "file_not_in_trash" && message.contains("is not an item")),
                 "{}: {outside:?}",
                 not_an_item.display()
             );
         }
+    }
+
+    /// Undo of an item the system moved to the trash of a volume mounted outside `/Volumes`: the
+    /// exact path `move_to` gave puts the item back.
+    #[test]
+    fn an_item_in_the_trash_of_a_volume_mounted_anywhere_comes_back() {
+        let dir = crate::test_temp_dir::TestTempDir::new("macos-volume");
+        let volume = dir.join("mnt/data");
+        let in_trash = volume.join(".Trashes/501/a.txt");
+        std::fs::create_dir_all(in_trash.parent().unwrap()).unwrap();
+        std::fs::write(&in_trash, b"a").unwrap();
+        let trash = on_machine(&dir.join("home"), OSASCRIPT.into(), &[&volume]);
+        let wanted = volume.join("work/a.txt");
+
+        let back = trash.restore(&in_trash, &wanted).unwrap();
+
+        assert_eq!(back, wanted);
+        assert_eq!(std::fs::read(&wanted).unwrap(), b"a");
+        assert!(!in_trash.exists());
     }
 }
