@@ -2026,6 +2026,203 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
     assert_eq!(loads[0].run_id, "local-claude-run");
 }
 
+// Discovery lists skills by name: a load by name settles on the canonical id the
+// kernel returned, so Loaded history, duplicate refusal and restoration all see it.
+#[tokio::test]
+async fn load_by_name_settles_loaded_on_the_canonical_skill_id() {
+    use crate::skill::service::SkillCatalogService;
+    // Native discovery reads the run's own HOME and worktree, so both are real
+    // test directories rather than this machine's Claude skills.
+    let files = crate::test_support::TestWorktree::new("load-by-name");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(files.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "local-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "local-claude-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: [
+                ("HOME".into(), files.path().display().to_string()),
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    files.path().join("claude").display().to_string(),
+                ),
+            ]
+            .into(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(files.path().into()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let runtime = super::tests::owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    runtime
+        .owned
+        .skill_inventories
+        .set_test_version(run.id(), "2.1.212");
+    let (session_id, agent_id, attachment) = (
+        session.id().to_string(),
+        agent.id().to_string(),
+        attachment.id().to_string(),
+    );
+    let config = runtime.owned.config_projection.snapshot();
+    let storage = SkillCatalogStorage::new(
+        config.user_config_path.parent().unwrap(),
+        runtime.owned.durable_state_store.clone(),
+    )
+    .unwrap();
+    let service = SkillCatalogService::new(storage.clone());
+    let install = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Review safely\n---\nReview source.\n"
+                    .into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&install).unwrap();
+    let skill = service
+        .publish_authorized(&install, &prepared)
+        .unwrap()
+        .catalogs[0]
+        .skills[0]
+        .clone();
+    let auto = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: service.storage.snapshot().unwrap().revision,
+        actions: vec![SkillCatalogAction::SetState {
+            skill_id: skill.id.clone(),
+            state: Some(SkillState::Auto),
+        }],
+    };
+    let prepared = service.prepare(&auto).unwrap();
+    let catalog = service.publish_authorized(&auto, &prepared).unwrap();
+    let submission = runtime
+        .owned
+        .submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "claude-name-load-turn",
+                &attachment,
+                &agent_id,
+                "inspect source",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    let prompt = match submission.outcome {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let authority = SkillTurnAuthority {
+        catalog_revision: catalog.revision,
+        project_id: session.project_id().into(),
+        provider_run_id: run.id().into(),
+        context_generation: "generation".into(),
+        explicit_skill_ids: vec![],
+        body_budget_tokens: 100_000,
+        reserved_body_tokens: Default::default(),
+        pending_loads: vec![],
+        prompt_delivery_skill_ids: Default::default(),
+        remote_roots: Default::default(),
+        native_tool_loads: Default::default(),
+        compaction_revision: None,
+    };
+    runtime
+        .owned
+        .prompt_state_owner
+        .update_skill_authority_durably(
+            &runtime.owned.session_store,
+            &runtime.owned.durable_state_store,
+            &session_id,
+            &agent_id,
+            prompt.id(),
+            |_| Ok(authority),
+        )
+        .unwrap();
+    let arguments = serde_json::json!({"origin_prompt_id": prompt.id(), "skill_id": "Review"});
+    let loaded = runtime
+        .dispatch_capability_runtime_tool_call(
+            &run,
+            crate::transport::runtime_tools::LOAD_SKILL_TOOL,
+            arguments.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(loaded.ok, "{:?}", loaded.payload);
+    let ack = crate::provider::completed_skill_tool(
+        "mcp__chariox__chariox_load_skill",
+        &arguments,
+        &serde_json::json!({"content":[{"type":"text","text":loaded.payload.to_string()}]}),
+    )
+    .expect("a completed load by name is a delivery receipt");
+    let delivered = crate::provider::ProviderPromptSignalBatch {
+        skill_tool_delivery_acknowledgements: vec![ack],
+        ..Default::default()
+    };
+    super::super::skills_dispatch::bridge(&runtime)
+        .acknowledge_tools(&run, &delivered)
+        .unwrap();
+    let loads = storage.loads(&session_id).unwrap();
+    assert_eq!(
+        loads
+            .iter()
+            .map(|load| load.skill_id.as_str())
+            .collect::<Vec<_>>(),
+        [skill.id.as_str()]
+    );
+    let duplicate = runtime
+        .dispatch_capability_runtime_tool_call(
+            &run,
+            crate::transport::runtime_tools::LOAD_SKILL_TOOL,
+            serde_json::json!({"origin_prompt_id": prompt.id(), "skill_id": "review"}),
+        )
+        .await;
+    assert!(
+        format!("{duplicate:?}").contains("already supplied"),
+        "{duplicate:?}"
+    );
+    let restored = storage
+        .active_loads(&session_id, Some(session.project_id()), catalog.revision)
+        .unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].skill_id, skill.id);
+}
+
 // A native composer outlives the typed turns that clear its binding's active run id, so a
 // published catalog change has to reach every lease, not only those with a running turn.
 #[tokio::test]

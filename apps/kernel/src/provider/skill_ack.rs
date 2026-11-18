@@ -23,14 +23,15 @@ pub(crate) fn completed_skill_tool(
     let args: crate::transport::runtime_tools::LoadSkillArgs =
         serde_json::from_value(arguments.clone()).ok()?;
     let origin = args.origin_prompt_id.as_str();
-    let skill_id = args.skill_id.as_str();
-    if origin.is_empty() || origin.len() > 256 || skill_id.is_empty() || skill_id.len() > 128 {
+    if origin.is_empty() || origin.len() > 256 || args.skill_id.is_empty() {
         return None;
     }
-    let digest = delivered_digest(output, skill_id, 0)?;
+    // The call may name the skill or pass its id; the kernel resolved it once and
+    // returned the canonical id with the body, so the receipt carries that id.
+    let (skill_id, digest) = delivered_body(output, 0)?;
     Some(SkillToolDeliveryAcknowledgement {
         prompt_id: origin.into(),
-        skill_id: skill_id.into(),
+        skill_id,
         digest,
     })
 }
@@ -92,33 +93,35 @@ pub(crate) fn completed_tool_transcript(
     completed_skill_tool(tool, value.get("input")?, value.get("output")?)
 }
 
-fn delivered_digest(value: &Value, skill_id: &str, depth: u8) -> Option<String> {
+fn delivered_body(value: &Value, depth: u8) -> Option<(String, String)> {
     if depth > 4 || value.get("isError").and_then(Value::as_bool) == Some(true) {
         return None;
     }
     if value.get("kind").and_then(Value::as_str) == Some("loaded")
-        && value.get("skill_id").and_then(Value::as_str) == Some(skill_id)
         && value
             .get("body")
             .and_then(Value::as_str)
             .is_some_and(|body| !body.is_empty())
     {
+        let skill_id = value.get("skill_id")?.as_str()?;
         let digest = value.get("digest")?.as_str()?;
-        return (digest.len() == 64
+        return (!skill_id.is_empty()
+            && skill_id.len() <= 128
+            && digest.len() == 64
             && digest
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-        .then(|| digest.into());
+        .then(|| (skill_id.into(), digest.into()));
     }
     if let Some(content) = value
         .get("structuredContent")
         .filter(|content| !content.is_null())
     {
-        return delivered_digest(content, skill_id, depth + 1);
+        return delivered_body(content, depth + 1);
     }
     if let Some(text) = value.as_str() {
         let content: Value = serde_json::from_str(text).ok()?;
-        return delivered_digest(&content, skill_id, depth + 1);
+        return delivered_body(&content, depth + 1);
     }
     let blocks = value
         .as_array()
@@ -130,7 +133,7 @@ fn delivered_digest(value: &Value, skill_id: &str, depth: u8) -> Option<String> 
         .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))?
         .get("text")?
         .as_str()?;
-    delivered_digest(&Value::String(text.into()), skill_id, depth + 1)
+    delivered_body(&Value::String(text.into()), depth + 1)
 }
 
 #[cfg(test)]
@@ -185,7 +188,7 @@ mod tests {
         }
     }
     #[test]
-    fn skill_tool_ack_refuses_invocation_failure_wrong_identity_and_forged_explicit() {
+    fn skill_tool_ack_refuses_invocation_failure_and_forged_explicit() {
         let args = json!({"origin_prompt_id":"turn-1","skill_id":"skill-1"});
         for output in [
             json!({"kind":"page","skills":[]}),
@@ -196,12 +199,6 @@ mod tests {
             assert!(completed_skill_tool("load_skill", &args, &output).is_none());
         }
         assert!(completed_skill_tool("other.load_skill", &args, &body()).is_none());
-        assert!(completed_skill_tool(
-            "load_skill",
-            &json!({"skill_id":"other","origin_prompt_id":"turn-1"}),
-            &body()
-        )
-        .is_none());
         assert!(
             completed_skill_tool("load_skill", &json!({"skill_id":"skill-1"}), &body()).is_none()
         );
