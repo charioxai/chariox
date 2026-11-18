@@ -47,7 +47,7 @@ async fn rejects_unprovisioned_worker() {
     let result = std::panic::AssertUnwindSafe(async {
         fixture.create_slice().await;
         let room = &fixture.rooms[0];
-        dispatch_json(
+        dispatch_bind_room(
             &fixture.home,
             json!({"BindRoomEnvironmentSlice": {
                 "session_id":room,"slice_ref":"desktop"
@@ -168,7 +168,7 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
         )
         .expect("live worker fixture slice should be running");
     let room = &fixture.rooms[0];
-    let original = dispatch_json(
+    let original = dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id":room, "slice_ref":"desktop"
@@ -430,7 +430,7 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
         .await
         .unwrap();
     assert!(
-        dispatch_json(&fixture.home, bind(&fixture.rooms[1], "desktop"))
+        dispatch_bind_room(&fixture.home, bind(&fixture.rooms[1], "desktop"))
             .await
             .is_err(),
         "deleting a Room must not release its physical browser profile to another Room"

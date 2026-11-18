@@ -383,7 +383,8 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
-        if sender.starts_with("slice:")
+        // A slice asks its home for files; no other same-owner request comes from one.
+        if (sender.starts_with("slice:") && !machine_file_request(&request))
             || identity.subject.trim().is_empty()
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && identity.subject != sender)
@@ -400,6 +401,8 @@ pub(super) async fn handle_daemon_peer_request(
         }
         let owner = if project_environment_request(&request) {
             router.environment_peer_user_id(identity)
+        } else if machine_file_request(&request) {
+            router.machine_file_peer_user_id(identity, sender, &requester_public_key)
         } else {
             router.same_owner_peer_user_id(identity)
         };
@@ -3181,6 +3184,243 @@ mod tests {
             }
         }
         assert!(notes.exists());
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
+    fn run_on_large_stack(
+        name: &str,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        std::thread::Builder::new()
+            .name(name.to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(future);
+            })
+            .expect("test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    fn assert_unauthorized(refused: Result<RelayPeerResponse, RelayError>) {
+        assert!(
+            matches!(&refused, Err(error) if error.code == "unauthorized"),
+            "{refused:?}"
+        );
+    }
+
+    // A slice has no Cloud profile, so the same-owner check can never admit its home: it serves
+    // the machine files of the home it is provisioned to and nobody else.
+    #[test]
+    fn a_slice_serves_machine_files_only_to_its_pinned_home() {
+        run_on_large_stack(
+            "slice machine file admission test",
+            a_slice_serves_machine_files_only_to_its_pinned_home_inner(),
+        );
+    }
+
+    async fn a_slice_serves_machine_files_only_to_its_pinned_home_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("slice-machine-file-admission");
+        std::fs::write(folder.path().join("notes.txt"), b"for my slice").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(&state_home).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        let home_thumbprint = public_key_thumbprint(&home_public_key);
+        let other_private_key = relay_crypto::generate_private_key_base64();
+        let other_public_key = relay_crypto::public_key_from_private_key_base64(&other_private_key)
+            .expect("other public key");
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = None;
+        config.managed_slice_relay_owner_public_key = Some(home_public_key.clone());
+        config.room_environment_worker_binding =
+            Some(crate::config::RoomEnvironmentWorkerBinding {
+                home_kernel_id: "kernel-home".into(),
+                home_public_key: home_public_key.clone(),
+                session_id: "home-session".into(),
+                slice_id: "owned-slice".into(),
+                provisioned_slice_id: Some("owned-slice".into()),
+            });
+        let app = DaemonApp::bootstrap(config).expect("slice kernel should boot");
+        let slice_public_key = app.config().relay_public_key.clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let notes = folder.path().join("notes.txt").display().to_string();
+        let read = || RelayPeerRequest::ReadMachineFile {
+            path: notes.clone(),
+            offset: 0,
+        };
+        let ask = |sender: &str, identity: RelayCallerIdentity, private_key: &str| {
+            let (router, state) = (router.clone(), state.clone());
+            let (sender, private_key, target) = (
+                sender.to_string(),
+                private_key.to_string(),
+                slice_public_key.clone(),
+            );
+            let request = read();
+            async move {
+                send_authenticated_peer_request_for_test(
+                    &router,
+                    &state,
+                    &sender,
+                    identity,
+                    &private_key,
+                    &target,
+                    request,
+                )
+                .await
+            }
+        };
+
+        let home = scoped_machine_identity("machine-home", Some(home_thumbprint));
+        let served = ask("kernel-home", home.clone(), &home_private_key)
+            .await
+            .expect("the pinned home is served");
+        let RelayPeerResponse::FileSliceRead { content, .. } = served else {
+            panic!("{served:?}")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"for my slice");
+        // Another kernel of the same owner, or one holding another key, is not the home.
+        assert_unauthorized(ask("kernel-other", home.clone(), &home_private_key).await);
+        let other = scoped_machine_identity(
+            "machine-home",
+            Some(public_key_thumbprint(&other_public_key)),
+        );
+        assert_unauthorized(ask("kernel-home", other, &other_private_key).await);
+        assert_unauthorized(
+            ask(
+                "kernel-home",
+                scoped_machine_identity("machine-home", None),
+                &home_private_key,
+            )
+            .await,
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
+    // The slice pulls the files it copies from its home, so the home serves the slices it
+    // provisioned, which carry no Cloud profile either, and no other slice.
+    #[test]
+    fn a_home_serves_machine_files_to_its_own_slices_only() {
+        run_on_large_stack(
+            "home machine file admission test",
+            a_home_serves_machine_files_to_its_own_slices_only_inner(),
+        );
+    }
+
+    async fn a_home_serves_machine_files_to_its_own_slices_only_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("home-machine-file-admission");
+        std::fs::write(folder.path().join("notes.txt"), b"for my slice").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(&state_home).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let slice_private_key = relay_crypto::generate_private_key_base64();
+        let slice_public_key = relay_crypto::public_key_from_private_key_base64(&slice_private_key)
+            .expect("slice public key");
+        let thumbprint = public_key_thumbprint(&slice_public_key);
+        let mut config = lease_worker_config();
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::General;
+        config.remote_lease_capacity = None;
+        let app = DaemonApp::bootstrap(config).expect("home kernel should boot");
+        let home_public_key = app.config().relay_public_key.clone();
+        let home_id = app.config().daemon_id.clone();
+        let host_machine_id = app.config().host_machine_id.clone();
+        let slices = app.slices();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let create_slice = |name: &str, owner_kernel_id: &str| {
+            slices
+                .create(
+                    owner_kernel_id,
+                    &host_machine_id,
+                    crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
+                        name: name.into(),
+                        backend: crate::slice::SliceBackendKind::LocalDocker,
+                        os: "linux".into(),
+                        display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
+                        workspace_id: None,
+                        worktree_id: None,
+                        workspace_mount: None,
+                        development: None,
+                        worker_kernel_ref: Some(format!("{name}-worker")),
+                        display_url: None,
+                        provider_auth: Vec::new(),
+                        from_saved_state: None,
+                        now_ms: 1,
+                    },
+                )
+                .expect("slice record")
+        };
+        create_slice("own", &home_id);
+        create_slice("foreign", "someone-elses-home");
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let notes = folder.path().join("notes.txt").display().to_string();
+        let ask = |sender: &str, identity: RelayCallerIdentity| {
+            let (router, state) = (router.clone(), state.clone());
+            let (sender, private_key, target) = (
+                sender.to_string(),
+                slice_private_key.clone(),
+                home_public_key.clone(),
+            );
+            let request = RelayPeerRequest::ReadMachineFile {
+                path: notes.clone(),
+                offset: 0,
+            };
+            async move {
+                send_authenticated_peer_request_for_test(
+                    &router,
+                    &state,
+                    &sender,
+                    identity,
+                    &private_key,
+                    &target,
+                    request,
+                )
+                .await
+            }
+        };
+
+        // A slice carries no Cloud user, so only the home's own slice records can admit it.
+        let mut slice = scoped_machine_identity("machine-slice", Some(thumbprint.clone()));
+        slice.user_id = None;
+        let served = ask("own-worker", slice.clone())
+            .await
+            .expect("a slice of this home is served");
+        let RelayPeerResponse::FileSliceRead { content, .. } = served else {
+            panic!("{served:?}")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"for my slice");
+        // A slice of another home, an unknown kernel and another realm are refused.
+        assert_unauthorized(ask("foreign-worker", slice.clone()).await);
+        assert_unauthorized(ask("unknown-worker", slice.clone()).await);
+        let mut other_realm = slice.clone();
+        other_realm.realm_id = "realm-2".to_string();
+        assert_unauthorized(ask("own-worker", other_realm).await);
         match previous {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),
             None => std::env::remove_var("CHARIOX_HOME"),

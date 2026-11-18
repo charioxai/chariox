@@ -120,18 +120,35 @@ impl KernelRuntimeState {
             .ok_or_else(|| unknown_transfer(&job.job_id))
     }
 
-    /// The files of `kernel`, a kernel of the same owner, as a source of this kernel's transfers.
+    /// The files of `kernel` as a source of this kernel's transfers: a kernel of the same owner, or
+    /// the home this slice is provisioned to.
     pub(crate) fn peer_files(&self, kernel: &str, name: &str) -> Result<PeerFiles, DaemonError> {
-        let owner = self.file_peer_owner()?;
-        let (runtime, kernel) = (self.clone(), kernel.to_owned());
-        let link: PeerLink = Arc::new(move |request| {
-            let (runtime, owner, kernel) = (runtime.clone(), owner.clone(), kernel.clone());
-            Box::pin(async move {
-                runtime
-                    .peer_send(&owner, &kernel, request, SLICE_TIMEOUT)
-                    .await
+        let runtime = self.clone();
+        let link: PeerLink = if self
+            .slice_home()
+            .is_some_and(|home| home.kernel_id == kernel)
+        {
+            let kernel = kernel.to_owned();
+            Arc::new(move |request| {
+                let (runtime, kernel) = (runtime.clone(), kernel.clone());
+                Box::pin(async move {
+                    let config = runtime.owned.config_projection.snapshot();
+                    runtime
+                        .send_worker_home_runtime_request(&config, &kernel, request, SLICE_TIMEOUT)
+                        .await
+                })
             })
-        });
+        } else {
+            let (owner, kernel) = (self.file_peer_owner()?, kernel.to_owned());
+            Arc::new(move |request| {
+                let (runtime, owner, kernel) = (runtime.clone(), owner.clone(), kernel.clone());
+                Box::pin(async move {
+                    runtime
+                        .peer_send(&owner, &kernel, request, SLICE_TIMEOUT)
+                        .await
+                })
+            })
+        };
         Ok(PeerFiles::new(format!("The machine `{name}`"), link))
     }
 

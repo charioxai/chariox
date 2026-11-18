@@ -6,16 +6,25 @@ pub(crate) struct SliceAgentRelaunchManifest {
     pub(crate) agent_id: String,
     pub(crate) owner_user_id: String,
     pub(crate) source_remote_execution: crate::agent::RemoteAgentBinding,
+    pub(crate) execution_mode: crate::provider::AgentExecutionMode,
+    pub(crate) permission_level: crate::provider::AgentPermissionLevel,
+    pub(crate) existing_provider_run_id: Option<String>,
+    /// Set only for an agent whose provider ran in a native terminal when the slice stopped.
+    /// Every other agent's provider starts with its next prompt, the way its first one did: a
+    /// relaunched native terminal that no client drives stops at Claude's workspace-trust
+    /// question, and the first prompt typed into it answers "No, exit".
+    pub(crate) native_terminal: Option<SliceAgentNativeTerminal>,
+}
+
+/// The provider selection a slice start relaunches in a native terminal.
+#[derive(Debug, Clone)]
+pub(crate) struct SliceAgentNativeTerminal {
     pub(crate) adapter_key: String,
     pub(crate) provider: String,
     pub(crate) account_profile: String,
     pub(crate) model: String,
     pub(crate) variant: Option<String>,
-    pub(crate) execution_mode: crate::provider::AgentExecutionMode,
-    pub(crate) permission_level: crate::provider::AgentPermissionLevel,
-    pub(crate) structured_endpoint: Option<String>,
     pub(crate) provider_session_id: Option<String>,
-    pub(crate) existing_provider_run_id: Option<String>,
 }
 
 impl KernelRuntimeState {
@@ -228,49 +237,39 @@ impl KernelRuntimeState {
                     busy_agents.push(agent.id().to_string());
                     continue;
                 }
+                let native_terminal = (run.client_interface()
+                    == crate::provider::ProviderClientInterface::NativeTui)
+                    .then(|| SliceAgentNativeTerminal {
+                        adapter_key: run.adapter_key().to_string(),
+                        provider: run.provider().to_string(),
+                        account_profile: run.account_profile().to_string(),
+                        model: run.model().to_string(),
+                        variant: run.variant().or_else(|| agent.effort()).map(str::to_string),
+                        provider_session_id: run
+                            .provider_session_id()
+                            .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
+                            .map(str::to_string),
+                    });
                 SliceAgentRelaunchManifest {
                     session_id: session.id().to_string(),
                     agent_id: agent.id().to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),
                     source_remote_execution: source_remote_execution.clone(),
-                    adapter_key: run.adapter_key().to_string(),
-                    provider: run.provider().to_string(),
-                    account_profile: run.account_profile().to_string(),
-                    model: run.model().to_string(),
-                    variant: run.variant().or_else(|| agent.effort()).map(str::to_string),
                     execution_mode: effective_config.mode,
                     permission_level: effective_config.permission_level,
-                    // A slice restart must spawn a fresh managed provider process inside the
-                    // restarted worker. The previous structured endpoint is worker-local and
-                    // points at the provider server that was stopped with the old slice.
-                    structured_endpoint: None,
-                    provider_session_id: run
-                        .provider_session_id()
-                        .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
-                        .map(str::to_string),
                     existing_provider_run_id: Some(run.id().to_string()),
+                    native_terminal,
                 }
             } else {
-                let adapter_key =
-                    crate::provider::adapter_key_for_provider(agent.provider()).to_string();
                 SliceAgentRelaunchManifest {
                     session_id: session.id().to_string(),
                     agent_id: agent.id().to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),
                     source_remote_execution,
-                    adapter_key: adapter_key.clone(),
-                    provider: agent.provider().to_string(),
-                    account_profile: agent.provider_account_profile().to_string(),
-                    model: agent.model().unwrap_or("default").to_string(),
-                    variant: agent.effort().map(str::to_string),
                     execution_mode: effective_config.mode,
                     permission_level: effective_config.permission_level,
-                    structured_endpoint: None,
-                    provider_session_id: agent
-                        .provider_resume_state()
-                        .provider_session_id(&adapter_key)
-                        .map(str::to_string),
                     existing_provider_run_id: None,
+                    native_terminal: None,
                 }
             };
             manifests.push(manifest);
@@ -397,23 +396,28 @@ impl KernelRuntimeState {
             self.append_agent_durable_event("agent.remote_binding_refreshed", &rebound, None)
                 .await?;
 
+            let Some(terminal) = manifest.native_terminal.as_ref() else {
+                continue;
+            };
             let request = crate::local::LaunchProviderRunRequest {
                 session_id: manifest.session_id.clone(),
                 agent_id: Some(manifest.agent_id.clone()),
-                adapter_key: manifest.adapter_key.clone(),
-                provider: manifest.provider.clone(),
-                account_profile: manifest.account_profile.clone(),
-                model: manifest.model.clone(),
-                variant: manifest.variant.clone(),
-                structured_endpoint: manifest.structured_endpoint.clone(),
-                provider_session_id: manifest.provider_session_id.clone(),
+                adapter_key: terminal.adapter_key.clone(),
+                provider: terminal.provider.clone(),
+                account_profile: terminal.account_profile.clone(),
+                model: terminal.model.clone(),
+                variant: terminal.variant.clone(),
+                // The previous structured endpoint is worker-local and points at the provider
+                // server that was stopped with the old slice.
+                structured_endpoint: None,
+                provider_session_id: terminal.provider_session_id.clone(),
                 native_tui: true,
                 native_checkpoint_binding: None,
             };
             let response = self
                 .launch_remote_native_provider_run(&request, &manifest.owner_user_id)
                 .await?;
-            validate_slice_agent_relaunch_response(&manifest, response)?;
+            validate_slice_agent_relaunch_response(&manifest.agent_id, terminal, response)?;
         }
         Ok(())
     }
@@ -1213,7 +1217,8 @@ fn busy_slice_agents_message(operation: &'static str, agent_ids: &[String]) -> S
 }
 
 fn validate_slice_agent_relaunch_response(
-    manifest: &SliceAgentRelaunchManifest,
+    agent_id: &str,
+    terminal: &SliceAgentNativeTerminal,
     response: Option<crate::local::LocalDaemonResponse>,
 ) -> Result<(), DaemonError> {
     let provider_run = match response {
@@ -1225,7 +1230,7 @@ fn validate_slice_agent_relaunch_response(
                 operation: "slice.agent.relaunch",
                 message: format!(
                     "provider launch for slice agent `{}` returned no provider run",
-                    manifest.agent_id
+                    agent_id
                 ),
             });
         }
@@ -1234,21 +1239,21 @@ fn validate_slice_agent_relaunch_response(
                 operation: "slice.agent.relaunch",
                 message: format!(
                     "provider launch returned no run for slice agent `{}`",
-                    manifest.agent_id
+                    agent_id
                 ),
             });
         }
     };
-    if provider_run.agent_instance_id() != Some(manifest.agent_id.as_str()) {
+    if provider_run.agent_instance_id() != Some(agent_id) {
         return Err(DaemonError::LocalTransport {
             operation: "slice.agent.relaunch",
             message: format!(
                 "provider launch for slice agent `{}` returned a run for a different agent",
-                manifest.agent_id
+                agent_id
             ),
         });
     }
-    let Some(expected_provider_session_id) = manifest.provider_session_id.as_deref() else {
+    let Some(expected_provider_session_id) = terminal.provider_session_id.as_deref() else {
         return Ok(());
     };
     // Public projection already resolves the provider-native session ID.
@@ -1258,7 +1263,7 @@ fn validate_slice_agent_relaunch_response(
             operation: "slice.agent.relaunch",
             message: format!(
                 "provider resume for slice agent `{}` expected session `{expected_provider_session_id}` but launch returned `{}`; refusing to accept a blank or different provider thread",
-                manifest.agent_id,
+                agent_id,
                 actual_provider_session_id.unwrap_or("none")
             ),
         });
@@ -1349,14 +1354,9 @@ mod tests {
 
         assert_eq!(manifests.len(), 1);
         assert_eq!(manifests[0].agent_id, agent_id);
-        assert_eq!(manifests[0].adapter_key, "codex");
-        assert_eq!(manifests[0].provider, "codex");
-        assert_eq!(manifests[0].account_profile, "work");
-        assert_eq!(manifests[0].model, "gpt-5.6-sol");
-        assert_eq!(manifests[0].variant.as_deref(), Some("low"));
-        assert_eq!(
-            manifests[0].provider_session_id.as_deref(),
-            Some("thread-before-save")
+        assert!(
+            manifests[0].native_terminal.is_none(),
+            "an agent with no provider run starts it with its next prompt"
         );
         assert_eq!(
             manifests[0].source_remote_execution.worker_machine_id,
@@ -1476,44 +1476,24 @@ mod tests {
 
     #[test]
     fn resumed_slice_agent_launch_must_keep_the_captured_provider_session() {
-        let manifest = SliceAgentRelaunchManifest {
-            session_id: "session-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            owner_user_id: "user-1".to_string(),
-            source_remote_execution: crate::agent::RemoteAgentBinding {
-                worker_kernel_id: "worker-1".to_string(),
-                worker_machine_id: "slice:slice-1".to_string(),
-                execution_lease_id: "lease-1".to_string(),
-                leased_agent_id: "leased-agent-1".to_string(),
-                active_worker_provider_run_id: None,
-                relay_url: None,
-                relay_token: None,
-                relay_peer_protocol_version: Some(
-                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                ),
-                worker_worktree_id: None,
-            },
+        let terminal = SliceAgentNativeTerminal {
             adapter_key: "opencode".to_string(),
             provider: "opencode".to_string(),
             account_profile: "work".to_string(),
             model: "opencode/gpt-5.6-sol".to_string(),
             variant: None,
-            execution_mode: crate::provider::AgentExecutionMode::Build,
-            permission_level: crate::provider::AgentPermissionLevel::Yolo,
-            structured_endpoint: None,
             provider_session_id: Some("session-before-save".to_string()),
-            existing_provider_run_id: None,
         };
 
         let response = |provider_session_id: Option<&str>| {
             let request = crate::provider::LaunchProviderRequest::new(
-                &manifest.session_id,
-                &manifest.adapter_key,
-                &manifest.provider,
-                &manifest.account_profile,
-                &manifest.model,
+                "session-1",
+                &terminal.adapter_key,
+                &terminal.provider,
+                &terminal.account_profile,
+                &terminal.model,
             )
-            .with_agent_id(&manifest.agent_id)
+            .with_agent_id("agent-1")
             .with_resume_state(match provider_session_id {
                 Some(provider_session_id) => {
                     crate::provider::ProviderResumeState::from_opencode_session_id(
@@ -1543,19 +1523,20 @@ mod tests {
         };
 
         assert!(validate_slice_agent_relaunch_response(
-            &manifest,
+            "agent-1",
+            &terminal,
             Some(response(Some("session-before-save")))
         )
         .is_ok());
         for result in [response(None), response(Some("different-session"))] {
-            let error = validate_slice_agent_relaunch_response(&manifest, Some(result))
+            let error = validate_slice_agent_relaunch_response("agent-1", &terminal, Some(result))
                 .expect_err("blank or changed provider session must not count as resumed");
             assert!(error
                 .to_string()
                 .contains("refusing to accept a blank or different provider thread"));
             assert!(error.to_string().contains("session-before-save"));
         }
-        let error = validate_slice_agent_relaunch_response(&manifest, None)
+        let error = validate_slice_agent_relaunch_response("agent-1", &terminal, None)
             .expect_err("missing provider launch response must not count as a relaunch");
         assert!(error
             .to_string()
@@ -1563,7 +1544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relaunch_manifests_preserve_projected_provider_selection_after_parking() {
+    async fn a_parked_native_terminal_relaunches_with_its_projected_provider_selection() {
         let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
         runtime
             .owned
@@ -1642,6 +1623,33 @@ mod tests {
         let manifests = runtime
             .slice_agent_relaunch_manifests(&slice, "slice.state.save")
             .expect("active projected provider should be captured");
+        assert_eq!(manifests.len(), 1);
+        let manifest = &manifests[0];
+        let terminal = manifest
+            .native_terminal
+            .as_ref()
+            .expect("a running native terminal relaunches with the restarted slice");
+        assert_eq!(terminal.adapter_key, "codex");
+        assert_eq!(terminal.provider, "codex");
+        assert_eq!(terminal.account_profile, "work");
+        assert_eq!(terminal.model, "gpt-5.6-sol");
+        assert_eq!(terminal.variant.as_deref(), Some("high"));
+        assert_eq!(
+            terminal.provider_session_id.as_deref(),
+            Some("thread-projected")
+        );
+        assert_eq!(
+            manifest.existing_provider_run_id.as_deref(),
+            Some(projected_provider_run_id.as_str())
+        );
+        assert_eq!(
+            manifest.execution_mode,
+            crate::provider::AgentExecutionMode::Plan
+        );
+        assert_eq!(
+            manifest.permission_level,
+            crate::provider::AgentPermissionLevel::Required
+        );
         runtime
             .park_slice_agent_provider_runs(&manifests)
             .await
@@ -1677,27 +1685,13 @@ mod tests {
         );
         let recaptured = runtime
             .slice_agent_relaunch_manifests(&slice, "slice.start")
-            .expect("parked projected provider selection should remain recoverable");
+            .expect("a parked slice agent should still rebind on start");
 
         assert_eq!(recaptured.len(), 1);
-        let manifest = &recaptured[0];
-        assert_eq!(manifest.adapter_key, "codex");
-        assert_eq!(manifest.provider, "codex");
-        assert_eq!(manifest.account_profile, "work");
-        assert_eq!(manifest.model, "gpt-5.6-sol");
-        assert_eq!(manifest.variant.as_deref(), Some("high"));
-        assert_eq!(
-            manifest.provider_session_id.as_deref(),
-            Some("thread-projected")
-        );
-        assert_eq!(manifest.existing_provider_run_id.as_deref(), None);
-        assert_eq!(
-            manifest.execution_mode,
-            crate::provider::AgentExecutionMode::Plan
-        );
-        assert_eq!(
-            manifest.permission_level,
-            crate::provider::AgentPermissionLevel::Required
+        assert_eq!(recaptured[0].agent_id, agent_id);
+        assert!(
+            recaptured[0].native_terminal.is_none(),
+            "no provider runs once parked: the next prompt or native client starts it"
         );
     }
 
@@ -2123,7 +2117,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    pub(super) async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -2199,3 +2193,7 @@ mod tests {
 #[cfg(test)]
 #[path = "slice_runtime_state/attachment_identity_tests.rs"]
 mod attachment_identity_tests;
+
+#[cfg(test)]
+#[path = "slice_runtime_state/relaunch_interface_tests.rs"]
+mod relaunch_interface_tests;

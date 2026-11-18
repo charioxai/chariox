@@ -13,7 +13,7 @@ async fn rejects_worker_identity_collisions_after_binding() {
         let (router, rooms) = state.router();
         for (index, name) in ["first", "second"].into_iter().enumerate() {
             create_desktop(&router, name).await;
-            dispatch_json(&router, bind(&rooms[index], name))
+            dispatch_bind_room(&router, bind(&rooms[index], name))
                 .await
                 .unwrap();
         }
@@ -80,7 +80,7 @@ async fn rejects_every_cross_room_admission_path() {
                 1,
             )
             .unwrap();
-        dispatch_json(&router, bind(&rooms[0], "reserved"))
+        dispatch_bind_room(&router, bind(&rooms[0], "reserved"))
             .await
             .unwrap();
         let slice = dispatch_json(&router, json!({"GetSlice":{"slice_ref":"reserved"}}))
@@ -151,7 +151,7 @@ async fn preserves_owner_admission_and_releases_failed_guards() {
         let (router, rooms) = state.router();
         create_desktop(&router, "target").await;
         if reserved {
-            dispatch_json(&router, bind(&rooms[0], "target"))
+            dispatch_bind_room(&router, bind(&rooms[0], "target"))
                 .await
                 .unwrap();
         }
@@ -194,7 +194,7 @@ async fn preserves_owner_admission_and_releases_failed_guards() {
                 "failed owner spawn must release its operation marker: {denied}"
             );
         } else {
-            dispatch_json(&router, bind(&rooms[1], "target"))
+            dispatch_bind_room(&router, bind(&rooms[1], "target"))
                 .await
                 .expect("failed legacy admission leaves the unassigned slice available");
         }
@@ -204,7 +204,7 @@ async fn preserves_owner_admission_and_releases_failed_guards() {
     let (router, rooms) = state.router();
     create_desktop(&router, "available").await;
     create_desktop(&router, "reserved").await;
-    dispatch_json(&router, bind(&rooms[0], "reserved"))
+    dispatch_bind_room(&router, bind(&rooms[0], "reserved"))
         .await
         .unwrap();
     let denied = dispatch_json(
@@ -219,7 +219,7 @@ async fn preserves_owner_admission_and_releases_failed_guards() {
     .unwrap_err()
     .to_string();
     assert!(denied.contains("environment_slice_access_denied"));
-    dispatch_json(&router, bind(&rooms[1], "available"))
+    dispatch_bind_room(&router, bind(&rooms[1], "available"))
         .await
         .expect("later preflight failure must release earlier slice guards");
 }
@@ -234,7 +234,7 @@ async fn rejects_cross_room_spawn_before_worktree_mutation() {
     let state = TestState::new();
     let (router, rooms) = state.router();
     create_desktop(&router, "reserved").await;
-    dispatch_json(&router, bind(&rooms[0], "reserved"))
+    dispatch_bind_room(&router, bind(&rooms[0], "reserved"))
         .await
         .unwrap();
     let before = dispatch_json(&router, json!({"GetSlice":{"slice_ref":"reserved"}}))
@@ -303,7 +303,7 @@ async fn friendly_alias_admission(busy: bool) {
                 1,
             )
             .unwrap();
-        dispatch_json(&router, bind(&rooms[0], "desktop"))
+        dispatch_bind_room(&router, bind(&rooms[0], "desktop"))
             .await
             .unwrap();
         let active = busy.then(|| slices.try_begin_operation("desktop", "state.save").unwrap());
@@ -379,7 +379,7 @@ async fn friendly_alias_shares_canonical_admission_without_authorizing_alias() {
     create_desktop(&router, "desktop").await;
     let slices = router.app.lock().await.slices().clone();
     let record = slices.resolve("desktop").unwrap();
-    dispatch_json(&router, bind(&rooms[0], "desktop"))
+    dispatch_bind_room(&router, bind(&rooms[0], "desktop"))
         .await
         .unwrap();
     let admission = router
@@ -431,7 +431,7 @@ async fn friendly_alias_rejects_canonical_collision() {
     let state = TestState::new();
     let (router, rooms) = state.router();
     create_desktop(&router, "desktop").await;
-    dispatch_json(&router, bind(&rooms[0], "desktop"))
+    dispatch_bind_room(&router, bind(&rooms[0], "desktop"))
         .await
         .unwrap();
     dispatch_json(

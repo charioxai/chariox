@@ -1248,7 +1248,7 @@ pub(super) async fn prepare_cross_worker_room_display(
         .expect("mark the headed Room environment running on worker A");
 
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id":&room,
@@ -1788,7 +1788,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         )
         .expect("test slice running");
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id":room, "slice_ref":"desktop"
