@@ -119,6 +119,7 @@ pub(super) fn stamp_runtime_credential_metadata_for_agent(
         vault_key,
         created_at_ms: Some(now_ms),
         updated_at_ms: Some(now_ms),
+        copied_from: None,
     });
     credential
 }
