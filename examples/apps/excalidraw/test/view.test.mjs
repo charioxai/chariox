@@ -505,8 +505,8 @@ test('a draft that advances after a recovering window read it is never removed b
     await waitUntil(() => backend.drafts.size === 1, { what: 'the open window\'s edit to be kept' });
     const [openId] = backend.drafts.keys();
     // The recovering window has its copy of that draft when the open window keeps a second rectangle.
-    backend.afterReadDrafts = async () => {
-      backend.afterReadDrafts = null;
+    backend.afterReadDraft = async () => {
+      backend.afterReadDraft = null;
       await open.draw(700, 500);
       await waitUntil(() => backend.drafts.get(openId).elements.length === 2, { what: 'the open window\'s second rectangle to be kept' });
     };

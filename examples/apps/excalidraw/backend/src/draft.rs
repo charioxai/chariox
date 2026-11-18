@@ -2,9 +2,10 @@
 //! App update, a reconnect, a reload), so it hands the scene it is about to save to the App and asks
 //! for the kept ones when it starts. A window has no identity that outlives its replacement, so each
 //! window keeps its drafts under an id of its own choosing, and only that window removes its draft
-//! (`discard_draft`): one window saving never drops what another window has not saved, and a
-//! recovering window copies the kept drafts into its canvas and leaves them where they are, because
-//! their window may still be open. The one removal that is not the window's own is age: a draft that
+//! (`discard_draft`): one window saving never drops what another window has not saved. A recovering
+//! window lists the drafts and reads them one at a time, so no reply nears the catalog's call limit,
+//! and merges them into its canvas, leaving them where they are, because their window may still be
+//! open. The one removal that is not the window's own is age: a draft that
 //! cannot be read, or that is older than the hour a deletion is kept, is dropped when the folder is next
 //! read or written. At the cap a new window's draft is refused, never made room for by removing another.
 //!
@@ -56,10 +57,17 @@ fn decode(text: &str) -> Option<(u64, Value)> {
     Some((saved_at, scene))
 }
 
-/// The drafts a window is handed, oldest first, and the ids whose files are of no use any more: one
+/// A kept draft: the window it belongs to and its revision (the time it was written, which rises with
+/// every write of that window).
+struct Kept {
+    id: String,
+    revision: u64,
+}
+
+/// The drafts a window can recover, oldest first, and the ids whose files are of no use any more: one
 /// that cannot be read, or one kept longer ago than the deletions are, because a deletion that an
 /// older draft does not know of may be forgotten by then and the draft would draw it again.
-fn select(files: Vec<(String, String)>, now_ms: u64) -> (Vec<(String, Value)>, Vec<String>) {
+fn select(files: Vec<(String, String)>, now_ms: u64) -> (Vec<Kept>, Vec<String>) {
     let mut kept = Vec::new();
     let mut useless = Vec::new();
     for (id, text) in files {
@@ -72,7 +80,9 @@ fn select(files: Vec<(String, String)>, now_ms: u64) -> (Vec<(String, Value)>, V
     }
     kept.sort_by_key(|(saved_at, _, _)| *saved_at);
     (
-        kept.into_iter().map(|(_, id, scene)| (id, scene)).collect(),
+        kept.into_iter()
+            .map(|(revision, id, _)| Kept { id, revision })
+            .collect(),
         useless,
     )
 }
@@ -112,7 +122,7 @@ fn remove(id: &str) -> Result<(), AppError> {
 /// An id that is kept already always fits, since the save replaces its file.
 fn admit(files: Vec<(String, String)>, id: &str, now_ms: u64) -> (Vec<String>, bool) {
     let (kept, useless) = select(files, now_ms);
-    let others = kept.iter().filter(|(other, _)| other != id).count();
+    let others = kept.iter().filter(|draft| draft.id != id).count();
     (useless, others < MAX_DRAFTS)
 }
 
@@ -145,15 +155,37 @@ pub async fn save(input: &Value) -> Result<Value, AppError> {
     Ok(json!({}))
 }
 
-/// `read_drafts`: the kept drafts, oldest first.
-pub fn read() -> Result<Value, AppError> {
+/// `list_drafts`: the kept drafts' ids and revisions, oldest first. A scene is read one at a time with
+/// `read_draft`, because the scenes of several windows together can exceed the catalog's call limit.
+pub fn list() -> Result<Value, AppError> {
     let (kept, useless) = select(files()?, now_ms());
     for id in useless {
         remove(&id)?;
     }
-    Ok(
-        json!({"drafts": kept.into_iter().map(|(id, scene)| json!({"id": id, "scene": scene})).collect::<Vec<_>>()}),
-    )
+    Ok(json!({"drafts": kept.into_iter()
+        .map(|draft| json!({"id": draft.id, "revision": draft.revision}))
+        .collect::<Vec<_>>()}))
+}
+
+/// The kept draft of `id`, when it is still kept and readable.
+fn kept_of(id: &str) -> Result<Option<(u64, Value)>, AppError> {
+    match fs::read_to_string(format!("data/{}", path_of(id)?)) {
+        Ok(text) => Ok(decode(&text)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(error("DRAFT_FAILED", "cannot read the kept draft")),
+    }
+}
+
+/// `read_draft`: the scene of one kept draft. A draft that its window discarded or that aged out since
+/// the list has no scene to hand over.
+pub fn read(input: &Value) -> Result<Value, AppError> {
+    let id = input["id"]
+        .as_str()
+        .ok_or_else(|| error("INVALID_ARGUMENT", "id is required"))?;
+    Ok(match kept_of(id)? {
+        Some((revision, scene)) => json!({"id": id, "revision": revision, "scene": scene}),
+        None => json!({"id": id, "revision": null, "scene": null}),
+    })
 }
 
 /// `discard_draft`: forget the draft of this id and no other. Only the window of that id sends it.
@@ -199,9 +231,9 @@ mod tests {
             ),
         ];
         let (kept, useless) = select(files, now);
-        let ids: Vec<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
+        let ids: Vec<&str> = kept.iter().map(|draft| draft.id.as_str()).collect();
         assert_eq!(ids, ["old", "new"]);
-        assert_eq!(kept[1].1, scene_of(&["n"]));
+        assert_eq!(kept[1].revision, now - 5);
         assert_eq!(useless, ["expired", "torn", "not-a-scene"]);
     }
 

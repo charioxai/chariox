@@ -76,7 +76,7 @@ Excalidraw's reconciliation and saves what is still its own, so neither side's e
 lost. An agent's selection is shown once. The window's page keeps nothing when the App
 updates or the connection returns and the view is replaced, so a scene it has not saved yet
 (waiting for the timer or for the answer to a save) is also kept in the App, in
-`data/drafts/<window id>.json`, one file per window (`save_draft`, `read_drafts`,
+`data/drafts/<window id>.json`, one file per window (`save_draft`, `list_drafts`, `read_draft`,
 `discard_draft`; at most four, none older than the hour a deletion is kept). The
 new window merges the kept drafts into its canvas by element version and saves what is
 still unsaved, so a draft never overwrites what an agent saved meanwhile. A draft is

@@ -1,8 +1,9 @@
 // Keeps the person's unsaved scene in the App, not in this window: the view is replaced when the App
 // updates or the connection returns, and its page keeps nothing across that. Each window keeps its
 // draft under an id of its own and only that window writes or removes it; a draft is otherwise removed
-// only when the backend finds it older than an hour. The new window asks for every kept draft and
-// merges them into its canvas by element version: it copies, so it never removes another window's.
+// only when the backend finds it older than an hour. The new window lists the kept drafts, reads
+// them one at a time (all of them together can exceed the catalog's call limit) and merges them into
+// its canvas by element version: it copies, so it never removes another window's.
 const DELAY_MS = 100;
 
 export function drafts(call, id, read) {
@@ -45,9 +46,15 @@ export function drafts(call, id, read) {
       kept = false;
       return run('discard_draft', { id }).catch(tell);
     },
+    // The kept drafts of the other windows as {id, revision, scene}, oldest first, one read each.
     async recall() {
       await queue;
-      return (await call('read_drafts', {})).drafts;
+      const recalled = [];
+      for (const { id: other } of (await call('list_drafts', {})).drafts) {
+        const { revision, scene } = await call('read_draft', { id: other });
+        if (scene) recalled.push({ id: other, revision, scene });
+      }
+      return recalled;
     },
   };
 }

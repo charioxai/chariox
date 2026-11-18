@@ -6,7 +6,7 @@
 //   save_scene   -> { version }            refused with an error unless `version` is the saved version
 //   view_changes -> { latest, dropped, changes }   `latest` rises on every write, window saves too
 //   write_file / read_file / pick_file     files; an offered copy returns a grant
-//   save_draft / read_drafts / discard_draft   one unsaved scene per window id, kept for a window that is replaced
+//   save_draft / list_drafts / read_draft / discard_draft   one unsaved scene per window id, kept for a window that is replaced
 //
 // `agentEdit(fn)` edits the saved scene the way the backend does for an agent action.
 import assert from 'node:assert/strict';
@@ -46,6 +46,11 @@ export async function closeEnvironment() {
   await new Promise(done => server.close(done));
 }
 
+const MAX_CALL_BYTES = 512 * 1024;
+const withinBudget = (name, value) => {
+  const bytes = Buffer.byteLength(JSON.stringify(value ?? null));
+  if (bytes > MAX_CALL_BYTES) throw Error(`${name}: ${bytes} bytes exceed the catalog's ${MAX_CALL_BYTES} byte call limit`);
+};
 const clone = value => JSON.parse(JSON.stringify(value));
 const hash = text => [...text].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 2_000_000_000, 7);
 
@@ -82,7 +87,7 @@ export const sceneOf = (elements = [], appState = {}) =>
 
 export function fakeBackend() {
   const backend = {
-    scene: null, version: null, counter: 0, feed: 0,
+    scene: null, version: null, counter: 0, feed: 0, draftWrites: 0,
     calls: [], saves: [], writes: [], files: new Map(), picked: null,
     /** How many pick_file calls answer pending before the person's choice, and the ids the window asked again with. */
     pickWaits: 0, resumed: [],
@@ -90,10 +95,12 @@ export function fakeBackend() {
     failSaves: null,
     /** The kept drafts by window id. */
     drafts: new Map(),
+    /** The revision of each kept draft: it rises with every write of that window. */
+    revisions: new Map(),
     /** Message of the error every save_draft throws, with the kept drafts unchanged. */
     failDraftSaves: null,
-    /** Awaited by read_drafts after it took its copy of the kept drafts, before it answers. */
-    afterReadDrafts: null,
+    /** Awaited by read_draft after it took its copy of the draft, before it answers. */
+    afterReadDraft: null,
     /**
      * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
      * never answers: the two ways an App update can end a save the window is waiting for.
@@ -142,7 +149,14 @@ export function fakeBackend() {
     },
     /** The saved scene's live elements. */
     live: () => (backend.scene?.elements ?? []).filter(element => !element.isDeleted),
+    /** Every call and result passes the catalog's byte budget, as the kernel enforces it for the real App. */
     async call(name, input = {}) {
+      withinBudget(name, input);
+      const result = await backend.handle(name, input);
+      withinBudget(name, result);
+      return result;
+    },
+    async handle(name, input) {
       backend.calls.push(name);
       if (name === 'load_scene') return { scene: clone(backend.scene), version: backend.version };
       if (name === 'view_changes') return { latest: backend.feed, dropped: false, changes: [] };
@@ -158,10 +172,17 @@ export function fakeBackend() {
         if (backend.holdSaves === 'commit') await new Promise(() => {});
         return { version: backend.version };
       }
-      if (name === 'save_draft') { if (backend.failDraftSaves) throw Error(backend.failDraftSaves); backend.drafts.set(input.id, clone(input.scene)); return {}; }
-      if (name === 'read_drafts') {
-        const reply = { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
-        await backend.afterReadDrafts?.();
+      if (name === 'save_draft') {
+        if (backend.failDraftSaves) throw Error(backend.failDraftSaves);
+        backend.drafts.set(input.id, clone(input.scene));
+        backend.revisions.set(input.id, ++backend.draftWrites);
+        return {};
+      }
+      if (name === 'list_drafts') return { drafts: [...backend.drafts.keys()].map(id => ({ id, revision: backend.revisions.get(id) })) };
+      if (name === 'read_draft') {
+        const scene = backend.drafts.get(input.id);
+        const reply = scene ? { id: input.id, revision: backend.revisions.get(input.id), scene: clone(scene) } : { id: input.id, revision: null, scene: null };
+        await backend.afterReadDraft?.();
         return reply;
       }
       if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }

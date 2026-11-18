@@ -22,7 +22,9 @@ component-drills = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:tokio"]
 
 [dev-dependencies]
 chariox-app-package = { path = "../app-package" }
+chariox-app-runtime = { path = "../app-runtime" }
 ed25519-dalek = "2.1.1"
+rusqlite = "0.39.0"
 serde_json = "1.0.140"
 
 [[bin]]

@@ -107,12 +107,29 @@
       }
     },
     {
-      "name": "read_drafts",
-      "description": "The kept drafts, oldest first, as {drafts: [{id, scene}]}. Drafts kept for an hour or longer are not returned.",
+      "name": "list_drafts",
+      "description": "The kept drafts as {drafts: [{id, revision}]}, oldest first. Drafts kept for an hour or longer are not listed. Read each scene with read_draft.",
       "inputSchema": {
         "type": "object",
         "properties": {},
         "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_draft",
+      "description": "The scene of one kept draft as {id, revision, scene}; scene is null when the draft was discarded or aged out since it was listed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        },
+        "required": [
+          "id"
+        ],
         "additionalProperties": false
       }
     },

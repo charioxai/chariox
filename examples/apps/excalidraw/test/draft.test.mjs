@@ -12,7 +12,9 @@ async function run(order) {
   let unsaved = null;
   const draft = drafts(async (name, input) => {
     calls.push({ name, input });
-    return name === 'read_drafts' ? { drafts: [{ id: 'other', scene: { elements: [] } }] } : {};
+    if (name === 'list_drafts') return { drafts: [{ id: 'other', revision: 7 }] };
+    if (name === 'read_draft') return { id: 'other', revision: 7, scene: { elements: [] } };
+    return {};
   }, 'me', () => unsaved);
   for (const operation of order) {
     if (operation === 'edit') { unsaved = { elements: [{ id: 'e' }] }; draft.keep(); }
@@ -34,7 +36,7 @@ test('a window writes and removes only the draft of its own id, in every order o
   for (let length = 1; length <= 6; length++) {
     for (const order of orders(length)) {
       for (const { name, input } of await run(order)) {
-        if (name === 'read_drafts') continue;
+        if (name === 'list_drafts' || name === 'read_draft') continue;
         assert.equal(input.id, 'me', `${order.join(' ')}: ${name} named ${input.id}`);
       }
       checked++;

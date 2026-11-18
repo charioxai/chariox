@@ -18,6 +18,9 @@ use wasmtime::component::{
 use wasmtime::{Config, Engine, Store, StoreContextMut};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
+#[path = "../../../../packages/app-sdk-tools/tests/support/catalog_path.rs"]
+mod catalog_path;
+
 wasmtime::component::bindgen!({
     path: "../app-wit/wit",
     inline: r#"package chariox:excalidraw-drill;
@@ -443,6 +446,27 @@ async fn invoke(
     Ok(serde_json::from_str(&result.unwrap()).unwrap())
 }
 
+/// The kept drafts as a window recovers them: the list, then one read for each, oldest first.
+async fn kept_drafts(
+    store: &mut Store<Host>,
+    app: &Drill,
+) -> wasmtime::Result<Vec<serde_json::Value>> {
+    let listed = invoke(store, app, "list_drafts", serde_json::json!({})).await?;
+    let mut drafts = Vec::new();
+    for entry in listed["drafts"].as_array().unwrap() {
+        let read = invoke(
+            store,
+            app,
+            "read_draft",
+            serde_json::json!({"id": entry["id"]}),
+        )
+        .await?;
+        assert_eq!(read["revision"], entry["revision"]);
+        drafts.push(read);
+    }
+    Ok(drafts)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn same_named_export_preserves_the_earlier_private_save() -> wasmtime::Result<()> {
     let root = scratch("private-export")?;
@@ -690,10 +714,8 @@ async fn each_window_keeps_its_own_draft_in_the_data_directory_and_discards_only
         serde_json::json!({"id": "window-1", "scene": scene("left-again")}),
     )
     .await?;
-    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
-    let kept: Vec<(&str, &str)> = read["drafts"]
-        .as_array()
-        .unwrap()
+    let read = kept_drafts(&mut store, &app).await?;
+    let kept: Vec<(&str, &str)> = read
         .iter()
         .map(|draft| {
             (
@@ -713,13 +735,9 @@ async fn each_window_keeps_its_own_draft_in_the_data_directory_and_discards_only
         serde_json::json!({"id": "window-1"}),
     )
     .await?;
-    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
-    assert_eq!(
-        read["drafts"].as_array().unwrap().len(),
-        1,
-        "the other window's draft stays"
-    );
-    assert_eq!(read["drafts"][0]["id"], "window-2");
+    let read = kept_drafts(&mut store, &app).await?;
+    assert_eq!(read.len(), 1, "the other window's draft stays");
+    assert_eq!(read[0]["id"], "window-2");
 
     // An id names a file in the drafts folder and nothing else.
     for bad in ["../scene", "a/b", ""] {
@@ -760,14 +778,8 @@ async fn a_window_recovering_drafts_cannot_remove_the_newer_draft_of_another_win
     )
     .await?;
     // The recovering window reads, then the open window keeps a second element.
-    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
-    assert_eq!(
-        read["drafts"][0]["scene"]["elements"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let read = kept_drafts(&mut store, &app).await?;
+    assert_eq!(read[0]["scene"]["elements"].as_array().unwrap().len(), 1);
     invoke(
         &mut store,
         &app,
@@ -790,8 +802,7 @@ async fn a_window_recovering_drafts_cannot_remove_the_newer_draft_of_another_win
         serde_json::json!({"id": "recovering"}),
     )
     .await?;
-    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
-    let kept = read["drafts"].as_array().unwrap();
+    let kept = kept_drafts(&mut store, &app).await?;
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0]["id"], "open");
     assert_eq!(kept[0]["scene"]["elements"].as_array().unwrap().len(), 2);
@@ -830,10 +841,8 @@ async fn at_the_cap_a_new_window_is_refused_and_no_draft_is_removed_to_make_room
         serde_json::json!({"id": "window-0", "scene": scene("again")}),
     )
     .await?;
-    let read = invoke(&mut store, &app, "read_drafts", serde_json::json!({})).await?;
-    let mut ids: Vec<&str> = read["drafts"]
-        .as_array()
-        .unwrap()
+    let read = kept_drafts(&mut store, &app).await?;
+    let mut ids: Vec<&str> = read
         .iter()
         .map(|draft| draft["id"].as_str().unwrap())
         .collect();
@@ -855,5 +864,88 @@ async fn at_the_cap_a_new_window_is_refused_and_no_draft_is_removed_to_make_room
     )
     .await?;
     assert_eq!(fs::read_dir(root.0.join("drafts"))?.count(), 4);
+    Ok(())
+}
+
+/// A scene of `kib` KiB: one element that carries that much data.
+fn big_scene(id: &str, kib: usize) -> serde_json::Value {
+    serde_json::json!({"type":"excalidraw","version":2,
+        "elements":[{"id": id, "customData": {"pad": "x".repeat(kib * 1024)}}],
+        "appState":{},"files":{}})
+}
+
+/// The review's first finding: three drafts of 180 KiB are 540 KiB, over the catalog's 512 KiB call
+/// limit, so a reply with all of them was rejected before the window could merge any edit. Each reply
+/// now carries one scene, and every call of the recovery passes the catalog's own validation.
+#[tokio::test(flavor = "current_thread")]
+async fn near_limit_drafts_are_recovered_one_at_a_time_through_the_catalog() -> wasmtime::Result<()>
+{
+    let root = scratch("drafts-budget")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let mut catalog = catalog_path::Catalog::new(include_bytes!("../schemas/tools.json"));
+    for n in 0..3 {
+        let input = serde_json::json!({"id": format!("window-{n}"), "scene": big_scene(&format!("e{n}"), 180)});
+        let result = invoke(&mut store, &app, "save_draft", input.clone()).await?;
+        catalog.call("save_draft", &input, &result).unwrap();
+    }
+    let listed = invoke(&mut store, &app, "list_drafts", serde_json::json!({})).await?;
+    catalog
+        .call("list_drafts", &serde_json::json!({}), &listed)
+        .unwrap();
+    let ids: Vec<&str> = listed["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| draft["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    let mut all = Vec::new();
+    for id in ids {
+        let input = serde_json::json!({"id": id});
+        let read = invoke(&mut store, &app, "read_draft", input.clone()).await?;
+        assert_eq!(read["scene"]["elements"].as_array().unwrap().len(), 1);
+        catalog.call("read_draft", &input, &read).unwrap();
+        all.push(read);
+    }
+    // The premise: the three together do not fit one reply.
+    let together = serde_json::json!({"drafts": all});
+    assert!(matches!(
+        catalog.call(
+            "read_draft",
+            &serde_json::json!({"id": "window-0"}),
+            &together
+        ),
+        Err(chariox_app_runtime::app_catalog::CatalogError::Limit)
+    ));
+    Ok(())
+}
+
+/// A draft that its window discarded between the list and the read has no scene to hand over.
+#[tokio::test(flavor = "current_thread")]
+async fn a_draft_discarded_after_the_list_reads_as_no_scene() -> wasmtime::Result<()> {
+    let root = scratch("drafts-gone")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    invoke(
+        &mut store,
+        &app,
+        "save_draft",
+        serde_json::json!({"id": "window-1", "scene": big_scene("e", 1)}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "discard_draft",
+        serde_json::json!({"id": "window-1"}),
+    )
+    .await?;
+    let read = invoke(
+        &mut store,
+        &app,
+        "read_draft",
+        serde_json::json!({"id": "window-1"}),
+    )
+    .await?;
+    assert_eq!(read["scene"], serde_json::Value::Null);
     Ok(())
 }

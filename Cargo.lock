@@ -591,8 +591,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chariox-app-package",
+ "chariox-app-runtime",
  "chariox-app-wit",
  "ed25519-dalek",
+ "rusqlite",
  "serde_json",
  "tokio",
  "wasm-compose 0.262.0",
