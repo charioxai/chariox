@@ -9,7 +9,7 @@ fn files_watch_1011_448_snapshot_and_hash() {
     let bytes = include_bytes!("files-watch-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "914d176d6efa3bfdd9f9865653d60aa9659b4656b5a094475ace7e67d51d8537"
+        "559d5e7f1b3b19b88ae30897491e517039c0ac6d4f22ad0fbae8c191fdedcb3b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
