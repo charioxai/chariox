@@ -2091,13 +2091,9 @@ mod tests {
             (workspace.as_str(), worktree.as_str()),
             (primary.as_str(), primary.as_str())
         );
-        let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            repositories,
-            ..
-        } = selection
-        else {
-            panic!("source-project selection expected");
-        };
+        let (_, repositories) = selection
+            .single_source_project()
+            .expect("source-project selection expected");
         assert_eq!(repositories.len(), 2);
         assert_eq!(
             repositories[0].worktree_id.as_deref(),

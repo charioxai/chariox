@@ -565,6 +565,13 @@ impl RuntimeProviderRun {
         self.runtime_mcp_server_url = None;
         self.runtime_mcp_auth_token = None;
         self.provider_config_overrides.clear();
+        self.keep_only_fresh_child_env();
+        if self.adapter_key() == "claude" {
+            self.pty_args = self.metadata_only_claude_args();
+        }
+    }
+
+    fn keep_only_fresh_child_env(&mut self) {
         self.pty_env.retain(|name, _| {
             matches!(
                 name.as_str(),
@@ -580,9 +587,59 @@ impl RuntimeProviderRun {
                     | "COLORTERM"
             )
         });
-        if self.adapter_key() == "claude" {
-            self.pty_args = self.metadata_only_claude_args();
+    }
+
+    /// A Claude run on its native bridge (headless or a native terminal) has no structured I/O.
+    /// A setup turn the person asked for (publishing a new Room) runs on this ephemeral clone
+    /// instead: a fresh official `claude -p` child in the run's folder, account and model that
+    /// may run only `git` and `gh`, so it never needs an approval it has no way to ask for.
+    /// The clone has its own id so the run's own process resources stay untouched.
+    pub(crate) fn room_commands_claude_clone(&self, hidden_system_context: &str) -> Self {
+        debug_assert_eq!(self.adapter_key(), "claude");
+        let mut clone = self.clone();
+        clone.id = format!("{}-room-commands", self.id);
+        clone.resume_state = ProviderResumeState::default();
+        clone.mcp_servers.clear();
+        clone.runtime_mcp_server_url = None;
+        clone.runtime_mcp_auth_token = None;
+        clone.provider_config_overrides.clear();
+        clone.keep_only_fresh_child_env();
+        let mut args: Vec<String> = [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--permission-mode",
+            "default",
+            "--allowedTools",
+            "Bash(git:*)",
+            "Bash(gh:*)",
+        ]
+        .map(String::from)
+        .into();
+        let model = super::claude::normalized_claude_model(&self.model);
+        if model != "default" {
+            args.extend(["--model".into(), model]);
         }
+        if !hidden_system_context.is_empty() {
+            args.extend([
+                "--append-system-prompt".into(),
+                hidden_system_context.to_string(),
+            ]);
+        }
+        clone.pty_args = super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::RunFolder,
+        );
+        clone
     }
 
     // Metadata utilities own a fresh CLI command. Keep that executable
@@ -620,7 +677,11 @@ impl RuntimeProviderRun {
                 path.display().to_string(),
             ]);
         }
-        super::managed_isolation::fresh_provider_child_args(&self.pty_args, args)
+        super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::Empty,
+        )
     }
 
     /// Only the isolated Claude assessment clone receives this private input file.

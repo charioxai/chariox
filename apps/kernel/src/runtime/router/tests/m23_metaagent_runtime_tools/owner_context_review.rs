@@ -88,14 +88,18 @@ async fn human_review(source_project: bool, legacy_local: bool) {
 
     if source_project {
         let development =
-            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                project_id: session.project_id().into(),
-                repositories: vec![
+            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::package::ManagedContextSourceProject {
+                        project_id: session.project_id().into(),
+                        repositories: vec![
                     crate::managed_context::development::DevelopmentSourceRepositoryBinding {
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         workspace_id: session.workspace_id().into(),
                         worktree_id: None,
+                    },
+                ],
                     },
                 ],
             };

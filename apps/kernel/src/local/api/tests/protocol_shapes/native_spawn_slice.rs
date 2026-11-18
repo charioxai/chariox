@@ -717,7 +717,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
         worktree_id: Some("/repo/primary-worktree".to_string()),
         workspace_mount: Some("/repo/primary-worktree".to_string()),
         development: Some(
-            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects { projects: vec![crate::managed_context::package::ManagedContextSourceProject {
                 project_id: "project-1".to_string(),
                 repositories: vec![
                     crate::managed_context::development::DevelopmentSourceRepositoryBinding {
@@ -731,7 +731,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
                         worktree_id: None,
                     },
                 ],
-            },
+            }] },
         ),
         worker_kernel_ref: None,
         display_url: None,
@@ -752,10 +752,10 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
     let snapshot = serde_json::json!([request, publication]);
     assert_eq!(
         snapshot.pointer("/0/CreateSlice/development/kind"),
-        Some(&serde_json::json!("source_project"))
+        Some(&serde_json::json!("source_projects"))
     );
     assert_eq!(
-        snapshot.pointer("/0/CreateSlice/development/repositories/1/workspaceId"),
+        snapshot.pointer("/0/CreateSlice/development/projects/0/repositories/1/workspaceId"),
         Some(&serde_json::json!("/repo/supporting"))
     );
     assert_eq!(
@@ -775,7 +775,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "cd00f8ea87f2e45c7159acebd8c4a1a10138eb88b24c900cee9f3c041ce07293"
+        "47c3a69b8a97f40a22a488fef3c2165e1c1275ac18dc36a5a353673d0d2836ac"
     );
 }
 

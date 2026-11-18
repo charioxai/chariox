@@ -325,11 +325,16 @@ pub struct RelayManagedContextImportReceipt {
 pub enum RelayManagedDevelopmentContextImportReceipt {
     Empty,
     FromSource {
-        project_id: String,
-        destination_root: String,
-        primary_repository_id: String,
-        repositories: Vec<RelayManagedContextImportedRepository>,
+        projects: Vec<RelayManagedContextImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedProject {
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<RelayManagedContextImportedRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

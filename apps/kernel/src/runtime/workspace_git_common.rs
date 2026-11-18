@@ -239,6 +239,11 @@ pub(crate) fn workspace_repository_state(workspace_path: &str) -> String {
     .to_string()
 }
 
+/// A folder that exists and holds nothing at all: the only place a Room offers to start a private repository.
+pub(crate) fn workspace_is_empty(workspace_path: &str) -> bool {
+    std::fs::read_dir(workspace_path).is_ok_and(|mut entries| entries.next().is_none())
+}
+
 pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
     git_command_output(workspace_path, &["remote", "get-url", "origin"])
         .as_deref()

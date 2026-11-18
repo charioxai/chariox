@@ -526,7 +526,8 @@ mod tests {
                 UNBOUNDED_BYTES,
                 u64::MAX,
                 None,
-                Some(&wrong)
+                Some(&wrong),
+                0
             )
             .is_err()
         );
@@ -537,6 +538,7 @@ mod tests {
             u64::MAX,
             None,
             Some(&authority),
+            0,
         )
         .unwrap();
         let restored = &imported.repositories[0].destination_path;
@@ -610,6 +612,7 @@ mod tests {
             u64::MAX,
             None,
             Some(&authority),
+            0,
         )
         .expect_err("a closed receiving Vault refuses the import");
 
@@ -641,6 +644,7 @@ mod tests {
             u64::MAX,
             None,
             Some(&authority),
+            0,
         )
         .expect("the same import completes once the Vault is open");
         crate::secret::lock_chariox_encrypted_vault(&source.user_config.credential_vault.path)

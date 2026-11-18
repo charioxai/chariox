@@ -178,12 +178,14 @@ export type SliceRecord = {
 export type SliceDevelopmentSelection =
   | { kind: "empty" }
   | {
-      kind: "source_project"
-      project_id: string
-      repositories: Array<{
-        role: "primary" | "supporting"
-        workspaceId: string
-        worktreeId?: string | null
+      kind: "source_projects"
+      projects: Array<{
+        project_id: string
+        repositories: Array<{
+          role: "primary" | "supporting"
+          workspaceId: string
+          worktreeId?: string | null
+        }>
       }>
     }
 
