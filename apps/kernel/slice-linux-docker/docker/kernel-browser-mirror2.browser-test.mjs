@@ -9,6 +9,8 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
+import { HostChromium } from "./kernel-browser-process.mjs";
+import { encodePng } from "./kernel-browser-pixels.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-11: explicit disposable drill root required");
 
@@ -22,7 +24,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
-async function mirrored(html, run, routes = {}, initialOptions = {}) {
+async function mirrored(html, run, routes = {}, initialOptions = {}, environment = process.env) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
@@ -31,7 +33,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const apps = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "apps-")); // a managed-policy browser requires a WASM App storage root outside its temporary directory
-  const host = new KernelBrowserHost(root, { appStorageRoot: apps });
+  const host = new KernelBrowserHost(root, { appStorageRoot: apps, chromium: new HostChromium(root, { appStorageRoot: apps, environment }) });
   try {
     const opened = await host.request({ op: "open", url: `http://127.0.0.1:${server.address().port}/` });
     const evaluate = async expression => {
@@ -361,6 +363,24 @@ test("MP-10: opaque-region stills never ride on a DOM-change packet and an uncha
   let changed = []; for (let i = 0; i < 4 && !changed.length; i++) changed = (await next(600)).tiles;
   assert.equal(changed.length, 1, "MP-10: a changed still reaches the viewer");
 }));
+
+// browserfidelity r3 (vimeo): a headless browser (the kernel's on macOS and in headless Linux) keeps the still of a video
+// over most of the viewport, and its lossless pixels made the reply larger than one relay reply (MAX_REPLY_BYTES,
+// daemon_requests.rs): the relay refused that credit on every retry and the viewer stayed on an old frame. Noise pixels
+// do not compress, the worst still a page can show. A cross-origin image taints the canvas: its still is a screenshot.
+const noise = tainted => `<style>body{margin:0}canvas{display:block;width:100vw;height:100vh}</style><canvas id="c"></canvas><script>const c=document.querySelector("#c");c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0);${tainted ? 'const i=new Image();i.onload=()=>g.drawImage(i,0,0);i.src="http://localhost:PORT/dot.png"' : ''}</script>`;
+const dot = { type: "image/png", binary: Buffer.from(encodePng(1, 1, Buffer.from([0, 0, 0, 255])), "base64") };
+for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) test(`MP-10: every mirror packet fits one relay reply and the still of a full-viewport ${tainted ? "tainted " : ""}canvas still arrives (DPR${device_scale_factor})`, () => mirrored(noise(tainted), async ({ host, subscribe, evaluate }) => {
+  if (tainted) for (let i = 0; i < 200 && await evaluate('(()=>{try{document.querySelector("#c").getContext("2d").getImageData(0,0,1,1);return false}catch{return true}})()') !== true; i++) await settle(25);
+  const { subscription_id, generation } = await subscribe({ device_scale_factor });
+  let applied = 0, tiles = 0;
+  for (let i = 0; i < 6 && !tiles; i++) {
+    const packet = await host.request({ op: "mirror_next", subscription_id, generation, after_sequence: applied, drift_nodes: [], wait_ms: 1100 }); applied = packet.sequence;
+    assert(Buffer.byteLength(JSON.stringify(packet)) < 1024 * 1024, `MP-10: packet ${packet.sequence} fits one relay reply`);
+    tiles += packet.tiles?.length ?? 0;
+  }
+  assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
+}, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
 test("MP-08/MP-10/MP-11: user keys follow a page-created editor before its mirror packet arrives", () => mirrored(
   '<input id="a"><p id="x">page</p>', async ({ next, evaluate, input }) => {

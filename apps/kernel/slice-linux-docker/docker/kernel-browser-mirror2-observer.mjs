@@ -1100,7 +1100,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // overlays and sticky headers above it stay mirrored DOM, never baked in. Null when tainted
     // (cross-origin pixels never leave this way), blank (WebGL without preserveDrawingBuffer), without a
     // frame yet, or another kind (plugins, closed roots, frames: masked screenshots).
-    const elementPixels = async (id, scale) => {
+    // The still keeps its CSS box: past the packet's byte budget it travels at half the pixel density, again until it fits.
+    const elementPixels = async (id, scale, budget) => {
       const node = nodes.get(id);
       if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
       const style = getComputedStyle(node), px = name => parseFloat(style[name]) || 0, video = node.localName === 'video';
@@ -1113,10 +1114,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       try {
         g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
         if (!video) { const data = g.getImageData(0, 0, W, H).data; let blank = true; for (let i = 3; i < data.length && blank; i += 4) blank = !data[i]; if (blank) return null; }
-        const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
-        if (bytes.length > 4 * 1024 * 1024) return null;
-        let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-        return { x, y, width, height, data_base64: btoa(binary) };
+        for (let still = canvas; ;) {
+          const bytes = new Uint8Array(await (await still.convertToBlob({ type: 'image/png' })).arrayBuffer());
+          if (4 * Math.ceil(bytes.length / 3) <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary) }; }
+          if (still.width === 1 && still.height === 1) return null;
+          const half = new OffscreenCanvas(Math.ceil(still.width / 2), Math.ceil(still.height / 2));
+          half.getContext('2d').drawImage(still, 0, 0, half.width, half.height); still = half;
+        }
       } catch { return null; }
     };
     // MP-08 / MP-11: input follows live geometry; Vault protection applies to model observations.

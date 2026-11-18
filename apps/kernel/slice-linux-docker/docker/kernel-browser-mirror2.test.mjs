@@ -943,6 +943,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
   if(expression==='m.snapshot()')return{...page,root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],opaque:false};
   if(expression==='m.opaqueBoxes()')return boxes;
   if(expression==='m.drain()'){const d={...page,...drain};drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};return d;}
+  if(expression.startsWith('m.elementPixels('))return{x:0,y:0,width:1280,height:800,data_base64:'AAAA'};
   return {...page,ops:[],changed:[],resources:[],sheets:[]};
  };
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
