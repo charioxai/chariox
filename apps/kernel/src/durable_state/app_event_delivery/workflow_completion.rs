@@ -157,7 +157,7 @@ pub(crate) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Resul
         let entry =
             crate::durable_state::workflow_gate::admission::accept_in(tx, admission.clone())?;
         tx.execute("UPDATE app_outbox SET state='entry_owned',gate_entry_id=?4,payload_json=NULL,invocation_json=?5 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3",params![p.subscription.subscription_id,p.envelope.source_id,p.envelope.occurrence_id,entry.entry_id,encode(&serde_json::json!({"ancestry":p.envelope.ancestry}))?]).map_err(sql)?;
-        return Ok(());
+        return delivered_again_in(tx, p);
     }
     super::write_queue_state_in(
         tx,
@@ -171,5 +171,13 @@ pub(crate) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Resul
         },
     )?;
     tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=?6 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3",params![p.subscription.subscription_id,p.envelope.source_id,p.envelope.occurrence_id,p.queued_id,p.subscription.session_id,encode(&serde_json::json!({"ancestry":p.envelope.ancestry}))?]).map_err(sql)?;
-    Ok(())
+    delivered_again_in(tx, p)
+}
+/// An occurrence a pause held reads as delivered once its prompt is handed to the endpoint.
+fn delivered_again_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Result<(), DaemonError> {
+    crate::durable_state::workflow_notifications::subscription_settings::handed_off_in(
+        tx,
+        &p.subscription.subscription_id,
+        &p.envelope.occurrence_id,
+    )
 }

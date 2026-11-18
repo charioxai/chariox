@@ -10,18 +10,30 @@ pub use api::{
 };
 pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
-    ListWorkflowNotificationsRequest, NotificationSourceKind,
-    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
-    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationSource,
-    WorkflowNotificationSourceSummary, WorkflowNotificationSubscription,
-    WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
+    ListWorkflowNotificationsRequest, NotificationOptionValue, NotificationSourceKind,
+    NotificationSourceOption, NotificationTraceOutcome, RegisterWorkflowNotificationSourceRequest,
+    WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
+pub use api::{
+    GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
+    PersonInboxNotice, PersonInboxOrigin, PersonInboxPriority, SetInboxCardStateRequest,
+    SetInboxMuteRequest,
+};
 pub use api::{
     GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,
     JobPlacement, JobRanOn, JobResult, JobView, OffloadPolicy, RemoteJobEstimate,
     RemoteJobPlacement, RemoteJobPolicy, RunJobRequest, RunSessionProcessRemotelyRequest,
     SetRemoteJobPolicyRequest,
+};
+pub use api::{
+    ListNotificationSubscriptionsRequest, NotificationSubscriptionChange,
+    NotificationSubscriptionHealth, NotificationSubscriptionRow, NotificationTraceLine,
+    NotificationTraceTurn, PersonInboxFlag, PersonInboxWorkflowRun, PersonResponsibilityRow,
+    ReadNotificationTraceRequest, RemoveNotificationSubscriptionRequest,
+    TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
 };
 mod api;
 pub use api::{

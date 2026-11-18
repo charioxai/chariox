@@ -314,6 +314,7 @@ mod decisions;
 mod hidden_subagents;
 mod kernel_ref_placement;
 mod peer_spawn;
+mod person_inbox_notify;
 mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;

@@ -40,8 +40,10 @@ mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
+mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
@@ -97,8 +99,10 @@ pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -572,4 +576,12 @@ pub use workspace::*;
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
 /// 1019 adds `SendProviderLoginVaultEntry` → `ProviderLoginVaultEntrySent`: a running API-key provider login
 /// takes a Vault entry by handle and the kernel types its value into the login.
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
+/// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
+/// snoozed and muted by the kernel (`SetInboxCardState`, `SetInboxMute`), with a card for a failed or waiting run
+/// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
+/// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
+/// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

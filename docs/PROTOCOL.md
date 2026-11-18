@@ -7994,3 +7994,42 @@ at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
 `allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
 `UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
 `user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
+
+### The person's Inbox and subscriptions — local 1012 / relay peer 449
+
+`GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
+`{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
+interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
+`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
+run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
+delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,
+snoozes and wakes cards, and `SetInboxMute{origin:{session_id, agent_id}, muted}` mutes one agent's notices; needs-you cards cannot be muted.
+
+`ListNotificationSubscriptions` answers `NotificationSubscriptions{subscriptions, responsibilities}`: one row per
+subscription whose subscriber lives on this kernel (`subscription`, `source` or null when it is gone,
+`subscriber_name`, `prompt`, `options`, `once`, `paused`, `fired`, `last_fired_at_ms`, `loop_stopped_at_ms`,
+`responsible_for`, `health`), and one row per workflow whose runs that need the person come to the Inbox.
+`health` is `ok`, `paused`, `loop_stopped`, `options_changed`, `subscriber_gone` or `source_gone`.
+`UpdateNotificationSubscription{subscription_id, change}` pauses (`paused{paused}`) or moves the subscription to
+another agent of the same Room (`subscriber{agent_id}`), and `RemoveNotificationSubscription{subscription_id}`
+removes it; both answer the new list. `TestNotificationSubscription{subscription_id}` is a dry run of the
+source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
+sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
+`NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
+
+A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
+a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those
+values wake the subscriber. A pick the source does not declare is refused when subscribing; when the source later
+drops a picked option the subscription holds delivery with `options_changed`. `once` ends the subscription after
+its first delivery. On one kernel a subscription to the subscriber's own source, or one that closes a cycle, is
+refused; across kernels a delivery caused by the subscription itself is answered `LoopDropped` and flagged.
+Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
+`person-inbox-1012.json` and its SHA-256 test pin the shape.

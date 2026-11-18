@@ -157,4 +157,5 @@ mod provider_login;
 mod session_activity;
 
 mod owner_vault;
+mod person_inbox;
 mod totp;

@@ -109,6 +109,8 @@ async fn exercise() {
                         installation_id: "installed".into(),
                         event_name: "changed".into(),
                     },
+                    options: Vec::new(),
+                    once: false,
                 },
                 busy_policy: None,
                 prompt: Some("Review the pull request".into()),
