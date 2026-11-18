@@ -1475,7 +1475,8 @@ impl KernelRuntimeState {
             recovery_material.attachments,
             provider_restart_continuation_prompt,
         )
-        .await?;
+        .await
+        .map_err(|failure| failure.error)?;
         Ok(UncertainLocalRecoveryOutcome::ContinuationDispatched)
     }
 
@@ -1490,7 +1491,7 @@ impl KernelRuntimeState {
         hidden_system_context: String,
         attachments: Vec<crate::session::PromptAttachment>,
         continuation: impl FnOnce(&str) -> String,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<(), Box<ContinuationFailure>> {
         let recovery_prompt =
             self.owned
                 .begin_active_prompt_recovery(session_id, agent_id, prompt.id())?;
@@ -1521,8 +1522,15 @@ impl KernelRuntimeState {
                     &operation_id,
                     crate::session::DurablePromptDeliveryPhase::Accepted,
                 );
-                return Err(error);
+                return Err(error.into());
             }
+        };
+        let started_run_id = provider_run_id.clone();
+        let failed = |error| {
+            Box::new(ContinuationFailure {
+                error,
+                started_run_id: Some(started_run_id.clone()),
+            })
         };
         let structured = self
             .owned
@@ -1557,20 +1565,22 @@ impl KernelRuntimeState {
                 &operation_id,
                 crate::session::DurablePromptDeliveryPhase::Accepted,
             );
-            return Err(error);
+            return Err(failed(error));
         }
         self.restart_recovery_dispatched
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(operation_id.clone());
         if !structured {
-            self.owned.mark_active_prompt_recovery_phase(
-                session_id,
-                agent_id,
-                prompt.id(),
-                &operation_id,
-                crate::session::DurablePromptDeliveryPhase::Delivered,
-            )?;
+            self.owned
+                .mark_active_prompt_recovery_phase(
+                    session_id,
+                    agent_id,
+                    prompt.id(),
+                    &operation_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                )
+                .map_err(failed)?;
         }
         Ok(())
     }
@@ -1617,6 +1627,24 @@ impl KernelRuntimeState {
             Some("provider_restart_transcript_reconciled"),
         )?;
         Ok(())
+    }
+}
+
+/// A continuation that did not go through. `started_run_id` is the run it had started for the
+/// turn: that run owns the turn from then on, so whoever fails the turn settles against it. It is
+/// boxed in a `Result` because a `DaemonError` is large.
+#[derive(Debug)]
+pub(super) struct ContinuationFailure {
+    pub(super) error: DaemonError,
+    pub(super) started_run_id: Option<String>,
+}
+
+impl From<DaemonError> for Box<ContinuationFailure> {
+    fn from(error: DaemonError) -> Self {
+        Box::new(ContinuationFailure {
+            error,
+            started_run_id: None,
+        })
     }
 }
 

@@ -1,6 +1,6 @@
 // Documents view. It talks to the App only through window.chariox.call, which
 // runs the App's own tools as the signed-in person; agents use the same tools.
-import { drafts } from "./draft.js"
+import { drafts, newEditor } from "./draft.js"
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
@@ -11,6 +11,7 @@ const $ = (id) => document.getElementById(id)
 let documents = []
 let current = null // { id, revision, kind, content } of the loaded document
 let dirty = false
+let dirtyId = null // the document the unsaved edit belongs to
 // The App view has no modal dialogs (its sandbox omits allow-modals), so
 // destructive steps ask for a second click instead.
 let pendingOpen = null
@@ -34,17 +35,22 @@ async function call(tool, input = {}) {
   }
 }
 
-const keeper = drafts(call)
+const keeper = drafts(call, newEditor())
 
-// Unsaved edits end here, saved or given up, and the App forgets the draft with them.
+// Unsaved edits end here, saved or given up, and the App forgets the draft with them. The draft is
+// the dirty document's, which is no longer the open one when the person moved on.
 function settle() {
-  if (dirty) keeper.drop()
+  if (dirty && dirtyId) keeper.drop(dirtyId)
   dirty = false
+  dirtyId = null
 }
+
+const unsavedDraft = () => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null
 
 function edited() {
   dirty = true
-  keeper.keep(() => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null)
+  dirtyId = current?.id ?? null
+  keeper.keep(unsavedDraft)
 }
 
 function renderList() {
@@ -156,6 +162,10 @@ async function save() {
       settle()
       $("title").value = saved.title
       $("folder").value = saved.folder
+    } else {
+      // The draft the App holds was written on the revision this save replaced; the edits typed
+      // meanwhile start from the acknowledged one, or every later save would refuse the person's own.
+      keeper.keep(unsavedDraft)
     }
     say(`Saved revision ${saved.revision}.`)
     await refreshList()
@@ -271,16 +281,17 @@ async function restoreDraft() {
   restored = true
   if (!draft || dirty) return
   const doc = documents.find((item) => item.id === draft.id)
-  if (!doc) return keeper.drop()
+  if (!doc) return keeper.drop(draft.id)
   await open(doc.id)
   const same = draft.base_revision === doc.revision && draft.title === doc.title && draft.folder === doc.folder
     && draft.content === $("content").value
-  if (same) return keeper.drop()
+  if (same) return keeper.drop(draft.id)
   $("title").value = draft.title
   $("folder").value = draft.folder
   $("content").value = draft.content
   current.revision = draft.base_revision
   dirty = true
+  dirtyId = draft.id
   renderPreview()
   say(draft.base_revision === doc.revision
     ? "Restored your unsaved changes after the App reloaded."
