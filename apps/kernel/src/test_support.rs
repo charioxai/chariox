@@ -6,7 +6,9 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod account_models;
 pub(crate) mod allocation;
+pub(crate) use account_models::{seed_account_models, seed_default_account_models};
 #[cfg(unix)]
 mod claude_executable;
 #[cfg(unix)]
