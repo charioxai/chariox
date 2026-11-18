@@ -23,23 +23,6 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
-    if value
-        .strip_prefix("accepted:")
-        .is_some_and(|id| !id.is_empty())
-    {
-        // Acknowledgement belongs to this launch's fresh runtime directory.
-        let _ = fs::write(
-            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
-            "accepted",
-        );
-    }
-}
-
-pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
-    fs::read_to_string(
-        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
-    )
-    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
