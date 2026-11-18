@@ -369,6 +369,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(())
     }
 
+    pub(crate) fn execution_lease_owner(&self, lease_id: &str) -> Result<String, DaemonError> {
+        self.app
+            .execution_leases
+            .get(lease_id)
+            .map(|lease| lease.owner_user_id.clone())
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
+    }
+
     pub(crate) fn consume_execution_lease_authorization(
         &mut self,
         lease_id: &str,

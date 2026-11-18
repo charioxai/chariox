@@ -33,8 +33,16 @@ export type NativeTuiRuntimeBannerInput = {
   readonly grantedMcps?: readonly string[]
   readonly grantedSkills?: readonly string[]
   readonly providerLines?: readonly string[]
-  readonly promptPolicy?: string
+  readonly promptPolicy: string
 }
+
+// Claude takes what is typed straight into its terminal and the kernel watches it
+// through hooks; the Codex and OpenCode proxies stop each prompt and submit it
+// through the kernel.
+export const NATIVE_PROMPT_POLICY = {
+  observed: "prompts typed here go straight to the provider; Chariox observes the session",
+  throughKernel: "prompts typed here are sent through the Chariox kernel",
+} as const
 
 export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput): string {
   const slice = sliceForRemoteAgent(input.agent, input.slices ?? [])
@@ -56,7 +64,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? [], remoteNativeRun),
     ...formatProviderRunLines(input.agent, input.run ?? null),
     ...(input.providerLines ?? []),
-    ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
+    `  prompt policy:  ${input.promptPolicy}`,
     "",
   ].join("\n")
 }

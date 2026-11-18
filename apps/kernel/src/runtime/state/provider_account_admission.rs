@@ -32,6 +32,10 @@ impl KernelRuntimeOwnedState {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(None);
         };
+        // OpenCode's free models run with no account; its server refuses the rest.
+        if provider == "opencode" {
+            return Ok(None);
+        }
         let current = selected_run.cloned().or_else(|| {
             self.provider_store
                 .get_run_for_agent(agent.session_id(), agent.id())

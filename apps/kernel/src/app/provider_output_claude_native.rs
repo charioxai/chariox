@@ -19,7 +19,9 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
+mod first_run_notice;
 mod hidden_context;
+mod local_denial;
 mod permission;
 mod readiness;
 mod session_start;
@@ -30,6 +32,7 @@ mod transcript;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
+pub(crate) use first_run_notice::claude_native_first_run_notice;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(super) use startup_exit::claude_native_startup_exit;
 
@@ -1167,6 +1170,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             active_prompt_id.as_deref(),
             &drain.enqueued_prompts,
         );
+        if drain.user_denied_tool_use {
+            if let Some(prompt_id) = active_prompt_id.as_deref() {
+                local_denial::settle_denial_in_claude_dialog(
+                    context_file,
+                    provider_run_id,
+                    prompt_id,
+                );
+            }
+        }
         if drain.chunks.is_empty()
             && drain.assistant_message_ids.is_empty()
             && drain.terminal_assistant_message_ids.is_empty()

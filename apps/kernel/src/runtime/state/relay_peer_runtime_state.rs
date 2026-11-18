@@ -218,6 +218,24 @@ impl KernelRuntimeState {
         let lease_id = lease_id.to_string();
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
+        // The worker runs the agent, so the model is chosen from the worker's own catalog: home's
+        // catalog can lack the provider or list other models.
+        let lease_owner = self
+            .with_app_side_effect({
+                let lease_id = lease_id.clone();
+                move |app| RemoteLeaseRuntime::new(app).execution_lease_owner(&lease_id)
+            })
+            .await?;
+        let (model, effort) = self
+            .resolve_new_agent_selection(
+                &lease_owner,
+                &provider,
+                Some(&account_profile),
+                model,
+                super::ModelSource::Named,
+                effort,
+            )
+            .await?;
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             // Resolve the folder first: a worker with nowhere to put it refuses before the

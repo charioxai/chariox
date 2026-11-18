@@ -1,3 +1,4 @@
+import { formatNativeReopenHint } from "./exit-hint.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import { signalNativeChild } from "./native-child-signals.js"
@@ -41,6 +42,7 @@ import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
@@ -108,7 +110,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         effort: null,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? (options.sessionRef
       ? await resolveNativeSession(client, options.sessionRef, workspace)
       : (() => {
@@ -127,8 +129,10 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     detach = async () => { await client.send(detachFromSessionRequest(attachment.id)) }
 
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, options.model, undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
+    // The kernel chose the model on the provider that runs the agent, or refused the spawn.
+    const model = agent.model?.trim() || options.model
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     let upstreamBaseUrl: string
     let run: RuntimeProviderRun | null = null
@@ -136,7 +140,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: options.model,
+        model,
         effort: "",
         agentId: agent.id,
       })
@@ -171,7 +175,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: options.model,
+        model,
         effort: "",
         agentId: agent.id,
         native: { structuredEndpoint: proxyUrl },
@@ -204,7 +208,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         `  opencode server:${upstreamBaseUrl}`,
         `  proxy:          ${proxyUrl}`,
       ],
-      promptPolicy: "native prompts pass through; Chariox observes the session",
+      promptPolicy: NATIVE_PROMPT_POLICY.throughKernel,
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment, {
       recovery,
@@ -217,6 +221,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       providerSessionId,
       workingDirectory: run.working_directory?.trim() || worktree,
     })
+    process.stderr.write(formatNativeReopenHint("opencode", session.id))
   } finally {
     active = false
     pump?.stop()

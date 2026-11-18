@@ -178,6 +178,11 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>();
+            if let Some(notice) =
+                crate::app::claude_native_first_run_notice(&provider_run, &rendered)
+            {
+                owned.record_notice(session_id, Some(provider_run_id), Vec::new(), notice);
+            }
             if !rendered.is_empty() {
                 let provider_run = provider_run.clone();
                 self.with_app_side_effect(|app| {
