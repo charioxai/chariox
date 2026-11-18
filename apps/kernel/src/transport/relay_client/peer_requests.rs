@@ -603,6 +603,8 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::ListMachineDirectory { .. }
         | RelayPeerRequest::ReadMachineFile { .. }
         | RelayPeerRequest::DeleteMachinePath { .. }
+        | RelayPeerRequest::TrashMachineFiles { .. }
+        | RelayPeerRequest::RestoreMachineTrash { .. }
         | RelayPeerRequest::StartFileTransfer { .. }
         | RelayPeerRequest::GetFileTransfer { .. }
         | RelayPeerRequest::CancelFileTransfer { .. }
@@ -2640,6 +2642,8 @@ fn machine_file_request(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::ListMachineDirectory { .. }
             | RelayPeerRequest::ReadMachineFile { .. }
             | RelayPeerRequest::DeleteMachinePath { .. }
+            | RelayPeerRequest::TrashMachineFiles { .. }
+            | RelayPeerRequest::RestoreMachineTrash { .. }
             | RelayPeerRequest::StartFileTransfer { .. }
             | RelayPeerRequest::GetFileTransfer { .. }
             | RelayPeerRequest::CancelFileTransfer { .. }

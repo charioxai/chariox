@@ -10,9 +10,9 @@ use crate::agent_file_copy::{read_slice, LinkError, RemoteSource, SourceSlice};
 use crate::error::DaemonError;
 use crate::local::{
     KernelDirectoryEntry, KernelFileStat, ListKernelDirectoryRequest, LocalDaemonResponse,
-    StatKernelFileRequest,
+    RestoreKernelTrashRequest, StatKernelFileRequest, TrashKernelFilesRequest,
 };
-use crate::runtime::kernel_files;
+use crate::runtime::{kernel_files, kernel_trash};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RemoteFileBytes};
 
 type Answer = Pin<Box<dyn Future<Output = Result<RelayPeerResponse, DaemonError>> + Send>>;
@@ -228,6 +228,24 @@ pub(crate) fn serve(machine: &Machine, request: RelayPeerRequest) -> RelayPeerRe
             Ok(()) => RelayPeerResponse::MachinePathDeleted,
             Err(reason) => refused(reason),
         },
+        RelayPeerRequest::TrashMachineFiles { paths } => {
+            match kernel_trash::trash(&TrashKernelFilesRequest { paths }, machine.guard()) {
+                Ok(LocalDaemonResponse::KernelFilesTrashed { trashed, failed }) => {
+                    RelayPeerResponse::MachineFilesTrashed { trashed, failed }
+                }
+                Ok(_) => refused("unexpected answer".to_owned()),
+                Err(error) => refused(reason(error)),
+            }
+        }
+        RelayPeerRequest::RestoreMachineTrash { items } => {
+            match kernel_trash::restore(&RestoreKernelTrashRequest { items }, machine.guard()) {
+                Ok(LocalDaemonResponse::KernelTrashRestored { restored, failed }) => {
+                    RelayPeerResponse::MachineTrashRestored { restored, failed }
+                }
+                Ok(_) => refused("unexpected answer".to_owned()),
+                Err(error) => refused(reason(error)),
+            }
+        }
         _ => refused("not a file request".to_owned()),
     }
 }

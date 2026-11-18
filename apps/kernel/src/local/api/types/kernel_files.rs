@@ -111,3 +111,36 @@ pub struct KernelDirectoryEntry {
     /// Protocol 1005: the Unix permission bits.
     pub mode: u32,
 }
+
+/// Protocol 1032: move these files and folders to the machine's own trash. Each is a path as in
+/// `StatKernelFileRequest`; nothing is deleted for good.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrashKernelFilesRequest {
+    pub paths: Vec<String>,
+}
+
+/// Protocol 1032: an item in the machine's trash and where it came from; `RestoreKernelTrash` puts it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrashedKernelFile {
+    /// The absolute path the item had.
+    pub path: String,
+    /// The absolute path of the item inside the trash.
+    pub trash_path: String,
+}
+
+/// Protocol 1032: put trashed items back at their original paths. An item whose path is taken stays in
+/// the trash and is reported as failed; nothing is ever overwritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreKernelTrashRequest {
+    pub items: Vec<TrashedKernelFile>,
+}
+
+/// Protocol 1032: one item of a trash or restore request that could not be done, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelFileFailure {
+    pub path: String,
+    pub message: String,
+}
