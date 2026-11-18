@@ -85,6 +85,40 @@ pub fn read_private(path: &str) -> Result<Option<String>, AppError> {
     }
 }
 
+/// Every file of a private folder, as text; empty while nothing was written there.
+pub fn read_private_folder(folder: &str) -> Result<Vec<String>, AppError> {
+    let entries = match fs::read_dir(on_disk(folder)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io("list", folder, &e)),
+    };
+    let mut texts = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        // A file removed after the listing was discarded by its window: nothing to hand over.
+        if let Some(text) = read_private(&format!("{folder}/{name}"))? {
+            texts.push(text);
+        }
+    }
+    Ok(texts)
+}
+
+/// The paths of the files in a private folder; empty while nothing was written there.
+pub fn private_files(folder: &str) -> Result<Vec<String>, AppError> {
+    let entries = match fs::read_dir(on_disk(folder)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io("list", folder, &e)),
+    };
+    Ok(entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .map(|name| format!("{folder}/{name}"))
+        .collect())
+}
+
 pub fn remove_private(path: &str) -> Result<(), AppError> {
     match fs::remove_file(on_disk(path)) {
         Ok(()) => Ok(()),

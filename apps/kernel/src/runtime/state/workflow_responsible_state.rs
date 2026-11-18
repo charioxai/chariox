@@ -345,7 +345,13 @@ impl KernelRuntimeState {
             responsible.clone(),
             notice,
         )?;
-        if retire_previous && previous.agent().is_some() && previous != responsible {
+        // A renamed agent chosen again is still the same agent: its trigger stays.
+        let replaced = match (previous.agent(), responsible.agent()) {
+            (Some(was), Some(now)) => !was.is_same_agent(&now),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if retire_previous && replaced {
             if let Err(error) = self
                 .detach_responsible_trigger(room, workflow, &previous)
                 .await

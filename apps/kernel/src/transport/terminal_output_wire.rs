@@ -162,7 +162,11 @@ fn encode_mirror_reply(response: &mut Value) -> Result<Option<Vec<u8>>, serde_js
         let Some(data) = field
             .as_str()
             .and_then(|text| engine.decode(text).ok())
-            .filter(|data| engine.encode(data) == field.as_str().unwrap_or_default())
+            // An empty field (a retained font has no bytes) stays a string: a `[0, 0]` range would
+            // read as bytes the client never expects there.
+            .filter(|data| {
+                !data.is_empty() && engine.encode(data) == field.as_str().unwrap_or_default()
+            })
         else {
             continue;
         };
@@ -491,6 +495,19 @@ mod mirror_reply_tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
             original
+        );
+    }
+
+    #[test]
+    fn a_small_reply_that_only_retains_a_font_keeps_the_empty_field_a_string() {
+        let mut response = serde_json::json!({"KernelBrowser":{"result":{"wire":2,"resources":[
+            {"key":"f","resource_id":"r","mime_type":"font/woff2","data_base64":""}]}}});
+        let original = response.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original,
+            "the client reads a string where a retained font has no bytes"
         );
     }
 
