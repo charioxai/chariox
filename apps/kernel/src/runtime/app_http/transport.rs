@@ -165,7 +165,7 @@ impl HttpTransport {
         admitted: Instant,
     ) -> Result<()> {
         let result = self
-            .perform(&target, &mut exchange, &mut stopped, &lease, admitted)
+            .perform_following(&target, &mut exchange, &mut stopped, &lease, admitted)
             .await;
         if let Err(error) = result {
             if let Some(headers) = exchange.headers.take() {
@@ -181,7 +181,10 @@ impl HttpTransport {
         result
     }
 
-    async fn perform(
+    /// One exchange, and the one more a redirect to a host the signed route
+    /// declares asks for. The redirected exchange has its own connection and
+    /// connect deadline, and is bound by the same lifetime.
+    async fn perform_following(
         &self,
         target: &ApprovedTarget,
         exchange: &mut Exchange,
@@ -189,7 +192,29 @@ impl HttpTransport {
         lease: &LifetimeLease,
         admitted: Instant,
     ) -> Result<()> {
-        let initial_deadline = admitted + Duration::from_secs(30);
+        let Some(next) = self
+            .perform(target, exchange, stopped, lease, admitted, admitted)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.perform(&next, exchange, stopped, lease, admitted, Instant::now())
+            .await?;
+        Ok(())
+    }
+
+    /// Returns the redirected target when the answer was a redirect the route
+    /// allows; nothing of that answer has been handed on then.
+    async fn perform(
+        &self,
+        target: &ApprovedTarget,
+        exchange: &mut Exchange,
+        stopped: &mut watch::Receiver<bool>,
+        lease: &LifetimeLease,
+        admitted: Instant,
+        connecting: Instant,
+    ) -> Result<Option<ApprovedTarget>> {
+        let initial_deadline = connecting + Duration::from_secs(30);
         let lifetime = admitted + STREAM_LIFETIME;
         let addresses = crate::outbound_dial::interleave_families(
             self.dns
@@ -270,7 +295,7 @@ async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stopped: &mut watch::Receiver<bool>,
     progress: progress::Progress,
     lifetime: Instant,
-) -> Result<()> {
+) -> Result<Option<ApprovedTarget>> {
     let mut builder = http1::Builder::new();
     builder
         .max_headers(64)
@@ -310,7 +335,7 @@ impl Exchange {
         mut sender: http1::SendRequest<UploadBody>,
         target: &ApprovedTarget,
         phase: &AtomicU8,
-    ) -> Result<()> {
+    ) -> Result<Option<ApprovedTarget>> {
         if matches!(*target.method(), hyper::Method::GET | hyper::Method::HEAD)
             && !self.upload.is_end_stream()
         {
@@ -331,7 +356,7 @@ impl Exchange {
         );
         // The kernel's own header, after the App's: it names the destination's
         // account, which the App can only ask for.
-        if let Some(authorization) = target.authorization() {
+        if let Some(authorization) = target.sent_authorization() {
             let mut value = hyper::header::HeaderValue::from_str(authorization)
                 .map_err(|_| HttpError::Invalid)?;
             value.set_sensitive(true);
@@ -363,6 +388,17 @@ impl Exchange {
         phase.store(ANSWERED, Ordering::Release);
         if response.status().as_u16() == 101 {
             return Err(HttpError::Invalid);
+        }
+        // A redirect the route allows is followed before anything is handed on.
+        if response.status().is_redirection() {
+            if let Some(next) = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| target.redirected(location))
+            {
+                return Ok(Some(next));
+            }
         }
         let scrub = target.authorization().map(scrub::boundary);
         let cap = if scrub.is_some() {
@@ -418,7 +454,8 @@ impl Exchange {
         match scrub {
             Some(scrub) => self.download_scrubbed(response.into_body(), &scrub).await,
             None => self.download(response.into_body()).await,
-        }
+        }?;
+        Ok(None)
     }
     /// An account's answer is read whole (at most `ANSWER_BYTES`), scrubbed,
     /// and only then handed on, so the credential cannot straddle two chunks.

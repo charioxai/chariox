@@ -102,6 +102,30 @@ test('what a check reports: its summary and the annotations that carry the failu
   assert.deepEqual((await plain.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK })).steps, [], 'a check that is not a GitHub Actions job has no steps');
 });
 
+test('the log of a failing job: its last lines, read through the logs route the kernel follows to GitHub storage', async () => {
+  const lines = Array.from({ length: 300 }, (_, i) => `2026-11-17T10:00:${String(i % 60).padStart(2, '0')}.0000000Z line ${i + 1}`);
+  const seen = [];
+  // GitHub's logs route answers 415 to an Accept other than its JSON media type, whatever it then redirects to.
+  const logs = app({ override: (url, init) => {
+    if (!/\/logs$/.test(url.pathname)) return undefined;
+    seen.push(url.pathname);
+    const accept = init?.headers?.accept ?? init?.headers?.get?.('accept');
+    if (accept !== 'application/vnd.github+json') return { status: 415, headers: {}, body: `{"message":"Unsupported 'Accept' header: '${accept}'. Must accept 'application/json'."}` };
+    return { status: 200, headers: {}, body: `${lines.join('\n')}\n` };
+  } });
+  const { log } = await logs.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK });
+  assert.deepEqual(seen, [`/repos/${REPO}/actions/jobs/${FAILING_CHECK}/logs`]);
+  assert.deepEqual([log.lines, log.truncated], [300, true]);
+  assert.equal(log.tail.split('\n').length, 200);
+  assert.equal(log.tail.split('\n').at(-1), 'line 300', 'the timestamps GitHub puts in front of every line are dropped');
+  const refused = app({ override: url => /\/logs$/.test(url.pathname) ? { status: 410, headers: {}, body: '{"message":"Gone"}' } : undefined });
+  const gone = (await refused.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK }));
+  assert.match(gone.log.unavailable, /./);
+  const tooBig = app({ override: url => { if (/\/logs$/.test(url.pathname)) throw { payload: { code: 'APP_HTTP_LIMIT', message: 'response exceeds' } }; } });
+  assert.match((await tooBig.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK })).log.unavailable, /^APP_HTTP_LIMIT/);
+  assert.equal(gone.steps.length, 3, 'the steps still come back when the log does not');
+});
+
 test('check state: none, pending, success, failure from runs and statuses', async () => {
   const { checksSummary } = await import('../src/normalize.mjs');
   const run = (status, conclusion) => ({ status, conclusion });
@@ -314,17 +338,16 @@ test('the feed keeps 128 changes and tells an older reader to read the state aga
   assert.equal(state.saved.has('chariox.view.change.2'), false);
 });
 
-test('an event delivery is a change of the feed, so an open window reloads what it is about, even before any automation is set', async () => {
+test('an event delivery is a change of the feed, so an open window reloads what it is about, even when no subscription wants it', async () => {
   const state = memoryState();
   const { definition, call } = app({}, state);
   const delivery = {
     source: { generator_id: 'dev.chariox.github', connection_id: 'c', event_type: 'pull_request.synchronize', event_type_version: 1 },
     occurred_at: '2026-11-15T12:00:00.000Z', text: 'x', metadata: { repository: { full_name: REPO }, pull_request: { number: 2 } }, artifacts: [],
   };
-  await assert.rejects(definition.events.pull_request_updated(delivery, { occurrenceId: 'o1' }), { code: 'NOT_CONFIGURED' });
+  await definition.events.pull_request_updated(delivery, { occurrenceId: 'o1', fetch: fakeGitHub().fetch });
   const feed = await call('view_changes', { since: 0 });
   assert.deepEqual(feed.changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: 2 }]);
-  await call('configure_automations', { automations: { pull_request_updated_notification: [] } });
-  await definition.events.pull_request_updated({ ...delivery, metadata: { repository: { full_name: REPO } } }, { occurrenceId: 'o2' });
+  await definition.events.pull_request_updated({ ...delivery, metadata: { repository: { full_name: REPO } } }, { occurrenceId: 'o2', fetch: fakeGitHub().fetch });
   assert.deepEqual((await call('view_changes', { since: 1 })).changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: null }]);
 });

@@ -406,6 +406,19 @@ impl RuntimeSecretService {
         Ok(Zeroizing::new(value.replace("${secret}", &secret)))
     }
 
+    /// The bare token of an account's entry, for the one caller that cannot
+    /// use the `Authorization` header: `git push` to the same origin's
+    /// repositories. It goes to git by environment and is scrubbed from git's
+    /// output; the App never sees it.
+    pub(crate) fn app_account_token(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.validate_app_account(credential_id, origin)?;
+        Ok(Zeroizing::new(self.resolve_secret(credential)?))
+    }
+
     pub(crate) fn prepare_http_request_with_credential(
         &self,
         request: CredentialHttpRequest,

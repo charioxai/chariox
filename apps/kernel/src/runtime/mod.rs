@@ -5,6 +5,7 @@ pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 mod agent_tree_projection;
 pub(crate) mod agent_utility_executor;
+mod app_approved_operations;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -49,6 +50,7 @@ pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+mod app_workspace_broker;
 pub(crate) mod bounded_process;
 pub(crate) mod browser_artifact;
 pub(crate) mod browser_controller_action;

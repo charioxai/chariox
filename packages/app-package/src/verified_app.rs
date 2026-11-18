@@ -212,6 +212,7 @@ pub fn verify_app<'a>(
                 v2::RequiredFeature::DirectedEvents,
                 v2::RequiredFeature::CredentialedHttp,
                 v2::RequiredFeature::EventRouting,
+                v2::RequiredFeature::Workspace,
             ]
             .into(),
             [("chariox:app/app", 1), ("chariox:app/migration", 0)]

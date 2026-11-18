@@ -321,7 +321,6 @@ pub enum LocalDaemonResponse {
     WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
-    WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
     WorkspaceGitOverview { overview: WorkspaceGitOverview, },
     WorkspaceFilesListed { listing: WorkspaceRepoFileListing, },
     WorkspaceFileContent { content: WorkspaceFileContent, },

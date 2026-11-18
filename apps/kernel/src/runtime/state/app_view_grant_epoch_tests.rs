@@ -288,6 +288,67 @@ async fn mp11_app_view_revoke_regrant_cancels_a_pending_worker_reply() {
     assert!(cancelled, "the worker receives Cancel");
 }
 
+/// An agent's call runs with the person's authority over routing only while the
+/// call the person approved is in progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_agent_call_is_approved_until_the_call_ends() {
+    let ViewFixture {
+        state,
+        agent,
+        binding,
+        view,
+        observations,
+        _cleanup,
+    } = prepare(Mode::ToolStall);
+    state
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", "installed", tokio::runtime::Handle::current())
+        .unwrap();
+    wait_worker(&state).await;
+    let dispatch = state.clone();
+    let caller = agent.clone();
+    let id = view.clone();
+    let call = tokio::spawn(async move {
+        let mut tracked = dispatch.app_control().views().track_call(&id, &id, None);
+        let method = tool_method(&dispatch);
+        dispatch
+            .invoke_user_app_view_call(
+                "alice",
+                &id,
+                &binding,
+                &method,
+                serde_json::json!({"text":"approved"}),
+                &mut tracked,
+                ViewCaller::ApprovedAgent(&caller),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| o.tool_invocations())
+            .sum::<u64>()
+            == 0
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(state.app_control().approved_operations().len(), 1);
+    state
+        .owned
+        .kernel_browser_host
+        .revoke_grants("alice", Some(agent.id()));
+    grant(&state, &agent, &view);
+    let _ = tokio::time::timeout(Duration::from_secs(2), call).await;
+    assert_eq!(state.app_control().approved_operations().len(), 0);
+    cleanup_worker(&state).await;
+}
+
 /// MP-08/MP-11: SQLite queue checks retain the document and the exact grant
 /// without taking its mutex recursively while an enqueue commit holds it.
 #[tokio::test]

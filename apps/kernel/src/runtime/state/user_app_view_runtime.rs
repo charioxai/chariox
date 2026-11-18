@@ -391,7 +391,7 @@ impl KernelRuntimeState {
                 "App view closed",
             ));
         }
-        if let super::app_view_runtime::ViewCaller::Agent(agent) = &caller {
+        if let Some(agent) = caller.agent() {
             let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
             if !self
                 .user_domain_owner_aliases(&user)

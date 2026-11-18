@@ -51,28 +51,6 @@ export function deleteWorkspaceWorktreeRequest(
   }
 }
 
-export function createWorkspacePullRequestRequest(
-  workspaceId: string,
-  worktreeId: string,
-  options: {
-    title?: string | null
-    body?: string | null
-    baseRef?: string | null
-    draft?: boolean
-  } = {},
-) {
-  return {
-    CreateWorkspacePullRequest: {
-      workspace_id: workspaceId,
-      worktree_id: worktreeId,
-      title: options.title?.trim() || null,
-      body: options.body?.trim() || null,
-      base_ref: options.baseRef?.trim() || null,
-      draft: options.draft ?? false,
-    },
-  }
-}
-
 export function getWorkspaceGitOverviewRequest(
   workspaceId: string,
   worktreeId: string,
@@ -170,40 +148,16 @@ export function commitWorkspaceChangesRequest(
   workspaceId: string,
   worktreeId: string,
   message: string,
+  files: readonly string[],
+  branch?: string | null,
 ) {
   return {
     CommitWorkspaceChanges: {
       workspace_id: workspaceId,
       worktree_id: worktreeId,
       message,
-    },
-  }
-}
-
-export function pushWorkspaceBranchRequest(
-  workspaceId: string,
-  worktreeId: string,
-  forceWithLease = false,
-) {
-  return {
-    PushWorkspaceBranch: {
-      workspace_id: workspaceId,
-      worktree_id: worktreeId,
-      force_with_lease: forceWithLease,
-    },
-  }
-}
-
-export function commitAndPushWorkspaceChangesRequest(
-  workspaceId: string,
-  worktreeId: string,
-  message: string,
-) {
-  return {
-    CommitAndPushWorkspaceChanges: {
-      workspace_id: workspaceId,
-      worktree_id: worktreeId,
-      message,
+      files,
+      branch: branch?.trim() || null,
     },
   }
 }
