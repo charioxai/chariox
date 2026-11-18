@@ -83,6 +83,31 @@ pub(super) struct VaultAgentContext {
     pub(super) home: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
 }
 
+impl VaultAgentContext {
+    pub(super) fn actor(&self) -> VaultActor {
+        VaultActor {
+            agent_id: self.agent_id.clone(),
+            session_id: self.session_id.clone(),
+            owner_user_id: self.owner_user_id.clone(),
+            provider_run_id: self.run.id().to_string(),
+        }
+    }
+}
+
+/// Who a change to the Vault is made for: the agent, the Room it answers to and the run that
+/// asked. On a leased worker this is the home agent the run stands for, resolved at the home.
+#[derive(Clone)]
+pub(super) struct VaultActor {
+    pub(super) agent_id: String,
+    pub(super) session_id: String,
+    pub(super) owner_user_id: String,
+    pub(super) provider_run_id: String,
+}
+
+/// What a Vault change repeats after each wait (an unlock, a command): fails when the actor's
+/// run or lease ended meanwhile.
+pub(super) type VaultRecheck<'a> = &'a (dyn Fn() -> Result<(), DaemonError> + Sync);
+
 impl KernelRuntimeState {
     pub(super) fn vault_agent_context(
         &self,
@@ -91,10 +116,10 @@ impl KernelRuntimeState {
         self.vault_agent_context_for_run(&self.vault_run_for_token(token)?)
     }
 
-    /// The context for a tool that uses Vault values in the agent's workspace. A run on a
-    /// leased worker keeps its workspace there and uses the Vault of the home kernel, which
-    /// resolves each value for the home agent it stands for.
-    pub(super) async fn vault_workspace_context(
+    /// The context for a tool that reaches the Vault. A run on a leased worker keeps its
+    /// workspace there and uses the Vault of the home kernel, which acts for the home agent it
+    /// stands for.
+    pub(super) async fn vault_leased_context(
         &self,
         token: &str,
     ) -> Result<VaultAgentContext, DaemonError> {
@@ -165,7 +190,7 @@ impl KernelRuntimeState {
                 != crate::session::DEFAULT_LOCAL_USER_ID
         {
             return Err(error(
-                "this Vault operation needs the owner's own kernel: an agent that runs on a slice or another machine can fill with chariox.vault.use_env or chariox.vault.write_file, and the owner adds or removes Vault entries",
+                "this Vault operation needs the owner's own kernel: an agent that runs on a slice or another machine reaches the owner's Vault through the chariox.vault tools, and the owner adds or removes Vault entries",
             ));
         }
         Ok(VaultAgentContext {

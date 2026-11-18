@@ -138,7 +138,7 @@ impl KernelRuntimeState {
                         Ok(provider_run_id) => provider_run_id,
                         Err(
                             refusal @ DaemonError::VaultUnlock {
-                                code: "vault_unlock_timed_out",
+                                code: "vault_unlock_timed_out" | "vault_unlock_declined",
                                 ..
                             },
                         ) => {

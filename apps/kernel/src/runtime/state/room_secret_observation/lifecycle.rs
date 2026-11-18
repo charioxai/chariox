@@ -245,7 +245,7 @@ impl KernelRuntimeState {
         credential: crate::config::UserCredentialConfig,
         secret: &str,
         overwrite: bool,
-        context: Option<&super::super::vault_use::VaultAgentContext>,
+        recheck: Option<super::super::vault_use::VaultRecheck<'_>>,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         let (credential, secret) =
             crate::secret::normalize_vault_credential_input(credential, secret)?;
@@ -301,10 +301,10 @@ impl KernelRuntimeState {
             _ => None,
         };
         self.with_authorized_app_side_effect(|_| {
-            if let Some(context) = context {
-                self.recheck_vault_agent(context)?;
+            if let Some(recheck) = recheck {
+                recheck()?;
             }
-            self.with_forwarded_binding_operation(|| {
+            let result = self.with_forwarded_binding_operation(|| {
                 let _history = self.owned.operational_history_store.lock_public_history()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     registry, credential, secret, overwrite,
@@ -322,9 +322,11 @@ impl KernelRuntimeState {
                     source?;
                     protection?;
                 }
-                self.record_vault_resource(&resource_metadata)?;
                 Ok(result)
-            })
+            })?;
+            // The register reads the session and agent stores, which a forwarded operation holds.
+            self.record_vault_resource(&resource_metadata)?;
+            Ok(result)
         })
         .await
     }

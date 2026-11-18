@@ -834,6 +834,39 @@ fn relay_home_credential_proxy_shape_is_versioned() {
                 },
             },
         };
+    let capture_binding = crate::config::VaultUseBinding {
+        target: crate::config::VaultUseTarget::CommandEnvironment {
+            name: "DEPLOY_TOKEN".to_string(),
+            origin: "https://deploy.example.com".to_string(),
+        },
+        value_kind: crate::config::VaultValueKind::Secret,
+    };
+    let capture_prepare_request =
+        crate::transport::relay_peer::RelayPeerRequest::CaptureForHomeVault {
+            context: context.clone(),
+            capture: crate::transport::relay_peer::HomeVaultCapture::Prepare {
+                request_id: "deploy".to_string(),
+                host: "deploy.example.com".to_string(),
+                use_binding: capture_binding.clone(),
+            },
+        };
+    let capture_store_request =
+        crate::transport::relay_peer::RelayPeerRequest::CaptureForHomeVault {
+            context: context.clone(),
+            capture: crate::transport::relay_peer::HomeVaultCapture::Store {
+                request_id: "deploy".to_string(),
+                host: "deploy.example.com".to_string(),
+                label: Some("Deploy token".to_string()),
+                use_binding: capture_binding,
+                secret: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                    "redacted-by-test-fixture".to_string(),
+                ),
+            },
+        };
+    let capture_prepared_response =
+        crate::transport::relay_peer::RelayPeerResponse::HomeVaultCapturePrepared {
+            committed: None,
+        };
     let list_response =
         crate::transport::relay_peer::RelayPeerResponse::HomeCredentialToolHandled {
             result: crate::transport::runtime_tools::RuntimeToolResult {
@@ -860,7 +893,10 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         pty_secret_request,
         list_response,
         secret_response,
-        workspace_secret_request
+        workspace_secret_request,
+        capture_prepare_request,
+        capture_store_request,
+        capture_prepared_response
     ]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
@@ -890,6 +926,18 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         }))
     );
     assert_eq!(
+        snapshot.pointer("/7/capture/kind"),
+        Some(&serde_json::json!("prepare"))
+    );
+    assert_eq!(
+        snapshot.pointer("/8/capture/kind"),
+        Some(&serde_json::json!("store"))
+    );
+    assert_eq!(
+        snapshot.pointer("/9/kind"),
+        Some(&serde_json::json!("home_vault_capture_prepared"))
+    );
+    assert_eq!(
         snapshot.pointer("/4/kind"),
         Some(&serde_json::json!("home_credential_tool_handled"))
     );
@@ -902,7 +950,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8db77d29b27608448d83f82ce608ae88c41a786652bb556f55f02caf3d8b0771"
+        "77b093fcbb801f9056558d5c72f81a1b39f0a49e8fe76917e7a1882145acbe7c"
     );
 }
 
@@ -1210,6 +1258,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "8f57695e8c0d87406a9d8fe02a8b0541a7e6f7c7f81b0da394aee07b631a1917"
+        "1a575cf8efc2750b41d58af1ec8bc1f78d79ae55af9b86ec0246bee41d79dd6f"
     );
 }

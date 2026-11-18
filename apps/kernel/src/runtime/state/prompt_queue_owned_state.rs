@@ -2014,9 +2014,9 @@ impl KernelRuntimeOwnedState {
         Ok(crate::app::KernelQueuedPromptCancellation { prompt, session })
     }
 
-    /// A queued prompt whose Vault unlock timed out cannot start without the owner, and nothing
-    /// else will start it: it ends with the reason in the Room, so the prompts behind it still
-    /// get their turn. An owner who declines the unlock keeps the queue as it is.
+    /// A queued prompt whose Vault unlock timed out, was declined or was cancelled cannot start
+    /// without the owner, and nothing else will start it: it ends with the reason in the Room,
+    /// so the prompts behind it still get their turn.
     /// Answers the prompt it ended, `None` when it was already gone.
     pub(super) fn end_queued_prompt_without_vault(
         &self,
