@@ -580,12 +580,12 @@ async fn an_unsaved_edit_is_kept_for_the_next_window_with_the_revision_it_starte
     .await;
     assert_eq!(missing.unwrap_err().code, "NOT_FOUND");
 
-    ok(store, app, "discard_draft", json!({})).await;
+    ok(store, app, "discard_draft", json!({"id": id})).await;
     assert_eq!(
         ok(store, app, "read_draft", json!({})).await["draft"],
         Value::Null
     );
-    assert!(!root.0.join("draft.json").exists());
+    assert!(!root.0.join("drafts").join(format!("{id}.json")).exists());
 
     // A draft of a document that was deleted has nothing to come back to.
     ok(
@@ -600,6 +600,85 @@ async fn an_unsaved_edit_is_kept_for_the_next_window_with_the_revision_it_starte
         ok(store, app, "read_draft", json!({})).await["draft"],
         Value::Null
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn two_windows_editing_at_once_each_keep_their_own_draft() -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("two_editors").await?;
+    let (store, app) = (&mut store, &app);
+    let mut ids = Vec::new();
+    for title in ["Plan", "Notes"] {
+        let made = ok(
+            store,
+            app,
+            "create_document",
+            json!({"title": title, "content": "v1"}),
+        )
+        .await;
+        ids.push(made["id"].as_str().unwrap().to_owned());
+    }
+    let (saving, dirty) = (&ids[0], &ids[1]);
+    for (id, content) in [(saving, "first window"), (dirty, "second window")] {
+        ok(
+            store,
+            app,
+            "save_draft",
+            json!({"id": id, "base_revision": 1, "content": content}),
+        )
+        .await;
+    }
+
+    // The first window saves its document and gives up its draft; the second stays dirty.
+    ok(
+        store,
+        app,
+        "update_document",
+        json!({"id": saving, "expected_revision": 1, "content": "first window"}),
+    )
+    .await;
+    ok(store, app, "discard_draft", json!({"id": saving})).await;
+
+    let kept = ok(store, app, "read_draft", json!({"id": dirty})).await["draft"].clone();
+    assert_eq!(
+        kept["content"], "second window",
+        "the other window's edit survives"
+    );
+    assert_eq!(
+        ok(store, app, "read_draft", json!({"id": saving})).await["draft"],
+        Value::Null
+    );
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"]["id"],
+        dirty.as_str(),
+        "a replaced window with nothing open is handed the draft that is left"
+    );
+
+    // The second window keeps typing; a save of its draft does not touch the first's document.
+    ok(
+        store,
+        app,
+        "save_draft",
+        json!({"id": dirty, "base_revision": 1, "content": "second again"}),
+    )
+    .await;
+    ok(
+        store,
+        app,
+        "save_draft",
+        json!({"id": saving, "base_revision": 2, "content": "first again"}),
+    )
+    .await;
+    assert_eq!(
+        ok(store, app, "read_draft", json!({"id": dirty})).await["draft"]["content"],
+        "second again"
+    );
+    assert_eq!(
+        ok(store, app, "read_draft", json!({"id": saving})).await["draft"]["content"],
+        "first again"
+    );
+    let escape = call(store, app, "discard_draft", json!({"id": "../documents"})).await;
+    assert_eq!(escape.unwrap_err().code, "INVALID_ARGUMENT");
     Ok(())
 }
 

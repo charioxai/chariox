@@ -140,7 +140,12 @@ class Element {
 }
 
 function fakeBackend() {
-  const store = { docs: new Map(), draft: null };
+  const store = {
+    docs: new Map(),
+    // One draft per document, as the App keeps them; `draft` is the latest, for single-window tests.
+    drafts: new Map(),
+    get draft() { return [...this.drafts.values()].at(-1) ?? null; },
+  };
   const summary = ({ content, ...doc }) => doc;
   const calls = [];
   const tools = {
@@ -153,9 +158,16 @@ function fakeBackend() {
       return { ...doc };
     },
     view_changes: () => ({ latest: 1, dropped: false, changes: [] }),
-    save_draft: (draft) => { store.draft = draft; return { saved: true }; },
-    read_draft: () => ({ draft: store.draft && store.docs.has(store.draft.id) ? store.draft : null }),
-    discard_draft: () => { store.draft = null; return { discarded: true }; },
+    save_draft: (draft) => { store.drafts.delete(draft.id); store.drafts.set(draft.id, draft); return { saved: true }; },
+    read_draft: ({ id }) => {
+      const draft = id ? store.drafts.get(id) : [...store.drafts.values()].at(-1);
+      return { draft: draft && store.docs.has(draft.id) ? draft : null };
+    },
+    discard_draft: ({ id }) => {
+      if (typeof id !== 'string') throw Error('id is required');
+      store.drafts.delete(id);
+      return { discarded: true };
+    },
   };
   const backend = { store, calls, holdSaves: null };
   const call = async (tool, input) => {
@@ -242,6 +254,21 @@ test('a saved edit leaves no draft to restore', async () => {
   await until(() => second.$('docs').children.length === 1, 'the list');
   await until(() => backend.calls.filter((tool) => tool === 'read_draft').length === 2, 'the new view asked for a draft');
   assert.equal(second.$('content').value, '', 'nothing is opened for a view with no draft');
+});
+
+test('a window that saves discards its own document\'s draft and leaves another window\'s', async () => {
+  const backend = fakeBackend();
+  backend.store.docs.set('d2', { id: 'd2', title: 'Other', folder: '', kind: 'markdown', revision: 1, versions: [1], content: 'other text' });
+  const first = await loadView(backend);
+  await until(() => first.$('docs').children.length === 2, 'the document list');
+  first.$('docs').children[0].children[0].click();
+  await until(() => first.$('content').value === 'saved text', 'the document opened');
+  type(first, { content: 'saved edit' });
+  await until(() => backend.store.drafts.has('d1'), 'the App keeps the draft');
+  backend.store.drafts.set('d2', { id: 'd2', base_revision: 1, title: 'Other', folder: '', content: 'edited in another window' });
+  first.$('save').click();
+  await until(() => !backend.store.drafts.has('d1'), 'the saved document\'s draft is dropped');
+  assert.equal(backend.store.drafts.get('d2')?.content, 'edited in another window');
 });
 
 test('a view that is going away hands over its latest keystrokes at once', async () => {

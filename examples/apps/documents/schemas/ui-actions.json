@@ -232,7 +232,7 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the person's unsaved edit of an open document, started from base_revision, so a replaced window finds it again. Replaces the earlier draft; saving the document is update_document.",
+      "description": "Keep the person's unsaved edit of an open document, started from base_revision, so a replaced window finds it again. Replaces the earlier draft of that document, and only that one; saving the document is update_document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -267,20 +267,33 @@
     },
     {
       "name": "read_draft",
-      "description": "Read the person's unsaved edit, kept by save_draft, or null when there is none or its document was deleted.",
+      "description": "Read the person's unsaved edit of the document id, kept by save_draft, or without an id the most recently kept one. Null when there is none or its document was deleted.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        },
         "additionalProperties": false
       },
       "effect": "read"
     },
     {
       "name": "discard_draft",
-      "description": "Drop the person's unsaved edit once it is saved or given up.",
+      "description": "Drop the person's unsaved edit of the document id once it is saved or given up; other documents' drafts stay.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        },
+        "required": [
+          "id"
+        ],
         "additionalProperties": false
       },
       "effect": "write"
