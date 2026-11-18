@@ -776,11 +776,11 @@ impl KernelRuntimeState {
             },
         })
     }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
-    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
-    /// no longer the active prompt, settle its task definitively. The person drives the provider
-    /// TUI, so there is no completion-check turn.
-    pub(super) async fn settle_finished_native_tui_turn(
+    /// Claude native-bridge turns (native TUI and headless) end at the provider Stop event, which
+    /// completes the prompt without the managed-provider settlement. Each output pass remembers
+    /// the turn the run is on; once it is no longer the active prompt, settle its task at once, so
+    /// the supervision sweep never finds a finished turn Working and ends it as interrupted.
+    pub(super) async fn settle_finished_native_bridge_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
@@ -798,7 +798,7 @@ impl KernelRuntimeState {
         let finished = {
             let mut turns = self
                 .owned
-                .native_tui_turns
+                .native_bridge_turns
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous = turns
@@ -832,7 +832,7 @@ impl KernelRuntimeState {
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
-                "native TUI task settlement retained for sweep",
+                "native bridge task settlement retained for sweep",
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
