@@ -10,6 +10,7 @@ import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-m
 import {captureDocumentOwner} from './browser-controller-frames.mjs';
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
+import { worldContext } from './browser-focus-world.mjs';
 // VAUDIT S3 / AU-03: the owner's own view shows Vault fills and captures as the page does. Only the
 // mask inputs change; staleness still follows the live protection policy's identity.
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
@@ -226,12 +227,12 @@ export class Mirror2 {
     const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame, { timeoutMs: patience?.() });
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
-      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId, { timeoutMs: patience?.() });
+      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, ...worldContext(world), returnByValue: true }, sessionId, { timeoutMs: patience?.() });
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
     this.host.timing?.('mirror2_world_install', installAt);
-    const out = { connection, sessionId, contextId: world.contextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
+    const out = { connection, sessionId, contextId: world.contextId, uniqueContextId: world.uniqueContextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
     const cssAt = timestamp();
     await this.watchCss(out, frameTree.frame.id, stream.id, patience);
     this.host.timing?.('mirror2_world_css', cssAt);
@@ -261,7 +262,7 @@ export class Mirror2 {
   // `json`: the page returns the value as one JSON string. A large snapshot or drain crosses CDP several times faster
   // that way than as a by-value object (the inspector's object serialization runs on the renderer's main thread).
   async evaluate(world, expression, awaitPromise = false, timeoutMs, json = false) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
+    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, ...worldContext(world), returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
@@ -285,7 +286,7 @@ export class Mirror2 {
     this.regions.retireStream(stream);
     stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);
     const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
-    for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
+    for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, ...worldContext(world), returnByValue: true }, world.sessionId).catch(() => {});
   }
   stream(stream) {
     this.host.timing?.(`mirror2_subscribe ${this.service.streams.size}`, timestamp());
