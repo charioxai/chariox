@@ -8,7 +8,7 @@ import type {
   SliceRecord,
 } from "../cli-types.js"
 import {
-  formatNativeTuiRuntimeBanner,
+  formatNativeTuiRuntimeBanner, NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
 
 test("native TUI runtime banner shows ownership, placement, and worktree", () => {
@@ -37,7 +37,7 @@ test("native TUI runtime banner shows ownership, placement, and worktree", () =>
     grantedMcps: ["filesystem"],
     grantedSkills: ["review"],
     providerLines: ["  proxy:          ws://127.0.0.1:1234"],
-    promptPolicy: "native prompts pass through",
+    promptPolicy: NATIVE_PROMPT_POLICY.throughKernel,
   })
 
   assert.match(banner, /^\[chariox codex native-tui\]/)
@@ -58,11 +58,12 @@ test("native TUI runtime banner shows ownership, placement, and worktree", () =>
   assert.match(banner, /ext sync next:  home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
-  assert.match(banner, /prompt policy:  native prompts pass through/)
+  assert.match(banner, /prompt policy:  prompts typed here are sent through the Chariox kernel/)
 })
 
 test("remote native TUI banner keeps MCPs and skills worker-local while scripts stay home-proxied", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -92,6 +93,7 @@ test("remote native TUI banner keeps MCPs and skills worker-local while scripts 
 
 test("remote native TUI banner does not invent manifest sync for worker-local MCPs and skills", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -119,6 +121,7 @@ test("remote native TUI banner does not invent manifest sync for worker-local MC
 
 test("native TUI runtime banner calls out missing slice provider auth", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -144,6 +147,7 @@ test("native TUI runtime banner calls out missing slice provider auth", () => {
 
 test("native TUI runtime banner reports stopped slice lifecycle recovery", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -164,6 +168,7 @@ test("native TUI runtime banner reports stopped slice lifecycle recovery", () =>
 
 test("native TUI runtime banner reports unhealthy slice lifecycle recovery", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "managed" }),
     agent: agent({
@@ -184,6 +189,7 @@ test("native TUI runtime banner reports unhealthy slice lifecycle recovery", () 
 
 test("native TUI runtime banner can show explicit slice lookup failures", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -205,6 +211,7 @@ test("native TUI runtime banner can show explicit slice lookup failures", () => 
 
 test("native TUI runtime banner renders local defaults without inventing state", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: null }),
     agent: agent({ remote_execution: null }),
@@ -224,6 +231,7 @@ test("native TUI runtime banner renders local defaults without inventing state",
 
 test("native TUI runtime banner surfaces blocked remote extension sync", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "claude native-tui",
     session: session({ workspace_live_sync_mode: "managed" }),
     agent: agent({
@@ -254,6 +262,7 @@ test("native TUI runtime banner surfaces blocked remote extension sync", () => {
 
 test("native TUI runtime banner keeps final revokes visible after grants are gone", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "managed" }),
     agent: agent({
@@ -281,6 +290,7 @@ test("native TUI runtime banner keeps final revokes visible after grants are gon
 
 test("native TUI runtime banner surfaces provider run recovery actions", () => {
   const mismatched = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({}),
@@ -291,6 +301,7 @@ test("native TUI runtime banner surfaces provider run recovery actions", () => {
   assert.match(mismatched, /provider next:  run \/kernel health and \/provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to A1/)
 
   const missingWorkerRun = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "managed" }),
     agent: agent({
@@ -311,6 +322,7 @@ test("native TUI runtime banner surfaces provider run recovery actions", () => {
 
 test("native TUI runtime banner omits sync line for passive skill snapshots", () => {
   const banner = formatNativeTuiRuntimeBanner({
+    promptPolicy: NATIVE_PROMPT_POLICY.observed,
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
@@ -430,7 +442,7 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
 
 test("directfirst r11 the native TUI banner never names how the connection is established", () => {
   for (const connectionLabel of ["Local connection", "Relay connection", null]) {
-    const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel }
+    const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel, promptPolicy: NATIVE_PROMPT_POLICY.observed }
     assert.doesNotMatch(formatNativeTuiRuntimeBanner(input), /connection:|Local connection|Relay connection/)
   }
 })

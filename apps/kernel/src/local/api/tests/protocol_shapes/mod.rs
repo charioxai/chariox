@@ -59,6 +59,7 @@ mod project_environment;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;
+mod provider_catalog_aliases;
 mod provider_usage_activity;
 mod provider_vault_login;
 mod publication;

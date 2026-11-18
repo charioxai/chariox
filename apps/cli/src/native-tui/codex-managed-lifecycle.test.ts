@@ -81,7 +81,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
     managed.send(JSON.stringify({ id, method, params }))
     await received
   }
-  const agent = { id: "agent", session_id: "session", alias: "fixture" }
+  const agent = { id: "agent", session_id: "session", alias: "fixture", model: "fixture" }
   const run = { id: "run", session_id: "session", agent_instance_id: "agent", provider: "codex", structured_endpoint: endpoint, provider_session_id: null }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, Record<string, unknown>>) => {
     const [kind, payload] = Object.entries(request)[0]!

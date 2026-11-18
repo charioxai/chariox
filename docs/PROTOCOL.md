@@ -7963,3 +7963,14 @@ agent's kernel reads or changes a workflow of a Room on another kernel) and
 `ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
 workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
 subscribes through the existing notification path).
+
+### Model names — local 1013
+
+A model of a provider catalog (`GetProviderCatalog`, the `provider_catalog_changed` event) may list
+`aliases`: the other names the provider's own tool accepts for it, as its catalog gives them (the Claude
+picker's `sonnet`, a Codex picker id). The field is absent when a model has none. An agent spawn (single
+or batch), a model change and a new Room's defaults take any of: the catalog id, the id behind a provider
+qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headless/…`, `codex/…`), an alias, or
+an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
+resolves to none is refused with the models to use. `provider-catalog-aliases-1013.json` and its SHA-256
+test pin the shape.

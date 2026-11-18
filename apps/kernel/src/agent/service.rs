@@ -1114,6 +1114,25 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    /// The model and variant the worker chose for a remote agent: the worker runs it, so its
+    /// choice is the agent's.
+    pub fn set_worker_model_selection(
+        &mut self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_model(model);
+        agent.set_effort(effort);
+        Ok(agent.clone())
+    }
+
     pub fn bind_remote_execution(
         &mut self,
         agent_id: &str,

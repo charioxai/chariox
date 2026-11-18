@@ -10,7 +10,6 @@ import {
   aliasAgentRequest,
   attachToSessionRequest,
   createSessionRequest,
-  moveAgentToRemoteRequest,
   resolveSessionRequest,
   spawnAgentRequest,
 } from "../ipc-requests.js"
@@ -26,9 +25,11 @@ export async function createNativeSession(
   alias: string | undefined,
   agentDefaults: SessionAgentDefaults,
   sliceRef?: string,
+  machineRef?: string,
 ): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
+  // The kernel places the agent on the machine, so the machine's provider chooses its model.
   const response = await client.send<Record<string, unknown>>(
-    createSessionRequest(workspace, worktree, alias, agentDefaults, sliceRef ?? null),
+    createSessionRequest(workspace, worktree, alias, agentDefaults, sliceRef ?? null, null, machineRef ?? null),
   )
   const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
   return {
@@ -69,12 +70,9 @@ export async function spawnNativeAgent(
   sliceRef?: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, provider, alias, model, worktree, effort, mode, permissions, undefined, undefined, sliceRef),
+    spawnAgentRequest(sessionId, provider, alias, model, worktree, effort, mode, permissions, machineRef, undefined, sliceRef),
   )
-  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
-  return machineRef
-    ? moveNativeAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
 }
 
 export async function prepareCreatedNativeAgent(
@@ -82,24 +80,8 @@ export async function prepareCreatedNativeAgent(
   sessionId: string,
   agent: AgentInstance,
   alias: string | undefined,
-  machineRef: string | undefined,
 ): Promise<AgentInstance> {
-  const placed = machineRef
-    ? await moveNativeAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
-  return maybeAliasNativeAgent(client, sessionId, placed, alias)
-}
-
-async function moveNativeAgentToRemote(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  machineRef: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
-  )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
+  return maybeAliasNativeAgent(client, sessionId, agent, alias)
 }
 
 async function maybeAliasNativeAgent(

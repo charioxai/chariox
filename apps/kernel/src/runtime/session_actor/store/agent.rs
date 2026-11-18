@@ -17,6 +17,16 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 /// A child never has more authority than its parent: a level or mode the spawn does not ask
 /// for is the parent's current limit, and one it asks for cannot be above it. A spawn from a
 /// person (no parent) keeps the requested values, filled from the room defaults.
+/// A model the request names must be one the account offers; one the Room default supplies is
+/// already in use.
+fn requested_model_source(named: bool) -> crate::runtime::state::ModelSource {
+    if named {
+        crate::runtime::state::ModelSource::Named
+    } else {
+        crate::runtime::state::ModelSource::Kept
+    }
+}
+
 fn child_authority(
     parent: Option<crate::session::EffectiveAgentExecutionConfig>,
     mode: Option<AgentExecutionMode>,
@@ -312,6 +322,8 @@ impl SessionRuntimeStore {
             .provider
             .as_deref()
             .is_none_or(|provider| provider == defaults.provider);
+        // A model the Room default supplies is already in use; one the request names must be offered.
+        let model_source = requested_model_source(request.model.is_some());
         let model = request
             .model
             .or_else(|| same_provider.then(|| defaults.model.clone()).flatten());
@@ -398,6 +410,7 @@ impl SessionRuntimeStore {
                     &spawn_provider,
                     account_profile.as_deref(),
                     model,
+                    model_source,
                     effort,
                 )
                 .await
@@ -662,6 +675,7 @@ impl SessionRuntimeStore {
                 .provider
                 .as_deref()
                 .is_none_or(|provider| provider == default_provider);
+            let model_source = requested_model_source(item.model.is_some());
             let model = item
                 .model
                 .or_else(|| same_provider.then(|| default_model.clone()).flatten());
@@ -732,6 +746,7 @@ impl SessionRuntimeStore {
                         &item_provider,
                         item_account_profile.as_deref(),
                         model,
+                        model_source,
                         effort,
                     )
                     .await

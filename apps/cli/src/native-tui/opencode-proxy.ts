@@ -73,7 +73,8 @@ export async function startOpenCodeProxy(options: OpenCodeProxyOptions): Promise
   const server = http.createServer((request, response) => {
     handleProxyRequest(request, response, options, state).catch((error) => {
       if (!response.headersSent) {
-        response.writeHead(502, { "content-type": "application/json" })
+        // OpenCode's toast prints the status line, so the reason goes there.
+        response.writeHead(502, httpReasonPhrase(formatError(error)), { "content-type": "application/json" })
       }
       response.end(JSON.stringify({ error: formatError(error) }))
     })
@@ -331,4 +332,10 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** A reason that is safe in an HTTP status line: one printable ASCII line, bounded. */
+export function httpReasonPhrase(message: string): string {
+  const line = message.replace(/[^\x20-\x7e]+/g, " ").replace(/\s+/g, " ").trim()
+  return line.length > 0 ? line.slice(0, 240) : "Bad Gateway"
 }

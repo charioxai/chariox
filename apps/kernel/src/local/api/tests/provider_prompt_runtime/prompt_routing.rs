@@ -518,6 +518,15 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
         crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &unavailable_account.profile_id,
+            &["gpt-5.4"],
+        )
+    });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -748,6 +757,15 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
             &account.profile_id,
         )
         .expect("account should become authenticated")
+    });
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &account.profile_id,
+            &["gpt-5.4"],
+        )
     });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(

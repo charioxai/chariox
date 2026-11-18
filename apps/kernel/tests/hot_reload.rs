@@ -1609,7 +1609,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1748,7 +1748,7 @@ fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllab
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "builder",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1973,7 +1973,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             let spawned = request(
                 &mut socket,
                 json!({"SpawnAgent": {"session_id": session_id, "alias": "counter",
-                    "provider": "claude", "model": "haiku", "effort": null,
+                    "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                     "worktree_id": null, "no_subscribe": true}}),
             )
             .await;
