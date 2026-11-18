@@ -137,6 +137,10 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_diagnostic: Option<String>,
     started_at_ms: u64,
+    // Clones share it, so a Claude child the run actor restarts moves it for every
+    // holder of the run.
+    #[serde(skip)]
+    process_started_at_ms: ProcessStart,
     last_activity_at_ms: u64,
     /// When the provider last wrote output; the run's start until it does.
     /// Kept in memory only: a restarted kernel counts a turn's quiet from its start.
@@ -238,6 +242,7 @@ impl RuntimeProviderRun {
                 .map(str::to_string),
             terminal_diagnostic: None,
             started_at_ms: now,
+            process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
             last_output_at_ms: now,
         }
@@ -309,6 +314,7 @@ impl RuntimeProviderRun {
             provider_session_id: None,
             terminal_diagnostic: None,
             started_at_ms: now,
+            process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
             last_output_at_ms: now,
         }
@@ -802,6 +808,21 @@ impl RuntimeProviderRun {
         self.started_at_ms
     }
 
+    /// When the run's current provider process started (Unix ms). Claude reads its
+    /// skills when its process starts, so a restarted child has read later ones.
+    /// A process the run did not start itself (a handed-over child) counts from
+    /// the run's start, the earliest it can have started.
+    pub fn process_started_at_ms(&self) -> u64 {
+        self.process_started_at_ms
+            .0
+            .load(std::sync::atomic::Ordering::Acquire)
+            .max(self.started_at_ms)
+    }
+
+    pub(crate) fn process_start(&self) -> ProcessStart {
+        self.process_started_at_ms.clone()
+    }
+
     pub fn last_activity_at_ms(&self) -> u64 {
         self.last_activity_at_ms
     }
@@ -904,6 +925,26 @@ fn provider_preparation_base_path(launch_result: &ProviderLaunchResult) -> Optio
     }
     std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned())
 }
+
+/// When the current provider process started (Unix ms); 0 until the run starts one.
+#[derive(Clone, Default)]
+pub(crate) struct ProcessStart(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl ProcessStart {
+    pub(crate) fn record(&self, started_at_ms: u64) {
+        self.0
+            .store(started_at_ms, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl PartialEq for ProcessStart {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+            == other.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl Eq for ProcessStart {}
 
 pub(crate) fn projected_leased_provider_run_id(
     leased_agent_id: &str,

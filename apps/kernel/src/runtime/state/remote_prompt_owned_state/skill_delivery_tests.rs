@@ -2340,6 +2340,151 @@ async fn a_native_skill_written_after_claude_started_does_not_withhold_the_chari
     );
 }
 
+// A restarted Claude child reads its skill directories again, so a native skill
+// written before the restart is offered by the child: verified and selectable.
+#[tokio::test]
+async fn a_native_skill_written_before_claude_restarted_is_verified_and_selectable() {
+    use crate::skill::service::SkillCatalogService;
+    let files = crate::test_support::TestWorktree::new("restarted-native");
+    let skill_md = "---\nname: late\ndescription: Review safely\n---\nReview source.\n";
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(files.session_request())
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "local-claude-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "cat >/dev/null".into()],
+            pty_env: [
+                ("HOME".into(), files.path().display().to_string()),
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    files.path().join("claude").display().to_string(),
+                ),
+            ]
+            .into(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(files.path().into()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+    app.providers_mut()
+        .apply_runtime_binding(
+            run.id(),
+            crate::provider::ProviderRuntimeBinding::Claude(binding),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let native = files.path().join(".claude/skills/late");
+    std::fs::create_dir_all(&native).unwrap();
+    std::fs::write(native.join("SKILL.md"), skill_md).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // An aborted turn restarts the Claude child.
+    app.providers_mut()
+        .enqueue_structured_prompt_abort(
+            session.id().into(),
+            run.id().into(),
+            "restart-prompt".into(),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let restarted = loop {
+        if let Some(job) = app
+            .providers_mut()
+            .drain_finished_structured_prompt_abort_jobs()
+            .pop()
+        {
+            break job;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the abort must restart the Claude child"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    restarted.result.unwrap();
+    let runtime = super::tests::owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    runtime
+        .owned
+        .skill_inventories
+        .set_test_version(run.id(), "2.1.212");
+    let config = runtime.owned.config_projection.snapshot();
+    let service = SkillCatalogService::new(
+        SkillCatalogStorage::new(
+            config.user_config_path.parent().unwrap(),
+            runtime.owned.durable_state_store.clone(),
+        )
+        .unwrap(),
+    );
+    let install = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: service.storage.snapshot().unwrap().revision,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: skill_md.into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&install).unwrap();
+    service.publish_authorized(&install, &prepared).unwrap();
+    let response = runtime
+        .execute_skills_catalog_request(
+            SkillsV2Request::Catalog {
+                project_id: Some(session.project_id().into()),
+                agent_id: Some(agent.id().into()),
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+        )
+        .await
+        .unwrap();
+    let crate::local::LocalDaemonResponse::SkillsV2 {
+        result: SkillsV2Response::Catalog { skills, .. },
+    } = response
+    else {
+        panic!("Catalog must answer with the catalog");
+    };
+    let delivery = skills
+        .iter()
+        .find(|projection| projection.skill.name == "late")
+        .map(|projection| projection.delivery.clone())
+        .unwrap();
+    assert!(
+        matches!(delivery, SkillDelivery::ProvidedBy { .. }),
+        "{delivery:?}"
+    );
+    let inventory = runtime
+        .local_skill_inventory(
+            agent.id(),
+            service.storage.snapshot().unwrap().revision,
+            false,
+        )
+        .unwrap();
+    let late = inventory
+        .entries
+        .iter()
+        .find(|entry| matches!(&entry.selection, SkillSelection::Native { name, .. } if name == "late"))
+        .unwrap();
+    inventory.native_path(&late.selection).unwrap();
+}
+
 // A native composer outlives the typed turns that clear its binding's active run id, so a
 // published catalog change has to reach every lease, not only those with a running turn.
 #[tokio::test]

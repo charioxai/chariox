@@ -132,7 +132,10 @@ impl ProviderProcessService {
         binding: ProviderRuntimeBinding,
     ) -> Result<(), DaemonError> {
         match binding {
-            ProviderRuntimeBinding::Claude(binding) => {
+            ProviderRuntimeBinding::Claude(mut binding) => {
+                binding
+                    .state
+                    .bind_run_process_start(self.get_run(run_id)?.process_start());
                 let session_id = binding.state.session_id().map(str::to_string);
                 self.run_actor_mailbox
                     .insert_claude_runtime(run_id.to_string(), binding.state);

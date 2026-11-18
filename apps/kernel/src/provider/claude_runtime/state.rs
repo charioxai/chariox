@@ -40,6 +40,10 @@ pub struct ClaudeRuntimeState {
     pub(super) resources: Option<crate::runtime::process_resources::ProcessDomain>,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
+    // When this child started (Unix ms); None for a handed-over child.
+    pub(super) child_started_at_ms: Option<u64>,
+    // Only the run's own runtime moves the run's process start, never a utility child.
+    pub(super) run_process_start: Option<crate::provider::ProcessStart>,
     pub(super) stdin: ChildStdin,
     pub(super) output: ClaudeOutput,
     pub(in crate::provider) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
@@ -122,6 +126,13 @@ impl ClaudeRuntimeState {
             }
         }
         selected
+    }
+
+    pub(crate) fn bind_run_process_start(&mut self, start: crate::provider::ProcessStart) {
+        if let Some(started_at_ms) = self.child_started_at_ms {
+            start.record(started_at_ms);
+        }
+        self.run_process_start = Some(start);
     }
 
     pub(crate) fn process_identity_slot(

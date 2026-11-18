@@ -201,7 +201,7 @@ pub(crate) use run_actor::{
     ProviderRunOperationPermit,
 };
 pub(crate) use runtime_run::{
-    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id, ProcessStart,
 };
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};

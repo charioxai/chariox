@@ -94,6 +94,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
+    let child_started_at_ms = crate::session::unix_epoch_ms();
     let (child, stdin, output, resources, adopted) = match crate::hot_reload::take_claude(run.id())
     {
         Some(handover) => {
@@ -147,6 +148,8 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                     .ok()
                     .map(|(identity, _)| identity),
             )),
+            child_started_at_ms: adopted.is_none().then_some(child_started_at_ms),
+            run_process_start: None,
             child,
             resources: Some(resources),
             stdin,
@@ -639,6 +642,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
+    let child_started_at_ms = crate::session::unix_epoch_ms();
     let (child, stdin, output, resources) = spawn_claude_child(
         run.id(),
         run.agent_instance_id().unwrap_or(run.id()),
@@ -658,6 +662,10 @@ fn restart_claude_runtime(
         crate::runtime::kernel_access::process::inspect(child.id())
             .ok()
             .map(|(identity, _)| identity);
+    state.child_started_at_ms = Some(child_started_at_ms);
+    if let Some(start) = &state.run_process_start {
+        start.record(child_started_at_ms);
+    }
     state.child = child;
     state.resources = Some(resources);
     state.stdin = stdin;
@@ -824,6 +832,8 @@ mod tests {
                 main_stream_has_context: true,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                child_started_at_ms: None,
+                run_process_start: None,
                 child,
                 resources: None,
                 stdin,
