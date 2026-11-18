@@ -1,8 +1,7 @@
 // Keeps the person's unsaved scene in the App, not in this window: the view is replaced when the App
 // updates or the connection returns, and its page keeps nothing across that. Each window keeps its
-// draft under an id of its own and only that window writes or removes it; a draft is otherwise removed
-// only when the backend finds it older than an hour. The new window asks for every kept draft and
-// merges them into its canvas by element version: it copies, so it never removes another window's.
+// draft under an id of its own, so another window's save or discard never reaches it; the new window
+// asks for every kept draft and merges them into its canvas by element version.
 const DELAY_MS = 100;
 
 export function drafts(call, id, read) {
@@ -49,5 +48,7 @@ export function drafts(call, id, read) {
       await queue;
       return (await call('read_drafts', {})).drafts;
     },
+    // Drafts of windows that were replaced, once their edits are saved or kept by this window.
+    forget: ids => Promise.all(ids.map(other => run('discard_draft', { id: other }).catch(tell))),
   };
 }

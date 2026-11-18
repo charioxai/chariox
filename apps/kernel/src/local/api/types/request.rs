@@ -24,6 +24,7 @@ pub enum LocalDaemonRequest {
     ExtendKernelSudo(ExtendKernelSudoRequest),
     RenewKernelSudoRequester(RenewKernelSudoRequesterRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
+    ListOwnerInteractions(ListOwnerInteractionsRequest),
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     ListGatewayKernels(ListGatewayKernelsRequest),
     HeartbeatAttachments(HeartbeatAttachmentsRequest),

@@ -37,16 +37,19 @@ async function call(tool, input = {}) {
 
 const keeper = drafts(call)
 
-// Unsaved edits end here, saved or given up, and the App forgets the draft with them.
+// Unsaved edits end here, saved or given up, and the App forgets the draft with them. The draft is
+// the dirty document's, which is no longer the open one when the person moved on.
 function settle() {
-  if (dirty) keeper.drop()
+  if (dirty && dirtyId) keeper.drop(dirtyId)
   dirty = false
+  dirtyId = null
 }
 
 const unsavedDraft = () => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null
 
 function edited() {
   dirty = true
+  dirtyId = current?.id ?? null
   keeper.keep(unsavedDraft)
 }
 
@@ -278,11 +281,11 @@ async function restoreDraft() {
   restored = true
   if (!draft || dirty) return
   const doc = documents.find((item) => item.id === draft.id)
-  if (!doc) return keeper.drop()
+  if (!doc) return keeper.drop(draft.id)
   await open(doc.id)
   const same = draft.base_revision === doc.revision && draft.title === doc.title && draft.folder === doc.folder
     && draft.content === $("content").value
-  if (same) return keeper.drop()
+  if (same) return keeper.drop(draft.id)
   $("title").value = draft.title
   $("folder").value = draft.folder
   $("content").value = draft.content

@@ -73,7 +73,14 @@ The current scene auto-saves after 300 ms without an edit, with an optimistic
 state version check. The window asks the change feed once a second; when an agent
 (or another window) saved meanwhile it merges the saved scene into its canvas with
 Excalidraw's reconciliation and saves what is still its own, so neither side's edit is
-lost. An agent's selection is shown once. Explicit private files use `files.atomic_replace`; imports
+lost. An agent's selection is shown once. The window's page keeps nothing when the App
+updates or the connection returns and the view is replaced, so a scene it has not saved yet
+(waiting for the timer or for the answer to a save) is also kept in the App, in
+`data/drafts/<window id>.json`, one file per window (`save_draft`, `read_drafts`,
+`discard_draft`; at most four, none older than the hour a deletion is kept). The
+new window merges the kept drafts into its canvas by element version, saves what is
+still unsaved and discards them, so a draft never overwrites what an agent saved
+meanwhile, and one window saving never discards another window's. Explicit private files use `files.atomic_replace`; imports
 use `host.request_file`, `host.await_file` and `files.import` (one call waits 20 s for the person's choice and returns `{pending, pickId}` while they have not chosen; the window asks again with that `pickId`, and the request ends when the window closes), and exports use `files.export`. Inputs
 are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently

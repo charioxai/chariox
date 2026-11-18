@@ -39,8 +39,12 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        // This is a human frontend channel, never an agent/host escalation.
-        if !command.is_terminal_caller() {
+        // This is a human frontend channel, never an agent/host escalation; an external agent
+        // only answers the person's cards outside any Room, under its grant's checks.
+        let for_person = matches!(request, LocalDaemonRequest::AnswerUserDomainInteraction(_))
+            && command.caller.connection_class
+                == Some(crate::local::KernelConnectionClass::ExternalAgent);
+        if !command.is_terminal_caller() && !for_person {
             return Some(Err(DaemonError::UserDomainRefused {
                 reason: crate::error::UserDomainRefusalReason::NotGranted,
             }));
@@ -209,17 +213,18 @@ impl KernelRuntimeState {
                         reason: crate::error::UserDomainRefusalReason::NotGranted,
                     });
                 }
-                self.answer_terminal_runtime_interaction(
-                    "",
-                    &request.interaction_id,
-                    &request.choice_id,
-                    None,
-                    Some(owner),
-                    request.passkey.as_ref(),
-                    request.passkey_remember_minutes,
-                    command.caller.connection_class,
-                )
-                .await?;
+                self.with_interaction_answerer(&command.caller)
+                    .answer_terminal_runtime_interaction(
+                        "",
+                        &request.interaction_id,
+                        &request.choice_id,
+                        None,
+                        Some(owner),
+                        request.passkey.as_ref(),
+                        request.passkey_remember_minutes,
+                        command.caller.connection_class,
+                    )
+                    .await?;
                 Ok(LocalDaemonResponse::UserDomainInteractionAnswered {
                     interaction_id: request.interaction_id.clone(),
                 })

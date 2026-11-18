@@ -1,6 +1,6 @@
 {
-  "local": 1012,
-  "relayPeer": 449,
+  "local": 1023,
+  "relayPeer": 448,
   "credentials": [
     {
       "id": "service-totp",

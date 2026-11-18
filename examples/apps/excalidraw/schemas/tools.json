@@ -61,7 +61,7 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id, at most four at once (a new id is refused until one is discarded or an hour old).",
+      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -118,7 +118,7 @@
     },
     {
       "name": "discard_draft",
-      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts never removes them.",
+      "description": "Forget the draft kept under this window id and no other.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -460,7 +460,7 @@
     },
     {
       "name": "open_file",
-      "description": "Open a named private diagram, or request a user-selected .excalidraw file when no name is given.",
+      "description": "Open a named private diagram, or request a user-selected .excalidraw file when no name is given. The owner's choice is waited for up to 20 seconds; while it is not made this returns {pending: true, pickId}: call again with that pickId to keep waiting (the request stays open for ten minutes).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -468,6 +468,10 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
             "maxLength": 64
+          },
+          "pickId": {
+            "type": "string",
+            "maxLength": 128
           }
         },
         "required": [],

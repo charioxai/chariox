@@ -1,16 +1,11 @@
 //! The unsaved scene of each open window. The window's page keeps nothing across a replacement (an
 //! App update, a reconnect, a reload), so it hands the scene it is about to save to the App and asks
 //! for the kept ones when it starts. A window has no identity that outlives its replacement, so each
-//! window keeps its drafts under an id of its own choosing, and only that window removes its draft
-//! (`discard_draft`): one window saving never drops what another window has not saved, and a
-//! recovering window copies the kept drafts into its canvas and leaves them where they are, because
-//! their window may still be open. The one removal that is not the window's own is age: a draft that
-//! cannot be read, or that is older than the hour a deletion is kept, is dropped when the folder is next
-//! read or written. At the cap a new window's draft is refused, never made room for by removing another.
+//! window keeps its drafts under an id of its own choosing and discards only that id's draft: one
+//! window saving never drops what another window has not saved.
 //!
 //! A recovered draft is merged into the saved scene by element version, as any other saved scene
-//! is, so it needs no base version and never overwrites what was saved meanwhile. Merging the same draft
-//! again changes nothing.
+//! is, so it needs no base version and never overwrites what was saved meanwhile.
 
 use crate::{actions, file_io, scene};
 use chariox_app_sdk::{app_types::AppError, error};
@@ -19,8 +14,8 @@ use std::{fs, io::ErrorKind};
 
 const FOLDER: &str = "drafts";
 const MAX_ID: usize = 64;
-/// The most drafts kept at once, so a reply with all of them stays small. A window with a new id is
-/// refused while this many are kept; they age out within the hour.
+/// The most drafts kept at once: the oldest goes when a window with a new id keeps one more, so the
+/// drafts of windows that are gone cannot pile up, and a reply with all of them stays small.
 const MAX_DRAFTS: usize = 4;
 
 /// Where the draft of a window is kept. The id names a file, so it must look like one id.
@@ -108,14 +103,6 @@ fn remove(id: &str) -> Result<(), AppError> {
     }
 }
 
-/// What a save finds in the folder: the files to drop for their age, and whether the window's id fits.
-/// An id that is kept already always fits, since the save replaces its file.
-fn admit(files: Vec<(String, String)>, id: &str, now_ms: u64) -> (Vec<String>, bool) {
-    let (kept, useless) = select(files, now_ms);
-    let others = kept.iter().filter(|(other, _)| other != id).count();
-    (useless, others < MAX_DRAFTS)
-}
-
 /// `save_draft`: keep the scene this window is about to save, under its own id.
 pub async fn save(input: &Value) -> Result<Value, AppError> {
     let id = input["id"]
@@ -124,15 +111,19 @@ pub async fn save(input: &Value) -> Result<Value, AppError> {
     let path = path_of(id)?;
     let checked = scene::parse(&input["scene"].to_string())?;
     let now = now_ms();
-    let (useless, fits) = admit(files()?, id, now);
+    let (kept, useless) = select(files()?, now);
     for id in useless {
         remove(&id)?;
     }
-    if !fits {
-        return Err(error(
-            "INVALID_STATE",
-            format!("{MAX_DRAFTS} other windows already keep an unsaved diagram; save or close one, or wait until it is an hour old"),
-        ));
+    // Room for this one: a window with an id the App has not seen pushes out the oldest draft.
+    let others: Vec<&String> = kept
+        .iter()
+        .map(|(other, _)| other)
+        .filter(|other| other.as_str() != id)
+        .collect();
+    let overflow = (others.len() + 1).saturating_sub(MAX_DRAFTS);
+    for other in others.into_iter().take(overflow) {
+        remove(other)?;
     }
     // The broker's atomic replace does not create parents.
     fs::create_dir_all(format!("data/{FOLDER}")).map_err(|_| {
@@ -156,7 +147,7 @@ pub fn read() -> Result<Value, AppError> {
     )
 }
 
-/// `discard_draft`: forget the draft of this id and no other. Only the window of that id sends it.
+/// `discard_draft`: forget the draft of this id and no other.
 pub fn discard(input: &Value) -> Result<Value, AppError> {
     remove(
         input["id"]
@@ -203,133 +194,5 @@ mod tests {
         assert_eq!(ids, ["old", "new"]);
         assert_eq!(kept[1].1, scene_of(&["n"]));
         assert_eq!(useless, ["expired", "torn", "not-a-scene"]);
-    }
-
-    #[test]
-    fn a_new_window_is_refused_at_the_cap_and_a_kept_one_is_not_and_nothing_is_dropped_to_make_room(
-    ) {
-        let now = actions::TOMBSTONE_MS * 10;
-        let files: Vec<(String, String)> = (0..MAX_DRAFTS)
-            .map(|n| (format!("w{n}"), encode(&scene_of(&["x"]), now - n as u64)))
-            .collect();
-        let (useless, fits) = admit(files.clone(), "new", now);
-        assert!(!fits && useless.is_empty());
-        let (useless, fits) = admit(files.clone(), "w0", now);
-        assert!(
-            fits && useless.is_empty(),
-            "a window that keeps a draft rewrites its own"
-        );
-        // Room opens only when a draft ages out, and that one is the only file dropped.
-        let later = now + actions::TOMBSTONE_MS - (MAX_DRAFTS as u64 - 1);
-        let (useless, fits) = admit(files, "new", later);
-        assert_eq!(useless, ["w3"]);
-        assert!(fits);
-    }
-
-    /// Windows `a`, `b` and `c` keep, read and discard drafts, and an hour passes between any two
-    /// steps. Every order of up to `DEPTH` steps writes or removes only the file of the window that
-    /// sent the step, except that an hour-old or unreadable file is swept by whatever reads or writes
-    /// the folder next; and a window's kept scene stays in its file until it discards it.
-    #[test]
-    fn no_order_of_saves_reads_discards_and_hours_removes_another_windows_draft() {
-        use std::collections::BTreeMap;
-        #[derive(Clone, Copy, Debug)]
-        enum Step {
-            Save(&'static str),
-            Discard(&'static str),
-            Read,
-            Hour,
-        }
-        #[derive(Clone)]
-        struct World {
-            files: BTreeMap<String, String>,
-            now: u64,
-            writes: u64,
-            /// The scene each window last kept, with when.
-            kept: BTreeMap<&'static str, (u64, u64)>,
-        }
-        const DEPTH: usize = 6;
-        let windows = ["a", "b", "c"];
-        let mut steps = vec![Step::Read, Step::Hour];
-        for window in windows {
-            steps.extend([Step::Save(window), Step::Discard(window)]);
-        }
-        fn run(world: &World, depth: usize, steps: &[Step], visited: &mut u64) {
-            if depth == 0 {
-                return;
-            }
-            for &step in steps {
-                let mut next = world.clone();
-                let before = next.files.clone();
-                match step {
-                    Step::Hour => next.now += actions::TOMBSTONE_MS,
-                    Step::Read => {
-                        let files = next.files.iter().map(|(i, t)| (i.clone(), t.clone()));
-                        for id in select(files.collect(), next.now).1 {
-                            next.files.remove(&id);
-                        }
-                    }
-                    Step::Save(window) => {
-                        let files = next.files.iter().map(|(i, t)| (i.clone(), t.clone()));
-                        let (useless, fits) = admit(files.collect(), window, next.now);
-                        for id in useless {
-                            next.files.remove(&id);
-                        }
-                        if fits {
-                            next.writes += 1;
-                            let scene = scene_of(&[&format!("e{}", next.writes)]);
-                            next.files
-                                .insert(window.to_owned(), encode(&scene, next.now));
-                            next.kept.insert(window, (next.writes, next.now));
-                        }
-                    }
-                    Step::Discard(window) => {
-                        next.files.remove(window);
-                        next.kept.remove(window);
-                    }
-                }
-                for (id, text) in &before {
-                    if next.files.get(id) == Some(text) {
-                        continue;
-                    }
-                    let own = matches!(step, Step::Save(w) | Step::Discard(w) if w == id);
-                    let swept = !next.files.contains_key(id)
-                        && decode(text).is_none_or(|(at, _)| {
-                            next.now.saturating_sub(at) >= actions::TOMBSTONE_MS
-                        });
-                    assert!(
-                        own || swept,
-                        "{step:?} changed {id}, which is not its window's own"
-                    );
-                }
-                for (id, text) in &next.files {
-                    assert!(
-                        before.get(id) == Some(text) || matches!(step, Step::Save(w) if w == id)
-                    );
-                }
-                for (window, (n, at)) in &next.kept {
-                    if next.now.saturating_sub(*at) >= actions::TOMBSTONE_MS {
-                        continue;
-                    }
-                    let text = next
-                        .files
-                        .get(*window)
-                        .unwrap_or_else(|| panic!("after {step:?} window {window} lost its draft"));
-                    let (_, scene) = decode(text).unwrap();
-                    assert_eq!(scene, scene_of(&[&format!("e{n}")]));
-                }
-                *visited += 1;
-                run(&next, depth - 1, steps, visited);
-            }
-        }
-        let start = World {
-            files: BTreeMap::new(),
-            now: actions::TOMBSTONE_MS * 3,
-            writes: 0,
-            kept: BTreeMap::new(),
-        };
-        let mut visited = 0;
-        run(&start, DEPTH, &steps, &mut visited);
-        assert!(visited > 100_000, "the search covered {visited} steps");
     }
 }

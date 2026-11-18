@@ -139,8 +139,8 @@ async fn call(name: &str, input: &Value) -> Result<Value, AppError> {
             let (id, base) = (text(input, "id")?, revision(input, "base_revision")?);
             draft::save(&docs, id, base, input).await
         }
-        "read_draft" => draft::read(&index::load().await?.0),
-        "discard_draft" => draft::discard(),
+        "read_draft" => draft::read(&index::load().await?.0, input["id"].as_str()),
+        "discard_draft" => draft::discard(text(input, "id")?),
         _ => Err(error("TOOL_NOT_FOUND", name)),
     }
 }

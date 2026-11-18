@@ -258,7 +258,7 @@ impl KernelRuntimeState {
             }
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
-                    if self.claim_resume(&agent, &stop, now, true).await? {
+                    if self.claim_resume(&agent, now, true).await? {
                         sends.push(self.spawn_resume(agent, stop));
                     }
                 }
@@ -353,10 +353,33 @@ impl KernelRuntimeState {
 
     /// Takes the resume of a stopped agent: marks it as going on, so no other tick or decision
     /// sends it again. `staggered` holds it back until the kernel has not sent another for a while.
+    /// The scheduler and a person's decision can arrive together, so there is one claim per agent
+    /// and whoever finds it taken sends nothing.
     async fn claim_resume(
         &self,
         agent: &crate::agent::AgentInstance,
-        stop: &UsageLimitStop,
+        now: u64,
+        staggered: bool,
+    ) -> Result<bool, DaemonError> {
+        let claimed = self
+            .owned
+            .usage_limit_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent.id().to_string());
+        if !claimed {
+            return Ok(false);
+        }
+        let taken = self.take_claimed_resume(agent, now, staggered).await;
+        if !matches!(taken, Ok(true)) {
+            self.end_resume_send(agent);
+        }
+        taken
+    }
+
+    async fn take_claimed_resume(
+        &self,
+        agent: &crate::agent::AgentInstance,
         now: u64,
         staggered: bool,
     ) -> Result<bool, DaemonError> {
@@ -364,7 +387,17 @@ impl KernelRuntimeState {
         if self.agent_has_turn(agent) {
             return Ok(false);
         }
-        if self.drop_stop_of_cancelled_task(agent, stop).await? {
+        // The caller read the stop before it got here; a resume claimed and sent meanwhile has
+        // moved it on, and its continuation must not be sent a second time.
+        let current = self.owned.agent_store.get_agent(agent.id())?;
+        let Some(current) = current
+            .usage_limit_stop()
+            .filter(|current| !matches!(current.state, UsageLimitStopState::Resuming { .. }))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if self.drop_stop_of_cancelled_task(agent, &current).await? {
             return Ok(false);
         }
         {
@@ -388,17 +421,10 @@ impl KernelRuntimeState {
                 since_ms: now,
                 sent: false,
             },
-            ..stop.clone()
+            ..current
         };
-        self.owned
-            .usage_limit_sends
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent.id().to_string());
-        if let Err(error) = self.store_usage_limit_stop(agent, Some(resuming), "").await {
-            self.end_resume_send(agent);
-            return Err(error);
-        }
+        self.store_usage_limit_stop(agent, Some(resuming), "")
+            .await?;
         Ok(true)
     }
 
@@ -661,13 +687,13 @@ impl KernelRuntimeState {
     }
 
     /// Resumes without the stagger: a person asked for it.
-    async fn resume_stopped_agent_now(
+    pub(super) async fn resume_stopped_agent_now(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
         now: u64,
     ) -> Result<(), DaemonError> {
-        if self.claim_resume(agent, stop, now, false).await? {
+        if self.claim_resume(agent, now, false).await? {
             self.spawn_resume(agent.clone(), stop.clone());
         }
         Ok(())

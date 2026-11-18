@@ -20,6 +20,7 @@ fn kernel_access_socket(root: &Path) -> PathBuf {
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
+mod owner_cards;
 mod standing;
 mod vault_secret;
 mod waiter;
@@ -104,6 +105,25 @@ fn kernel_access_child_server() {
                         None,
                         crate::agent::GridPosition::new(0, 0, 1, 1),
                     ));
+            }
+            // Sub-agents two levels down, whose cards are the owner's too.
+            for (id, parent) in [
+                ("access-sub-agent", "access-vault-agent"),
+                ("access-sub-sub-agent", "access-sub-agent"),
+            ] {
+                let mut agent = crate::agent::AgentInstance::new(
+                    id,
+                    id,
+                    SESSION,
+                    None,
+                    "claude",
+                    None,
+                    None,
+                    None,
+                    crate::agent::GridPosition::new(0, 0, 1, 1),
+                );
+                agent.set_parent_agent(Some(crate::agent::AgentRef::local(parent)));
+                app.agents_mut().restore_agent(agent);
             }
             // MP-11: a different owner session holds a worker admission credential.
             if credential_session {

@@ -28,6 +28,7 @@ const ready = next => {
   if (api) return;
   api = next;
   storage = persistence(chariox, api, loaded, feedHead);
+  storage.recover().catch(report);
   // Excalidraw installs its default actions after calling excalidrawAPI.
   queueMicrotask(() => { for (const [name, handler, key, shift] of [
     ['loadScene', 'open_file', 'o', false],

@@ -1,6 +1,7 @@
 // Keeps the person's unsaved edit in the App, not in this window: the view is replaced when the App
 // updates or the connection returns, and its sandbox keeps nothing across that. The App holds one
-// draft, the open document's, with the revision the edit started from.
+// draft per document, with the revision the edit started from: the window has no identity that
+// outlives its replacement, so another window's save or discard never reaches this document's draft.
 const DELAY_MS = 400
 
 export function drafts(call) {
@@ -30,10 +31,11 @@ export function drafts(call) {
       pending = null
       send(read)
     },
-    drop() {
+    // The draft of the document `id`; a pending write is this window's, so it goes with it.
+    drop(id) {
       clearTimeout(pending?.timer)
       pending = null
-      return run("discard_draft", {}).catch(() => {})
+      return run("discard_draft", { id }).catch(() => {})
     },
     async recall() {
       await queue

@@ -42,6 +42,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
+    OwnerInteractionsListed { interactions: Vec<OwnerInteraction> },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },

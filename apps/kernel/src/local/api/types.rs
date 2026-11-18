@@ -581,4 +581,7 @@ pub use workspace::*;
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
 /// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// Provisional 1023: an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions`
+/// lists the person's open cards with why the person keeps one (`person_only`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1023;
