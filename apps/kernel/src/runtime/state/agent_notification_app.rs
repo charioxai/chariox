@@ -1,8 +1,9 @@
 //! App occurrences retain App catalog, signer, schema, and receipt admission.
 //! Only their final target differs from workflow automation delivery.
-use super::agent_trigger_notification::ResolvedSource;
+use super::agent_trigger_notification::{NotificationHold, ResolvedSource};
 use super::*;
 use crate::durable_state::app_automations::{AppAutomationMutation, WorkflowAutomationTarget};
+use crate::durable_state::workflow_notifications::subscription_settings;
 use crate::runtime::app_operation_budget::AppOperationBudget;
 use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource};
 use chariox_app_runtime::app_outbox::{AutomationStatus, AutomationTargetKind};
@@ -467,12 +468,21 @@ impl KernelRuntimeState {
             )
             .map_err(app_error)?;
             let input = serde_json::json!({"installation_id":catalog.installation_id(),"event_name":config.event_name,"occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":payload});
+            let hold = NotificationHold {
+                subscription_id: &receipt.automation_id,
+                occurrence_id: &receipt.occurrence_id,
+                title: subscription_settings::app_event_title(
+                    receipt.invocation.as_deref(),
+                    &config.event_name,
+                ),
+            };
             let admission = self
                 .queue_agent_notification_input(
                     &config.target.session_id,
                     &config.target.publication_id,
                     &receipt.receipt_id,
                     input,
+                    hold,
                 )
                 .await;
             match admission {
@@ -486,6 +496,8 @@ impl KernelRuntimeState {
                             budget(),
                         )
                         .map_err(app_error)?;
+                    // The delivery's line names its turn on the person's Inbox.
+                    self.record_person_inbox_change();
                 }
                 result => {
                     if let Err(error) = result {

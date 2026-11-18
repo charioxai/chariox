@@ -16,6 +16,17 @@ use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerS
 /// An agent target has no queue of its own; the column keeps the shared row shape valid.
 const AGENT_QUEUE_ID: &str = "agent";
 
+/// Why a listener that follows a workflow's responsible agent refuses a change of its own.
+pub(super) const RESPONSIBLE_LISTENER: &str = "this subscription follows a workflow's responsible agent; change who is responsible for the workflow instead";
+
+/// The subscription an accepted occurrence waits under while it is paused, and the line its
+/// trace shows for it.
+pub(super) struct NotificationHold<'a> {
+    pub(super) subscription_id: &'a str,
+    pub(super) occurrence_id: &'a str,
+    pub(super) title: String,
+}
+
 /// A source the agent may subscribe to, as the picker names it.
 pub(super) struct ResolvedSource {
     pub(in crate::runtime::state) kernel_id: String,
@@ -136,11 +147,16 @@ impl KernelRuntimeState {
                     (
                         t.id().to_owned(),
                         notification_subscription_id(t).unwrap_or_default().to_owned(),
+                        t.responsible_for().is_some(),
                     )
                 }),
             AgentTriggerNotificationSource::App { .. } => None,
         };
-        if let Some((trigger_id, subscription_id)) = listener {
+        if let Some((trigger_id, subscription_id, responsible)) = listener {
+            // Its prompt and settings follow the workflow's responsible agent, not this request.
+            if responsible {
+                return Err(store::error(RESPONSIBLE_LISTENER));
+            }
             self.owned
                 .durable_state_store
                 .notify(NotificationOperation::Configure {
@@ -601,8 +617,15 @@ impl KernelRuntimeState {
             .map_err(|_| store::error("notification encoding failed"))?;
         let receipt =
             crate::durable_state::workflow_notifications::receipt_id(subscription, &envelope)?;
+        let hold = NotificationHold {
+            subscription_id: &subscription.subscription_id,
+            occurrence_id: &envelope.occurrence_id,
+            title: crate::durable_state::workflow_notifications::subscription_settings::title_of(
+                &envelope,
+            ),
+        };
         if let Some(prompt_id) = self
-            .queue_agent_notification_input(session_id, trigger_id, &receipt, payload)
+            .queue_agent_notification_input(session_id, trigger_id, &receipt, payload, hold)
             .await?
         {
             if self.settle_agent_notification(subscription, &envelope, &prompt_id)? {
@@ -622,6 +645,7 @@ impl KernelRuntimeState {
         trigger_id: &str,
         receipt_id: &str,
         payload: serde_json::Value,
+        hold: NotificationHold<'_>,
     ) -> Result<Option<String>, DaemonError> {
         let now = crate::session::unix_epoch_ms();
         let deadline = payload
@@ -647,7 +671,11 @@ impl KernelRuntimeState {
         {
             return Ok(Some(prompt_id));
         }
-        if now >= deadline {
+        if now >= deadline
+            || self
+                .owned
+                .notification_held(hold.subscription_id, hold.occurrence_id, hold.title)?
+        {
             return Ok(None);
         }
         self.owned
@@ -712,6 +740,7 @@ impl KernelRuntimeState {
     }
 
     /// Settles the receipt with its prompt; true when that was the subscription's one delivery.
+    /// The line names the agent and prompt, so it keeps pointing at the turn after a move.
     fn settle_agent_notification(
         &self,
         subscription: &WorkflowNotificationSubscription,
@@ -719,11 +748,11 @@ impl KernelRuntimeState {
         prompt_id: &str,
     ) -> Result<bool, DaemonError> {
         self.owned
-            .durable_state_store
-            .notify(NotificationOperation::AgentQueued {
+            .notify_traced(NotificationOperation::AgentQueued {
                 subscription_id: subscription.subscription_id.clone(),
                 source_id: envelope.source_id.clone(),
                 occurrence_id: envelope.occurrence_id.clone(),
+                agent_id: subscription.endpoint_id.clone(),
                 prompt_id: prompt_id.into(),
                 session_id: subscription.session_id.clone(),
             })

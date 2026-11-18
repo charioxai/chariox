@@ -151,7 +151,7 @@ async fn the_table_lists_a_subscription_with_its_pick_and_counters_and_pause_hol
                 line.occurrence_id,
                 line.outcome,
                 line.detail,
-                line.turn_ref.is_some(),
+                line.turn.is_some(),
             )
         })
         .collect();
@@ -355,7 +355,13 @@ async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters()
             NotificationSubscriptionHealth::Ok
         )
     );
-    assert_eq!(rig.trace(&after.subscription.subscription_id).len(), 1);
+    let carried = rig.trace(&after.subscription.subscription_id);
+    assert_eq!(carried.len(), 1);
+    assert_eq!(
+        carried[0].turn.as_ref().map(|turn| turn.agent_id.as_str()),
+        Some(rig.agent_id.as_str()),
+        "a carried line opens the turn of the agent that took it, not the new subscriber's"
+    );
     let triggers = rig
         .runtime
         .owned
@@ -421,3 +427,6 @@ async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_raises_
         NotificationTraceOutcome::LoopStopped
     );
 }
+
+#[path = "notification_subscriptions_guard_tests.rs"]
+mod guards;

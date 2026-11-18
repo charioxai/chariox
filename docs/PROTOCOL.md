@@ -7986,8 +7986,13 @@ removes it; both answer the new list. `TestNotificationSubscription{subscription
 source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
 sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
 `NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
-`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn_ref` of the prompt a
-delivery queued.
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
 
 A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
 a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those

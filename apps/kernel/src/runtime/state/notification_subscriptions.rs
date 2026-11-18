@@ -1,19 +1,23 @@
 //! The Notification center's subscriptions table (docs/NOTIFICATION_CENTER_PLAN.md section 6):
 //! every subscription whose subscriber lives on this kernel, in a Room the caller owns, with
 //! what it picked, its counters and its health. Pause, change of subscriber, removal, the dry
-//! run and the trace each act on one row of it.
+//! run and the trace each act on one row of it. An agent's listener on an App event is a row
+//! as well, keyed by its App automation, and every one of these acts on it the same way.
+use super::agent_trigger_notification::{notification_subscription_id, RESPONSIBLE_LISTENER};
 use super::workflow_notification_router::{source_available, summaries};
 use super::*;
 use crate::durable_state::workflow_notifications::{
     self as store, subscription_settings::SubscriptionSettings, NotificationOperation,
 };
 use crate::local::{
-    AgentTriggerSourceRequest, CreateAgentTriggerRequest, DetachWorkflowNotificationRequest,
-    LocalDaemonResponse, NotificationSubscriptionChange, NotificationSubscriptionHealth,
-    NotificationSubscriptionRow, NotificationTraceOutcome, PersonResponsibilityRow,
-    UpdateNotificationSubscriptionRequest, WorkflowNotificationTargetKind,
+    AgentTriggerSourceRequest, CreateAgentTriggerRequest, DeleteAgentTriggerRequest,
+    DetachWorkflowNotificationRequest, LocalDaemonResponse, NotificationSourceKind,
+    NotificationSubscriptionChange, NotificationSubscriptionHealth, NotificationSubscriptionRow,
+    NotificationTraceOutcome, PersonResponsibilityRow, UpdateNotificationSubscriptionRequest,
+    WorkflowNotificationSourceSummary, WorkflowNotificationSubscription,
+    WorkflowNotificationTargetKind,
 };
-use crate::session::AgentTriggerNotificationSource;
+use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource};
 
 impl KernelRuntimeState {
     pub(crate) fn list_notification_subscriptions(
@@ -89,14 +93,11 @@ impl KernelRuntimeState {
         caller: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let row = self.notification_subscription_row(subscription_id, caller)?;
-        self.execute_workflow_notification_command(
-            LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
-                session_id: row.subscription.session_id,
-                subscription_id: row.subscription.subscription_id,
-            }),
-            caller,
-        )
-        .await?;
+        if row.responsible_for.is_some() {
+            return Err(store::error(RESPONSIBLE_LISTENER));
+        }
+        self.end_notification_subscription(&row.subscription, caller)
+            .await?;
         self.record_person_inbox_change();
         self.list_notification_subscriptions(caller)
     }
@@ -110,11 +111,18 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let row = self.notification_subscription_row(subscription_id, caller)?;
         let subscriber = row.subscriber_name.as_deref().unwrap_or("its subscriber");
-        let result = match self
-            .owned
-            .durable_state_store
-            .notification_dry_run(&row.subscription)?
-        {
+        let store = &self.owned.durable_state_store;
+        let dry_run = match self.listened_source(&row.subscription) {
+            Some(AgentTriggerNotificationSource::App {
+                installation_id, ..
+            }) => store.notification_app_dry_run(
+                &row.subscription.owner_user_id,
+                &installation_id,
+                &row.subscription.subscription_id,
+            )?,
+            _ => store.notification_dry_run(&row.subscription)?,
+        };
+        let result = match dry_run {
             None => "Nothing has arrived from this source yet, so there is nothing to test. Nothing was sent.".to_owned(),
             Some(dry_run) => match dry_run.skipped {
                 None => format!(
@@ -251,13 +259,156 @@ impl KernelRuntimeState {
                     health,
                 });
             }
+            for room in rooms.iter().filter(|room| room.owner_user_id() == owner) {
+                for trigger in room.agent_triggers() {
+                    if let Some(row) = self.app_listener_row(room, trigger, &home)? {
+                        rows.push(row);
+                    }
+                }
+            }
         }
         Ok(rows)
     }
 
+    /// An agent's listener on an App event: the row its App automation keys. The App's
+    /// installation is the source; it is gone once the App is uninstalled.
+    fn app_listener_row(
+        &self,
+        room: &crate::session::RuntimeSession,
+        trigger: &AgentTrigger,
+        home: &str,
+    ) -> Result<Option<NotificationSubscriptionRow>, DaemonError> {
+        let AgentTriggerSource::Notification {
+            source:
+                AgentTriggerNotificationSource::App {
+                    installation_id,
+                    event_name,
+                },
+            subscription_id,
+            ..
+        } = trigger.source()
+        else {
+            return Ok(None);
+        };
+        let owner = room.owner_user_id();
+        let subscription = WorkflowNotificationSubscription {
+            subscription_id: subscription_id.clone(),
+            source_id: installation_id.clone(),
+            owner_user_id: owner.to_owned(),
+            created_by_user_id: trigger.created_by_user_id().unwrap_or(owner).to_owned(),
+            target_kernel_id: home.to_owned(),
+            target_kind: WorkflowNotificationTargetKind::Agent,
+            session_id: room.id().to_owned(),
+            workflow_id: String::new(),
+            publication_id: trigger.id().to_owned(),
+            endpoint_id: trigger.agent_id().to_owned(),
+            queue_id: String::new(),
+            source_available: true,
+            source_kernel_id: home.to_owned(),
+            agent_id: Some(trigger.agent_id().to_owned()),
+            trigger_id: Some(trigger.id().to_owned()),
+        };
+        let source = self
+            .owned
+            .durable_state_store
+            .get_app_installation(owner, installation_id)
+            .ok()
+            .map(|installed| WorkflowNotificationSourceSummary {
+                kind: NotificationSourceKind::AppEvent,
+                source_id: installation_id.clone(),
+                kernel_id: home.to_owned(),
+                session_id: room.id().to_owned(),
+                workflow_id: String::new(),
+                exit_node_id: event_name.clone(),
+                exit_ordinal: 0,
+                name: event_name.clone(),
+                display_name: format!("{} · {event_name}", installed.app_id),
+                available: true,
+                options: Vec::new(),
+            });
+        let subscriber_name = self
+            .owned
+            .agent_store
+            .get_agent(trigger.agent_id())
+            .ok()
+            .filter(|agent| agent.session_id() == room.id())
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned());
+        let settings = self
+            .owned
+            .durable_state_store
+            .notification_subscription_settings(&subscription)?;
+        let health = health(source.is_some(), subscriber_name.is_some(), &settings);
+        Ok(Some(NotificationSubscriptionRow {
+            subscription,
+            source,
+            subscriber_name,
+            prompt: Some(trigger.prompt().to_owned()),
+            options: settings.options,
+            once: settings.once,
+            paused: settings.paused,
+            fired: settings.fired,
+            last_fired_at_ms: settings.last_fired_at_ms,
+            loop_stopped_at_ms: settings.loop_stopped_at_ms,
+            responsible_for: None,
+            health,
+        }))
+    }
+
+    /// What an agent's subscription listens to, as its trigger says.
+    fn listened_source(
+        &self,
+        subscription: &WorkflowNotificationSubscription,
+    ) -> Option<AgentTriggerNotificationSource> {
+        let trigger_id = subscription.trigger_id.as_deref()?;
+        let room = self
+            .owned
+            .session_store
+            .get_session(&subscription.session_id)
+            .ok()?;
+        room.agent_triggers()
+            .iter()
+            .find(|trigger| trigger.id() == trigger_id)
+            .and_then(|trigger| match trigger.source() {
+                AgentTriggerSource::Notification { source, .. } => Some(source.clone()),
+                _ => None,
+            })
+    }
+
+    /// Ends a subscription: an App event's listener by deleting its trigger, which disables its
+    /// automation; any other through the ordinary detach.
+    async fn end_notification_subscription(
+        &self,
+        subscription: &WorkflowNotificationSubscription,
+        caller: &str,
+    ) -> Result<(), DaemonError> {
+        if let (Some(AgentTriggerNotificationSource::App { .. }), Some(trigger_id)) = (
+            self.listened_source(subscription),
+            subscription.trigger_id.clone(),
+        ) {
+            self.delete_agent_trigger(
+                DeleteAgentTriggerRequest {
+                    session_id: subscription.session_id.clone(),
+                    trigger_id,
+                },
+                caller,
+            )
+            .await?;
+            return Ok(());
+        }
+        self.execute_workflow_notification_command(
+            LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
+                session_id: subscription.session_id.clone(),
+                subscription_id: subscription.subscription_id.clone(),
+            }),
+            caller,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Another agent of the same Room takes the subscription over with its prompt, options,
-    /// counters and trace; the old trigger is removed. The source must still be there, since
-    /// the new subscriber attaches to it.
+    /// counters and trace; the old trigger is removed. Every refusal comes before the first
+    /// write, and a removal that fails puts the old subscription back as it was.
     async fn change_notification_subscriber(
         &self,
         row: NotificationSubscriptionRow,
@@ -270,6 +421,9 @@ impl KernelRuntimeState {
                 "Only an agent's subscription changes subscriber. Remove this one and attach the workflow you want instead.",
             ));
         }
+        if row.responsible_for.is_some() {
+            return Err(store::error(RESPONSIBLE_LISTENER));
+        }
         if row.source.is_none() {
             return Err(store::error(
                 "The source is gone, so no new subscriber can attach to it. Remove this subscription.",
@@ -280,15 +434,31 @@ impl KernelRuntimeState {
                 "This agent is already the subscriber. Pick another agent of the Room.",
             ));
         }
+        let source = self.listened_source(&subscription).ok_or_else(|| {
+            store::error("This subscription's trigger is gone. List the subscriptions again.")
+        })?;
+        let occupied = self
+            .owned
+            .session_store
+            .get_session(&subscription.session_id)?
+            .agent_triggers()
+            .iter()
+            .any(|trigger| {
+                trigger.agent_id() == agent_id
+                    && matches!(trigger.source(), AgentTriggerSource::Notification { source: s, .. } if *s == source)
+            });
+        if occupied {
+            return Err(store::error(
+                "That agent already subscribes to this source. Remove one of the two subscriptions first, then change the subscriber.",
+            ));
+        }
         let created = self
             .create_agent_trigger(
                 CreateAgentTriggerRequest {
                     session_id: subscription.session_id.clone(),
                     agent_id,
                     source: AgentTriggerSourceRequest::Notification {
-                        source: AgentTriggerNotificationSource::Workflow {
-                            source_id: subscription.source_id.clone(),
-                        },
+                        source,
                         options: row.options,
                         once: row.once,
                     },
@@ -301,23 +471,33 @@ impl KernelRuntimeState {
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = created else {
             return Err(store::error("unexpected agent trigger response"));
         };
-        if let Some(to) = super::agent_trigger_notification::notification_subscription_id(&trigger)
-        {
+        let to = notification_subscription_id(&trigger)
+            .ok_or_else(|| store::error("the new subscriber's trigger has no subscription"))?
+            .to_owned();
+        let carry = |from: &str, to: &str| {
             self.owned
                 .durable_state_store
                 .notify(NotificationOperation::Carry {
-                    from: subscription.subscription_id.clone(),
+                    from: from.to_owned(),
                     to: to.to_owned(),
-                })?;
+                })
+        };
+        carry(&subscription.subscription_id, &to)?;
+        if let Err(error) = self
+            .end_notification_subscription(&subscription, caller)
+            .await
+        {
+            carry(&to, &subscription.subscription_id)?;
+            self.delete_agent_trigger(
+                DeleteAgentTriggerRequest {
+                    session_id: subscription.session_id.clone(),
+                    trigger_id: trigger.id().to_owned(),
+                },
+                caller,
+            )
+            .await?;
+            return Err(error);
         }
-        self.execute_workflow_notification_command(
-            LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
-                session_id: subscription.session_id,
-                subscription_id: subscription.subscription_id,
-            }),
-            caller,
-        )
-        .await?;
         Ok(())
     }
 }

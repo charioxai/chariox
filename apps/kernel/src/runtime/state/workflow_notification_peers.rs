@@ -532,16 +532,11 @@ impl KernelRuntimeState {
                                 return Err(store::error("notification target changed"));
                             }
                         }
-                        match self.owned.durable_state_store.notify(
-                            NotificationOperation::Accept {
-                                subscription: sub,
-                                envelope,
-                            },
-                        )? {
+                        match self.owned.notify_traced(NotificationOperation::Accept {
+                            subscription: sub,
+                            envelope,
+                        })? {
                             NotificationOutcome::Ack(ack) => {
-                                if ack == WorkflowNotificationAck::LoopDropped {
-                                    self.record_person_inbox_change();
-                                }
                                 Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
                             }
                             _ => Err(store::error("notification admission failed")),

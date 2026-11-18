@@ -1,11 +1,12 @@
 //! What a subscription keeps on its subscriber's kernel beside the shared row: the option values
 //! it picked, whether it ends after one delivery, the person's pause, its counters and the trace
 //! of what each occurrence did. The gate runs where the occurrence is accepted, so an occurrence
-//! that does not match wakes no one and does not use up `once`.
+//! that does not match wakes no one and does not use up `once`. Pause is checked again where the
+//! prompt is queued: an occurrence accepted before the pause waits there until resume or expiry.
 use super::*;
 use crate::local::{
     NotificationOptionValue, NotificationSourceOption, NotificationTraceLine,
-    NotificationTraceOutcome,
+    NotificationTraceOutcome, NotificationTraceTurn,
 };
 use serde_json::{Map, Value};
 
@@ -23,7 +24,8 @@ pub(super) fn initialize(db: &Connection) -> rusqlite::Result<()> {
       loop_stopped_at_ms INTEGER);
     CREATE TABLE IF NOT EXISTS notification_trace (
       subscription_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, at_ms INTEGER NOT NULL,
-      outcome TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, turn_ref TEXT,
+      outcome TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, turn_agent_id TEXT,
+      turn_prompt_id TEXT,
       PRIMARY KEY(subscription_id, occurrence_id));",
     )
 }
@@ -279,19 +281,116 @@ pub(super) fn loop_stopped_in(
     )
 }
 
-/// The turn a delivered occurrence started: an agent's prompt, or the person's Inbox card.
+/// The agent's turn a delivered occurrence started. An occurrence held by a pause reads as
+/// delivered again once its prompt is queued.
 pub(super) fn woke_in(
     tx: &Transaction<'_>,
     subscription_id: &str,
     occurrence_id: &str,
-    turn_ref: &str,
+    turn: &NotificationTraceTurn,
 ) -> Result<(), DaemonError> {
     tx.execute(
-        "UPDATE notification_trace SET turn_ref=?3 WHERE subscription_id=?1 AND occurrence_id=?2",
-        params![subscription_id, occurrence_id, turn_ref],
+        "UPDATE notification_trace SET outcome=?3, turn_agent_id=?4, turn_prompt_id=?5
+         WHERE subscription_id=?1 AND occurrence_id=?2",
+        params![
+            subscription_id,
+            occurrence_id,
+            outcome_word(NotificationTraceOutcome::Delivered)?,
+            turn.agent_id,
+            turn.prompt_id
+        ],
     )
     .map_err(sql)?;
     Ok(())
+}
+
+/// An App event's prompt is queued: it counts as fired and its line names the turn. An App
+/// event has no gate at acceptance, so this is its first line.
+pub(crate) fn app_delivered_in(
+    tx: &Transaction<'_>,
+    automation_id: &str,
+    occurrence_id: &str,
+    title: &str,
+    turn: &NotificationTraceTurn,
+    now: u64,
+) -> Result<(), DaemonError> {
+    tx.execute(
+        "INSERT INTO notification_subscription_settings (subscription_id, fired, last_fired_at_ms)
+         VALUES (?1, 1, ?2)
+         ON CONFLICT(subscription_id) DO UPDATE SET fired=fired+1, last_fired_at_ms=excluded.last_fired_at_ms",
+        params![automation_id, now as i64],
+    )
+    .map_err(sql)?;
+    line_in(
+        tx,
+        automation_id,
+        occurrence_id,
+        title,
+        NotificationTraceOutcome::Delivered,
+        None,
+        now,
+    )?;
+    woke_in(tx, automation_id, occurrence_id, turn)
+}
+
+/// Where the prompt would be queued: a paused subscription keeps the occurrence for resume or
+/// expiry and its line says it waits. True when the subscription is paused; the line is only
+/// written when it did not already say so, so a held occurrence retried each pass moves no
+/// revision.
+pub(super) fn hold_in(
+    tx: &Transaction<'_>,
+    subscription_id: &str,
+    occurrence_id: &str,
+    title: &str,
+    now: u64,
+) -> Result<Hold, DaemonError> {
+    if !paused_in(tx, subscription_id)? {
+        return Ok(Hold::Queue);
+    }
+    let paused = outcome_word(NotificationTraceOutcome::Paused)?;
+    let said: Option<String> = tx
+        .query_row(
+            "SELECT outcome FROM notification_trace WHERE subscription_id=?1 AND occurrence_id=?2",
+            [subscription_id, occurrence_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if said.as_deref() == Some(paused.as_str()) {
+        return Ok(Hold::Held { traced: false });
+    }
+    line_in(
+        tx,
+        subscription_id,
+        occurrence_id,
+        title,
+        NotificationTraceOutcome::Paused,
+        None,
+        now,
+    )?;
+    Ok(Hold::Held { traced: true })
+}
+
+/// What the queue boundary does with one accepted occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    Queue,
+    /// Paused: the occurrence stays for resume or expiry. `traced` when its line changed.
+    Held {
+        traced: bool,
+    },
+}
+
+fn paused_in(db: &Connection, subscription_id: &str) -> Result<bool, DaemonError> {
+    Ok(db
+        .query_row(
+            "SELECT paused FROM notification_subscription_settings WHERE subscription_id=?1",
+            [subscription_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .unwrap_or(false))
 }
 
 /// Whether the subscription ends after its first delivery.
@@ -315,7 +414,26 @@ fn trace_in(
     detail: Option<String>,
     now: u64,
 ) -> Result<(), DaemonError> {
-    let title = title_of(env);
+    line_in(
+        tx,
+        subscription_id,
+        &env.occurrence_id,
+        &title_of(env),
+        outcome,
+        detail,
+        now,
+    )
+}
+
+fn line_in(
+    tx: &Transaction<'_>,
+    subscription_id: &str,
+    occurrence_id: &str,
+    title: &str,
+    outcome: NotificationTraceOutcome,
+    detail: Option<String>,
+    now: u64,
+) -> Result<(), DaemonError> {
     tx.execute(
         "INSERT INTO notification_trace (subscription_id, occurrence_id, at_ms, outcome, title, detail)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -323,9 +441,9 @@ fn trace_in(
            at_ms=excluded.at_ms, outcome=excluded.outcome, detail=excluded.detail",
         params![
             subscription_id,
-            env.occurrence_id,
+            occurrence_id,
             now as i64,
-            encode(&outcome)?.trim_matches('"'),
+            outcome_word(outcome)?,
             title,
             detail
         ],
@@ -375,10 +493,26 @@ pub(super) fn declared_options_in(
     Ok(Vec::new())
 }
 
-fn title_of(env: &WorkflowNotificationEnvelope) -> String {
-    env.output
-        .message()
-        .lines()
+fn outcome_word(outcome: NotificationTraceOutcome) -> Result<String, DaemonError> {
+    Ok(encode(&outcome)?.trim_matches('"').to_owned())
+}
+
+pub(crate) fn title_of(env: &WorkflowNotificationEnvelope) -> String {
+    title_line(env.output.message())
+}
+
+/// An App event's line reads the App's own words for the occurrence, or the event's name.
+pub(crate) fn app_event_title(invocation: Option<&str>, event_name: &str) -> String {
+    invocation
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|invocation| invocation.get("prompt")?.as_str().map(title_line))
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| event_name.to_owned())
+}
+
+/// The first line of an occurrence's words, as a trace line keeps it.
+pub(crate) fn title_line(text: &str) -> String {
+    text.lines()
         .next()
         .unwrap_or_default()
         .chars()
@@ -465,8 +599,8 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("notification trace")?;
         let mut query = db
             .prepare(
-                "SELECT occurrence_id, at_ms, outcome, title, detail, turn_ref FROM notification_trace
-                 WHERE subscription_id=?1 ORDER BY at_ms DESC, rowid DESC",
+                "SELECT occurrence_id, at_ms, outcome, title, detail, turn_agent_id, turn_prompt_id
+                 FROM notification_trace WHERE subscription_id=?1 ORDER BY at_ms DESC, rowid DESC",
             )
             .map_err(sql)?;
         let rows = query
@@ -478,18 +612,25 @@ impl DurableKernelStateStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })
             .map_err(sql)?;
         rows.map(|row| {
-            let (occurrence_id, at_ms, outcome, title, detail, turn_ref) = row.map_err(sql)?;
+            let (occurrence_id, at_ms, outcome, title, detail, agent_id, prompt_id) =
+                row.map_err(sql)?;
             Ok(NotificationTraceLine {
                 occurrence_id,
                 at_ms: at_ms as u64,
                 outcome: decode(&format!("\"{outcome}\""))?,
                 title,
                 detail,
-                turn_ref,
+                turn: agent_id
+                    .zip(prompt_id)
+                    .map(|(agent_id, prompt_id)| NotificationTraceTurn {
+                        agent_id,
+                        prompt_id,
+                    }),
             })
         })
         .collect()
@@ -519,6 +660,35 @@ impl DurableKernelStateStore {
         Ok(Some(DryRun {
             title: title_of(&env),
             skipped: verdict(&db, sub, &env)?,
+        }))
+    }
+
+    /// The same question for an App event's listener, against the latest occurrence the App
+    /// emitted for it. An App event has no options, so only a pause holds it back.
+    pub(crate) fn notification_app_dry_run(
+        &self,
+        owner: &str,
+        installation_id: &str,
+        automation_id: &str,
+    ) -> Result<Option<DryRun>, DaemonError> {
+        let db = self.lock_connection("notification dry run")?;
+        let latest: Option<(Option<String>, String)> = db
+            .query_row(
+                "SELECT invocation_json, event_name FROM app_outbox WHERE owner_id=?1
+                 AND installation_id=?2 AND automation_id=?3
+                 ORDER BY accepted_at_ms DESC, occurrence_id DESC LIMIT 1",
+                params![owner, installation_id, automation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some((invocation, event_name)) = latest else {
+            return Ok(None);
+        };
+        Ok(Some(DryRun {
+            title: app_event_title(invocation.as_deref(), &event_name),
+            skipped: paused_in(&db, automation_id)?
+                .then_some((NotificationTraceOutcome::Paused, None)),
         }))
     }
 }

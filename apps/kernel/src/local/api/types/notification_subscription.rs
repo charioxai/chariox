@@ -97,6 +97,14 @@ pub struct NotificationTraceLine {
     pub title: String,
     /// Why it was filtered out, worded for the picked option: "Not PR number 976".
     pub detail: Option<String>,
-    /// The prompt the delivery queued for the agent.
-    pub turn_ref: Option<String>,
+    /// The turn the delivery queued; it stays with the agent that took it when the
+    /// subscription moves to another one.
+    pub turn: Option<NotificationTraceTurn>,
+}
+
+/// The agent a delivery woke and the prompt it queued for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationTraceTurn {
+    pub agent_id: String,
+    pub prompt_id: String,
 }

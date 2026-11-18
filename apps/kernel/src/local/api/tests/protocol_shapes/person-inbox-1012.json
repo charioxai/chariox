@@ -45,8 +45,8 @@
     } },
     { "NotificationSubscriptionTested": { "result": "\"Review requested on PR #976\" would wake Reviewer. Nothing was sent." } },
     { "NotificationTrace": { "subscription_id": "sub-1", "lines": [
-      { "occurrence_id": "occ-1", "at_ms": 10, "outcome": "filtered", "title": "Review requested on PR #12", "detail": "Not PR number 976", "turn_ref": null },
-      { "occurrence_id": "occ-2", "at_ms": 12, "outcome": "delivered", "title": "Review requested on PR #976", "detail": null, "turn_ref": "prompt-9" }
+      { "occurrence_id": "occ-1", "at_ms": 10, "outcome": "filtered", "title": "Review requested on PR #12", "detail": "Not PR number 976", "turn": null },
+      { "occurrence_id": "occ-2", "at_ms": 12, "outcome": "delivered", "title": "Review requested on PR #976", "detail": null, "turn": { "agent_id": "agent-1", "prompt_id": "prompt-9" } }
     ] } }
   ]
 }

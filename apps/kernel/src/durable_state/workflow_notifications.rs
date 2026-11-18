@@ -27,8 +27,8 @@ use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::{
     error::DaemonError,
     local::{
-        WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
-        WorkflowNotificationSource, WorkflowNotificationSubscription,
+        NotificationTraceTurn, WorkflowNotificationAck, WorkflowNotificationDiagnostic,
+        WorkflowNotificationEnvelope, WorkflowNotificationSource, WorkflowNotificationSubscription,
     },
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -261,8 +261,16 @@ pub(crate) enum NotificationOperation {
         subscription_id: String,
         source_id: String,
         occurrence_id: String,
+        agent_id: String,
         prompt_id: String,
         session_id: String,
+    },
+    /// Where an accepted occurrence's prompt would be queued: a paused subscription keeps it.
+    Hold {
+        subscription_id: String,
+        occurrence_id: String,
+        title: String,
+        now: u64,
     },
     /// The receipt names the operation of the prompt about to be admitted for it.
     ReserveAgentLineage {
@@ -376,6 +384,7 @@ pub(crate) enum NotificationOutcome {
     Queued,
     /// The occurrence was the one delivery of a subscription that ends after it.
     Spent,
+    Hold(subscription_settings::Hold),
     LineageReserved,
     SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
@@ -760,17 +769,34 @@ fn apply(
             subscription_id,
             source_id,
             occurrence_id,
+            agent_id,
             prompt_id,
             session_id,
         } => {
             tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
-            subscription_settings::woke_in(tx, &subscription_id, &occurrence_id, &prompt_id)?;
+            let turn = NotificationTraceTurn {
+                agent_id,
+                prompt_id,
+            };
+            subscription_settings::woke_in(tx, &subscription_id, &occurrence_id, &turn)?;
             Ok(if subscription_settings::once_in(tx, &subscription_id)? {
                 NotificationOutcome::Spent
             } else {
                 NotificationOutcome::Queued
             })
         }
+        NotificationOperation::Hold {
+            subscription_id,
+            occurrence_id,
+            title,
+            now,
+        } => Ok(NotificationOutcome::Hold(subscription_settings::hold_in(
+            tx,
+            &subscription_id,
+            &occurrence_id,
+            &title,
+            now,
+        )?)),
         NotificationOperation::Configure {
             subscription_id,
             options,

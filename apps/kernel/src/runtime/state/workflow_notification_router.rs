@@ -4,8 +4,10 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
     workflow_notifications::{
-        self as store, naming, remote_install::Generation, NotificationOperation,
-        NotificationOutcome, PreparedNotification, SourceAdmission,
+        self as store, naming,
+        remote_install::Generation,
+        subscription_settings::{self, Hold},
+        NotificationOperation, NotificationOutcome, PreparedNotification, SourceAdmission,
     },
 };
 use crate::{error::DaemonError, local::*, session::SessionService};
@@ -444,6 +446,45 @@ impl KernelRuntimeState {
     }
 }
 impl KernelRuntimeOwnedState {
+    /// A notification step that writes a line of a subscription's trace: the person's Inbox
+    /// revision moves with it, so an open trace reads the line without polling.
+    pub(super) fn notify_traced(
+        &self,
+        operation: NotificationOperation,
+    ) -> Result<NotificationOutcome, DaemonError> {
+        let outcome = self.durable_state_store.notify(operation)?;
+        self.person_inbox_changes.record_change();
+        Ok(outcome)
+    }
+
+    /// Where an accepted occurrence's prompt would be queued: true when its subscription is
+    /// paused, so the occurrence stays for resume or expiry.
+    pub(super) fn notification_held(
+        &self,
+        subscription_id: &str,
+        occurrence_id: &str,
+        title: String,
+    ) -> Result<bool, DaemonError> {
+        let outcome = self
+            .durable_state_store
+            .notify(NotificationOperation::Hold {
+                subscription_id: subscription_id.into(),
+                occurrence_id: occurrence_id.into(),
+                title,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        match outcome {
+            NotificationOutcome::Hold(Hold::Queue) => Ok(false),
+            NotificationOutcome::Hold(Hold::Held { traced }) => {
+                if traced {
+                    self.person_inbox_changes.record_change();
+                }
+                Ok(true)
+            }
+            _ => Err(store::error("unexpected notification hold")),
+        }
+    }
+
     /// A local source's occurrence for a local agent is accepted as a remote one is on delivery.
     pub(super) fn accept_local_agent_notification(
         &self,
@@ -466,11 +507,10 @@ impl KernelRuntimeOwnedState {
                 {
                     return Ok(());
                 }
-                self.durable_state_store
-                    .notify(NotificationOperation::Accept {
-                        subscription: sub.clone(),
-                        envelope: env.clone(),
-                    })?;
+                self.notify_traced(NotificationOperation::Accept {
+                    subscription: sub.clone(),
+                    envelope: env.clone(),
+                })?;
                 self.durable_state_store
                     .notify(NotificationOperation::Acknowledge {
                         subscription_id: sub.subscription_id.clone(),
@@ -585,6 +625,13 @@ impl KernelRuntimeOwnedState {
                                 return Err(store::error("notification target changed"));
                             }
                             if accepted {
+                                if self.notification_held(
+                                    &sub.subscription_id,
+                                    &env.occurrence_id,
+                                    subscription_settings::title_of(&env),
+                                )? {
+                                    return Ok(false);
+                                }
                                 let prepared = PreparedNotification::prepare(
                                     &mut sessions,
                                     sub.clone(),
@@ -598,17 +645,11 @@ impl KernelRuntimeOwnedState {
                                 Ok(true)
                             } else {
                                 require_grant()?;
-                                match self.durable_state_store.notify(
-                                    NotificationOperation::Accept {
-                                        subscription: sub.clone(),
-                                        envelope: env.clone(),
-                                    },
-                                )? {
-                                    NotificationOutcome::Ack(ack) => {
-                                        // A dropped loop raises a flag in the person's Inbox.
-                                        if ack == WorkflowNotificationAck::LoopDropped {
-                                            self.person_inbox_changes.record_change();
-                                        }
+                                match self.notify_traced(NotificationOperation::Accept {
+                                    subscription: sub.clone(),
+                                    envelope: env.clone(),
+                                })? {
+                                    NotificationOutcome::Ack(_) => {
                                         // Local acceptance shares the source receipt: Accepted
                                         // already promoted it. Terminal ACKs must retire any
                                         // remaining retryable source work, just like peer ACKs.
