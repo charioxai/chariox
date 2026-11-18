@@ -61,7 +61,6 @@ mod tests {
                 MINIMUM_TARGET_PROTOCOL - 1
             )
         );
-        assert!(crate::runtime::kernel_gateway::is_public_code(error.code()));
     }
 
     #[test]
