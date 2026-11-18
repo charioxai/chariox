@@ -470,7 +470,7 @@ configure_chromium_browser_policy() {
     for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
       mkdir -p \"\$dir\"
       cat > \"\$dir/chariox-slice.json\" <<'JSON'
-{\"BrowserSignin\":0}
+{\"BrowserSignin\":0,\"PasswordManagerEnabled\":false,\"AutofillAddressEnabled\":false,\"AutofillCreditCardEnabled\":false}
 JSON
       chmod 0644 \"\$dir/chariox-slice.json\"
     done

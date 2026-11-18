@@ -10,6 +10,7 @@ _x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -386,11 +387,21 @@ def room_input_guard():
     return module.input_guard()
 
 
-# MP-11: bare keys that move the caret or scroll the page and insert no text.
-# The native focus proof exists for typed text; Chromium is never traversed
-# by it, so these keys would otherwise be refused on every web page.
+# MP-11: keys that move the caret, scroll the page or leave the control and
+# insert no text. The native focus proof exists for typed text; Chromium is
+# never traversed by it, so these keys would otherwise be refused on every
+# web page, including the desktop shortcuts that get the agent out of it.
 NAVIGATION_KEYS = frozenset(('up', 'down', 'left', 'right', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
-                             'home', 'end', 'pageup', 'pagedown', 'prior', 'next', 'page_up', 'page_down'))
+                             'home', 'end', 'pageup', 'pagedown', 'prior', 'next', 'page_up', 'page_down',
+                             'escape', 'esc', 'tab'))
+WINDOW_MANAGER_MODIFIERS = frozenset(('super', 'meta', 'alt', 'super_l', 'super_r', 'meta_l', 'meta_r', 'alt_l', 'alt_r'))
+
+
+def inserts_no_text(value):
+    names = value.lower().split('+')
+    function_key = len(names) == 1 and re.fullmatch(r'f(?:[1-9]|1[0-2])', names[0]) is not None
+    return (value.lower() in NAVIGATION_KEYS or function_key
+            or any(name in WINDOW_MANAGER_MODIFIERS for name in names[:-1]))
 
 
 def main(args, stream):
@@ -399,7 +410,7 @@ def main(args, stream):
         prepare_owned_text_keymap()
     elif len(args) == 2 and args[0] == 'key-repeat':
         value = stream.read(129).decode('ascii', errors='strict')
-        guard = room_input_guard() if agent and value.lower() not in NAVIGATION_KEYS else None
+        guard = room_input_guard() if agent and not inserts_no_text(value) else None
         key_repeat(value, int(args[1]), before_press=guard)
     elif len(args) == 2 and args[0] == 'hold-key':
         hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
