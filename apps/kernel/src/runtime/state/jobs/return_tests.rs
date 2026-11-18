@@ -476,15 +476,18 @@ pub(super) async fn release_service(state: &KernelRuntimeState) -> tokio::task::
 
 impl HeldWorker {
     pub(super) async fn job_tool(&self, name: &str) -> serde_json::Value {
-        self.state
-            .dispatch_job_tool(
+        tokio::time::timeout(
+            super::cleanup_tests::SCRIPTED_REQUEST_DEADLINE,
+            self.state.dispatch_job_tool(
                 Some(&self.run),
                 name,
                 &serde_json::json!({"job_id":self.job_id}),
                 &self.task,
-            )
-            .await
-            .unwrap()
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{name} never answered"))
+        .unwrap()
     }
 }
 

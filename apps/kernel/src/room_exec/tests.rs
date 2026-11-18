@@ -518,6 +518,10 @@ async fn offload_job_declared_memory_queues_before_creating_a_process() {
     assert!(!marker.exists());
 }
 
+/// The pool stops a command it sees growing; one that already holds its memory
+/// at the first sample only waits, so the memory arrives over several samples.
+const GROWING_PAST_THE_POOL: &str = "import time\nx = []\nfor _ in range(16):\n    x.append(bytearray(32 * 1024 * 1024))\n    time.sleep(0.2)\ntime.sleep(30)";
+
 #[tokio::test]
 async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_settle() {
     let directory = crate::test_support::TestWorktree::new("offload-job-memory-outcome");
@@ -527,17 +531,13 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
             "room",
             crate::session::DEFAULT_LOCAL_USER_ID,
             directory.path(),
-            &[
-                "python3".into(),
-                "-c".into(),
-                "import time; x=bytearray(512*1024*1024); time.sleep(30)".into(),
-            ],
+            &["python3".into(), "-c".into(), GROWING_PAST_THE_POOL.into()],
             &crate::local::JobNeeds::default(),
             None,
             Some("agent".into()),
         )
         .unwrap();
-    let input = serde_json::json!({"argv":["python3", "-c", "import time; x=bytearray(512*1024*1024); time.sleep(30)"], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
+    let input = serde_json::json!({"argv":["python3", "-c", GROWING_PAST_THE_POOL], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
     let offset = service
         .write(
             "room",
@@ -549,7 +549,7 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
     service.close_stdin("room", &id, offset).unwrap();
     let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(15), collect(&service, &id))
         .await
-        .unwrap();
+        .expect("the command grew past the pool and was never stopped for memory");
     assert!(
         matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0),
         "{outcome:?}"
