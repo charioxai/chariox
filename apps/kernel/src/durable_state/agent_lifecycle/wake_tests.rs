@@ -547,6 +547,7 @@ fn a03_a_later_turn_retires_an_interrupted_wake_turn_whose_wake_was_handled() {
     f.apply(Operation::RetireRestartFailure {
         task: "p".into(),
         revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
         now: 2_000,
     });
     let retired = f.task();
@@ -596,6 +597,7 @@ fn a03_a_later_turn_keeps_an_interrupted_wake_turn_with_another_wake_still_armed
     f.apply(Operation::RetireRestartFailure {
         task: "p".into(),
         revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
         now: 2_000,
     });
     assert_eq!(f.task(), interrupted, "t2 is still armed for this task");
