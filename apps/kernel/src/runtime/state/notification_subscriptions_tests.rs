@@ -308,6 +308,44 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
 }
 
 #[tokio::test]
+async fn a_subscription_made_again_for_the_same_source_and_agent_keeps_the_earlier_history() {
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    let options = serde_json::json!([{"name": "pr", "value": 976}]);
+    subscribe(&rig, &source, options.clone(), false)
+        .await
+        .unwrap();
+    let first = rig.rows().remove(0).subscription.subscription_id;
+    review_requested(&rig, "pr-976", 976);
+    rig.pass().await;
+    rig.runtime
+        .remove_notification_subscription(&first, "local")
+        .await
+        .unwrap();
+
+    subscribe(&rig, &source, options, false).await.unwrap();
+    let row = rig.rows().remove(0);
+    let second = row.subscription.subscription_id;
+    assert_ne!(first, second, "a new subscription has its own id");
+    assert_eq!(row.fired, 0, "its counters start again");
+    review_requested(&rig, "pr-976-again", 976);
+    rig.pass().await;
+    let history: Vec<_> = rig
+        .trace(&second)
+        .into_iter()
+        .map(|line| (line.occurrence_id, line.outcome))
+        .collect();
+    assert_eq!(
+        history,
+        vec![
+            ("pr-976-again".into(), NotificationTraceOutcome::Delivered),
+            ("pr-976".into(), NotificationTraceOutcome::Delivered),
+        ],
+        "the source's and agent's earlier lines stay with the new subscription"
+    );
+}
+
+#[tokio::test]
 async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters() {
     let rig = rig().await;
     let source = app_event_source(&rig);
