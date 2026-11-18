@@ -76,10 +76,6 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
     if lower.contains("repeated invalid turn end") {
         return "Its turn ended before its work was done. Resume to continue, or Cancel.".into();
     }
-    if lower.contains("unconfirmed delivery") {
-        return "A message to it may not have arrived. Check its last turn, then Resume or Cancel."
-            .into();
-    }
     if lower.contains("owner must reconcile") {
         return "Its work was interrupted. Check its last turn, then Resume or Cancel.".into();
     }
@@ -125,14 +121,6 @@ mod tests {
             (
                 "Repeated invalid turn end; owner must resume or cancel",
                 "Its turn ended before its work was done. Resume to continue, or Cancel.",
-            ),
-            (
-                "Unconfirmed delivery 7 prevents this task's wake; owner must reconcile the original attempt or cancel, then explicitly resume",
-                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
-            ),
-            (
-                "Unconfirmed delivery 7: owner must reconcile the original attempt",
-                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
             ),
             (
                 "Recovered legacy dispatch obligation; owner must reconcile its exact resource and resume or cancel",

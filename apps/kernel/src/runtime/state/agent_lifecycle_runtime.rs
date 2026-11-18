@@ -1692,6 +1692,7 @@ impl KernelRuntimeState {
         // `now` was read; a newer sweep may have committed meanwhile. Commit with
         // the current clock, one sweep at a time, so an old `now` never reads as
         // a clock rollback that wakes every waiting task early.
+        self.settle_interrupted_deliveries(crate::session::unix_epoch_ms())?;
         let swept = {
             let _commit = SWEEP_COMMIT.lock().unwrap_or_else(|e| e.into_inner());
             self.owned

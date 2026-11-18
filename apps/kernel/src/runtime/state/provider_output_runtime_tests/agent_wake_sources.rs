@@ -545,10 +545,14 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
         .unwrap()
         .remove(0);
     assert_eq!(
-        timed_out.state, "blocked",
+        timed_out.state, "submitting",
+        "the sweep asks no owner: the exact worker receipt settles a leased steer"
+    );
+    assert_eq!(
+        timed_out.attempted_at_ms,
+        Some(at),
         "an active leased turn must not renew an already-sent receipt window"
     );
-    assert_eq!(timed_out.attempted_at_ms, Some(at));
     home.runtime
         .record_agent_delivery_receipt(&home.room, &home.agent, event.sequence, "accepted")
         .unwrap();
