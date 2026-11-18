@@ -21,13 +21,6 @@ fn the_title_names_the_room_the_agent_the_waiting_cards_and_the_goal() {
     );
 }
 
-#[test]
-fn delivery_bookkeeping_is_no_blocked_stripe() {
-    assert!(is_delivery_bookkeeping("Unconfirmed delivery 3"));
-    assert!(is_delivery_bookkeeping("Delivery 2 refusal clock runs"));
-    assert!(!is_delivery_bookkeeping("Waiting for the review"));
-}
-
 fn card(choice: crate::session::RuntimeInteractionChoice) -> RuntimeInteraction {
     RuntimeInteraction::new(
         "card",

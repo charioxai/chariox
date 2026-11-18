@@ -33,7 +33,7 @@ export type PaneFeed = {
   readonly state: "idle" | "working" | "waiting_for_answer"
   readonly goal: string | null
   readonly cards: readonly PaneCard[]
-  readonly stripes: readonly { readonly id: string; readonly kind: string; readonly text: string; readonly at_ms: number | null }[]
+  readonly stripes: readonly { readonly id: string; readonly kind: string; readonly text: string; readonly detail: string | null; readonly at_ms: number | null }[]
   readonly notices: readonly { readonly id: string; readonly title: string; readonly body: string | null; readonly at_ms: number }[]
   readonly link: string | null
 }

@@ -93,16 +93,67 @@
           ],
           "stripes": [
             {
+              "id": "job:proc-1",
+              "kind": "Queued",
+              "text": "cargo build · waiting for memory, needs 9 GB",
+              "detail": null,
+              "at_ms": null
+            },
+            {
               "id": "queue:p-2",
               "kind": "Queued",
               "text": "Then tag it",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "trigger:t-1",
+              "kind": "Schedule",
+              "text": "0 9 * * 1 · Europe/Berlin",
+              "detail": "3 fired · 1 skipped",
+              "at_ms": 1795300000000
+            },
+            {
+              "id": "trigger:t-2",
+              "kind": "Notification",
+              "text": "GitHub pull requests",
+              "detail": "Offline",
+              "at_ms": null
+            },
+            {
+              "id": "goal:g-1",
+              "kind": "/goal · WORKING",
+              "text": "Ship the notes",
+              "detail": null,
               "at_ms": null
             },
             {
               "id": "wake:w-1",
               "kind": "/wait-in",
               "text": "check CI",
+              "detail": null,
               "at_ms": 1795000600000
+            },
+            {
+              "id": "meta:m-1",
+              "kind": "/meta · ACTIVE",
+              "text": "Review the release",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "attention:wf-1:run-4",
+              "kind": "Workflow",
+              "text": "Run #4 waiting on Claude usage limit",
+              "detail": null,
+              "at_ms": null
+            },
+            {
+              "id": "usage-limit:p-1",
+              "kind": "Usage limit",
+              "text": "Usage limit reached on work",
+              "detail": null,
+              "at_ms": 1795003600000
             }
           ],
           "notices": [

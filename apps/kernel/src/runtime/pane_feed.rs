@@ -3,24 +3,21 @@
 use std::collections::BTreeMap;
 
 use crate::agent::AgentInstance;
-use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
+use crate::durable_state::agent_lifecycle::ExecutionState;
 use crate::error::DaemonError;
 use crate::local::{
     PaneCard, PaneCardChoice, PaneCardReply, PaneFeed, PaneIdentity, PaneNotice, PaneSettings,
-    PaneState, PaneStripe, PersonInboxCard, PersonInboxCardBody,
+    PaneState, PersonInboxCard, PersonInboxCardBody,
 };
 use crate::runtime::projection::AgentRuntimeActivity;
 use crate::session::{RuntimeInteraction, RuntimeInteractionInputKind, RuntimeSession};
-
-/// A wait deadline at or past this is open-ended and shows no countdown.
-const OPEN_ENDED_MS: u64 = 253_370_764_800_000;
-/// A blocked task's own decision card; the card shows it, so no Blocked stripe does.
-const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
 
 pub(crate) struct PaneFeedSources<'a> {
     /// The Room as the caller may see it.
     pub session: &'a RuntimeSession,
     pub activity: &'a BTreeMap<String, AgentRuntimeActivity>,
+    /// The Room's processes; a command of this agent waiting for memory or disk is a stripe.
+    pub processes: &'a [crate::runtime::process_resources::SessionProcess],
     /// The caller's Inbox; only this agent's notices are read.
     pub inbox: &'a [PersonInboxCard],
     /// The web origin of the paired Cloud, when the kernel is paired.
@@ -80,7 +77,7 @@ pub(crate) fn project_pane_feed(
         },
         state: pane_state(sources.activity.get(agent_id), !cards.is_empty()),
         goal,
-        stripes: stripes(session, agent),
+        stripes: crate::runtime::pane_feed_stripes::stripes(session, agent, sources.processes),
         notices: notices(sources.inbox, session.id(), agent_id),
         cards,
         link,
@@ -217,148 +214,6 @@ pub(crate) fn text_terminal_answers(interaction: &RuntimeInteraction) -> bool {
             .iter()
             .any(|choice| choice.requires_passkey());
     !needs_pane
-}
-
-fn stripes(session: &RuntimeSession, agent: &AgentInstance) -> Vec<PaneStripe> {
-    let agent_id = agent.id();
-    let mut stripes = Vec::new();
-    if let Some(queued) = session.queued_prompts_for_agent(agent_id) {
-        stripes.extend(queued.iter().map(|item| PaneStripe {
-            id: format!("queue:{}", item.id()),
-            kind: "Queued".into(),
-            text: item.prompt().to_string(),
-            at_ms: None,
-        }));
-    }
-    let tasks = session
-        .agent_tasks()
-        .iter()
-        .filter(|task| task.agent_id == agent_id)
-        .collect::<Vec<_>>();
-    let latest = tasks.last().map(|task| task.task_id.as_str());
-    for task in &tasks {
-        if Some(task.task_id.as_str()) == latest && task.state == ExecutionState::Cancelled {
-            let kind = if task.goal.is_some() { "/goal" } else { "Task" };
-            stripes.push(stripe(
-                format!("task:{}", task.task_id),
-                format!("{kind} · Stopped"),
-                &task.reason,
-                None,
-            ));
-            continue;
-        }
-        if let Some(goal) = &task.goal {
-            let state = if goal.paused {
-                "PAUSED".to_string()
-            } else {
-                execution_state_word(&task.state).to_uppercase()
-            };
-            stripes.push(stripe(
-                format!("goal:{}", goal.id),
-                format!("/goal · {state}"),
-                &goal.objective,
-                None,
-            ));
-        }
-        if task.state == ExecutionState::Blocked
-            && !is_delivery_bookkeeping(&task.reason)
-            && !has_owner_card(session, agent_id, task)
-        {
-            let text = if task.reason.is_empty() {
-                "Waiting for the next task event"
-            } else {
-                &task.reason
-            };
-            let until = task
-                .wait
-                .as_ref()
-                .and_then(|wait| wait.deadline_ms)
-                .filter(|deadline| *deadline < OPEN_ENDED_MS);
-            stripes.push(stripe(
-                format!("wait:{}", task.task_id),
-                "Blocked".into(),
-                text,
-                until,
-            ));
-        }
-    }
-    let waiting = tasks
-        .iter()
-        .filter(|task| task.state == ExecutionState::Waiting)
-        .map(|task| task.task_id.as_str())
-        .collect::<Vec<_>>();
-    for wake in session.agent_wakes().iter().filter(|wake| {
-        wake.agent_id == agent_id
-            && matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
-            && !waiting.contains(&wake.task_id.as_str())
-    }) {
-        let kind = match (wake.kind.as_str(), wake.interval_ms) {
-            ("timer", Some(_)) => "/wait-every",
-            ("timer", None) => "/wait-in",
-            _ => "Waiting",
-        };
-        let text = if wake.label.is_empty() {
-            &wake.summary
-        } else {
-            &wake.label
-        };
-        let due = wake.next_due_ms.filter(|due| *due < OPEN_ENDED_MS);
-        stripes.push(stripe(format!("wake:{}", wake.id), kind.into(), text, due));
-    }
-    if let Some(limit) = agent.usage_limit_stop() {
-        stripes.push(PaneStripe {
-            id: format!("usage-limit:{}", limit.prompt_id),
-            kind: "Usage limit".into(),
-            text: format!("Usage limit reached on {}", limit.account_label),
-            at_ms: limit.resumes_at_ms,
-        });
-    }
-    stripes.retain(|stripe| !stripe.text.is_empty());
-    stripes
-}
-
-fn stripe(id: String, kind: String, text: &str, at_ms: Option<u64>) -> PaneStripe {
-    PaneStripe {
-        id,
-        kind,
-        text: text.to_string(),
-        at_ms,
-    }
-}
-
-fn execution_state_word(state: &ExecutionState) -> &'static str {
-    match state {
-        ExecutionState::Working => "working",
-        ExecutionState::Waiting => "waiting",
-        ExecutionState::Blocked => "blocked",
-        ExecutionState::Done => "done",
-        ExecutionState::Cancelled => "cancelled",
-    }
-}
-
-/// A delivery the kernel is reconciling is its own bookkeeping, nothing the person acts on.
-fn is_delivery_bookkeeping(reason: &str) -> bool {
-    let numbered = |rest: &str| {
-        rest.split_once(' ')
-            .is_some_and(|(n, _)| n.parse::<u64>().is_ok())
-    };
-    reason
-        .strip_prefix("Unconfirmed delivery ")
-        .is_some_and(|rest| rest.parse::<u64>().is_ok() || numbered(rest))
-        || reason
-            .strip_prefix("Delivery ")
-            .and_then(|rest| rest.split_once(' '))
-            .is_some_and(|(n, rest)| n.parse::<u64>().is_ok() && rest.starts_with("refusal clock"))
-}
-
-fn has_owner_card(session: &RuntimeSession, agent_id: &str, task: &AgentTaskExecution) -> bool {
-    let decision_prefix = format!("{BLOCKED_TASK_DECISION_PREFIX}{}-", task.task_id);
-    session.active_interactions().iter().any(|interaction| {
-        let mine = interaction.agent_id() == Some(agent_id)
-            || interaction.related_agent_id() == Some(agent_id);
-        mine && (interaction.asking_task_id() == Some(task.task_id.as_str())
-            || interaction.id().starts_with(&decision_prefix))
-    })
 }
 
 fn notices(inbox: &[PersonInboxCard], session_id: &str, agent_id: &str) -> Vec<PaneNotice> {

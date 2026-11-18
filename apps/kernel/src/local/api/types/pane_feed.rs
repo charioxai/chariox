@@ -130,9 +130,12 @@ pub struct PaneCardReply {
 #[serde(deny_unknown_fields)]
 pub struct PaneStripe {
     pub id: String,
-    /// What it is: "Queued", "/goal · RUNNING", "Blocked", "/wait-in", "Usage limit" ...
+    /// What it is: "Queued", "Schedule", "HTTP", "Notification", "/goal · WORKING", "Blocked",
+    /// "/wait-in", "/wait-every", "Waiting", "/meta · ACTIVE", "Plan", "Workflow", "Usage limit".
     pub kind: String,
     pub text: String,
+    /// A second part shown apart from the text: "3 fired · 1 skipped", "Done", "Offline".
+    pub detail: Option<String>,
     /// When it ends or runs next; a client counts down to it in its own clock.
     pub at_ms: Option<u64>,
 }
