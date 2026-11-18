@@ -33,6 +33,8 @@ impl Scratch {
             project_id: Some("project-1".into()),
             catalog_revision: 1,
             source_revision: 1,
+            // Claude started after every scratch skill was written.
+            started_at_ms: u64::MAX,
         }
     }
 }

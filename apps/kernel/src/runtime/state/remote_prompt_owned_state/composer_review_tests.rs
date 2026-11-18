@@ -199,6 +199,7 @@ async fn leased_composer_native_selection_uses_the_real_adapter_before_receipt()
             project_id: Some("worker-project".into()),
             catalog_revision: 0,
             source_revision: 1,
+            started_at_ms: 0,
         },
         vec![NativeSkillCandidate {
             name: "worker-native".into(),
@@ -343,6 +344,7 @@ async fn leased_composer_keeps_a_plugin_namespace_in_a_typed_native_name() {
             project_id: Some("worker-project".into()),
             catalog_revision: 0,
             source_revision: 1,
+            started_at_ms: 0,
         },
         vec![NativeSkillCandidate {
             name: "lint".into(),
@@ -466,6 +468,7 @@ async fn leased_composer_restores_several_folded_claude_skills_with_one_native_c
             project_id: Some("worker-project".into()),
             catalog_revision: 0,
             source_revision: 1,
+            started_at_ms: 0,
         },
         candidates,
     )

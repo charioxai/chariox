@@ -114,15 +114,43 @@ pub fn filesystem_skill_candidates(
         candidates.retain(|candidate| names.insert(candidate.invocation_name()));
         let denied = claude_denied_skills(binding, worktree_root);
         for candidate in &mut candidates {
-            candidate.exposure = if denied.contains(&candidate.invocation_name()) {
-                NativeSkillExposure::Disabled
+            (candidate.exposure, candidate.discovery_error) = if denied
+                .contains(&candidate.invocation_name())
+            {
+                (NativeSkillExposure::Disabled, None)
+            } else if written_after_start(&candidate.skill_file, binding.started_at_ms) {
+                (
+                        NativeSkillExposure::Unverified,
+                        Some("Claude started before this skill was written; it offers the skill after its next start".into()),
+                    )
             } else {
-                NativeSkillExposure::Confirmed
+                (NativeSkillExposure::Confirmed, None)
             };
-            candidate.discovery_error = None;
         }
     }
     Ok(candidates)
+}
+/// Claude reads its skill directories once, when its process starts, so a skill
+/// written later is not offered to the running model.
+fn written_after_start(skill_file: &Path, started_at_ms: u64) -> bool {
+    let Ok(metadata) = std::fs::metadata(skill_file) else {
+        return false;
+    };
+    #[cfg(unix)]
+    let changed_ms = {
+        use std::os::unix::fs::MetadataExt;
+        u64::try_from(metadata.ctime())
+            .unwrap_or(0)
+            .saturating_mul(1000)
+            .saturating_add(u64::try_from(metadata.ctime_nsec()).unwrap_or(0) / 1_000_000)
+    };
+    #[cfg(not(unix))]
+    let changed_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_millis() as u64);
+    changed_ms > started_at_ms
 }
 fn claude_config_dir(binding: &SkillInventoryBinding) -> Option<PathBuf> {
     let env_path = |key: &str| binding.environment.get(key).map(PathBuf::from);

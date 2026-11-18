@@ -28,6 +28,8 @@ pub struct SkillInventoryBinding {
     pub catalog_revision: u64,
     /// Increment on provider source/settings/watch invalidation.
     pub source_revision: u64,
+    /// When the provider process started (Unix ms).
+    pub started_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]

@@ -18,8 +18,15 @@ struct Composer {
     storage: SkillCatalogStorage,
 }
 impl Composer {
-    async fn new() -> Self {
+    /// Claude reads its skill directories when it starts, so native skills are
+    /// written before the run.
+    async fn new(native_skills: &[(&str, &str)]) -> Self {
         let files = crate::test_support::TestWorktree::new("typed-native-skill");
+        for (name, skill_md) in native_skills {
+            let native = files.path().join("claude/skills").join(name);
+            fs::create_dir_all(&native).unwrap();
+            fs::write(native.join("SKILL.md"), skill_md).unwrap();
+        }
         let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(files.session_request())
@@ -131,10 +138,7 @@ impl Composer {
 
 #[tokio::test]
 async fn typed_native_only_claude_skill_runs_the_prepared_command_before_loaded() {
-    let composer = Composer::new().await;
-    let native = composer.files.path().join("claude/skills/review");
-    fs::create_dir_all(&native).unwrap();
-    fs::write(native.join("SKILL.md"), "---\nname: review\ndescription: Review source\ndisable-model-invocation: true\n---\nInspect the source.\n").unwrap();
+    let composer = Composer::new(&[("review", "---\nname: review\ndescription: Review source\ndisable-model-invocation: true\n---\nInspect the source.\n")]).await;
     composer.send(serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"$review inspect source", "hook_context_request_id":"typed-original"})).await;
     let prompt_id = composer.active_prompt_id().await;
     let redirected = composer.response("typed-original", "error").exists();
@@ -213,7 +217,7 @@ async fn typed_native_only_claude_skill_runs_the_prepared_command_before_loaded(
 
 #[tokio::test]
 async fn typed_installed_claude_skill_with_a_missing_package_fails_the_hook() {
-    let composer = Composer::new().await;
+    let composer = Composer::new(&[]).await;
     let service = SkillCatalogService::new(composer.storage.clone());
     let mutation = SkillCatalogMutation { scope: SkillScope::Chariox, expected_revision: 0, actions: vec![SkillCatalogAction::Install {
         source: SkillInstallSource::Content { skill_md: "---\nname: review\ndescription: Review source\ndisable-model-invocation: true\n---\nInspect the source.\n".into() }, collision: SkillCollisionAction::Reject, package_id: None,

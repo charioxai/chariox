@@ -240,6 +240,7 @@ mod tests {
                 project_id: None,
                 catalog_revision: 1,
                 source_revision: 1,
+                started_at_ms: 0,
             },
             vec![],
         )

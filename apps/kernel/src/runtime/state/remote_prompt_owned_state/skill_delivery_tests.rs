@@ -2223,6 +2223,123 @@ async fn load_by_name_settles_loaded_on_the_canonical_skill_id() {
     assert_eq!(restored[0].skill_id, skill.id);
 }
 
+// Claude reads its skill directories once, when it starts: a native copy written
+// later is not offered to the running model, so the Chariox copy keeps delivering.
+#[tokio::test]
+async fn a_native_skill_written_after_claude_started_does_not_withhold_the_chariox_copy() {
+    use crate::skill::service::SkillCatalogService;
+    let files = crate::test_support::TestWorktree::new("late-native");
+    let skill_md = |name: &str| {
+        format!("---\nname: {name}\ndescription: Review safely\n---\nReview source.\n")
+    };
+    let native = |name: &str| {
+        let directory = files.path().join(".claude/skills").join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("SKILL.md"), skill_md(name)).unwrap();
+    };
+    native("early");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(files.session_request())
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "local-claude-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: [
+                ("HOME".into(), files.path().display().to_string()),
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    files.path().join("claude").display().to_string(),
+                ),
+            ]
+            .into(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(files.path().into()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    native("late");
+    let runtime = super::tests::owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    runtime
+        .owned
+        .skill_inventories
+        .set_test_version(run.id(), "2.1.212");
+    let config = runtime.owned.config_projection.snapshot();
+    let service = SkillCatalogService::new(
+        SkillCatalogStorage::new(
+            config.user_config_path.parent().unwrap(),
+            runtime.owned.durable_state_store.clone(),
+        )
+        .unwrap(),
+    );
+    for name in ["early", "late"] {
+        let install = SkillCatalogMutation {
+            scope: SkillScope::Chariox,
+            expected_revision: service.storage.snapshot().unwrap().revision,
+            actions: vec![SkillCatalogAction::Install {
+                source: SkillInstallSource::Content {
+                    skill_md: skill_md(name),
+                },
+                collision: SkillCollisionAction::Reject,
+                package_id: None,
+            }],
+        };
+        let prepared = service.prepare(&install).unwrap();
+        service.publish_authorized(&install, &prepared).unwrap();
+    }
+    let response = runtime
+        .execute_skills_catalog_request(
+            SkillsV2Request::Catalog {
+                project_id: Some(session.project_id().into()),
+                agent_id: Some(agent.id().into()),
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+        )
+        .await
+        .unwrap();
+    let crate::local::LocalDaemonResponse::SkillsV2 {
+        result: SkillsV2Response::Catalog { skills, .. },
+    } = response
+    else {
+        panic!("Catalog must answer with the catalog");
+    };
+    let delivery = |name: &str| {
+        skills
+            .iter()
+            .find(|projection| projection.skill.name == name)
+            .map(|projection| projection.delivery.clone())
+            .unwrap()
+    };
+    assert!(
+        matches!(delivery("early"), SkillDelivery::ProvidedBy { .. }),
+        "{:?}",
+        delivery("early")
+    );
+    assert!(
+        matches!(delivery("late"), SkillDelivery::Unverified { .. }),
+        "{:?}",
+        delivery("late")
+    );
+}
+
 // A native composer outlives the typed turns that clear its binding's active run id, so a
 // published catalog change has to reach every lease, not only those with a running turn.
 #[tokio::test]

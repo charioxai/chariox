@@ -70,6 +70,7 @@ pub fn inventory_for_run(
         project_id: request.project_id.map(str::to_string),
         catalog_revision: request.catalog_revision,
         source_revision: request.source_revision,
+        started_at_ms: run.started_at_ms(),
     };
     cache.inventory(&binding, refresh, |force_reload| {
         let filesystem = || {
