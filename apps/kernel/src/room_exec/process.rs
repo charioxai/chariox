@@ -104,6 +104,12 @@ fn spawn_with_environment(
     for name in crate::room_terminal::KERNEL_SECRET_ENVIRONMENT {
         command.env_remove(name);
     }
+    // Everything the command starts inherits this claim, so cleanup owns a job that detached
+    // before anything looked at the command's tree.
+    command.env(
+        crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+        format!("room-exec-{:032x}", rand::random::<u128>()),
+    );
     #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {

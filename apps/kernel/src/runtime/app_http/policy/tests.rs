@@ -341,6 +341,12 @@ fn an_account_reaches_only_the_routes_of_the_signed_table() {
             "GET",
             HttpError::RouteNotDeclared,
         ),
+        // A route parameter cannot smuggle a path separator past the table.
+        (
+            "https://api.github.com/repos/o/r/pulls/7%2F..%2Fmerge",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
         // Another origin or scheme is not the destination.
         (
             "https://evil.example.com/repos/o/r/pulls/7",

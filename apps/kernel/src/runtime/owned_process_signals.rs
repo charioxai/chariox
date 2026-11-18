@@ -21,6 +21,17 @@ pub(crate) struct OwnedProcessSignals {
     root: u32,
     exclusive_session: Option<u32>,
     owned: BTreeMap<u32, String>,
+    claim: Claim,
+}
+
+/// The launch claim the root carried in its environment at spawn. Every descendant inherits
+/// it, so a job that left the tree (its own session, its parent gone) before anything looked
+/// at the tree is still found and ended.
+#[derive(Default)]
+struct Claim {
+    marker: Option<Vec<u8>>,
+    /// Processes already read without the marker, by the birth they had then.
+    unmarked: std::collections::BTreeSet<(u32, String)>,
 }
 
 impl OwnedProcessSignals {
@@ -76,8 +87,12 @@ impl OwnedProcessSignals {
             exclusive_session: (launched_exclusive_session || identity.session == pid)
                 .then_some(pid),
             owned: BTreeMap::from([(pid, identity.start.clone())]),
+            claim: Claim::default(),
         };
         guard.refresh_from(&rows);
+        if launched_exclusive_session {
+            guard.claim.marker = launch_claim_of(pid)?;
+        }
         Ok(guard)
     }
 
@@ -86,6 +101,45 @@ impl OwnedProcessSignals {
     }
 
     fn refresh_from(&mut self, rows: &[ProcessIdentity]) {
+        loop {
+            self.refresh_related(rows);
+            if !self.refresh_claimed(rows) {
+                break;
+            }
+        }
+    }
+
+    /// Adds the processes that carry the launch claim; true when one was new.
+    fn refresh_claimed(&mut self, rows: &[ProcessIdentity]) -> bool {
+        let Some(marker) = self.claim.marker.clone() else {
+            return false;
+        };
+        let mut added = false;
+        for row in rows {
+            let key = (row.pid, row.start.clone());
+            if row.pid <= 1
+                || row.start.is_empty()
+                || self.owned.contains_key(&row.pid)
+                || self.claim.unmarked.contains(&key)
+            {
+                continue;
+            }
+            match read_environment(row.pid) {
+                Ok(Some(bytes)) if bytes.split(|byte| *byte == 0).any(|entry| entry == marker) => {
+                    self.owned.insert(row.pid, row.start.clone());
+                    added = true;
+                }
+                Ok(_) => {
+                    self.claim.unmarked.insert(key);
+                }
+                // A process that cannot be read now is asked again next time.
+                Err(_) => {}
+            }
+        }
+        added
+    }
+
+    fn refresh_related(&mut self, rows: &[ProcessIdentity]) {
         loop {
             let added: Vec<_> = rows
                 .iter()
@@ -353,6 +407,7 @@ impl OwnedProcessSignals {
                 .filter(|leader| leader.session == leader.pid)
                 .map(|leader| leader.pid),
             owned,
+            claim: Claim::default(),
         };
         guard.kill_owned_with(inspect, send)?;
         Ok(false)
@@ -480,7 +535,18 @@ fn send_process_signal_with(row: &ProcessIdentity, signal: i32) -> io::Result<()
     }
 }
 
-/// Names the run a process belongs to; every descendant inherits it.
+/// The launch claim in `pid`'s environment, as its `NAME=value` entry; none when it has none.
+fn launch_claim_of(pid: u32) -> io::Result<Option<Vec<u8>>> {
+    let prefix = format!("{CLAIM_VARIABLE}=").into_bytes();
+    Ok(read_environment(pid)?.and_then(|bytes| {
+        bytes
+            .split(|byte| *byte == 0)
+            .find(|entry| entry.starts_with(&prefix))
+            .map(<[u8]>::to_vec)
+    }))
+}
+
+/// Names the run or command a process belongs to; every descendant inherits it.
 pub(crate) const CLAIM_VARIABLE: &str = "CHARIOX_SETUP_CLAIM";
 
 /// Ok(None): the process cannot be read (another user's or hidden), so it proves nothing.
@@ -945,6 +1011,7 @@ mod tests {
         assert!(hidden.start.is_empty());
         assert_eq!(hidden.group, unsafe { libc::getpgrp() } as u32);
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: hidden.group,
             exclusive_session: None,
             owned: BTreeMap::from([(hidden.group, "root".into())]),
@@ -969,6 +1036,7 @@ mod tests {
         orphan.session = macos_session_id(42, 0, |_| Ok(41)).unwrap();
         let rows = [leader, orphan];
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: Some(41), // retained setsid launch witness
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
@@ -987,6 +1055,7 @@ mod tests {
             ))
             .is_err());
         let mut lost = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: Some(41),
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
@@ -1008,6 +1077,7 @@ mod tests {
     #[test]
     fn mp11_review_failed_group_cleanup_signals_only_current_owned_births() {
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([
@@ -1219,6 +1289,7 @@ mod tests {
         for root in [0, 1, u32::MAX] {
             let rows = [row(root, 9, root, "birth")];
             let mut guard = OwnedProcessSignals {
+                claim: Claim::default(),
                 root,
                 exclusive_session: None,
                 owned: BTreeMap::from([(root, "birth".into())]),
@@ -1237,6 +1308,7 @@ mod tests {
             row(99, 1, 99, "foreign"),
         ];
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([(41, "root".into())]),
@@ -1267,6 +1339,7 @@ mod tests {
     #[test]
     fn mp11_signal_guard_refuses_reused_and_foreign_members() {
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([(41, "original".into())]),
