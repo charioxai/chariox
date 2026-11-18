@@ -567,3 +567,236 @@ fn a_code_fence_closing_the_text_leaves_nothing_to_send() {
     );
     assert_eq!(rest, "\n\nDone.");
 }
+
+#[test]
+fn a_token_longer_than_the_screen_ending_on_the_withheld_row_is_carried_on() {
+    let token = format!("https://example.com/{}", "a".repeat(160));
+    let (head, last) = token.split_at(118);
+    let (streamed, rest) = adopted_tail(
+        &["● Open", &format!("  {head}"), &format!("  {last}")],
+        &format!("Open {token}"),
+    );
+    assert_eq!(streamed, format!("Open {head}"));
+    assert_eq!(rest, last);
+}
+
+#[test]
+fn a_row_of_bold_labels_followed_by_a_withheld_paragraph_loses_nothing() {
+    let labels = [
+        "CPU", "RAM", "GPU", "SSD", "HDD", "NIC", "USB", "DNS", "TLS", "API",
+    ];
+    let drawn = labels.join(" ");
+    let markdown = format!(
+        "{}\n\nReady.",
+        labels.map(|label| format!("**{label}**")).join(" ")
+    );
+    let (streamed, rest) = adopted_tail(&[&format!("● {drawn}"), "", "  Ready."], &markdown);
+    assert_eq!(streamed, drawn);
+    assert_eq!(rest, "\n\nReady.");
+}
+
+/// A reply as the terminal draws it and as the transcript holds it.
+struct Reply {
+    markdown: String,
+    rows: Vec<String>,
+}
+
+fn columns(text: &str) -> usize {
+    text.chars()
+        .map(|c| if c.len_utf8() >= 3 { 2 } else { 1 })
+        .sum()
+}
+
+/// Claude's wrapping: between words, and inside a token longer than the row.
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for word in text.split(' ') {
+        let mut word = word.to_string();
+        while columns(&word) > width {
+            let mut cut = String::new();
+            while columns(&cut) + 2 <= width {
+                cut.push(word.remove(0));
+            }
+            if !row.is_empty() {
+                rows.push(std::mem::take(&mut row));
+            }
+            rows.push(cut);
+        }
+        if !row.is_empty() && columns(&row) + 1 + columns(&word) > width {
+            rows.push(std::mem::take(&mut row));
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        row.push_str(&word);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn generated_reply(rng: &mut rand::rngs::StdRng) -> Reply {
+    use rand::Rng;
+    const WORDS: [&str; 10] = [
+        "alpha",
+        "beta-gamma",
+        "naïve",
+        "日本語",
+        "emoji🙂",
+        "x_y",
+        "v1.2",
+        "a.b",
+        "(paren)",
+        "tool",
+    ];
+    const CODE_SPANS: [&str; 5] = ["ls *", "a_b_", "$HOME/*", "x*y", "cat *.log"];
+    const CODE_LINES: [&str; 10] = [
+        "fn main() {",
+        "    run();",
+        "}",
+        "ls *",
+        ")",
+        "]",
+        "};",
+        "x = a * b;",
+        "# note",
+        "_private = 1",
+    ];
+    const ENDINGS: [&str; 6] = ["", "", ".", ",", ":", "!"];
+    let mut markdown = String::new();
+    let mut rows: Vec<String> = Vec::new();
+    for block in 0..rng.gen_range(1..=4) {
+        if block > 0 {
+            markdown.push_str("\n\n");
+            rows.push(String::new());
+        }
+        match rng.gen_range(0..4) {
+            0 => {
+                let mut items = Vec::new();
+                for _ in 0..rng.gen_range(2..=8) {
+                    let word = WORDS[rng.gen_range(0..WORDS.len())];
+                    let span = CODE_SPANS[rng.gen_range(0..CODE_SPANS.len())];
+                    let (md, drawn) = match rng.gen_range(0..8) {
+                        0 => (format!("**{word}**"), word.to_string()),
+                        1 => (format!("*{word}*"), word.to_string()),
+                        2 => (format!("_{word}_"), word.to_string()),
+                        3 => (format!("`{span}`"), span.to_string()),
+                        4 => (
+                            format!("[{word}](https://e.com/p)"),
+                            format!("{word} (https://e.com/p)"),
+                        ),
+                        5 => {
+                            let token =
+                                format!("https://e.com/{}", "ab-".repeat(rng.gen_range(10..70)));
+                            (token.clone(), token)
+                        }
+                        _ => (word.to_string(), word.to_string()),
+                    };
+                    let ending = ENDINGS[rng.gen_range(0..ENDINGS.len())];
+                    items.push((format!("{md}{ending}"), format!("{drawn}{ending}")));
+                }
+                markdown.push_str(
+                    &items
+                        .iter()
+                        .map(|i| i.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                let drawn = items
+                    .iter()
+                    .map(|i| i.1.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                rows.extend(wrapped(&drawn, 116));
+            }
+            1 => {
+                let word = WORDS[rng.gen_range(0..WORDS.len())];
+                markdown.push_str(&format!("## {word} tool"));
+                rows.push(format!("{word} tool"));
+            }
+            2 => {
+                markdown.push_str("```\n");
+                let lines = rng.gen_range(1..=5);
+                for line in 0..lines {
+                    let code = CODE_LINES[rng.gen_range(0..CODE_LINES.len())];
+                    if line > 0 {
+                        markdown.push('\n');
+                    }
+                    markdown.push_str(code);
+                    rows.push(code.to_string());
+                }
+                markdown.push_str("\n```");
+            }
+            _ => {
+                for item in 0..rng.gen_range(1..=4) {
+                    let word = WORDS[rng.gen_range(0..WORDS.len())];
+                    if item > 0 {
+                        markdown.push('\n');
+                    }
+                    markdown.push_str(&format!("- **{word}** tool"));
+                    rows.push(format!("- {word} tool"));
+                }
+            }
+        }
+    }
+    Reply { markdown, rows }
+}
+
+#[test]
+fn nothing_is_lost_or_repeated_whatever_the_stream_and_the_transcript_differ_by() {
+    use rand::SeedableRng;
+    let alphanumerics = |text: &str| {
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let symbols = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+            .collect::<Vec<_>>()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(1425);
+    let mut checked = 0;
+    for case in 0..600 {
+        let reply = generated_reply(&mut rng);
+        if reply.rows.len() > 30 || reply.rows.iter().all(String::is_empty) {
+            continue;
+        }
+        let mut screen = vec![format!("● {}", reply.rows[0])];
+        screen.extend(reply.rows[1..].iter().map(|row| {
+            if row.is_empty() {
+                String::new()
+            } else {
+                format!("  {row}")
+            }
+        }));
+        screen.extend([String::new(), "✻ Working (3s)".to_string()]);
+        let mut live = LiveReply::new(40, 120);
+        let rows: Vec<&str> = screen.iter().map(String::as_str).collect();
+        let deltas = read_twice(&mut live, "prompt-1", &draw(&rows));
+        let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
+        let Adoption::Streamed { rest, .. } = live.adopt(&reply.markdown) else {
+            continue;
+        };
+        checked += 1;
+        let live_text = format!("{streamed}{rest}");
+        assert_eq!(
+            alphanumerics(&live_text),
+            alphanumerics(&reply.markdown),
+            "case {case}: letters lost or repeated\nmarkdown: {:?}\nstreamed: {streamed:?}\nrest: {rest:?}",
+            reply.markdown
+        );
+        let (mut wanted, markdown_symbols) =
+            (symbols(&live_text).into_iter(), symbols(&reply.markdown));
+        let mut available = markdown_symbols.iter();
+        assert!(
+            wanted.all(|symbol| available.any(|found| *found == symbol)),
+            "case {case}: a symbol is repeated or invented\nmarkdown: {:?}\nstreamed: {streamed:?}\nrest: {rest:?}",
+            reply.markdown
+        );
+    }
+    assert!(checked > 100, "only {checked} replies were checked");
+}

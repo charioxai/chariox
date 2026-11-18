@@ -616,6 +616,62 @@ fn a_command_with_a_wildcard_streamed_before_the_transcript_block_is_not_repeate
 }
 
 #[test]
+fn a_url_wrapped_over_two_rows_keeps_its_end_when_the_transcript_block_arrives() {
+    let mut turn = running_turn("streamed-wrapped-url");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let token = format!("https://example.com/{}", "a".repeat(160));
+    let (head, last) = token.split_at(118);
+    let drawn = screen(&[
+        "● Open",
+        &format!("  {head}"),
+        &format!("  {last}"),
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let reply = format!("Open {token}");
+    turn.append_transcript(assistant_text("reply", &reply));
+    turn.pass();
+    let live = turn.output_rows().concat();
+    assert!(live.ends_with(last), "the end of the URL was lost: {live}");
+    assert_eq!(live.replace(' ', ""), reply.replace(' ', ""));
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+#[test]
+fn bold_labels_streamed_before_the_last_paragraph_do_not_cost_the_paragraph() {
+    let mut turn = running_turn("streamed-bold-labels");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let labels = [
+        "CPU", "RAM", "GPU", "SSD", "HDD", "NIC", "USB", "DNS", "TLS", "API",
+    ];
+    let drawn_row = labels.join(" ");
+    let drawn = screen(&[
+        &format!("● {drawn_row}"),
+        "",
+        "  Ready.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let reply = format!(
+        "{}\n\nReady.",
+        labels.map(|label| format!("**{label}**")).join(" ")
+    );
+    turn.append_transcript(assistant_text("reply", &reply));
+    turn.pass();
+    assert_eq!(
+        turn.output_rows().concat(),
+        format!("{drawn_row}\n\nReady.")
+    );
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+#[test]
 fn a_stopped_turn_streams_nothing_more() {
     const PLAIN: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.pty.jsonl");
     let mut turn = running_turn("streamed-stop");
