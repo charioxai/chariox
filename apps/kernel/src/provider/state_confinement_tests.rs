@@ -201,6 +201,7 @@ fn a_fresh_provider_child_keeps_the_confinement() {
     let args = crate::provider::managed_isolation::fresh_provider_child_args(
         &launch.pty_args,
         vec!["second".to_string()],
+        crate::provider::managed_isolation::FreshChildFolder::Empty,
     );
     let prefix = super::confinement_prefix_len(&launch.pty_args).expect("the launch is confined");
     assert_eq!(args[..prefix], launch.pty_args[..prefix]);
