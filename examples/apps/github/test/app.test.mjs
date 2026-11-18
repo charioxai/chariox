@@ -113,6 +113,14 @@ test('check state: none, pending, success, failure from runs and statuses', asyn
   assert.equal(checksSummary([run('completed', 'success')], [{ state: 'pending' }]).state, 'pending');
 });
 
+test('check state: a cancelled check is not a success, alone or beside passing ones', async () => {
+  const { checksSummary } = await import('../src/normalize.mjs');
+  const run = (status, conclusion) => ({ status, conclusion });
+  assert.deepEqual(checksSummary([run('completed', 'cancelled')], []), { state: 'failure', total: 1, failed: 1, pending: 0 });
+  assert.equal(checksSummary([run('completed', 'success'), run('completed', 'cancelled')], []).state, 'failure');
+  assert.equal(checksSummary([run('in_progress', null), run('completed', 'cancelled')], []).state, 'failure');
+});
+
 test('reviews: the decision is each reviewer\'s latest verdict; comments, pending and dismissed ones do not decide', async () => {
   const { reviewDecision } = await import('../src/normalize.mjs');
   const r = (login, state) => ({ user: { login }, state });

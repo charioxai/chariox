@@ -191,6 +191,7 @@ pub(crate) fn store_provider_account_credential(
             vault_key: Some(credential_id.clone()),
             created_at_ms: Some(created_at_ms),
             updated_at_ms: Some(now_ms),
+            copied_from: None,
         }),
     };
     let service = crate::secret::RuntimeSecretService::with_vault_config(
