@@ -407,7 +407,8 @@ impl HistoryEvent {
             .is_some_and(crate::terminal::is_internal_dispatch_diagnostic)
     }
 
-    pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+    /// The kind of the entry `to_session_history_entry` builds, without building it.
+    pub fn session_history_entry_kind(&self) -> Option<SessionHistoryEntryKind> {
         if self.kind == HistoryEventKind::ProviderTool
             && self
                 .content
@@ -416,8 +417,42 @@ impl HistoryEvent {
         {
             return None;
         }
-        let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
+        self.session_id.as_ref()?;
+        SessionHistoryEntryKind::try_from(self.kind).ok()
+    }
+
+    /// The entry's text, read without building the entry; outline reads check every streamed
+    /// fragment of a turn, so they read fields and build entries only for what they return.
+    pub fn session_history_entry_text(&self) -> Option<&str> {
+        self.session_history_entry_kind()?;
+        Some(self.content.as_deref().unwrap_or_default())
+    }
+
+    pub fn is_external_provider_observed(&self) -> bool {
+        self.metadata.get("source").is_some_and(|source| {
+            SessionHistoryEntrySource::deserialize(source).ok()
+                == Some(SessionHistoryEntrySource::ExternalProviderObserved)
+        }) && self.session_history_entry_kind().is_some()
+    }
+
+    pub fn is_external_provider_observed_state_signal(&self) -> bool {
+        self.is_external_provider_observed()
+            && self
+                .to_session_history_entry()
+                .is_some_and(|entry| entry.is_external_provider_observed_state_signal())
+    }
+
+    pub fn session_history_observed_at_ms(&self) -> Option<u64> {
+        self.metadata
+            .get("observed_at_ms")
+            .and_then(|value| value.as_u64())
+    }
+
+    pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+        let kind = self.session_history_entry_kind()?;
         let session_id = self.session_id.clone()?;
+        #[cfg(test)]
+        session_history_entry_builds::BUILDS.with(|count| count.set(count.get() + 1));
         let source_attachment_id = self
             .metadata
             .get("source_attachment_id")
@@ -459,15 +494,8 @@ impl HistoryEvent {
                 .get("external_provider_turn_id")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
-            observed_at_ms: self
-                .metadata
-                .get("observed_at_ms")
-                .and_then(|value| value.as_u64()),
-            external_observation: self
-                .metadata
-                .get("external_observation")
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok()),
+            observed_at_ms: self.session_history_observed_at_ms(),
+            external_observation: self.metadata_external_observation(),
             attachments: self
                 .metadata
                 .get("attachments")
@@ -484,7 +512,13 @@ impl HistoryEvent {
     pub fn session_history_external_observation(
         &self,
     ) -> Option<SessionHistoryExternalObservation> {
-        self.to_session_history_entry()?.external_observation
+        self.session_history_entry_kind()?;
+        self.metadata_external_observation()
+    }
+
+    fn metadata_external_observation(&self) -> Option<SessionHistoryExternalObservation> {
+        SessionHistoryExternalObservation::deserialize(self.metadata.get("external_observation")?)
+            .ok()
     }
 
     pub fn operational(
@@ -528,6 +562,16 @@ impl HistoryEvent {
             attribution_confidence: None,
             caused_by_event_id: None,
         }
+    }
+}
+
+/// Per-thread count of entries built from events, so tests can assert how much work a read repeats.
+#[cfg(test)]
+pub(crate) mod session_history_entry_builds {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(crate) static BUILDS: Cell<usize> = const { Cell::new(0) };
     }
 }
 
