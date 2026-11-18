@@ -305,7 +305,8 @@ impl KernelRuntimeState {
             .await;
     }
 
-    /// A notice arrived, or a read, snooze or mute changed what an Inbox shows.
+    /// A notice arrived, a read, snooze or mute changed what an Inbox shows, or a subscription
+    /// changed.
     pub(crate) fn record_person_inbox_change(&self) {
         self.owned.person_inbox_changes.record_change();
     }

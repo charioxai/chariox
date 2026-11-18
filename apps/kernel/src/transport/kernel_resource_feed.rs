@@ -215,9 +215,8 @@ impl Feed {
                     continue;
                 }
             }
-            match self.read(&resource).await {
-                Ok(data) => {
-                    let revision = revision_of(&data);
+            match self.read_revised(&resource).await {
+                Ok((data, revision)) => {
                     let body = if watch.known_revision.as_deref() == Some(revision.as_str()) {
                         KernelResourceChange::Unchanged {}
                     } else {
@@ -261,8 +260,8 @@ impl Feed {
     async fn refresh_resources(&mut self, resources: Vec<FeedResource>) -> Vec<KernelEvent> {
         let mut events = Vec::new();
         for resource in resources {
-            let data = match self.read(&resource).await {
-                Ok(data) => data,
+            let (data, revision) = match self.read_revised(&resource).await {
+                Ok(read) => read,
                 Err(error) => {
                     // The client keeps the copy it holds; the next change or interval reads again.
                     crate::logging::warn_with_fields(
@@ -273,7 +272,6 @@ impl Feed {
                     continue;
                 }
             };
-            let revision = revision_of(&data);
             let Some(watched) = self.watched.get_mut(&resource) else {
                 continue;
             };
@@ -300,6 +298,24 @@ impl Feed {
             .min()?;
         let left = ends_at_ms.saturating_sub(crate::session::unix_epoch_ms());
         Some(Instant::now() + Duration::from_millis(left) + LEASE_END_GRACE)
+    }
+
+    /// The resource's data and its revision. The Inbox's revision also moves with every recorded
+    /// change the cards do not show, such as a subscription moved, paused or removed, so every
+    /// client reads its Subscriptions again; the mark is taken before the read, so a change during
+    /// the read wakes the feed once more.
+    async fn read_revised(
+        &mut self,
+        resource: &FeedResource,
+    ) -> Result<(Value, String), DaemonError> {
+        let mark = matches!(resource, FeedResource::PersonInbox)
+            .then(|| self.router.person_inbox_change_sequence());
+        let data = self.read(resource).await?;
+        let revision = match mark {
+            Some(mark) => revision_of(&serde_json::json!([data, mark])),
+            None => revision_of(&data),
+        };
+        Ok((data, revision))
     }
 
     async fn read(&mut self, resource: &FeedResource) -> Result<Value, DaemonError> {

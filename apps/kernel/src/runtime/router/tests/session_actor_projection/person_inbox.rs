@@ -3,23 +3,31 @@ use crate::local::{GetPersonInboxRequest, PersonInboxCard};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 use crate::transport::kernel_protocol::KernelEvent;
 
-/// The card ids of the next Inbox snapshot the watch pushes, within 2 s (well under the 10 s unsignalled interval).
-async fn next_cards(events: &mut tokio::sync::mpsc::UnboundedReceiver<KernelEvent>) -> Vec<String> {
+/// The revision and card ids of the next Inbox snapshot the watch pushes, within 2 s (well under
+/// the 10 s unsignalled interval).
+async fn next_snapshot(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<KernelEvent>,
+) -> (String, Vec<String>) {
     loop {
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
             .await
             .expect("an Inbox change within 2 s, not the 10 s unsignalled interval")
             .unwrap();
-        if let KernelEvent::KernelResourceChanged { body, .. } = event {
+        if let KernelEvent::KernelResourceChanged { revision, body, .. } = event {
             let body = serde_json::to_value(body).unwrap();
-            return body["snapshot"]["data"]["cards"]
+            let cards = body["snapshot"]["data"]["cards"]
                 .as_array()
                 .expect("an Inbox snapshot")
                 .iter()
                 .map(|card| card["card_id"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>();
+            return (revision, cards);
         }
     }
+}
+
+async fn next_cards(events: &mut tokio::sync::mpsc::UnboundedReceiver<KernelEvent>) -> Vec<String> {
+    next_snapshot(events).await.1
 }
 
 fn room(owner: &str) -> RuntimeSession {
@@ -204,10 +212,20 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         },
     )
     .unwrap();
+    let (noticed, cards) = next_snapshot(&mut events).await;
     assert_eq!(
-        next_cards(&mut events).await,
-        [card_id],
+        cards,
+        [card_id.clone()],
         "a notice wakes the watched Inbox at once"
+    );
+
+    // What a subscription move, pause or removal records: the cards stay as they are.
+    router.runtime_state.record_person_inbox_change();
+    let (moved, cards) = next_snapshot(&mut events).await;
+    assert_eq!(cards, [card_id]);
+    assert_ne!(
+        moved, noticed,
+        "every client reads its Subscriptions again when one of them changes"
     );
 }
 

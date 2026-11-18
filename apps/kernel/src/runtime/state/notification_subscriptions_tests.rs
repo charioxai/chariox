@@ -322,6 +322,7 @@ async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters()
     review_requested(&rig, "pr-976", 976);
     rig.pass().await;
     let before = rig.rows().remove(0);
+    let inbox_changes = rig.runtime.person_inbox_change_sequence();
     let reviewer = rig
         .runtime
         .spawn_agent(
@@ -337,6 +338,10 @@ async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters()
         },
     )
     .await;
+    assert!(
+        rig.runtime.person_inbox_change_sequence() > inbox_changes,
+        "a moved subscription wakes every client's Notification center"
+    );
     let rows = rig.rows();
     assert_eq!(rows.len(), 1, "{rows:?}");
     let after = &rows[0];
