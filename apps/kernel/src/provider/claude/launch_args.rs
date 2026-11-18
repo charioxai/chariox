@@ -172,7 +172,7 @@ fn append_claude_execution_config_args(
     }
 }
 
-pub(super) fn normalized_claude_model(model: &str) -> String {
+pub(crate) fn normalized_claude_model(model: &str) -> String {
     let model = model.trim();
     for prefix in ["claude/", "claude-headless/", "claude-p/"] {
         if let Some(stripped) = model.strip_prefix(prefix) {

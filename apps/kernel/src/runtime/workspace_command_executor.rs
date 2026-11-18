@@ -111,6 +111,9 @@ pub(crate) fn execute_list_workspace_worktrees_request(
             .map(|target| target.worktree_id.as_str()),
     )?;
     Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
+        workspace_empty: crate::runtime::workspace_git_common::workspace_is_empty(
+            &request.workspace_id,
+        ),
         workspace_id: request.workspace_id,
         worktrees,
     })
@@ -248,4 +251,42 @@ pub(crate) fn execute_commit_and_push_workspace_changes_request(
         &request.message,
     )?;
     Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_list_workspace_worktrees_request;
+    use crate::local::{ListWorkspaceWorktreesRequest, LocalDaemonResponse};
+
+    fn workspace_empty(path: &std::path::Path) -> bool {
+        let reply = execute_list_workspace_worktrees_request(ListWorkspaceWorktreesRequest {
+            workspace_id: path.display().to_string(),
+        })
+        .expect("worktrees listed");
+        match reply {
+            LocalDaemonResponse::WorkspaceWorktreesListed {
+                workspace_empty, ..
+            } => workspace_empty,
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_listing_says_whether_the_workspace_is_empty() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-workspace-empty-{}", std::process::id()));
+        let empty = root.join("empty");
+        let filled = root.join("filled");
+        let missing = root.join("missing");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&filled).unwrap();
+        std::fs::write(filled.join("README.md"), "x").unwrap();
+        assert!(workspace_empty(&empty));
+        assert!(!workspace_empty(&filled));
+        assert!(
+            !workspace_empty(&missing),
+            "a folder that does not exist is not empty"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

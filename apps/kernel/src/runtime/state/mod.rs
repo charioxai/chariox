@@ -205,6 +205,7 @@ mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_setup_git;
 mod room_setup_publish;
 mod room_setup_runtime;
 mod room_shared_display;
