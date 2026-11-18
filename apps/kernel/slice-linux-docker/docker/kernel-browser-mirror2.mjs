@@ -14,8 +14,7 @@ import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 // mask inputs change; staleness still follows the live protection policy's identity.
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
 export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
-import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
-import { losslessRegion } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, halvePixels, maskPixels, regionPixels } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
@@ -36,6 +35,9 @@ const FONT_REFRESH_MS = 1000;
 const MOVED = Symbol('document moved');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// Stills (base64 PNG) in one packet; with its resources and body the packet stays under one relay reply (MAX_REPLY_BYTES,
+// 1 MiB): a larger reply is refused on every retry and the viewer stays on its old frame (vimeo, browserfidelity r3).
+const STILL_PACKET_BYTES = 512 * 1024;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
 // clicking so an echo never waits behind more than one slice on the socket.
@@ -1025,10 +1027,12 @@ export class Mirror2 {
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
-    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
+    // A still that does not fit what is left of the packet's budget, even at the lowest density, follows at the next refresh.
+    let budget = STILL_PACKET_BYTES;
+    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); };
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
-      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
+      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${budget})`, true).catch(() => null);
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
@@ -1050,7 +1054,9 @@ export class Mirror2 {
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;
-      send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: losslessRegion(frame, x, y, w, h).data_base64 });
+      let still = regionPixels(frame, x, y, w, h), data;
+      while ((data = encodePng(still.width, still.height, still.pixels)).length > budget && (still.width > 1 || still.height > 1)) still = halvePixels(still);
+      if (data.length <= budget) send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: data });
     }
     return out;
   }
