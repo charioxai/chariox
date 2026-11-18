@@ -99,6 +99,8 @@ export async function executeProviderCommand(
       const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
       return { ok: true, message: `${result.provider} logged out`, data: result }
     }
+    const options = parseLoginOptions(rest)
+    if (typeof options === "string") return { ok: false, message: options }
     if (action === "reauth" && !provider.startsWith("claude")) {
       const logoutResponse = await deps.client.send(logoutProviderRequest(provider))
       if ("ProviderLogoutStarted" in logoutResponse) {
@@ -106,8 +108,6 @@ export async function executeProviderCommand(
         return { ok: true, message: `${formatProviderLoginStart(logout, "logout")}\nFinish logout before starting reauthentication.`, data: { logout } }
       }
     }
-    const options = parseLoginOptions(rest)
-    if (typeof options === "string") return { ok: false, message: options }
     const response = await deps.client.send(provider.startsWith("claude")
       ? setProviderAccountCredentialRequest("claude", options.accountProfile || "default", "", true,
         { ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.agentId ? { agentId: context.agentId } : {}) }, true)

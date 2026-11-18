@@ -395,3 +395,24 @@ test("provider login --vault has the kernel type a Vault entry into an API-key l
   assert.equal(withoutMethod.ok, false)
   assert.match(withoutMethod.message ?? "", /needs --method/)
 })
+
+test("provider reauth with invalid options sends no request, not even the logout", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { ProviderLoggedOut: { provider: "opencode" } }
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", provider: "opencode" })
+  for (const command of [
+    "provider reauth opencode --bogus",
+    "provider reauth opencode work --vault cap-1",
+    "provider reauth opencode a b",
+  ]) {
+    const result = await executeShellCommand(parseShellCommand(command), context, { client })
+    assert.equal(result.ok, false, command)
+    assert.match(result.message ?? "", /usage: provider login|needs --method/, command)
+  }
+  assert.deepEqual(requests, [])
+})
