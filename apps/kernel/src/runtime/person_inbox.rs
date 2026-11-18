@@ -225,7 +225,9 @@ impl OwnedInbox {
                         card_id: interaction.id().to_owned(),
                         session_id: session.id().to_owned(),
                         snoozed_until_ms: snoozed(interaction.id()),
-                        body: PersonInboxCardBody::NeedsYou { interaction },
+                        body: PersonInboxCardBody::NeedsYou {
+                            interaction: Box::new(interaction),
+                        },
                     })
             })
             .collect::<Vec<_>>();

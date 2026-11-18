@@ -38,7 +38,7 @@ fn room(owner: &str) -> RuntimeSession {
 fn decision(id: &str) -> RuntimeInteraction {
     RuntimeInteraction::for_kernel_operation(
         id,
-        &format!("operation-{id}"),
+        format!("operation-{id}"),
         "Install App?",
         "Review this release",
         vec![

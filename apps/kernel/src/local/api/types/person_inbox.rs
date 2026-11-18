@@ -23,7 +23,7 @@ pub enum PersonInboxCardBody {
     /// A pending interaction of the Room, as the Room shows it, so answering it here or in the
     /// Room is the same `RespondToInteraction`.
     NeedsYou {
-        interaction: crate::session::RuntimeInteraction,
+        interaction: Box<crate::session::RuntimeInteraction>,
     },
     /// What an agent told the person with `chariox.notify_person`; nothing waits on it.
     Notice(PersonInboxNotice),
