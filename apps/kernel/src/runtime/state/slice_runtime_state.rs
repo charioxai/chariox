@@ -32,6 +32,20 @@ impl KernelRuntimeState {
         self.owned.slice_store.list()
     }
 
+    /// The provider auth found in the running Docker slices; callers that overlap share one pass.
+    pub(crate) async fn inspect_running_slice_provider_auth(
+        &self,
+        candidates: Vec<crate::slice::SliceRecord>,
+    ) -> Result<super::slice_auth_inspection::DetectedProviderAuth, DaemonError> {
+        match &*self.slice_auth_inspections.inspect(candidates).await {
+            Ok(detected) => Ok(detected.clone()),
+            Err(message) => Err(DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: message.clone(),
+            }),
+        }
+    }
+
     pub(crate) async fn create_slice(
         &self,
         request: crate::local::CreateSliceRequest,

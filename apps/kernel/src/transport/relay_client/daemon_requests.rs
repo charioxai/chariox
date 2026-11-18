@@ -955,24 +955,47 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
             envelope.local_browser_connect,
         ));
     }
-    if let Ok(envelope) = serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
-        return Ok(ParsedRelayClientMessage::Request(
-            ParsedRelayClientRequest {
-                command_id: envelope
-                    .command_id
-                    .filter(|command_id| !command_id.trim().is_empty()),
-                request: envelope.request,
-                on_behalf_of: envelope.on_behalf_of,
-            },
-        ));
+    let envelope_error = match serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
+        Ok(envelope) => {
+            return Ok(ParsedRelayClientMessage::Request(
+                ParsedRelayClientRequest {
+                    command_id: envelope
+                        .command_id
+                        .filter(|command_id| !command_id.trim().is_empty()),
+                    request: envelope.request,
+                    on_behalf_of: envelope.on_behalf_of,
+                },
+            ));
+        }
+        Err(error) => error,
+    };
+    // A request with no envelope. When the payload has the envelope's `request` field, its own fault
+    // is the answer: reading it as a bare request would name the envelope's `command_id` as an unknown
+    // request variant.
+    serde_json::from_slice(bytes)
+        .map(|request| {
+            ParsedRelayClientMessage::Request(ParsedRelayClientRequest {
+                command_id: None,
+                request,
+                on_behalf_of: None,
+            })
+        })
+        .map_err(|bare_error| {
+            if has_request_field(bytes) {
+                envelope_error
+            } else {
+                bare_error
+            }
+        })
+}
+
+fn has_request_field(bytes: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Probe {
+        #[allow(dead_code)]
+        request: serde::de::IgnoredAny,
     }
-    Ok(ParsedRelayClientMessage::Request(
-        ParsedRelayClientRequest {
-            command_id: None,
-            request: serde_json::from_slice(bytes)?,
-            on_behalf_of: None,
-        },
-    ))
+    serde_json::from_slice::<Probe>(bytes).is_ok()
 }
 
 enum RelayDispatchOutcome {
@@ -1468,6 +1491,34 @@ mod tests {
                 .as_bytes()
         )
         .is_err());
+    }
+
+    #[test]
+    fn an_invalid_request_inside_an_envelope_is_refused_for_its_own_fault() {
+        for (payload, fault) in [
+            (
+                r#"{"command_id":"c-1","request":{"FutureRequest":{}}}"#,
+                "FutureRequest",
+            ),
+            (
+                r#"{"command_id":"c-1","request":{"GetSlice":{"slice_ref":17}}}"#,
+                "invalid type: integer `17`",
+            ),
+        ] {
+            let error = match super::parse_relay_client_request(payload.as_bytes()) {
+                Ok(_) => panic!("{payload} must not parse"),
+                Err(error) => error,
+            };
+            let message = error.to_string();
+            assert!(message.contains(fault), "{message}");
+            assert!(!message.contains("command_id"), "{message}");
+        }
+        // A bare request keeps its own error.
+        let error = match super::parse_relay_client_request(br#"{"FutureRequest":{}}"#) {
+            Ok(_) => panic!("a bare unknown request must not parse"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("FutureRequest"));
     }
 
     #[test]

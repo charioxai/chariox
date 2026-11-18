@@ -46,21 +46,9 @@ pub(super) async fn execute_list_slices_request(
                 && slice.status == crate::slice::SliceStatus::Running
         })
         .collect::<Vec<_>>();
-    let detected = tokio::task::spawn_blocking(move || {
-        candidates
-            .into_iter()
-            .filter_map(|slice| {
-                crate::slice::inspect_local_docker_slice_provider_auth(&slice, "all", None)
-                    .ok()
-                    .map(|provider_auth| (slice, provider_auth))
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.auth.inspect",
-        message: format!("slice provider auth inspection task failed: {error}"),
-    })?;
+    let detected = runtime_state
+        .inspect_running_slice_provider_auth(candidates)
+        .await?;
     for (slice, provider_auth) in detected {
         let merged = merge_detected_provider_auth(slice.provider_auth.clone(), provider_auth);
         if merged != slice.provider_auth {
