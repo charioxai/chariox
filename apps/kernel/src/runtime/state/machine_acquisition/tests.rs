@@ -136,7 +136,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .unwrap();
     let error = gate.await.unwrap().unwrap_err().to_string();
     assert!(error.contains("denied"));
-    assert!(error.contains("nothing was allocated or charged"));
+    assert!(error.contains("it was not sent to the service"));
 }
 
 #[tokio::test]
@@ -267,10 +267,10 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("nothing was allocated or charged"));
+        .contains("it was not sent to the service"));
 }
 
-fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
+pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
     MachineOption {
         class_id: class_id.into(),
         region: region.into(),
@@ -378,4 +378,29 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     .unwrap();
     assert!(message.contains("Acquire gone in auto"), "{message}");
     gate.abort();
+}
+
+#[test]
+fn the_service_request_id_is_scoped_to_the_kernel_and_agent() {
+    let id = super::choice::service_request_id("kernel", "agent", "R1");
+    assert!(id.len() <= 128, "{id}");
+    assert!(id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    assert_eq!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "other", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("other", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "r1")
+    );
 }
