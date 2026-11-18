@@ -1,10 +1,13 @@
 // Keeps the person's unsaved edit in the App, not in this window: the view is replaced when the App
 // updates or the connection returns, and its sandbox keeps nothing across that. The App holds one
-// draft per document, with the revision the edit started from: the window has no identity that
-// outlives its replacement, so another window's save or discard never reaches this document's draft.
+// draft per (document, editor), with the revision the edit started from. A window has no identity that
+// outlives its replacement, so each window instance is a new editor with a random name: its saves and
+// discards reach only its own drafts, and its first `recall` is the one place a draft changes hands.
 const DELAY_MS = 400
 
-export function drafts(call) {
+export const newEditor = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+
+export function drafts(call, editor) {
   // One write at a time and in order, so a late save never outlives the discard that follows it.
   let queue = Promise.resolve()
   let pending = null
@@ -15,7 +18,7 @@ export function drafts(call) {
   }
   function send(read) {
     const draft = read()
-    if (draft) run("save_draft", draft).catch(() => {})
+    if (draft) run("save_draft", { editor, ...draft }).catch(() => {})
   }
   return {
     // `read` is asked when the write is due, so the latest keystrokes are the ones kept.
@@ -31,15 +34,16 @@ export function drafts(call) {
       pending = null
       send(read)
     },
-    // The draft of the document `id`; a pending write is this window's, so it goes with it.
+    // This editor's draft of the document `id`; a pending write is this window's, so it goes with it.
     drop(id) {
       clearTimeout(pending?.timer)
       pending = null
-      return run("discard_draft", { id }).catch(() => {})
+      return run("discard_draft", { editor, id }).catch(() => {})
     },
+    // The draft this window starts with: its own, else the latest of a replaced window, moved to this one.
     async recall() {
       await queue
-      return (await call("read_draft", {})).draft
+      return (await call("claim_draft", { editor })).draft
     },
   }
 }

@@ -12,11 +12,13 @@ Markdown and HTML documents the person and their agents write together, on the w
 - Import: `import_documents` asks the owner for files in the kernel's prompt and waits up to 20 s per call;
   while the owner has not chosen it returns `{pending, importId}` and the caller asks again with that id
   (the kernel holds the request ten minutes), so no call outlasts the kernel's 30 s limit.
-- The window hands an unsaved edit to the App (`save_draft`, one draft per document in `data/drafts/<id>.json`,
-  with the revision it started from) because the view's sandbox keeps nothing across a replacement and a window
-  has no identity that outlives it; a window that saves or gives up its edit discards that document's draft
-  (`discard_draft`) and no other. The next window asks `read_draft` (the latest draft without an id) and restores
-  it, so a save after someone else's change is still refused.
+- The window hands an unsaved edit to the App (`save_draft`, one draft per document and editor in
+  `data/drafts/<id>.<editor>.json`, with the revision it started from) because the view's sandbox keeps nothing
+  across a replacement. Each window instance is its own editor with a random name, so two windows on one document
+  keep two drafts, and a window that saves or gives up its edit discards its own draft of that document
+  (`discard_draft`) and no other. A new window asks `claim_draft` once: it keeps its own draft, otherwise the most
+  recently kept draft of another editor moves to it, and a draft whose document was deleted is dropped. It restores
+  the edit, so a save after someone else's change is still refused.
 - An agent's `delete_document` is an `approval` action: the person confirms it in the Room. The person's own
   delete in the window is one click with the usual confirm.
 

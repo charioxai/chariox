@@ -105,6 +105,20 @@ pub fn read_private_folder(folder: &str) -> Result<Vec<String>, AppError> {
     Ok(texts)
 }
 
+/// The paths of the files in a private folder; empty while nothing was written there.
+pub fn private_files(folder: &str) -> Result<Vec<String>, AppError> {
+    let entries = match fs::read_dir(on_disk(folder)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io("list", folder, &e)),
+    };
+    Ok(entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .map(|name| format!("{folder}/{name}"))
+        .collect())
+}
+
 pub fn remove_private(path: &str) -> Result<(), AppError> {
     match fs::remove_file(on_disk(path)) {
         Ok(()) => Ok(()),

@@ -1,6 +1,6 @@
 // Documents view. It talks to the App only through window.chariox.call, which
 // runs the App's own tools as the signed-in person; agents use the same tools.
-import { drafts } from "./draft.js"
+import { drafts, newEditor } from "./draft.js"
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
@@ -35,7 +35,7 @@ async function call(tool, input = {}) {
   }
 }
 
-const keeper = drafts(call)
+const keeper = drafts(call, newEditor())
 
 // Unsaved edits end here, saved or given up, and the App forgets the draft with them. The draft is
 // the dirty document's, which is no longer the open one when the person moved on.
