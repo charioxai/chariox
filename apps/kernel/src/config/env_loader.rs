@@ -216,7 +216,6 @@ impl DaemonConfig {
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
             room_agent_tools: true,
-            remote_jobs: env::var("CHARIOX_REMOTE_JOBS").as_deref() == Ok("1"),
             accept_remote_leases,
             kernel_runtime_role,
             remote_lease_capacity,

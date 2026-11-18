@@ -58,8 +58,8 @@ async fn a12_owner_sudo_reaches_passkey_when_agent_decisions_fill_the_cap() {
 }
 
 #[tokio::test]
-async fn a12_external_sudo_keeps_the_agent_decision_quota() {
-    for cards in [7, 8] {
+async fn a12_external_sudo_still_asks_the_owner_with_many_agent_decisions_pending() {
+    for cards in [7, 8, 40] {
         let f = fixture();
         let mut receivers = Vec::new();
         for index in 0..cards {
@@ -86,37 +86,26 @@ async fn a12_external_sudo_keeps_the_agent_decision_quota() {
         }
         let grant = f.state.insert_access_grant_for_test(&f.request.session_id);
         let request = external_request(&f);
-        if cards == 8 {
-            let Err(error) = f.state.request_kernel_sudo(&grant, request).await else {
-                panic!("an external requester cannot spend reserved owner capacity");
-            };
-            assert!(
-                error.to_string().contains("Kernel decision limit reached"),
-                "{error}"
-            );
-        } else {
-            let state = f.state.clone();
-            let pending =
-                tokio::spawn(async move { state.request_kernel_sudo(&grant, request).await });
-            let prompt = popup(&f.state).await;
-            f.state
-                .answer_terminal_runtime_interaction(
-                    &prompt.session_id,
-                    &prompt.interaction_id,
-                    "refuse",
-                    None,
-                    Some("local"),
-                    None,
-                    None,
-                    Some(KernelConnectionClass::Terminal),
-                )
-                .await
-                .unwrap();
-            assert!(
-                pending.await.unwrap().is_err(),
-                "the real owner refusal settles the request"
-            );
-        }
+        let state = f.state.clone();
+        let pending = tokio::spawn(async move { state.request_kernel_sudo(&grant, request).await });
+        let prompt = popup(&f.state).await;
+        f.state
+            .answer_terminal_runtime_interaction(
+                &prompt.session_id,
+                &prompt.interaction_id,
+                "refuse",
+                None,
+                Some("local"),
+                None,
+                None,
+                Some(KernelConnectionClass::Terminal),
+            )
+            .await
+            .unwrap();
+        assert!(
+            pending.await.unwrap().is_err(),
+            "the real owner refusal settles the request"
+        );
         assert!(f.state.passkey_prompts_for("local").is_empty());
         assert!(f.state.list_sudo_turns("local").is_empty());
         f.state.owned.sweep_kernel_operation_interactions(true);

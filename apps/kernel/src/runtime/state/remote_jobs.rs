@@ -50,10 +50,6 @@ fn policy_error(message: impl Into<String>) -> DaemonError {
     }
 }
 impl KernelRuntimeState {
-    /// Read once at startup: off, no job acquires, reattaches to or returns files from a machine.
-    pub(super) fn remote_jobs_enabled(&self) -> bool {
-        self.owned.config_projection.snapshot().remote_jobs
-    }
     fn remote_policy_path(&self) -> PathBuf {
         self.owned
             .config_projection

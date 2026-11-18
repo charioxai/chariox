@@ -92,6 +92,9 @@ pub(crate) fn user_only(
         } else {
             None
         }
+    } else if super::machine_acquisition::is_machine_acquisition_decision(interaction.id()) {
+        // Acquiring a machine is the person's OK or an agent's acting for them.
+        None
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()

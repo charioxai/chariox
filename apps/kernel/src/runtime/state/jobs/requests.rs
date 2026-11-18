@@ -21,7 +21,6 @@ impl KernelRuntimeState {
             if record.state == "finished"
                 && record.placement == JobPlacement::Remote
                 && !record.deleted
-                && self.remote_jobs_enabled()
             {
                 match record.remote {
                     RemoteStage::Finished { .. } if name == "chariox.jobs.cancel" => {
@@ -144,10 +143,8 @@ impl KernelRuntimeState {
             memory_mib: None,
             remote: RemoteStage::Idle,
         };
-        if let Some(reach) = self
-            .remote_jobs_enabled()
-            .then(|| self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id())))
-            .flatten()
+        if let Some(reach) =
+            self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
         {
             if let Ok(Some(class)) = tokio::time::timeout(
                 Duration::from_secs(3),
@@ -177,12 +174,11 @@ impl KernelRuntimeState {
         let heavy = record.request.needs.memory_gib.is_some()
             || record.request.needs.cpus.is_some_and(|cpus| cpus > 1)
             || admission.is_heavy(&wake.command, &record.cwd);
-        let remote = self.remote_jobs_enabled()
-            && match self.effective_remote_jobs_policy(&record.room_id, &record.agent_id)? {
-                crate::local::OffloadPolicy::Off => false,
-                crate::local::OffloadPolicy::WhenBusy => busy,
-                crate::local::OffloadPolicy::AlwaysHeavy => heavy,
-            };
+        let remote = match self.effective_remote_jobs_policy(&record.room_id, &record.agent_id)? {
+            crate::local::OffloadPolicy::Off => false,
+            crate::local::OffloadPolicy::WhenBusy => busy,
+            crate::local::OffloadPolicy::AlwaysHeavy => heavy,
+        };
         if remote {
             record.placement = JobPlacement::Remote;
         }

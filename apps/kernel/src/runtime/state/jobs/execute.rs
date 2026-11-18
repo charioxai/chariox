@@ -305,14 +305,13 @@ impl KernelRuntimeState {
                 .expect("job move")
                 .remove(&record.job_id)
         });
-        let remote = self.remote_jobs_enabled()
-            && (force_remote
-                || requested
-                || match policy {
-                    OffloadPolicy::Off => false,
-                    OffloadPolicy::WhenBusy => busy,
-                    OffloadPolicy::AlwaysHeavy => heavy,
-                });
+        let remote = force_remote
+            || requested
+            || match policy {
+                OffloadPolicy::Off => false,
+                OffloadPolicy::WhenBusy => busy,
+                OffloadPolicy::AlwaysHeavy => heavy,
+            };
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }

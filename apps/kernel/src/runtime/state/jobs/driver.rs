@@ -59,14 +59,6 @@ impl WakeDriver for JobDriver {
             .insert(wake.id.clone(), cancel);
         let live = self.live.clone();
         tokio::spawn(async move {
-            // Left by an earlier run with remote jobs on: end the job with its reason and leave
-            // its worker, files and allocation exactly as saved.
-            if !state.remote_jobs_enabled() && record.has_remote_trace() {
-                let result = remote_jobs_off_result(&record);
-                state.finish_job(&wake, &mut record, result).await;
-                live.lock().expect("job live").remove(&wake.id);
-                return;
-            }
             // The command still runs on its worker: follow it to its end before anything else.
             if matches!(record.remote, RemoteStage::Running { .. }) {
                 state.execute_job(wake.clone(), record, cancelled).await;
@@ -149,26 +141,6 @@ impl WakeDriver for JobDriver {
         } else {
             Liveness::Lost("job supervisor ended without a result".into())
         }
-    }
-}
-
-/// A job whose remote state this kernel will not act on while remote jobs are off.
-fn remote_jobs_off_result(record: &Record) -> JobResult {
-    JobResult {
-        exit_code: None,
-        output_tail: "This job ran on a remote machine, but remote jobs are switched off on this kernel (CHARIOX_REMOTE_JOBS), so it was not followed and its machine was left untouched. Start the kernel with remote jobs on to resume it.".into(),
-        log: String::new(),
-        files_back: vec![],
-        conflicts: vec![],
-        ran_on: JobRanOn {
-            machine: record
-                .machine_label
-                .clone()
-                .unwrap_or_else(|| "a remote machine".into()),
-            ip: record.address.clone(),
-        },
-        duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
-        outcome: JobOutcome::MachineLost,
     }
 }
 
