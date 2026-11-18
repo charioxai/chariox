@@ -1736,6 +1736,24 @@ mod tests {
         assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
     }
 
+    /// The number of workers an orchestrator starts decides the cost of a delegation
+    /// (8 workers cost 2.3x the same task in 4): the note and the tool both say one
+    /// worker per independent area.
+    #[test]
+    fn delegation_guidance_caps_workers_at_the_independent_areas() {
+        let description = crate::transport::runtime_tools::agent_run_tool_specs()
+            .remove(0)
+            .description;
+        for text in [RUNTIME_BASE, description.as_str()] {
+            assert!(text.contains("one whole independent area"), "{text}");
+            assert!(
+                text.contains("no more workers than there are independent areas"),
+                "{text}"
+            );
+            assert!(text.contains("never one per file or step"), "{text}");
+        }
+    }
+
     // AU-03: a step the person does inside a page is one live card, never a chat request plus a Confirm.
     #[test]
     fn runtime_instructions_put_a_person_step_on_one_live_card_and_sign_up_through_auth_md() {

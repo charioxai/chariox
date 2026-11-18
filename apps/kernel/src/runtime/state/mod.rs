@@ -468,6 +468,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    agent_run_waiters: agent_run_waiters::AgentRunWaiters,
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
@@ -1366,6 +1367,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                agent_run_waiters: Default::default(),
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
@@ -1718,6 +1720,7 @@ mod agent_goal_migration;
 mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_inline;
 mod agent_inbox_leased_steer;
 mod agent_inbox_sender;
 mod agent_inbox_wake_text;
@@ -1729,7 +1732,13 @@ mod agent_lifecycle_runtime;
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_queued_messages;
+mod agent_run;
+#[cfg(test)]
+mod agent_run_test_support;
+mod agent_run_waiters;
 mod agent_subtree_cascade;
+pub(crate) use agent_run::WorkerCaller;
+pub(crate) use agent_run_waiters::WorkerEnd;
 mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;

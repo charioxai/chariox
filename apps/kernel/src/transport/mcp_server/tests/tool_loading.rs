@@ -4,9 +4,11 @@ use super::*;
 const TOKEN: &str = "claude-print-tool-loading-token";
 const BUDGET: &str = include_str!("../../../../agent_context_budget.json");
 
-/// What a Claude agent must have in context before its first call; every other
-/// runtime tool is found through Claude Code's tool search.
-const CORE_TOOLS: [&str; 3] = [
+/// What a Claude agent must have in context before its first call (delegation is one of them, so
+/// handing work to sub-agents costs no tool search); every other runtime tool is found through
+/// Claude Code's tool search.
+const CORE_TOOLS: [&str; 4] = [
+    "chariox.agents.run",
     "chariox.events.ack",
     "chariox.events.inbox",
     "chariox.permission_prompt",

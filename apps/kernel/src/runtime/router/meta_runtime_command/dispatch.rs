@@ -595,7 +595,7 @@ impl CommandRouter {
         Ok(result)
     }
 
-    async fn dispatch_meta_agent_spawn_command(
+    pub(super) async fn dispatch_meta_agent_spawn_command(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
         session: &crate::session::RuntimeSession,
