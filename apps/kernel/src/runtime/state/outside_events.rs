@@ -317,7 +317,7 @@ impl KernelRuntimeOwnedState {
             }
             InteractionPhase::Pending(pending) => (EventInteractionState::Pending, pending),
         };
-        if !pending.requires_terminal(interaction) {
+        if pending.person_only(interaction).is_none() {
             return (
                 OutsideEventValue::Interaction {
                     state,

@@ -989,6 +989,7 @@ impl KernelRuntimeState {
 }
 
 mod cover;
+mod delegate;
 mod policy;
 pub(crate) mod reach;
 #[cfg(test)]
