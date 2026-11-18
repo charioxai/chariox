@@ -567,4 +567,6 @@ pub use workspace::*;
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// 1033: a queued agent message in a session carries a `preview` (its first 200 characters) and `truncated`
+/// instead of the whole `prompt`, and a session lists at most the next ten per agent.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1033;

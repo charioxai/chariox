@@ -735,7 +735,9 @@ permission level or mode. Only the user changes the edge, with
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
 set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. A message that is not urgent waits in its receiver's queue and never starts or steers a turn: a session lists it in
-`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `prompt`), and the person cancels it or sends it now with
+`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `preview`: the first 200 characters, secrets redacted,
+`truncated`: the message is longer; at most the next ten per agent, so a Room's state stays small; the recipient reads the whole
+text from its inbox), and the person cancels it or sends it now with
 `CancelQueuedPrompt` / `SteerQueuedPrompt` on that id; its sender promotes it with `agent promote <message-id>`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
