@@ -7,6 +7,9 @@ pub(crate) fn room_name(meta: &str) -> Option<String> {
         | NOTIFICATION_SUBSCRIBE
         | NOTIFICATION_UNSUBSCRIBE
         | NOTIFY_PERSON => meta.into(),
+        WATCHER_CREATE | WATCHER_DRY_RUN | WATCHER_ACTIVATE | WATCHER_STATUS | WATCHER_REMOVE => {
+            meta.into()
+        }
         META_HISTORY_SEARCH_TOOL => "chariox.history.search".into(),
         META_SESSION_OVERVIEW_TOOL => "chariox.room.overview".into(),
         META_RUN_COMMAND_TOOL => "chariox.room.run_command".into(),

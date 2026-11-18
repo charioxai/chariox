@@ -155,6 +155,12 @@ impl CommandRouter {
                     .map(Some)
                 }))
             }
+            LocalDaemonRequest::Watcher(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .execute_watcher_request(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
             LocalDaemonRequest::GetProjectEnvironment(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_project_environment(request.clone(), caller_user_id)

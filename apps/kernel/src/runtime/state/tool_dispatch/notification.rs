@@ -1,9 +1,11 @@
 //! Caller-bound notification tools use the same trigger path as the shell.
 use super::*;
+use crate::local::{LocalDaemonResponse, WatcherRequest};
 use crate::session::AgentTriggerNotificationSource;
 use crate::transport::runtime_tools::{
     RuntimeToolResult, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
     NOTIFY_PERSON,
+    WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN, WATCHER_REMOVE, WATCHER_STATUS,
 };
 
 #[derive(serde::Deserialize)]
@@ -34,6 +36,22 @@ struct NotifyPerson {
     #[serde(default)]
     priority: crate::local::PersonInboxPriority,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatcherId {
+    watcher_id: String,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Activate {
+    watcher_id: String,
+    paused: Option<bool>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Status {
+    watcher_id: Option<String>,
+}
 fn invalid(error: impl std::fmt::Display) -> DaemonError {
     crate::durable_state::workflow_notifications::error(error.to_string())
 }
@@ -61,6 +79,13 @@ impl KernelRuntimeState {
                 .as_ref()
                 .map(|(_, run)| run.as_str()),
         )?;
+        if name.starts_with("chariox.watcher.") {
+            let payload = self
+                .dispatch_watcher_tool(session, agent, name, arguments)
+                .await?;
+            self.authorize_current_external_response()?;
+            return Ok(RuntimeToolResult { ok: true, payload });
+        }
         let response = match name {
             NOTIFY_PERSON => {
                 let args: NotifyPerson = serde_json::from_value(arguments).map_err(invalid)?;
@@ -99,15 +124,19 @@ impl KernelRuntimeState {
                     .owned
                     .durable_state_store
                     .notification_inventory(session.owner_user_id())?;
-                // The owner's agent also follows the owner's App events, whose source is the
-                // installation rather than a Room.
+                // The owner's agent also follows the owner's App events and watchers: they belong
+                // to the owner, not to a Room.
                 let sources = sources
                     .into_iter()
                     .filter(|s| {
                         s.enabled
                             && (s.session_id == session.id()
                                 || (!guest
-                                    && s.kind == crate::local::NotificationSourceKind::AppEvent))
+                                    && matches!(
+                                        s.kind,
+                                        crate::local::NotificationSourceKind::AppEvent
+                                            | crate::local::NotificationSourceKind::Watcher
+                                    )))
                     })
                     .collect::<Vec<_>>();
                 let mut workflows = super::super::workflow_notification_router::summaries(
@@ -204,5 +233,95 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({"trigger_id":trigger.id(),"source":trigger.source(),"enabled":trigger.enabled()}),
         })
+    }
+
+    /// The watcher tools act for the Room's owner; the calling agent is responsible for what it makes.
+    async fn dispatch_watcher_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if self.notification_guest(session.owner_user_id(), agent.owner_user_id()) {
+            return Err(invalid(
+                "watchers are the Room owner's sources; a collaborator's agent cannot use them",
+            ));
+        }
+        let caller = agent.owner_user_id();
+        let request = match name {
+            WATCHER_CREATE => {
+                let (watcher_id, manifest, script) =
+                    super::super::watchers::manifest_and_script(arguments)?;
+                match watcher_id {
+                    Some(watcher_id) => WatcherRequest::Update {
+                        watcher_id,
+                        manifest,
+                        script,
+                    },
+                    None => WatcherRequest::Create {
+                        session_id: session.id().into(),
+                        manifest,
+                        script,
+                    },
+                }
+            }
+            WATCHER_DRY_RUN => {
+                let args: WatcherId = serde_json::from_value(arguments).map_err(invalid)?;
+                WatcherRequest::DryRun {
+                    watcher_id: args.watcher_id,
+                }
+            }
+            WATCHER_ACTIVATE => {
+                let args: Activate = serde_json::from_value(arguments).map_err(invalid)?;
+                match args.paused {
+                    None => WatcherRequest::Activate {
+                        watcher_id: args.watcher_id,
+                    },
+                    Some(paused) => WatcherRequest::Pause {
+                        watcher_id: args.watcher_id,
+                        paused,
+                    },
+                }
+            }
+            WATCHER_STATUS => {
+                let args: Status = serde_json::from_value(arguments).map_err(invalid)?;
+                let Some(watcher_id) = args.watcher_id else {
+                    let watchers = self
+                        .owned
+                        .durable_state_store
+                        .watchers(Some(session.owner_user_id()))?;
+                    return Ok(serde_json::json!({
+                        "watchers": watchers.iter().map(|record| record.summary()).collect::<Vec<_>>(),
+                    }));
+                };
+                let record = self.caller_watcher(&watcher_id, caller)?;
+                return Ok(super::super::watchers::watcher_status(&record));
+            }
+            WATCHER_REMOVE => {
+                let args: WatcherId = serde_json::from_value(arguments).map_err(invalid)?;
+                WatcherRequest::Remove {
+                    watcher_id: args.watcher_id,
+                }
+            }
+            _ => return Err(invalid("unknown watcher tool")),
+        };
+        Ok(
+            match self
+                .watcher_request(request, caller, Some(agent.id()))
+                .await?
+            {
+                LocalDaemonResponse::Watcher { watcher } => {
+                    serde_json::json!({ "watcher": watcher })
+                }
+                LocalDaemonResponse::WatcherDryRun { result } => {
+                    serde_json::to_value(result).map_err(|e| invalid(e.to_string()))?
+                }
+                LocalDaemonResponse::WatcherRemoved { watcher_id } => {
+                    serde_json::json!({ "removed": watcher_id })
+                }
+                _ => return Err(invalid("unexpected watcher result")),
+            },
+        )
     }
 }

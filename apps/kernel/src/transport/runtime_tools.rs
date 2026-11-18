@@ -258,5 +258,6 @@ pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runti
 mod notification_tools;
 pub use notification_tools::{
     is_notification_tool, notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE,
-    NOTIFICATION_UNSUBSCRIBE, NOTIFY_PERSON,
+    NOTIFICATION_UNSUBSCRIBE, NOTIFY_PERSON, WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN,
+    WATCHER_REMOVE, WATCHER_STATUS,
 };
