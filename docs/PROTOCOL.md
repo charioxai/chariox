@@ -749,7 +749,7 @@ Provider-specific transport:
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
-## 3.3.2.1 Agent Pane Feed (local 1031)
+## 3.3.2.1 Agent Pane Feed (local 1014)
 
 One kernel projection per agent pane: what the web pane shows, in the kernel's words, so a
 provider's own terminal (`chariox claude`, `chariox codex`, `chariox opencode`) shows the same
@@ -2874,7 +2874,7 @@ No minimum version changes for clients that do not use these Environment control
 
 ## 4.1.1 Kernel Resource Subscription
 
-Status: protocol 1031 adds `pane_feed` (section 3.3.2.1). Protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
+Status: protocol 1014 adds `pane_feed` (section 3.3.2.1). Protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
 and `app_installations` (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); the other
 resources listed below, `changes`, multi-part snapshots and the conditional
 `AttachSessionView` are not implemented yet. The relay peer protocol is unchanged
