@@ -34,6 +34,12 @@ pub(crate) enum GatewayError {
         name: String,
         detail: String,
     },
+    /// The target runs a protocol below the oldest this kernel's gateway serves: no retry helps.
+    UpdateNeeded {
+        name: String,
+        kernel_protocol: u32,
+        needed_protocol: u32,
+    },
     RequestTimeout {
         name: String,
     },
@@ -94,6 +100,7 @@ impl GatewayError {
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
             Self::AccessEnded { .. } => "kernel_access_ended",
             Self::Incompatible { .. } => "kernel_incompatible",
+            Self::UpdateNeeded { .. } => "kernel_update_needed",
             Self::RequestTimeout { .. } => "kernel_request_timeout",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
                 "kernel_connection_lost"
@@ -130,6 +137,13 @@ impl GatewayError {
             Self::GatewayRevoked => "This kernel's agent gateway was revoked in the Cloud clients list and the agent access grants ended. Ask the user to approve a new agent access request.".to_string(),
             Self::Incompatible { name, detail } => format!(
                 "Kernel \"{name}\" cannot run this request ({detail}). Update the Chariox kernel on that machine."
+            ),
+            Self::UpdateNeeded {
+                name,
+                kernel_protocol,
+                needed_protocol,
+            } => format!(
+                "Kernel \"{name}\" runs protocol {kernel_protocol} and needs {needed_protocol}. Update the Chariox kernel on that machine, then try again."
             ),
             Self::RequestTimeout { name } => format!(
                 "Kernel \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the kernel never runs it twice."
