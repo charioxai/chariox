@@ -113,6 +113,8 @@ impl WatcherRecord {
             name: self.manifest.name.clone(),
             exit_ordinal: 0,
             display_name: self.manifest.name.clone(),
+            // A watcher declares events, not options a subscriber picks.
+            options: Vec::new(),
         }
     }
 }
