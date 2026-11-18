@@ -31,6 +31,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
             timeout_s: 30,
             wait_s: 0,
             outputs: outputs.iter().map(|pattern| (*pattern).into()).collect(),
+            machine: None,
         },
         workspace: source.to_owned(),
         cwd: source.to_owned(),
@@ -344,14 +345,16 @@ pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::Job
         allocation_ref: "cleanup-test".into(),
         machine_label: "offload-test".into(),
         address: None,
-        capability_revision: "v1".into(),
         kernel_id: "worker".into(),
         grant,
-        class_id: "test-class".into(),
-        rate_per_minute: crate::local::JobMachineRate {
-            amount_micros: 1,
-            currency: "usd".into(),
-        },
+        class: Some(super::super::job_compute::JobClass {
+            capability_revision: "v1".into(),
+            class_id: "test-class".into(),
+            rate_per_minute: crate::local::JobMachineRate {
+                amount_micros: 1,
+                currency: "usd".into(),
+            },
+        }),
     }
 }
 

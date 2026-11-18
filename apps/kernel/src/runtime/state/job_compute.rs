@@ -13,11 +13,26 @@ pub(super) struct JobMachine {
     pub(super) allocation_ref: String,
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
-    pub(super) capability_revision: String,
     pub(super) kernel_id: String,
     pub(super) grant: Arc<dyn GrantedSend>,
+    /// Present for a worker the job allocated; a machine the agent already holds has none.
+    pub(super) class: Option<JobClass>,
+}
+
+pub(super) struct JobClass {
+    pub(super) capability_revision: String,
     pub(super) class_id: String,
     pub(super) rate_per_minute: JobMachineRate,
+}
+
+/// Tests reach a second kernel in the same process under the kernel id they name; nothing else
+/// stands in for the relay gateway.
+#[cfg(test)]
+pub(super) fn stand_in_kernels() -> &'static std::sync::Mutex<BTreeMap<String, Arc<dyn GrantedSend>>>
+{
+    static KERNELS: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, Arc<dyn GrantedSend>>>> =
+        std::sync::OnceLock::new();
+    KERNELS.get_or_init(Default::default)
 }
 
 pub(super) fn select_job_class<'a>(
@@ -289,6 +304,14 @@ impl KernelRuntimeState {
         kernel_id: &str,
         harness: &str,
     ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
+        #[cfg(test)]
+        if let Some(kernel) = stand_in_kernels()
+            .lock()
+            .expect("stand-in kernels")
+            .get(kernel_id)
+        {
+            return Ok(kernel.clone());
+        }
         let owner = self.owned.config_projection.local_owner_user_id();
         let retained = Origin {
             grant_id: format!("{}{}", super::reach::OWNER_GRANT_PREFIX, owner),
@@ -392,11 +415,13 @@ impl KernelRuntimeState {
                     allocation_ref: allocation_ref.into(),
                     machine_label: machine_label.unwrap_or_else(|| "remote job".into()),
                     address,
-                    capability_revision: capability_revision.into(),
                     grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
                     kernel_id: target.kernel_id,
-                    class_id: class.class_id,
-                    rate_per_minute: class.rate_per_minute,
+                    class: Some(JobClass {
+                        capability_revision: capability_revision.into(),
+                        class_id: class.class_id,
+                        rate_per_minute: class.rate_per_minute,
+                    }),
                 });
             }
             if matches!(state.as_str(), "failed" | "deleted" | "released")
@@ -543,9 +568,12 @@ impl KernelRuntimeState {
         &self,
         machine: &JobMachine,
     ) -> Result<(), DaemonError> {
+        let Some(class) = &machine.class else {
+            return Ok(());
+        };
         self.job_compute_cleanup_request(&ControlPlaneRequest::JobStarted {
             allocation_ref: machine.allocation_ref.clone(),
-            capability_revision: machine.capability_revision.clone(),
+            capability_revision: class.capability_revision.clone(),
         })
         .await?;
         Ok(())

@@ -96,6 +96,8 @@ impl KernelRuntimeState {
             .push_str("The files the worker still held were collected.\n");
         record.advance(StageEvent::Home)?;
         save_record(self, record)?;
+        self.remove_held_workspace(record, &remote, &plan.root)
+            .await;
         self.forget_pending_return(&record.job_id);
         Ok(())
     }
@@ -118,6 +120,9 @@ impl KernelRuntimeState {
             .cloned();
         match live {
             Some(grant) => Ok(grant),
+            None if record.request.machine.is_some() => {
+                self.held_machine_reattach(record, kernel_id).await
+            }
             None => {
                 self.job_machine_reattach(
                     &record.job_id,

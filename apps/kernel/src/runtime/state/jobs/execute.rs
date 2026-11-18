@@ -179,6 +179,7 @@ impl KernelRuntimeState {
             Err(error) => {
                 if record.remote.awaits_command() {
                     // Without its output the command cannot be followed: stop it and its worker.
+                    self.stop_held_command(&record).await;
                     self.give_up_pending_return(&mut record);
                     self.forget_pending_return(&record.job_id);
                     if let (Some(allocation), Some(revision)) =
@@ -286,6 +287,11 @@ impl KernelRuntimeState {
         cancelled: &mut watch::Receiver<bool>,
         force_remote: bool,
     ) -> Result<JobResult, DaemonError> {
+        if let Some(held) = record.request.machine.clone() {
+            return self
+                .run_job_on_held_machine(record, &held, environment, output, cancelled)
+                .await;
+        }
         let command = validate(&record.request)?;
         let admission = crate::runtime::process_resources::LaunchAdmission::default();
         let busy = admission.would_wait(
@@ -361,12 +367,16 @@ impl KernelRuntimeState {
             }
             match acquired {
                 Ok(machine) => {
+                    let class = machine
+                        .class
+                        .as_ref()
+                        .expect("a job allocation carries its class");
                     record.allocation_ref = Some(machine.allocation_ref.clone());
-                    record.capability_revision = Some(machine.capability_revision.clone());
+                    record.capability_revision = Some(class.capability_revision.clone());
                     record.machine_label = Some(machine.machine_label.clone());
                     record.address = machine.address.clone();
-                    record.class_id = Some(machine.class_id.clone());
-                    record.rate_per_minute = Some(machine.rate_per_minute.clone());
+                    record.class_id = Some(class.class_id.clone());
+                    record.rate_per_minute = Some(class.rate_per_minute.clone());
                     // The allocation budget is an upper bound, not a duration estimate.
                     save_record(self, record)?;
                     let result = self
@@ -415,7 +425,11 @@ impl KernelRuntimeState {
         let result = match result {
             Err(_) if cancelled => uncollected_stop(self, record, output, JobOutcome::Cancelled),
             Err(error) if record.remote.awaits_command() => {
-                // Its end was never read: stop it by deleting its worker; nothing is collected.
+                // Its end was never read: stop it by deleting its worker (a held machine is not
+                // deleted, so its command is stopped by name); nothing is collected.
+                if let Some(notice) = self.stop_held_command(record).await {
+                    let _ = output.push(self, &record.room_id, notice.as_bytes(), true);
+                }
                 self.give_up_pending_return(record);
                 Err(error)
             }
@@ -424,7 +438,12 @@ impl KernelRuntimeState {
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
             if record.remote.holds_worker() {
-                let _ = output.push(self, &record.room_id, KEPT_WORKER_NOTICE.as_bytes(), true);
+                let _ = output.push(
+                    self,
+                    &record.room_id,
+                    kept_worker_notice(record).as_bytes(),
+                    true,
+                );
             }
             failed(record, "Job failed; see the protected output log".into())
         });
@@ -443,9 +462,14 @@ impl KernelRuntimeState {
             save_record(self, record)?;
             return Ok(result);
         }
+        self.forget_pending_return(&record.job_id);
+        if record.request.machine.is_some() {
+            // The agent keeps holding the machine: nothing is released.
+            save_record(self, record)?;
+            return Ok(result);
+        }
         record.state = "deleting".into();
         save_record(self, record)?;
-        self.forget_pending_return(&record.job_id);
         match self
             .job_compute_release_ref(
                 record.allocation_ref.as_deref().expect("remote allocation"),
@@ -781,10 +805,12 @@ impl KernelRuntimeState {
                 result.files_back = files;
                 result.conflicts = conflicts;
                 record.advance(StageEvent::Home)?;
+                self.remove_held_workspace(record, remote, &plan.root).await;
             }
             Err(error) => {
                 let notice = format!(
-                    "The command finished, but its files could not all be returned: {error}. {KEPT_WORKER_NOTICE}"
+                    "The command finished, but its files could not all be returned: {error}. {}",
+                    kept_worker_notice(record)
                 );
                 output.push(self, &record.room_id, notice.as_bytes(), true)?;
                 result.outcome = JobOutcome::OutsideEnd;
@@ -797,7 +823,15 @@ impl KernelRuntimeState {
 /// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.
 const WORKER_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });
 
-const KEPT_WORKER_NOTICE: &str = "The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n";
+pub(super) const HELD_COMMAND_MAY_RUN: &str = "The command may still run on the held machine; stop it from your Room before you release the machine.\n";
+
+fn kept_worker_notice(record: &Record) -> &'static str {
+    if record.request.machine.is_some() {
+        "The files the command left on the held machine are kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine stays yours: release it with chariox.machines.release when you are done.\n"
+    } else {
+        "The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n"
+    }
+}
 
 fn command_input(
     request: &RunJobRequest,
@@ -834,7 +868,7 @@ fn is_capacity_failure(error: &DaemonError) -> bool {
         _ => false,
     }
 }
-fn cancelled_result(record: &Record) -> JobResult {
+pub(super) fn cancelled_result(record: &Record) -> JobResult {
     let mut result = failed(record, String::new());
     result.outcome = JobOutcome::Cancelled;
     result
@@ -874,6 +908,14 @@ fn uncollected_stop(
         "Job cancelled. Command output is partial and returned files are unavailable.\n"
     };
     output.push(state, &record.room_id, notice.as_bytes(), true)?;
+    if record.request.machine.is_some() {
+        output.push(
+            state,
+            &record.room_id,
+            HELD_COMMAND_MAY_RUN.as_bytes(),
+            true,
+        )?;
+    }
     let mut result = failed(record, String::new());
     result.outcome = outcome;
     Ok(result)

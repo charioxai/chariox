@@ -105,6 +105,7 @@ impl WakeDriver for JobDriver {
             }
             if record.placement == JobPlacement::Remote
                 && record.allocation_ref.is_none()
+                && record.request.machine.is_none()
                 && !record.remote.holds_worker()
             {
                 match state.job_compute_release_job_ref(&record.job_id).await {
