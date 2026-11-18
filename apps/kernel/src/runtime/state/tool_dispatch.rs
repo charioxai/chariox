@@ -245,7 +245,9 @@ impl KernelRuntimeState {
                         room_tools
                             || (spec.name
                                 != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
-                                && !spec.name.starts_with("chariox.notification_"))
+                                && !crate::transport::runtime_tools::is_notification_tool(
+                                    &spec.name,
+                                ))
                     }),
             );
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());

@@ -681,6 +681,8 @@ impl KernelRuntimeState {
                             agent_id: agent_id.clone(),
                             source: crate::local::AgentTriggerSourceRequest::Notification {
                                 source,
+                                options: Vec::new(),
+                                once: false,
                             },
                             busy_policy: None,
                             prompt: None,

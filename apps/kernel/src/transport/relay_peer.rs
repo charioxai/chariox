@@ -222,8 +222,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
 /// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
-/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger; 449 carries the
+/// options a notification source declares and the options and `once` a subscription picks.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2547,6 +2548,7 @@ mod workflow_notification_shapes {
                     name: "Reviewer".into(),
                     display_name: "Reviewer-2".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             },
             RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },

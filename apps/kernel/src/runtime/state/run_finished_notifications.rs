@@ -33,5 +33,6 @@ pub(super) fn run_finished_source(
         display_name: naming::run_display_name(&name),
         name,
         exit_ordinal: 0,
+        options: Vec::new(),
     }
 }

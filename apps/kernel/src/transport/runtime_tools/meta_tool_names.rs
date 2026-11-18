@@ -18,6 +18,9 @@ pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'stati
         NOTIFICATION_UNSUBSCRIBE
         | "chariox_notification_unsubscribe"
         | "mcp__chariox__chariox_notification_unsubscribe" => Some(NOTIFICATION_UNSUBSCRIBE),
+        NOTIFY_PERSON | "chariox_notify_person" | "mcp__chariox__chariox_notify_person" => {
+            Some(NOTIFY_PERSON)
+        }
         META_HISTORY_SEARCH_TOOL
         | "chariox_meta_history_search"
         | "mcp__chariox__chariox_meta_history_search" => Some(META_HISTORY_SEARCH_TOOL),

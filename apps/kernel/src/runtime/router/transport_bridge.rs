@@ -147,6 +147,16 @@ impl CommandRouter {
             .session_projection_session_change_sequence(session_id)
     }
 
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.runtime_state.person_inbox_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_person_inbox_change_after(sequence)
+            .await;
+    }
+
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
         self.runtime_state
             .wait_for_session_projection_change_after(sequence)
