@@ -358,9 +358,19 @@ Each has a recommended default.
 | Q4 | Yes: no deadline while a terminal is attached to the pane. |
 | Q6 | Yes, limited to the models that run without an account in plain `opencode`. |
 | Q8 | Yes: one `/chariox <command>`. |
-| Q3, Q5, Q7, Q9 | Open. |
+| Q3 | Yes: Claude's "always allow" and "switch to auto mode" are the person's own choice; the resulting mode is reported to the kernel so every client shows it. |
+| Q5 | Yes: Codex cards use elicitation requests, not the experimental `item/tool/requestUserInput`; revisit if V11 fails. |
+| Q7 | Yes: links use the address of the Cloud the kernel is paired with; with no pairing the line names the Room and agent with no link. |
+| Q9 | Yes: a native launch uses the Room's default permission mode, as the web client does. |
 
-Also still open with the owner: the 12 validation cells (section 9) and the three repairs of section 1. No implementation starts until they are answered.
+The owner also accepted the 12 validation cells of section 9 as written and the three repairs of section 1 (F1, F2, F3). Implementation starts with M0 and M1 (section 8). The adapters (M2, M3, M4) and M5 start once M1's protocol shape has a clean review.
+
+### 10.2 Added by the owner
+
+| # | Item | Passes when |
+| --- | --- | --- |
+| NT-LIMITS | A limitations section for users, in the docs and in `chariox <provider> --help` and the exit hint: what a native terminal cannot do and where it goes instead (a link to the same pane on the web or phone). | It lists page-region and browser hand-off cards, passkeys, payments, file picks, App confirmations, the Visuals, Files, Browser and Terminal views, Room switching and the pane overview (one terminal is one agent), capture region and the picture editor, dictation, drafts, archive, delete and carry, drag-and-drop images (partial), Codex's lack of persistent stripes (a warning line and the link instead), and that nothing is drawn over a provider's screen. |
+| NT-NOTES | Leaving a note on a selection in a native terminal. The audit did not cover it: the selection belongs to the terminal and the provider. | Provider-native hooks, `/chariox note <text>` that refers to the last reply or turn, and the link to the pane are evaluated, and the result is either a line in NT-LIMITS or a validation cell. |
 
 ## 11. Known parked items this touches
 
