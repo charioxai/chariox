@@ -505,7 +505,16 @@ impl KernelRuntimeState {
             });
         crate::shutdown::stage("watched processes");
         let wakes = self.owned.agent_wakes.clone();
-        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        // A hot reload keeps them: the next program supervises them again.
+        if crate::hot_reload::handing_over() {
+            if let Ok(watched) =
+                tokio::task::spawn_blocking(move || wakes.processes.hand_over()).await
+            {
+                crate::hot_reload::hand_over_watched(watched);
+            }
+        } else {
+            let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        }
         crate::shutdown::stage("session interactions");
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {

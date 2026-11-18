@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+use super::OomKill;
+
 /// Accounting and ownership for every workload of a pool.
 pub(super) struct Budget {
     path: PathBuf,
@@ -224,6 +226,42 @@ impl Drop for Domain {
 
 fn parse_members(procs: &str) -> Vec<u32> {
     procs.lines().filter_map(|line| line.parse().ok()).collect()
+}
+
+/// OOM kills the memory controller counted for the owner's unit. A command's
+/// own directory carries no memory files, so every kill of its processes is
+/// charged to the unit above it, whichever ancestor's limit fired.
+pub(super) fn oom_kills(command: &Path) -> u64 {
+    command
+        .parent()
+        .and_then(|unit| std::fs::read_to_string(unit.join("memory.events")).ok())
+        .and_then(|events| {
+            events
+                .lines()
+                .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// What the controller killed in the unit of `command` since it counted
+/// `baseline` kills, and the limit that bound it.
+pub(super) fn oom_kill(command: &Path, baseline: u64) -> Option<OomKill> {
+    let kills = oom_kills(command)
+        .checked_sub(baseline)
+        .filter(|n| *n > 0)?;
+    let unit = command.parent()?;
+    let read = |dir: &Path, file: &str| {
+        std::fs::read_to_string(dir.join(file))
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+    };
+    let limit = unit
+        .ancestors()
+        .take_while(|dir| dir.starts_with("/sys/fs/cgroup"))
+        .filter_map(|dir| read(dir, "memory.max"))
+        .min();
+    let bytes = limit.or_else(|| read(unit, "memory.peak")).unwrap_or(0);
+    Some(OomKill { kills, bytes })
 }
 
 /// What runs in a process domain right now; none when it is gone.

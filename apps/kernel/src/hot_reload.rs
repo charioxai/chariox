@@ -23,7 +23,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 13;
+pub const HANDOVER_FORMAT: u32 = 14;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -36,6 +36,9 @@ struct Handover {
     // Jobs that workloads which ended left running stay their owners' (agent or
     // Room terminal): the next program watches them again.
     released_jobs: Vec<crate::runtime::process_resources::ReleasedJobs>,
+    // Processes agents watch keep their wakes: the next program supervises the
+    // same processes again, from the pipes handed over with them.
+    watched: Vec<crate::runtime::state::WatchedHandover>,
     // Commands whose admission stopped them for room stay stopped, listed and
     // startable: the next program's admission is told which they are.
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
@@ -61,6 +64,7 @@ impl Handover {
             providers: Vec::new(),
             attachments: Vec::new(),
             released_jobs: Vec::new(),
+            watched: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
             revoked_reach_runs: Vec::new(),
@@ -76,6 +80,11 @@ impl Handover {
             .iter()
             .map(TerminalHandover::master_fd)
             .chain(self.providers.iter().flat_map(ProviderHandover::fds))
+            .chain(
+                self.watched
+                    .iter()
+                    .flat_map(|watched| watched.fds().iter().copied()),
+            )
             .chain(self.credentials_fd)
             .chain(self.vault_fd)
             .chain(self.listeners.values().copied())
@@ -167,6 +176,8 @@ static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldComm
     Mutex::new(Vec::new());
 static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
     Mutex::new(Vec::new());
+static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
+    Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -236,6 +247,11 @@ pub fn receive() {
             set_close_on_exec(fd, true);
         }
     }
+    for watched in &handover.watched {
+        for fd in watched.fds() {
+            set_close_on_exec(*fd, true);
+        }
+    }
     let mut handover = handover;
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
@@ -251,6 +267,7 @@ pub fn receive() {
     // Activate these only after startup finishes consuming the environment.
     *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
+    *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -274,6 +291,11 @@ pub fn adopt_received_processes() {
     // Admission must precede the first watch sample.
     crate::runtime::process_resources::adopt_admission(held);
     crate::runtime::process_resources::adopt_released(jobs);
+}
+
+/// The watched processes the previous program handed over, once.
+pub(crate) fn take_watched() -> Vec<crate::runtime::state::WatchedHandover> {
+    std::mem::take(&mut *lock(&RECEIVED_WATCHED))
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -697,6 +719,19 @@ pub(crate) fn hand_over_claude(
     }
 }
 
+/// Keeps the processes agents watch for the next program, with the output
+/// pipes it reads them from.
+pub(crate) fn hand_over_watched(
+    watched: Vec<(crate::runtime::state::WatchedHandover, Vec<OwnedFd>)>,
+) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        for (process, pipes) in watched {
+            prepared.handover.watched.push(process);
+            prepared.masters.extend(pipes);
+        }
+    }
+}
+
 /// Keeps the users' focus and grants for the next program.
 pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
@@ -940,6 +975,13 @@ fn replace_program() -> Option<String> {
                 .released_jobs
                 .iter()
                 .flat_map(crate::runtime::process_resources::ReleasedJobs::pids),
+        )
+        .chain(
+            prepared
+                .handover
+                .watched
+                .iter()
+                .map(crate::runtime::state::WatchedHandover::pid),
         )
         .collect();
     end_children_except(&kept);

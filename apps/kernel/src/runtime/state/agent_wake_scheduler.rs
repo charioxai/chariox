@@ -151,7 +151,10 @@ impl KernelRuntimeState {
             step.enter("watched process recovery");
             if !worker_recovered {
                 worker_recovered = self
-                    .recover_worker_leased_processes(crate::session::unix_epoch_ms())
+                    .recover_worker_processes(
+                        crate::hot_reload::take_watched(),
+                        crate::session::unix_epoch_ms(),
+                    )
                     .is_ok();
             }
             step.enter("watched process waits");
