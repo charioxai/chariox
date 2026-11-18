@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
+import { hostFailureMessage } from "./kernel-browser-error-label.mjs";
 import { encodePng } from "./kernel-browser-pixels.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-11: explicit disposable drill root required");
@@ -1828,6 +1829,19 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
+// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
+// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
+test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    assert(region_id, "MP-10: the canvas is an opaque region");
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
+    assert(refused, "MP-08: no region display without a display");
+    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(
   '<style>body{margin:0}iframe{width:100px;height:80px;border:0}</style><iframe src="http://localhost:PORT/child"></iframe>',
   async({host,next,subscription_id,generation})=>{
