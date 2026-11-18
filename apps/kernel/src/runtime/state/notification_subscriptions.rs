@@ -17,7 +17,9 @@ use crate::local::{
     WorkflowNotificationSourceSummary, WorkflowNotificationSubscription,
     WorkflowNotificationTargetKind,
 };
-use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource};
+use crate::session::{
+    AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerNotificationSource, AgentTriggerSource,
+};
 
 impl KernelRuntimeState {
     pub(crate) fn list_notification_subscriptions(
@@ -81,6 +83,9 @@ impl KernelRuntimeState {
             NotificationSubscriptionChange::Subscriber { agent_id } => {
                 self.change_notification_subscriber(row, agent_id, caller)
                     .await?;
+            }
+            NotificationSubscriptionChange::Mode { mode } => {
+                self.change_notification_mode(&row.subscription, mode)?;
             }
         }
         self.record_person_inbox_change();
@@ -249,6 +254,7 @@ impl KernelRuntimeState {
                     source,
                     subscriber_name,
                     prompt,
+                    mode: trigger.map(|trigger| trigger.busy_policy()),
                     options: settings.options,
                     once: settings.once,
                     paused: settings.paused,
@@ -343,6 +349,7 @@ impl KernelRuntimeState {
             source,
             subscriber_name,
             prompt: Some(trigger.prompt().to_owned()),
+            mode: Some(trigger.busy_policy()),
             options: settings.options,
             once: settings.once,
             paused: settings.paused,
@@ -406,6 +413,33 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The subscription's agent takes its notifications another way from the next one on.
+    fn change_notification_mode(
+        &self,
+        subscription: &WorkflowNotificationSubscription,
+        mode: AgentTriggerBusyPolicy,
+    ) -> Result<(), DaemonError> {
+        let trigger_id = subscription
+            .trigger_id
+            .as_deref()
+            .filter(|_| subscription.target_kind == WorkflowNotificationTargetKind::Agent)
+            .ok_or_else(|| {
+                store::error(
+                    "Only an agent's subscription has a delivery mode. A workflow's runs queue.",
+                )
+            })?;
+        self.owned.session_store.write().update_agent_trigger(
+            &subscription.session_id,
+            trigger_id,
+            Some(mode),
+            None,
+            None,
+        )?;
+        self.owned
+            .persist_agent_trigger_session(&subscription.session_id, "agent_trigger_updated")?;
+        Ok(())
+    }
+
     /// Another agent of the same Room takes the subscription over with its prompt, options,
     /// counters and trace; the old trigger is removed. Every refusal comes before the first
     /// write, and a removal that fails puts the old subscription back as it was.
@@ -462,7 +496,7 @@ impl KernelRuntimeState {
                         options: row.options,
                         once: row.once,
                     },
-                    busy_policy: None,
+                    busy_policy: row.mode,
                     prompt: row.prompt,
                 },
                 caller,

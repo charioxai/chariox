@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::error::DaemonError;
 use crate::session::{PromptDetachEffect, RuntimeSession, SessionService};
 
-use super::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
+use super::{AttachRequest, RuntimeAttachment};
 
 #[derive(Debug, Clone, Default)]
 pub struct AttachmentService {

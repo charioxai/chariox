@@ -11,7 +11,9 @@ use crate::local::{
     CreateAgentTriggerRequest, LocalDaemonResponse, WorkflowNotificationSubscription,
     WorkflowNotificationTargetKind,
 };
-use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource};
+use crate::session::{
+    AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerNotificationSource, AgentTriggerSource,
+};
 
 /// An agent target has no queue of its own; the column keeps the shared row shape valid.
 const AGENT_QUEUE_ID: &str = "agent";
@@ -25,6 +27,8 @@ pub(super) struct NotificationHold<'a> {
     pub(super) subscription_id: &'a str,
     pub(super) occurrence_id: &'a str,
     pub(super) title: String,
+    /// The source's name as the notice shows it.
+    pub(super) source: String,
 }
 
 /// A source the agent may subscribe to, as the picker names it.
@@ -67,11 +71,6 @@ impl KernelRuntimeState {
         else {
             return Err(store::error("not a notification trigger"));
         };
-        if request.busy_policy.is_some() {
-            return Err(store::error(
-                "a notification trigger always queues; it has no busy policy",
-            ));
-        }
         let agent = self.owned.ensure_agent_prompt_access(
             &request.agent_id,
             caller,
@@ -167,7 +166,7 @@ impl KernelRuntimeState {
             let trigger = self.owned.session_store.write().update_agent_trigger(
                 &request.session_id,
                 &trigger_id,
-                None,
+                request.busy_policy,
                 request.prompt.filter(|p| !p.trim().is_empty()),
                 Some(true),
             )?;
@@ -190,6 +189,7 @@ impl KernelRuntimeState {
                 subscription_id.clone(),
                 resolved.display_name,
                 request.prompt,
+                request.busy_policy.unwrap_or(AgentTriggerBusyPolicy::Queue),
             )?;
         let subscription = if let AgentTriggerNotificationSource::Workflow { source_id } = source {
             Some(WorkflowNotificationSubscription {
@@ -623,6 +623,7 @@ impl KernelRuntimeState {
             title: crate::durable_state::workflow_notifications::subscription_settings::title_of(
                 &envelope,
             ),
+            source: envelope.display_name.clone(),
         };
         if let Some(prompt_id) = self
             .queue_agent_notification_input(session_id, trigger_id, &receipt, payload, hold)
@@ -672,12 +673,15 @@ impl KernelRuntimeState {
             return Ok(Some(prompt_id));
         }
         if now >= deadline
-            || self
-                .owned
-                .notification_held(hold.subscription_id, hold.occurrence_id, hold.title)?
+            || self.owned.notification_held(
+                hold.subscription_id,
+                hold.occurrence_id,
+                hold.title.clone(),
+            )?
         {
             return Ok(None);
         }
+        let notice = self.record_notification_occurrence(session_id, agent_id, &hold, &payload)?;
         self.owned
             .durable_state_store
             .reserve_agent_notification_lineage(
@@ -686,7 +690,7 @@ impl KernelRuntimeState {
                     trigger_id, &payload,
                 )?,
             )?;
-        let Some(dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
+        let Some(mut dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             session_id,
             trigger_id,
             crate::session::TriggerInputKind::Notification,
@@ -696,6 +700,7 @@ impl KernelRuntimeState {
             // Off, or mid-firing: the accepted occurrence waits for the next pass.
             return Ok(None);
         };
+        dispatch.prompt = format!("{}\n\n{notice}", dispatch.prompt);
         let now = crate::session::unix_epoch_ms();
         match self.fire_agent_trigger(&dispatch).await {
             Ok(AgentTriggerFiring::Fired {
@@ -737,6 +742,39 @@ impl KernelRuntimeState {
                 Err(error)
             }
         }
+    }
+
+    /// Puts the occurrence, in full, in the agent's inbox and returns the one line its prompt
+    /// carries. The row is already accepted: the prompt is how the agent is told, so the inbox
+    /// delivers nothing of its own. One row per subscription and occurrence, whatever the retries.
+    fn record_notification_occurrence(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        hold: &NotificationHold<'_>,
+        payload: &serde_json::Value,
+    ) -> Result<String, DaemonError> {
+        let mut event = crate::durable_state::agent_lifecycle::occurrence(
+            session_id,
+            agent_id,
+            hold.subscription_id,
+            hold.occurrence_id,
+            "notification",
+            payload.clone(),
+        );
+        event.state = "accepted".into();
+        let crate::durable_state::agent_lifecycle::Outcome::Event(event) =
+            self.owned.durable_state_store.agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::Occur(event),
+            )?
+        else {
+            return Err(store::error("notification inbox row missing"));
+        };
+        Ok(super::agent_inbox_wake_text::notification_notice(
+            &hold.title,
+            &hold.source,
+            event.sequence,
+        ))
     }
 
     /// Settles the receipt with its prompt; true when that was the subscription's one delivery.

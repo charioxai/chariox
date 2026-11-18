@@ -345,6 +345,50 @@ async fn a_subscription_made_again_for_the_same_source_and_agent_keeps_the_earli
     );
 }
 
+/// Queue is the default; the Subscriptions row changes it and a new subscriber keeps it.
+#[tokio::test]
+async fn a_subscription_mode_defaults_to_queue_changes_and_follows_a_new_subscriber() {
+    use crate::session::AgentTriggerBusyPolicy::{Queue, Steer};
+    let rig = rig().await;
+    let source = app_event_source(&rig);
+    subscribe(&rig, &source, serde_json::json!([]), false)
+        .await
+        .unwrap();
+    let id = rig.rows()[0].subscription.subscription_id.clone();
+    assert_eq!(rig.rows()[0].mode, Some(Queue));
+
+    rig.change(&id, NotificationSubscriptionChange::Mode { mode: Steer })
+        .await;
+    assert_eq!(rig.rows()[0].mode, Some(Steer));
+
+    let reviewer = rig
+        .runtime
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&rig.session_id, "dev-stub")
+                .with_alias("reviewer"),
+        )
+        .await
+        .unwrap();
+    rig.change(
+        &id,
+        NotificationSubscriptionChange::Subscriber {
+            agent_id: reviewer.id().into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        rig.rows()[0].mode,
+        Some(Steer),
+        "the mode moves with the subscription"
+    );
+    rig.change(
+        &rig.rows()[0].subscription.subscription_id,
+        NotificationSubscriptionChange::Mode { mode: Queue },
+    )
+    .await;
+    assert_eq!(rig.rows()[0].mode, Some(Queue));
+}
+
 #[tokio::test]
 async fn another_agent_of_the_room_takes_a_subscription_over_with_its_counters() {
     let rig = rig().await;

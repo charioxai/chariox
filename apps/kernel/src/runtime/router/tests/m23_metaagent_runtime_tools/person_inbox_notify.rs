@@ -271,14 +271,17 @@ async fn an_agent_that_sends_fourteen_notices_leaves_five_cards_and_one_noisy_ca
     }
 
     let cards = room.inbox().await;
-    let single = cards
-        .iter()
-        .filter(|card| notice(card).folded == 0)
-        .count();
+    let single = cards.iter().filter(|card| notice(card).folded == 0).count();
     assert_eq!(single, 5, "the first five notices keep their own cards");
-    let noisy: Vec<_> = cards.iter().filter(|card| notice(card).folded > 0).collect();
+    let noisy: Vec<_> = cards
+        .iter()
+        .filter(|card| notice(card).folded > 0)
+        .collect();
     assert_eq!(noisy.len(), 1, "every further notice folds into one card");
-    assert_eq!(noisy[0].card_id, last, "a folded notice answers with the folded card's id");
+    assert_eq!(
+        noisy[0].card_id, last,
+        "a folded notice answers with the folded card's id"
+    );
     let folded = notice(noisy[0]);
     assert_eq!(folded.folded, 9);
     assert!(
@@ -302,5 +305,8 @@ async fn an_agent_that_sends_fourteen_notices_leaves_five_cards_and_one_noisy_ca
         .find(|notice| notice.folded > 0)
         .unwrap();
     assert_eq!(folded.folded, 10);
-    assert!(!folded.read, "a new folded notice makes the card unread again");
+    assert!(
+        !folded.read,
+        "a new folded notice makes the card unread again"
+    );
 }

@@ -609,6 +609,10 @@ impl KernelRuntimeState {
             Some(payload) if dispatch.responsible => {
                 super::workflow_responsible_prompt::responsible_prompt(&dispatch.prompt, payload)
             }
+            // A notification's occurrence is in the agent's inbox; the prompt names it in one line.
+            Some(_) if dispatch.input_kind == crate::session::TriggerInputKind::Notification => {
+                dispatch.prompt.clone()
+            }
             Some(payload) => {
                 // JSON escaping prevents external text from closing the data block.
                 let payload = payload

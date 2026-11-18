@@ -16,6 +16,8 @@ struct Subscribe {
     options: Vec<crate::local::NotificationOptionValue>,
     #[serde(default)]
     once: bool,
+    /// Whether an occurrence waits for the running turn to end (the default) or joins it.
+    mode: Option<crate::session::AgentTriggerBusyPolicy>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,7 +164,7 @@ impl KernelRuntimeState {
                             options: args.options,
                             once: args.once,
                         },
-                        busy_policy: None,
+                        busy_policy: args.mode,
                         prompt: Some(args.prompt),
                     },
                     agent.owner_user_id(),
@@ -204,5 +206,40 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({"trigger_id":trigger.id(),"source":trigger.source(),"enabled":trigger.enabled()}),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Subscribe;
+    use crate::session::AgentTriggerBusyPolicy;
+
+    fn parse(mode: Option<&str>) -> Result<Subscribe, serde_json::Error> {
+        let mut args = serde_json::json!({
+            "source": {"workflow": {"source_id": "wf-exit"}},
+            "prompt": "Review what arrives",
+        });
+        if let Some(mode) = mode {
+            args["mode"] = mode.into();
+        }
+        serde_json::from_value(args)
+    }
+
+    #[test]
+    fn the_subscribe_tool_takes_queue_or_steer_and_nothing_else() {
+        assert_eq!(
+            parse(None).unwrap().mode,
+            None,
+            "the kernel's default is queue"
+        );
+        assert_eq!(
+            parse(Some("steer")).unwrap().mode,
+            Some(AgentTriggerBusyPolicy::Steer)
+        );
+        assert_eq!(
+            parse(Some("queue")).unwrap().mode,
+            Some(AgentTriggerBusyPolicy::Queue)
+        );
+        assert!(parse(Some("interrupt")).is_err());
     }
 }

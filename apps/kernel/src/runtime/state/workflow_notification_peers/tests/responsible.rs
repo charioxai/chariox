@@ -404,6 +404,7 @@ async fn follow_run_finished(drill: &Drill) -> String {
             "wf_subscription_own".into(),
             source.display_name.clone(),
             Some("Look at the failed run.".into()),
+            crate::session::AgentTriggerBusyPolicy::Queue,
         )
         .unwrap();
     let home = drill.target_runtime.owned.home_kernel_id();

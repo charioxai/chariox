@@ -103,7 +103,7 @@ async fn an_agent_waiting_for_pr_976_is_woken_by_976_and_not_by_9760() {
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 1, "{queued:?}");
     assert!(
-        queued[0].contains("Review requested on PR #976\""),
+        queued[0].contains("Review requested on PR #976 (from"),
         "{}",
         queued[0]
     );
