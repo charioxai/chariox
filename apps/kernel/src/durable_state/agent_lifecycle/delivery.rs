@@ -162,9 +162,11 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                     "delivery is already admitted; reconcile its exact receipt",
                 ));
             }
-            let urgent_steer = e.urgent && target.is_some() && e.attempted_at_ms.is_none();
+            // An urgent row not attempted yet goes ahead of earlier rows that are not: it steers
+            // a running turn, or starts a turn past a wake held for its blocked task's Resume.
+            let urgent = e.urgent && e.attempted_at_ms.is_none();
             let correlated = super::WORK_CORRELATED.replace("?3", "?5");
-            let earlier:i64=tx.query_row(&format!("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND NOT ({QUEUED_MESSAGE}) AND (?5 IS NULL OR {correlated}) AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END"),params![room,agent,sql_integer(sequence)?,urgent_steer,work],|r|r.get(0)).map_err(sql)?;
+            let earlier:i64=tx.query_row(&format!("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND NOT ({QUEUED_MESSAGE}) AND (?5 IS NULL OR {correlated}) AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END"),params![room,agent,sql_integer(sequence)?,urgent,work],|r|r.get(0)).map_err(sql)?;
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }

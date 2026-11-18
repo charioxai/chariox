@@ -432,3 +432,152 @@ async fn resume_on_the_card_of_an_undelivered_message_sends_it_again() {
     assert_eq!(f.state_of(lost.sequence), "accepted");
     assert!(f.child_is_running());
 }
+
+impl Fixture {
+    /// The child's waiting task whose wake was refused before it started (a declined Vault
+    /// unlock) and that was blocked for its owner: the wake stays pending, held for Resume.
+    fn blocked_task_with_held_wake(&self) -> (String, u64) {
+        let store = &self.runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        let Outcome::Task(task) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                prompt: "blocked-turn".into(),
+                run: None,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("task")
+        };
+        let timer: AgentWake = serde_json::from_value(serde_json::json!({
+            "id": "held-timer", "task_id": task.task_id, "room_id": self.room,
+            "agent_id": self.child, "registration_id": "completion-held-timer",
+            "kind": "timer", "label": "check later", "state": "scheduled", "created_at_ms": now,
+            "verified_at_ms": null, "next_due_ms": now + 3_600_000, "interval_ms": null,
+            "command": [], "match_text": null, "matched_at_ms": null, "pid": null,
+            "exit_code": null, "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
+            "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
+            "last_acknowledged_at_ms": null, "alerted_sequence": null
+        }))
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                registrations: vec!["completion-held-timer".into()],
+                cursor: 0,
+                deadline: Some(now + 7_200_000),
+                reason: "check later".into(),
+                now,
+            })
+            .unwrap();
+        let Outcome::Event(wake) = store
+            .agent_lifecycle(Operation::Occur(
+                crate::durable_state::agent_lifecycle::occurrence(
+                    &self.room,
+                    &self.child,
+                    "held-source",
+                    "held-source-done",
+                    "source_completed",
+                    serde_json::json!({"task_id": task.task_id, "success": true}),
+                ),
+            ))
+            .unwrap()
+        else {
+            panic!("event")
+        };
+        store
+            .agent_lifecycle(Operation::Attempt {
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                sequence: wake.sequence,
+                prompt: "refused-wake".into(),
+                target: None,
+                run: None,
+                now,
+                work: None,
+                through: wake.sequence,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Receipt {
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                sequence: wake.sequence,
+                state: "rejected".into(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Block {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                reason: "The Vault unlock was declined; unlock the Vault and Resume, or Cancel"
+                    .into(),
+            })
+            .unwrap();
+        (task.task_id, wake.sequence)
+    }
+}
+
+/// An urgent message to an idle agent whose blocked task holds a refused wake for its owner's
+/// Resume starts a turn of its own; the held wake keeps waiting for the Resume.
+#[tokio::test]
+async fn an_urgent_message_passes_a_wake_held_for_a_blocked_tasks_resume() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let (task, held) = f.blocked_task_with_held_wake();
+    let message = f.message("urgent-to-blocked", true, false);
+
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+
+    assert_eq!(f.state_of(message.sequence), "accepted");
+    assert!(f.child_is_running(), "the urgent message starts a turn");
+    assert_eq!(
+        f.state_of(held),
+        "pending",
+        "the held wake waits for Resume"
+    );
+    let blocked = f
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_task(&task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        blocked.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked
+    );
+}
+
+/// A message that is not urgent waits for the next turn, as it does for any agent: the held
+/// wake does not start one for it either.
+#[tokio::test]
+async fn a_queued_message_behind_a_held_wake_starts_nothing() {
+    let f = Fixture::with_child_provider("dev-stub");
+    let (_, held) = f.blocked_task_with_held_wake();
+    let message = f.message("queued-to-blocked", false, false);
+
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+
+    assert_eq!(f.state_of(message.sequence), "pending");
+    assert_eq!(f.state_of(held), "pending");
+    assert!(!f.child_is_running());
+}
+

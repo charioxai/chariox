@@ -151,7 +151,16 @@ impl KernelRuntimeState {
                             })?;
                         continue;
                     }
-                    WakeDisposition::Hold => return Ok(()),
+                    WakeDisposition::Hold => match self.urgent_past_held_wake(
+                        room,
+                        agent,
+                        &event,
+                        &tasks,
+                        work.as_deref(),
+                    )? {
+                        Some(urgent) => break urgent,
+                        None => return Ok(()),
+                    },
                     WakeDisposition::Deliver => {}
                 }
             }
@@ -311,9 +320,6 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
-        if attempt.state == "blocked" {
-            return Ok(());
-        }
         self.owned.record_woken_waits(&waiting, &attempt);
         if carries_brief {
             self.mark_brief_shown(room, agent, event.sequence)?;
@@ -585,6 +591,52 @@ impl KernelRuntimeState {
             return WakeDisposition::Retire;
         }
         WakeDisposition::Deliver
+    }
+    /// The urgent row that starts a turn while the front is a wake held for its blocked task's
+    /// Resume: the held wake keeps its answer for the owner, and an urgent message, or an urgent
+    /// wake of other work, does not wait for that answer. A sudo-bound window keeps its fence.
+    fn urgent_past_held_wake(
+        &self,
+        room: &str,
+        agent: &str,
+        held: &ledger::InboxEvent,
+        tasks: &[ledger::AgentTaskExecution],
+        work: Option<&str>,
+    ) -> Result<Option<ledger::InboxEvent>, DaemonError> {
+        if work.is_some() {
+            return Ok(None);
+        }
+        let Some(urgent) = self
+            .owned
+            .durable_state_store
+            .agent_urgent_delivery_front(room, agent)?
+            .filter(|urgent| {
+                urgent.state == "pending"
+                    && (urgent.kind == "message"
+                        || matches!(
+                            self.wake_disposition(urgent, tasks),
+                            WakeDisposition::Deliver
+                        ))
+            })
+        else {
+            return Ok(None);
+        };
+        crate::logging::info_with_fields(
+            "runtime.agent_inbox",
+            "urgent inbox event passes a wake held for its blocked task's Resume",
+            serde_json::json!({
+                "session_id": room,
+                "agent_id": agent,
+                "sequence": urgent.sequence,
+                "held_sequence": held.sequence,
+                "held_task_ids": tasks
+                    .iter()
+                    .filter(|t| t.state == ExecutionState::Blocked && names_task(held, &t.task_id))
+                    .map(|t| t.task_id.as_str())
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        Ok(Some(urgent))
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.
