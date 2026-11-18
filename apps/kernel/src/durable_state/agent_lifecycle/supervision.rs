@@ -668,22 +668,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
             drop(q);
-            if resume && !deliveries.is_empty() {
-                return Err(error("unconfirmed delivery must receive its exact provider receipt or be explicitly cancelled before resume"));
-            }
-            if !resume {
-                for sequence in deliveries {
-                    let mut event = get_event(
-                        tx,
-                        &t.room_id,
-                        &t.agent_id,
-                        u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
-                    )?;
-                    if delivery_belongs_to_task(tx, &event, &t)? {
-                        event.state = "failed".into();
-                        save_event(tx, &event)?;
-                    }
+            // Only this task's own unsettled deliveries hold its Resume: another turn's message
+            // on its way in keeps its place in the agent's queue either way.
+            for sequence in deliveries {
+                let mut event = get_event(
+                    tx,
+                    &t.room_id,
+                    &t.agent_id,
+                    u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
+                )?;
+                if !delivery_belongs_to_task(tx, &event, &t)? {
+                    continue;
                 }
+                if resume {
+                    return Err(error(format!(
+                        "unconfirmed delivery of inbox event {} to task {} must receive its exact provider receipt or be explicitly cancelled before resume",
+                        event.sequence, t.task_id
+                    )));
+                }
+                event.state = "failed".into();
+                save_event(tx, &event)?;
             }
             let retry_wake = resume && t.wait.is_some() && pending_refused_wake(tx, &t)?;
             let blocked_revision = t.blocked_revision;

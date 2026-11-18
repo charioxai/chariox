@@ -142,8 +142,17 @@ impl KernelRuntimeState {
         let _ = self.owned.session_snapshot(&next.room_id);
         outcome
     }
+    /// The person and the agent read why the answer did not take, and the kernel log keeps it.
     fn record_agent_task_owner_failure(&self, task: &AgentTaskExecution, error: &DaemonError) {
-        tracing::warn!(task_id=%task.task_id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "task owner action failed");
+        let error = crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();
+        crate::logging::warn_with_fields(
+            "runtime.task_owner_action",
+            "task owner action failed",
+            serde_json::json!({
+                "session_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                "blocked_revision": task.blocked_revision, "error": error,
+            }),
+        );
         self.owned.record_notice_for_agent(
             &task.room_id,
             None,
@@ -151,7 +160,10 @@ impl KernelRuntimeState {
             self.owned
                 .attachment_store
                 .list_session_attachment_ids(&task.room_id),
-            "Owner action failed. Check the latest task card and try again.",
+            format!(
+                "Owner action failed for task {}: {error}. Check the latest task card and try again.",
+                task.task_id
+            ),
         );
         self.owned
             .terminal_stream
