@@ -27,12 +27,18 @@ const FORWARDED_DECISION_RETENTION: Duration = Duration::from_secs(600);
 /// How often a card held open for a provider terminal checks the terminal is still there; the
 /// card's own timeout applies once it is gone.
 const PROVIDER_TERMINAL_RECHECK: Duration = Duration::from_secs(5);
-// A Claude permission hook outwaits a forwarded interaction's timeout and relay
-// buffer, with room for event pickup and the relay connection, so the deny it
-// resolves to still reaches Claude.
+/// How long past its own deadline a card waits for the person at a provider terminal. The
+/// kernel then settles it, so the provider's handler, which outwaits this, always gets an answer.
+pub(crate) const PROVIDER_TERMINAL_HOLD_LIMIT_SECS: u64 = 23 * 60 * 60;
+const PROVIDER_TERMINAL_HOLD_LIMIT: Duration =
+    Duration::from_secs(PROVIDER_TERMINAL_HOLD_LIMIT_SECS);
+// A Claude permission hook outwaits a held card and a forwarded interaction's timeout and
+// relay buffer, with room for event pickup and the relay connection, so the answer or deny the
+// kernel settles it with always reaches Claude.
 const _: () = assert!(
     crate::provider::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-        >= crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
+        >= PROVIDER_TERMINAL_HOLD_LIMIT_SECS
+            + crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
             + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER.as_secs()
             + 15
 );
@@ -498,6 +504,27 @@ async fn request_runtime_interaction_with_timeout(
     operation: &'static str,
     forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    request_runtime_interaction_holding(
+        state,
+        session_id,
+        interaction,
+        operation,
+        forwarding,
+        PROVIDER_TERMINAL_HOLD_LIMIT,
+    )
+    .await
+}
+
+/// `hold_limit` bounds how long a card waits past its own deadline for the person at a
+/// provider terminal; tests pass a short one.
+async fn request_runtime_interaction_holding(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    interaction: RuntimeInteraction,
+    operation: &'static str,
+    forwarding: Option<&RemoteNativeInteractionContext>,
+    hold_limit: Duration,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     if let Some(resolution) =
         state.sudo_native_permission_resolution(session_id, &interaction, forwarding)
     {
@@ -540,19 +567,19 @@ async fn request_runtime_interaction_with_timeout(
         timeout_interaction_id.clone(),
     )));
     // Waiting for another tool consumes this decision's original budget. While a provider's
-    // own terminal runs the pane the card shows in, the person sits there: it has no deadline.
-    let pane_agent_id = interaction
-        .shown_in_agent_id()
-        .or_else(|| interaction.agent_id())
-        .map(str::to_owned);
+    // own terminal runs the pane the registered card shows in, the person sits there: the card
+    // waits for them, up to the hold limit, and the kernel then settles it like any timeout.
     let resolution = if let Some(mut deadline) = deadline {
+        let hold_ends = deadline + hold_limit;
         loop {
             tokio::select! {
                 biased;
                 resolution = &mut receiver => break resolution,
                 _ = tokio::time::sleep_until(deadline) => {
-                    if pane_agent_id.as_deref().is_some_and(|agent_id| state.provider_terminal_runs_agent(&timeout_session_id, agent_id)) {
-                        deadline = tokio::time::Instant::now() + PROVIDER_TERMINAL_RECHECK;
+                    if tokio::time::Instant::now() < hold_ends
+                        && state.provider_terminal_holds_card(&timeout_session_id, &timeout_interaction_id)
+                    {
+                        deadline = (tokio::time::Instant::now() + PROVIDER_TERMINAL_RECHECK).min(hold_ends);
                         continue;
                     }
                     state.timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id).await?;
@@ -771,8 +798,14 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[tokio::test]
-    async fn a_permission_card_has_no_deadline_while_a_provider_terminal_runs_its_pane() {
+    /// A Room whose top agent a provider terminal runs, with a Chariox-run sub-agent below it.
+    async fn native_terminal_fixture() -> (
+        crate::runtime::router::CommandRouter,
+        String,
+        String,
+        String,
+        std::path::PathBuf,
+    ) {
         let root = crate::test_support::test_workspace_root().join(format!(
             "native-permission-terminal-{:016x}",
             rand::random::<u64>()
@@ -786,41 +819,75 @@ mod tests {
                 &worktree, &worktree,
             ))
             .unwrap();
-        let (session, agent) = (session.id().to_string(), agent.id().to_string());
-        {
-            let run = app
-                .launch_provider(
-                    crate::provider::LaunchProviderRequest::new(
-                        &session,
-                        "dev-stub",
-                        "claude-code",
-                        "default",
-                        "sonnet",
-                    )
-                    .with_agent_id(&agent)
-                    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+        let (session, parent) = (session.id().to_string(), agent.id().to_string());
+        let child = format!("child-{:016x}", rand::random::<u64>());
+        let mut child_agent = crate::agent::AgentInstance::new(
+            child.clone(),
+            "child",
+            session.clone(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 1, 1, 1),
+        );
+        child_agent.set_parent_agent(Some(crate::agent::AgentRef::local(parent.clone())));
+        app.agents_mut().restore_agent(child_agent);
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    &session,
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
                 )
-                .unwrap();
-            app.update_provider_run_projection(run);
-        }
+                .with_agent_id(&parent)
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+            )
+            .unwrap();
+        app.update_provider_run_projection(run);
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
             Arc::new(tokio::sync::Mutex::new(app)),
             1,
         );
-        let state = router.runtime_state();
-        let id = format!("native-terminal-{session}");
-        let waiting_state = state.clone();
-        let (waiting_session, waiting_id) = (session.clone(), id.clone());
-        let waiting = tokio::spawn(async move {
-            request_runtime_interaction_with_timeout(
-                &waiting_state,
-                &waiting_session,
-                queued_permission(&waiting_id, &agent, 1),
+        (router, session, parent, child, root)
+    }
+
+    fn wait_for_permission(
+        state: &KernelRuntimeState,
+        session: &str,
+        id: &str,
+        agent: &str,
+        hold_limit: Duration,
+    ) -> tokio::task::JoinHandle<Result<ProviderNativeInteractionResolution, DaemonError>> {
+        let (state, session, id, agent) = (
+            state.clone(),
+            session.to_owned(),
+            id.to_owned(),
+            agent.to_owned(),
+        );
+        tokio::spawn(async move {
+            request_runtime_interaction_holding(
+                &state,
+                &session,
+                queued_permission(&id, &agent, 1),
                 "native_permission_terminal_test",
                 None,
+                hold_limit,
             )
             .await
-        });
+        })
+    }
+
+    #[tokio::test]
+    async fn a_permission_card_has_no_deadline_while_a_provider_terminal_runs_its_pane() {
+        let (router, session, parent, _child, root) = native_terminal_fixture().await;
+        let state = router.runtime_state();
+        let id = format!("native-terminal-{session}");
+        let waiting =
+            wait_for_permission(&state, &session, &id, &parent, PROVIDER_TERMINAL_HOLD_LIMIT);
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert!(
             !waiting.is_finished(),
@@ -833,6 +900,82 @@ mod tests {
         let resolution = waiting.await.unwrap().unwrap();
         assert_eq!(resolution.choice_id.as_deref(), Some("allow"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sub_agent_card_shown_in_a_provider_terminal_pane_waits_for_its_person() {
+        let (router, session, parent, child, root) = native_terminal_fixture().await;
+        let state = router.runtime_state();
+        let id = format!("native-terminal-child-{session}");
+        let waiting =
+            wait_for_permission(&state, &session, &id, &child, PROVIDER_TERMINAL_HOLD_LIMIT);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let shown_in = state
+            .list_session_health_snapshots()
+            .into_iter()
+            .find(|room| room.id() == session)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == id)
+            .and_then(|interaction| interaction.shown_in_agent_id().map(str::to_owned));
+        assert_eq!(
+            shown_in.as_deref(),
+            Some(parent.as_str()),
+            "the child's card shows in its top parent's pane"
+        );
+        assert!(
+            !waiting.is_finished(),
+            "the parent's provider terminal holds the card its pane shows, though the child runs in Chariox"
+        );
+        state
+            .resolve_runtime_interaction(&session, &id, "deny", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            waiting.await.unwrap().unwrap().choice_id.as_deref(),
+            Some("deny")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_card_is_settled_by_the_kernel_once_the_hold_limit_passes() {
+        let (router, session, parent, _child, root) = native_terminal_fixture().await;
+        let state = router.runtime_state();
+        let id = format!("native-terminal-limit-{session}");
+        // 1 s deadline + 1 s hold stands in for the 300 s timeout and the 23 h hold: the provider's
+        // handler outwaits both, so the kernel's settlement is what it reads.
+        let waiting = wait_for_permission(&state, &session, &id, &parent, Duration::from_secs(1));
+        let resolution = tokio::time::timeout(Duration::from_secs(6), waiting)
+            .await
+            .expect("the kernel settles a held card at the hold limit; no card waits for nobody")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.choice_id.as_deref(), Some("deny"));
+        assert!(!state
+            .list_session_health_snapshots()
+            .into_iter()
+            .find(|room| room.id() == session)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction.id() == id));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_claude_permission_hook_outwaits_every_card_the_kernel_holds() {
+        let handler = include_str!("../provider/claude/native_tui_hook.mjs");
+        let wait_ms = crate::provider::CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS * 1000;
+        assert!(handler.contains(&format!("const deadline = Date.now() + {wait_ms}")));
+        assert!(
+            Duration::from_millis(wait_ms)
+                > PROVIDER_TERMINAL_HOLD_LIMIT
+                    + Duration::from_secs(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS)
+                    + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER,
+            "the hook still waits when the kernel settles a held card"
+        );
     }
 
     #[tokio::test]

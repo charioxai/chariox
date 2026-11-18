@@ -7,11 +7,13 @@ struct Pane {
     router: Arc<CommandRouter>,
     session_id: String,
     agent_id: String,
+    config: DaemonConfig,
     _worktree: crate::test_temp_dir::TestTempDir,
 }
 
 fn pane(client_interface: crate::provider::ProviderClientInterface) -> Pane {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
     let worktree = crate::test_temp_dir::TestTempDir::new("pane-feed");
     let path = worktree.path().display().to_string();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -40,6 +42,7 @@ fn pane(client_interface: crate::provider::ProviderClientInterface) -> Pane {
         router,
         session_id,
         agent_id,
+        config,
         _worktree: worktree,
     }
 }
@@ -249,5 +252,43 @@ async fn only_a_provider_terminal_reports_settings_and_every_client_then_shows_t
         terminal.feed().await.settings,
         feed.settings,
         "every reader sees it"
+    );
+}
+
+#[tokio::test]
+async fn reported_settings_survive_a_kernel_restart() {
+    let terminal = pane(crate::provider::ProviderClientInterface::NativeTui);
+    let report = LocalDaemonRequest::ReportPaneSettings(ReportPaneSettingsRequest {
+        session_id: terminal.session_id.clone(),
+        agent_id: terminal.agent_id.clone(),
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+        execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
+        permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+    });
+    terminal.send(report).await.expect("the report is taken");
+    let Pane {
+        router,
+        agent_id,
+        config,
+        _worktree,
+        ..
+    } = terminal;
+    drop(router);
+    let restored = DaemonApp::bootstrap(config).expect("the kernel restarts on its state");
+    let agent = restored
+        .agents()
+        .get_agent(&agent_id)
+        .expect("the agent restores");
+    assert_eq!(agent.model(), Some("opus"));
+    assert_eq!(agent.effort(), Some("high"));
+    assert_eq!(
+        agent.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Plan),
+        "the terminal's mode is the agent's after a restart"
+    );
+    assert_eq!(
+        agent.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Required)
     );
 }
