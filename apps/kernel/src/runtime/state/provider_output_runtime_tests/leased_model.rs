@@ -39,6 +39,9 @@ async fn a_leased_agent_runs_a_model_the_worker_serves() {
     };
     let chosen = spawn(None).await.unwrap();
     assert_eq!(chosen.model.as_deref(), Some("worker-model"));
+    // A provider-qualified name from home resolves to the worker's catalog id.
+    let qualified = spawn(Some("codex/worker-model")).await.unwrap();
+    assert_eq!(qualified.model.as_deref(), Some("worker-model"));
     let refused = spawn(Some("home-only-model"))
         .await
         .unwrap_err()
