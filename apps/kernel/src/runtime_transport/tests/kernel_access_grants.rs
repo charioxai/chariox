@@ -1990,7 +1990,7 @@ async fn a_refused_request_tells_the_grant_holder_why() {
         "workspace_id": "/tmp",
         "worktree_id": "/tmp",
         "metaagent": true,
-        "agent_defaults": {"provider": "claude", "model": "m", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
     }}));
     let error = &refused["error"];
     let message = error["message"].as_str().unwrap_or_default();
@@ -2011,10 +2011,10 @@ async fn an_archived_default_project_is_explained_to_the_grant_holder() {
     grant(&mut kernel, &mut holder).await;
     let workspace = kernel.root.join("project-workspace");
     std::fs::create_dir(&workspace).unwrap();
-    // A named model and effort keep the account catalog out of this test.
+    // A model of the offline Claude catalog and an effort keep the account catalog out of this test.
     let request = serde_json::json!({"CreateSession": {
         "workspace_id": workspace, "worktree_id": workspace,
-        "agent_defaults": {"provider": "claude", "model": "m", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
     }});
     let created = kernel.request(request.clone()).await;
     let project_id = created["response"]["SessionCreated"]["session"]["project_id"]
