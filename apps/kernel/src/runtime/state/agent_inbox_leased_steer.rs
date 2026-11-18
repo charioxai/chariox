@@ -18,7 +18,7 @@ impl KernelRuntimeState {
         active: &crate::session::PromptQueueItem,
         prompt: crate::session::PromptQueueItem,
         work: Option<String>,
-        carries_brief: bool,
+        shown: &[u64],
     ) -> Result<(), DaemonError> {
         let binding = self
             .owned
@@ -70,9 +70,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.owned.record_woken_waits(&waiting, &attempt);
-        if carries_brief {
-            self.mark_brief_shown(room, agent, sequence)?;
-        }
+        self.mark_prompt_events_shown(room, agent, shown)?;
         let result = self
             .steer_remote_agent_message_for_turn(room, &prompt, Some(active.id()), Some(&binding))
             .await;

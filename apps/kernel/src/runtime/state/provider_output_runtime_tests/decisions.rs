@@ -1581,30 +1581,6 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
     );
 }
 
-/// A holder that yields before its turn read the decision is woken for it: it keeps the decision.
-#[tokio::test]
-async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
-    let t = tree(
-        "decision-yield-unread",
-        AgentPermissionLevel::Yolo,
-        AgentPermissionLevel::Yolo,
-    )
-    .await;
-    let _answer = t.raise(permission("perm-unread", &t.c)).await;
-    t.end_turn_yielded(&t.p).await;
-    let events = t.decision_events(&t.p);
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].state, "pending", "the next wake delivers it");
-    assert!(t.decision_events(&t.g).is_empty());
-    assert_eq!(
-        t.runtime
-            .answer_child_decision(&t.room, &t.p, "perm-unread", "allow")
-            .await
-            .unwrap(),
-        ChildDecisionStatus::Answered
-    );
-}
-
 mod answer_audit;
 mod asked_without_waiting;
 mod blocked_card;
@@ -1614,3 +1590,4 @@ mod other_turns;
 mod reparent;
 mod restored;
 mod tenure;
+mod wake_text;
