@@ -1351,14 +1351,29 @@ export class KernelBrowserHost {
         // admitted human viewer with a live display lease owns the fast path.
         const viewerActive=()=>viewerPageInputActive(this,command,scope);
         // MP-08/MP-10/MP-11: the input grant and document fence admit drags too; a DOM mirror needs no video lease.
-        // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
+        // Review #1016 P1: native whole-page input only while this Tab is Chrome's active Tab. A click, key or wheel
+        // notch reads the owner snapshot, which Chrome's activation, resize and detach events retire; a miss reads live.
         // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
+        const kind=command.input?.kind;
         const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
         const candidate=handoverOrdered?null:(nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source);
-        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['key','scroll'].includes(command.input?.kind)}))?candidate:null;
-        const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
-        const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
-        const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
+        const refusedBy=handoverOrdered?'handover':!candidate?.attested?'attested':!viewerActive()?'viewer':
+          !await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['click','key','scroll'].includes(kind)}))?'front':null;
+        const owned=refusedBy?null:candidate;
+        // Diagnostics: the path a viewer's input took, or the gate that left it to CDP (`not_called`: the input
+        // itself is not native, such as a chord, a key without page focus or a mirror-resolved target).
+        let path=refusedBy??'not_called';
+        const failed=error=>{path=error?.code==='native_input_uncertain'?'uncertain':'refused';throw error;};
+        // A native key answers synchronously; a click or wheel notch answers with a promise.
+        const traced=native=>(...args)=>{
+          let done;
+          try{done=native(...args);}catch(error){failed(error);}
+          if(typeof done?.then!=='function'){path=done?'native':'refused';return done;}
+          return done.then(ok=>{path=ok?'native':'refused';return ok;},failed);
+        };
+        const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?traced((x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy)):null;
+        const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?traced((x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}):null;
+        const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?traced((keysym,shift)=>viewerActive()&&owned.key(keysym,shift)):null;
         const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
@@ -1380,6 +1395,7 @@ export class KernelBrowserHost {
         // frame-aligned ack would otherwise serialize kernel input admission.
         deferred?.ack?.catch(()=>{});
         if(dispatched)(nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
+        if(command._display_input===true&&['click','key','scroll'].includes(kind))this.timing(['native','uncertain'].includes(path)?`input_path ${path}`:`input_path cdp ${path}`,at);
         this.timing('cdp_input', at);
       }
       catch (error) {
