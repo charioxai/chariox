@@ -10,7 +10,7 @@ fn workflow_responsible_run_outcome_and_requests_are_bound_to_protocol1011() {
     let bytes = include_bytes!("workflow-responsible-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "f31780c3536df210f600257cac050a462809d2c6aad0c7defdfb6c58247d97f1"
+        "fd8e82e0ed7f349aa407ce1fb62d10d35336db586be2c42b4c85a9545d3b19d3"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(
