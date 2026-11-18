@@ -3,7 +3,7 @@ import "./managed-home-archive-digest.test.mjs"
 import assert from "node:assert/strict"
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -614,6 +614,104 @@ test("managed slice broker verifies archive size and digest before restore", {
     Buffer.from(corruptedResponse.stderrBase64, "base64").toString(),
     /digest does not match|metadata is invalid/,
   )
+})
+
+test("managed slice broker quarantines a corrupt archive generation and never an intact one", {
+  skip: process.platform !== "linux" ? "managed broker pins files through Linux /proc" : false,
+}, async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-archive-quarantine-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  const artifactRoot = join(share, ".broker-private/artifacts")
+  const id = "backup-1"
+  const backupDirectory = join(artifactRoot, "backups", id)
+  const generation = join(backupDirectory, "generation-abcdef")
+  const archive = join(generation, "home.tar.zst")
+  const contents = Buffer.from("verified archive")
+  await mkdir(generation, { recursive: true })
+  await writeFile(archive, contents)
+  await writeFile(join(generation, "metadata.json"), JSON.stringify({
+    schemaVersion: 1,
+    scope: "backup",
+    id,
+    sizeBytes: contents.length,
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  }))
+  const run = kind => {
+    const result = spawnSync(process.execPath, [broker, "--stdio"], {
+      input: `${JSON.stringify({ kind, scope: "backup", id, path: archive })}\n`,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+        CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT: artifactRoot,
+        CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+        CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const response = JSON.parse(result.stdout)
+    return { status: response.status, stdout: Buffer.from(response.stdoutBase64, "base64").toString(), stderr: Buffer.from(response.stderrBase64, "base64").toString() }
+  }
+
+  const intact = run("home_archive_quarantine")
+  assert.notEqual(intact.status, 0)
+  assert.match(intact.stderr, /intact/)
+  assert.deepEqual(await readdir(backupDirectory), ["generation-abcdef"])
+
+  await writeFile(archive, "corrupted archive")
+  const quarantined = run("home_archive_quarantine")
+  assert.equal(quarantined.status, 0, quarantined.stderr)
+  const { path: moved } = JSON.parse(quarantined.stdout)
+  assert.match(moved, /generation-abcdef\.corrupt-[0-9a-f]{16}$/)
+  assert.deepEqual(await readdir(backupDirectory), [basename(moved)])
+  assert.equal(await readFile(join(moved, "home.tar.zst"), "utf8"), "corrupted archive")
+  // The moved generation is no longer an archive anyone can verify or restore.
+  assert.notEqual(run("home_archive_verify").status, 0)
+})
+
+test("managed slice broker quarantines a generation whose metadata cannot be parsed or has the wrong keys", {
+  skip: process.platform !== "linux" ? "managed broker pins files through Linux /proc" : false,
+}, async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-metadata-quarantine-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  const artifactRoot = join(share, ".broker-private/artifacts")
+  const contents = Buffer.from("verified archive")
+  const valid = { schemaVersion: 1, scope: "backup", sizeBytes: contents.length, sha256: createHash("sha256").update(contents).digest("hex") }
+  const variants = {
+    truncated: id => JSON.stringify({ ...valid, id }).slice(0, 30),
+    missingKey: id => JSON.stringify({ ...valid, id, sha256: undefined }),
+    extraKey: id => JSON.stringify({ ...valid, id, comment: "extra" }),
+    notAnObject: () => "null",
+  }
+  for (const [name, metadata] of Object.entries(variants)) {
+    const id = `backup-${name}`
+    const backupDirectory = join(artifactRoot, "backups", id)
+    const generation = join(backupDirectory, "generation-abcdef")
+    const archive = join(generation, "home.tar.zst")
+    await mkdir(generation, { recursive: true })
+    await writeFile(archive, contents)
+    await writeFile(join(generation, "metadata.json"), metadata(id))
+    const result = spawnSync(process.execPath, [broker, "--stdio"], {
+      input: `${JSON.stringify({ kind: "home_archive_quarantine", scope: "backup", id, path: archive })}\n`,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+        CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT: artifactRoot,
+        CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+        CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const response = JSON.parse(result.stdout)
+    const stderr = Buffer.from(response.stderrBase64, "base64").toString()
+    assert.equal(response.status, 0, `${name}: ${stderr}`)
+    const { path: moved } = JSON.parse(Buffer.from(response.stdoutBase64, "base64").toString())
+    assert.match(moved, /generation-abcdef\.corrupt-[0-9a-f]{16}$/, name)
+    assert.deepEqual(await readdir(backupDirectory), [basename(moved)], name)
+  }
 })
 
 test("managed slice broker permits a disk-admission helper through its execution-time start gate", async (context) => {
