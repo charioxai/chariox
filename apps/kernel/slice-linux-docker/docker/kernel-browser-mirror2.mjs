@@ -124,7 +124,7 @@ function dataUrlBytes(url) {
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.
-export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)), 0);
+export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box, ink }) => { const [x, y, w, h] = ink ?? box; return sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)); }, 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
 export const regionOverBudget = (boxes, viewport) => regionArea(boxes, viewport) > 0.6 * viewport.width * viewport.height;
 
@@ -1041,16 +1041,19 @@ export class Mirror2 {
     }
     if (!shots.length) return out;
     boxes = shots;
-    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
-    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
+    // A closed root's still covers what its content paints (ink), placed relative to its host's box.
+    const area = b => b.ink ?? b.box;
+    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[1]))));
+    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => area(b)[0] + area(b)[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => area(b)[1] + area(b)[3]))));
     if (x1 <= x0 || y1 <= y0) return [];
     const clip = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scale: 1 };
     const masks = await captureRegionMasks(world.connection, world.sessionId);
     const captured = await this.host.screenshot(tab, clip);
     const protectedRegions = await masks.afterCapture({ width: viewport.width * scale, height: viewport.height * scale });
     const frame = maskPixels(decodePng(captured.data_base64, scale), protectedRegions.map(r => [r.x - clip.x * scale, r.y - clip.y * scale, r.width, r.height]));
-    for (const { id, box } of boxes) {
-      const left = Math.max(box[0], x0), top = Math.max(box[1], y0), right = Math.min(box[0] + box[2], x1), bottom = Math.min(box[1] + box[3], y1);
+    for (const b of boxes) {
+      const { id, box } = b, [ax, ay, aw, ah] = area(b);
+      const left = Math.max(ax, x0), top = Math.max(ay, y0), right = Math.min(ax + aw, x1), bottom = Math.min(ay + ah, y1);
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;

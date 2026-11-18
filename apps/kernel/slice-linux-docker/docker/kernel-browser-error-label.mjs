@@ -33,6 +33,7 @@ const fixedReasons=new Map([
  ['MP-11: native region crosses surface boundary','native_region_boundary_refused'],
  ['MP-11: admitted region lease required','native_region_lease_required'],
  ['MP-11: native window inventory lease','native_window_inventory_retired'],
+ ['MP-08: region video needs the browser\'s own display','region_video_no_display'],
  ['MP-11: native keys held; release desktop input first','native_keys_held'],
  ['MP-08: physical key channel unavailable (Pillow missing)','native_keyboard_pillow_missing'],
  ['MP-08: physical key channel unavailable (Xlib missing)','native_keyboard_xlib_missing'],
