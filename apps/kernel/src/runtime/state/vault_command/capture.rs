@@ -17,7 +17,8 @@ pub(in crate::runtime::state) struct CaptureClaims {
     claims: Arc<std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     /// The unlock of a capture whose command runs on a leased worker, kept until the worker
     /// sends the value, so "ask every time" asks once and a value a service shows once is not lost.
-    unlocks: Arc<std::sync::Mutex<BTreeMap<String, VaultUnlockGuard>>>,
+    /// The id names the hold its expiry belongs to.
+    unlocks: Arc<std::sync::Mutex<BTreeMap<String, (u64, VaultUnlockGuard)>>>,
 }
 
 /// How long a worker's capture command may run, with room for the transfer back.
@@ -45,21 +46,27 @@ impl CaptureClaims {
         Ok(claim.lock_owned().await)
     }
 
+    /// Callers hold the handle's claim and took any earlier hold, so nothing is replaced.
     fn hold_unlock(&self, handle: &str, unlock: VaultUnlockGuard) {
+        let id = rand::random::<u64>();
         if let Ok(mut unlocks) = self.unlocks.lock() {
-            unlocks.insert(handle.to_owned(), unlock);
+            unlocks.insert(handle.to_owned(), (id, unlock));
         }
         let (unlocks, handle) = (self.unlocks.clone(), handle.to_owned());
         tokio::spawn(async move {
             tokio::time::sleep(CAPTURE_UNLOCK_HOLD).await;
-            if let Ok(mut unlocks) = unlocks.lock() {
-                unlocks.remove(&handle);
-            }
+            // A retry holds the unlock anew; only this hold's own expiry ends it.
+            let lapsed = unlocks.lock().ok().and_then(|mut unlocks| {
+                let held = unlocks.get(&handle).is_some_and(|(held, _)| *held == id);
+                held.then(|| unlocks.remove(&handle)).flatten()
+            });
+            drop(lapsed);
         });
     }
 
     fn take_unlock(&self, handle: &str) -> Option<VaultUnlockGuard> {
-        self.unlocks.lock().ok()?.remove(handle)
+        let (_, unlock) = self.unlocks.lock().ok()?.remove(handle)?;
+        Some(unlock)
     }
 }
 
@@ -265,8 +272,11 @@ impl KernelRuntimeState {
         &self,
         actor: &VaultActor,
     ) -> Result<VaultUnlockGuard, DaemonError> {
-        self.ensure_vault_unlocked_for_agent(&actor.session_id, &actor.agent_id, "vault_capture")
-            .await
+        let unlock = self
+            .ensure_vault_unlocked_for_agent(&actor.session_id, &actor.agent_id, "vault_capture")
+            .await?;
+        unlock.keep_open_for(CAPTURE_UNLOCK_HOLD)?;
+        Ok(unlock)
     }
 
     /// Stores a captured value where the Vault is: here, or at the home for an agent on a
@@ -304,11 +314,25 @@ impl KernelRuntimeState {
         use_binding: &crate::config::VaultUseBinding,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
         let handle = captured_handle(actor, request_id);
+        let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, actor, host, use_binding).map(Some);
         }
-        let unlock = self.capture_unlock(actor).await?;
+        // A retry after a failed command keeps the unlock the first attempt held: a fresh
+        // guard on the still open Vault does not lock, and replacing the held one would lock now.
+        let unlock = match self
+            .owned
+            .vault_capture_claims
+            .take_unlock(&handle)
+            .filter(VaultUnlockGuard::still_unlocked)
+        {
+            Some(held) => {
+                held.keep_open_for(CAPTURE_UNLOCK_HOLD)?;
+                held
+            }
+            None => self.capture_unlock(actor).await?,
+        };
         recheck()?;
         self.owned.vault_capture_claims.hold_unlock(&handle, unlock);
         Ok(None)
@@ -336,6 +360,7 @@ impl KernelRuntimeState {
             .owned
             .vault_capture_claims
             .take_unlock(&captured.handle)
+            .filter(VaultUnlockGuard::still_unlocked)
         {
             Some(unlock) => unlock,
             None => self.capture_unlock(actor).await?,

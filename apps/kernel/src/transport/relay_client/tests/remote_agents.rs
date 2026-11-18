@@ -1166,6 +1166,69 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         .credential_vault
         .path
         .clone();
+    // "Just this once": a capture that fails on the worker keeps that unlock, and its retry
+    // stores under it; the Vault locks only after the store.
+    crate::secret::unlock_chariox_encrypted_vault(
+        home_vault_path.clone(),
+        "remote agents vault passphrase",
+        crate::secret::VaultUnlockLease::SingleUse,
+    )
+    .expect("the home Vault unlocks once");
+    let failed = worker_router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &worker_token,
+            "chariox.vault.capture_command",
+            serde_json::json!({
+                "request_id": "slice-capture-once",
+                "argv": ["sh", "-c", "exit 3"],
+                "host": "slice.example.com",
+                "use_binding": binding,
+            }),
+        )
+        .await
+        .expect_err("the command fails");
+    assert!(
+        failed.to_string().contains("exited with code 3"),
+        "{failed}"
+    );
+    let vault_unlocked = || {
+        crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .unlocked
+    };
+    assert!(
+        vault_unlocked(),
+        "a failed capture keeps the once-only unlock"
+    );
+    assert!(
+        crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .expires_at_ms
+            .is_some_and(|until| until >= crate::session::unix_epoch_ms() + 4 * 60_000),
+        "the kept unlock outlasts the retry's command"
+    );
+    let captured_once = tool(
+        "chariox.vault.capture_command",
+        serde_json::json!({
+            "request_id": "slice-capture-once",
+            "argv": ["printf", "slice-once-value"],
+            "host": "slice.example.com",
+            "use_binding": binding,
+        }),
+    )
+    .await;
+    assert!(captured_once.ok, "{:?}", captured_once.payload);
+    stored_by_home(
+        captured_once.payload["credential_id"]
+            .as_str()
+            .expect("captured handle"),
+        "vault_capture",
+    );
+    assert!(
+        !vault_unlocked(),
+        "the once-only unlock ends with the store"
+    );
     crate::secret::unlock_chariox_encrypted_vault(
         home_vault_path,
         "remote agents vault passphrase",

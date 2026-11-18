@@ -2,7 +2,7 @@
 //! use as env/stdin through the real MCP router and real child processes.
 //! Live provider acceptance is the separate drill.
 use super::tests::{fixture, Fixture};
-use super::vault_tests::{call, elevated, names, owner_unlocks, unlock};
+use super::vault_tests::{call, elevated, names, owner_unlocks, unlock, vault_path};
 use super::*;
 use serde_json::{json, Value};
 
@@ -602,6 +602,63 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
         .unwrap()
         .is_empty());
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+// "Just this once" lasts a minute; a capture command may run four. The unlock stays open
+// while the command runs, so the value it prints is stored, and the Vault locks after.
+#[tokio::test]
+async fn a_once_only_unlock_stays_open_until_a_long_capture_is_stored() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault_path(&f),
+        super::tests::PASSKEY,
+        crate::secret::VaultUnlockLease::SingleUse,
+    )
+    .unwrap();
+    let started = workspace(&f).join("once-started");
+    let release = workspace(&f).join("once-release");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+            started.display(),
+            release.display()
+        )
+    ]);
+    let status = || crate::secret::chariox_encrypted_vault_status(vault_path(&f)).unwrap();
+    let running = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let open_until = status().expires_at_ms.expect("a once-only unlock expires");
+        std::fs::write(&release, "go").unwrap();
+        open_until
+    };
+    let (captured, open_until) = tokio::join!(
+        capture(&f, "once-only", argv, json!({"kind":"stdout"})),
+        running
+    );
+    let captured = captured.unwrap();
+    assert!(
+        open_until >= crate::session::unix_epoch_ms() + 4 * 60_000,
+        "the unlock outlasts the longest capture command"
+    );
+    assert!(
+        !status().unlocked,
+        "the once-only unlock ends with the store"
+    );
+    unlock(&f);
+    assert_eq!(
+        stored(&f, captured["credential_id"].as_str().unwrap()).as_str(),
+        SECRET
+    );
     f.state.shutdown_cleanup().await.unwrap();
 }
 
