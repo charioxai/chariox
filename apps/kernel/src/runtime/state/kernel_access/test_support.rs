@@ -13,6 +13,7 @@ mod input_control_authority;
 mod meta_authority;
 mod native_launch_authority;
 mod notification_follows;
+mod owner_cards;
 mod pressure;
 mod session_authority;
 mod standing;
@@ -243,6 +244,11 @@ impl KernelRuntimeState {
             return;
         }
         if self.control_credential_access_for_test(action, vault).await {
+            return;
+        }
+        if action == "owner-cards" {
+            self.raise_owner_cards_for_test(vault.parent().unwrap())
+                .await;
             return;
         }
         if action == "guest" {
