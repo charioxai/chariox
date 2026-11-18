@@ -210,24 +210,3 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         "a notice wakes the watched Inbox at once"
     );
 }
-
-#[tokio::test]
-async fn a_room_collaborator_is_refused_the_owners_inbox() {
-    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
-    let request = LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest);
-    let mut command = KernelCommand::from_local_request("guest-inbox", None, None, &request);
-    command.source = crate::runtime::command::KernelCommandSource::RelayClient;
-    command.caller = crate::runtime::command::KernelCaller::for_relay_request(Some(
-        chariox_relay::protocol::RelayCallerIdentity {
-            realm_id: "test".into(),
-            subject: "client-member".into(),
-            subject_kind: chariox_relay::auth::RelaySubjectKind::Client,
-            expires_at_ms: u64::MAX,
-            token_id: None,
-            user_id: Some("member".into()),
-            public_key_thumbprint: None,
-        },
-    ));
-    assert!(router.dispatch(command, request).await.is_err());
-}

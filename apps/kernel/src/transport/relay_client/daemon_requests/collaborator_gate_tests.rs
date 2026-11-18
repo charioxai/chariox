@@ -33,6 +33,7 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
         serde_json::json!({ "ListPairedClients": null }),
         serde_json::json!({ "ListRemoteMachines": null }),
         serde_json::json!({ "GetUserConfig": null }),
+        serde_json::json!({ "GetPersonInbox": null }),
         serde_json::json!({ "RelayStatus": null }),
         serde_json::json!({ "ListMcpServers": {} }),
         serde_json::json!({ "GetWorkspaceGitOverview": { "workspace_id": "workspace", "worktree_id": "worktree" } }),
