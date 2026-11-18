@@ -294,7 +294,7 @@ pub struct KernelAccessGrant {
     pub covered: Vec<CoveredProcess>,
 }
 
-/// Protocol 1023: the caller's owner's open cards, for a terminal or an external agent's grant.
+/// Protocol 1012: the caller's owner's open cards, for a terminal or an external agent's grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListOwnerInteractionsRequest {}
