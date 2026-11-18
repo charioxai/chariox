@@ -257,6 +257,7 @@ mod tests {
             "haiku",
         )
         .with_agent_id(agent.id())
+        .with_working_directory(worktree.path().to_path_buf())
         .with_provider_credential_env(credentials);
         runtime.spawn_provider_relaunch(request, 0, None, 0);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -287,6 +288,76 @@ mod tests {
         assert!(
             probe.observed_exactly("runtime_binding"),
             "reload must deliver the selected credential at structured initialization"
+        );
+    }
+
+    /// A Claude agent that starts again after its process ended, a policy change or a
+    /// login is a cold start too: its folder is trusted before Claude runs again.
+    #[tokio::test]
+    async fn a_relaunch_trusts_the_agents_workspace_before_claude_starts() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("relaunch-trusts-workspace");
+        let profile = worktree.path().join("claude-profile");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude",
+            "selected",
+            "haiku",
+        )
+        .with_agent_id(agent.id())
+        .with_working_directory(worktree.path().to_path_buf())
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            profile.to_string_lossy().into_owned(),
+        )]));
+        runtime.spawn_provider_relaunch(request, 0, None, 0);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .is_some_and(|r| r.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the relaunch must start the run");
+        let own = worktree.path().canonicalize().unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(
+            state["projects"][own.to_str().unwrap()]["hasTrustDialogAccepted"],
+            true
+        );
+        let notices: Vec<String> = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(session.id(), Some(agent.id()))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice)
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(
+            notices
+                .iter()
+                .filter(
+                    |text| **text == format!("Chariox trusted {} for Claude Code.", own.display())
+                )
+                .count(),
+            1,
+            "{notices:?}"
         );
     }
 

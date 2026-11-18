@@ -7,7 +7,7 @@ import {spawnSync} from 'node:child_process'
 const repo=process.env.MP11_TEST_SOURCE??path.resolve(import.meta.dirname,'..')
 function driver(root,action){
  const source=fs.readFileSync(path.join(repo,'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'),'utf8')
- const copy=source.slice(source.indexOf('copy_provider_auth_file() {'),source.indexOf('trust_claude_slice_workspace() {'))
+ const copy=source.slice(source.indexOf('copy_provider_auth_file() {'),source.indexOf('import_provider_auth() {'))
  const remove=source.slice(source.indexOf('remove_codex_auth() {'),source.indexOf('import_opencode_auth() {'))
  return spawnSync('bash',['-euc',`${copy}\n${remove}\nlog(){ :; };run_with_file_stdin_timeout(){ local seconds="$1" source="$2";shift 2;"$@" < "$source"; };docker(){ bash -lc "\${@: -1}"; };exec_slice(){ "$@"; };\n${action}`],{timeout:3000,encoding:'utf8',env:{PATH:process.env.PATH,SCRIPT_DIR:path.join(repo,'apps/kernel/slice-linux-docker'),SLICE_NAME:'synthetic',SLICE_ACCOUNT_ROOT:root,SLICE_ACCOUNT_PROFILE:'fixture',SOURCE:path.join(root,'source'),TARGET:path.join(root,'codex/fixture/codex/auth.json')}})
 }

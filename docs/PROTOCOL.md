@@ -5833,8 +5833,7 @@ the official one-operation response before registering another interaction.
 They do not authorize responding to arbitrary RuntimeInteractions. Leased
 watched commands revalidate the current home window through the existing
 leased kernel-request path, including before execution. Startup workspace trust
-may reuse an approved exact-workspace launch without making a queued sudo task
-live for tools. Scope expansion, missing authentication values, identity choices,
+is never answered by a sudo window. Scope expansion, missing authentication values, identity choices,
 revocation, sandboxing, tenant/owner checks and once-only effects keep their
 normal fences. This is kernel policy on existing shapes; no protocol shape or
 version changes.

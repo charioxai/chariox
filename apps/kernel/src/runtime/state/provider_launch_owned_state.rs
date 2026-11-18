@@ -319,12 +319,10 @@ impl KernelRuntimeOwnedState {
             request = request.with_agent_settings(agent);
         }
         if request.working_directory.is_none() {
-            let agent_worktree = agent
-                .as_ref()
-                .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from));
-            request.working_directory = Some(
-                agent_worktree.unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id())),
-            );
+            request.working_directory = Some(crate::app::chosen_workspace(
+                session.worktree_id(),
+                agent.as_ref().and_then(|agent| agent.worktree_id()),
+            ));
         }
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
             let workspace_live_sync_roots = crate::app::workspace_live_sync_protected_roots(
@@ -780,7 +778,10 @@ mod tests {
         let mut app =
             crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .create_session(crate::session::CreateSessionRequest::new(
+                "home",
+                root.display().to_string(),
+            ))
             .unwrap();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
@@ -797,6 +798,7 @@ mod tests {
             "haiku",
         )
         .with_agent_id(agent.id())
+        .with_working_directory(root.clone())
         .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
         .with_provider_account_env(std::collections::BTreeMap::from([(
             "CLAUDE_CONFIG_DIR".into(),
@@ -817,6 +819,12 @@ mod tests {
         );
         let state:serde_json::Value = serde_json::from_slice(&std::fs::read(profile.join(".claude.json")).expect("owned native launch must initialize selected onboarding before separating credentials")).unwrap();
         assert_eq!(state["hasCompletedOnboarding"], true);
+        assert_eq!(
+            state["projects"][root.canonicalize().unwrap().to_str().unwrap()]
+                ["hasTrustDialogAccepted"],
+            true,
+            "the agent's own workspace is trusted in the selected profile before launch"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

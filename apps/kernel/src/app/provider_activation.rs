@@ -139,7 +139,27 @@ impl ProviderRunActivationState {
             app.update_provider_run_projection(outcome.into_run());
         }
 
-        crate::provider::prepare_claude_onboarding_state(&request)?;
+        let session = app.sessions.get_session(&session_id)?;
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| app.agents.get_agent(agent_id).ok());
+        if let Some(trusted) = crate::provider::prepare_claude_launch_state(
+            &request,
+            &crate::app::chosen_workspace(
+                session.worktree_id(),
+                agent.as_ref().and_then(|agent| agent.worktree_id()),
+            ),
+        )? {
+            let recipients = app.attachments.list_session_attachment_ids(&session_id);
+            app.record_notice_for_agent(
+                &session_id,
+                None,
+                request.agent_id.as_deref(),
+                recipients,
+                crate::provider::trusted_workspace_notice(&trusted),
+            );
+        }
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let outcome = app.providers.start_run_provider_only(request)?;
         app.sessions
