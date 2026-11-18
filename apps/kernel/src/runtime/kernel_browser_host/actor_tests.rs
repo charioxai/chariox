@@ -577,7 +577,6 @@ done
     host.claim_resource(
         Some(&admission),
         UserDomainResource::BrowserTab { tab_id: "a".into() },
-        false,
     )
     .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
@@ -612,8 +611,8 @@ done
             policy,
         )
         .unwrap();
-    assert_eq!(scoped["tabs"].as_array().unwrap().len(), 1);
-    assert_eq!(scoped["tabs"][0]["tab_id"], "a");
+    // Every agent lists every tab, however focus moved.
+    assert_eq!(scoped["tabs"].as_array().unwrap().len(), 2);
     assert!(host.actor_snapshot("owner").unwrap()["input_ownership"]
         .to_string()
         .contains("b"));
@@ -707,7 +706,7 @@ done
 }
 
 #[test]
-fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() {
+fn mdaccess_unfocused_agent_scope_allows_input_new_tabs_stop_and_vault() {
     let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-scope"));
     host.set_focus("owner", Some("first"));
     host.load("owner", "first").unwrap();
@@ -717,7 +716,6 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         UserDomainResource::BrowserTab {
             tab_id: "tab".into(),
         },
-        false,
     )
     .unwrap();
     host.set_focus("owner", Some("second"));
@@ -729,164 +727,28 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
     ] {
         host.scope_browser_request(
             Some(&admission),
-            "host.browser",
             &json!({"op":"input","tab_id":"tab","input":input}),
         )
         .unwrap();
     }
     for op in ["state", "start", "navigate", "close"] {
-        host.scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":op,"tab_id":"tab"}),
-        )
-        .unwrap();
+        host.scope_browser_request(Some(&admission), &json!({"op":op,"tab_id":"tab"}))
+            .unwrap();
     }
-    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
-    assert!(host
-        .scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":"stop","tab_id":"tab"})
-        )
-        .unwrap_err()
-        .contains("not_focused_agent"));
-    assert!(host
-        .scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":"snapshot","tab_id":"new"})
-        )
-        .unwrap_err()
-        .contains("not_focused_agent"));
+    // Every agent has the kernel browser: stop and the owner's other tabs need no focus.
+    host.scope_browser_request(Some(&admission), &json!({"op":"stop","tab_id":"tab"}))
+        .unwrap();
+    host.scope_browser_request(Some(&admission), &json!({"op":"snapshot","tab_id":"new"}))
+        .unwrap();
     // A Vault fill needs the grant and the tab, not focus.
     assert!(host
-        .scope_browser_request(Some(&admission), "host.secret", &json!({"tab_id":"tab"}))
+        .scope_browser_request(Some(&admission), &json!({"tab_id":"tab"}))
         .is_ok());
     host.revoke_agent("first");
     assert!(host
         .check_admission(Some(&admission))
         .unwrap_err()
         .contains("not_granted"));
-}
-
-#[test]
-fn mp11_global_stop_requires_focus_even_with_retained_tabs() {
-    for owns_tab in [false, true] {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-mp11-stop-scope-{:032x}",
-            rand::random::<u128>()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        let script = root.join("controller.sh");
-        // A real stdio controller lifetime. Browser resources are fixture IDs;
-        // this tests kernel admission/shutdown, not Chromium/client acceptance.
-        std::fs::write(
-            &script,
-            r#"set -eu
-while IFS= read -r request; do
-  id=${request#*:}; id=${id%%,*}
-  case "$request" in
-    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
-    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
-    *) result='{}' ;;
-  esac
-  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
-done
-"#,
-        )
-        .unwrap();
-        let host = KernelBrowserHost::new(root.clone());
-        let backend = BrowserControllerProcessStdioBackend::new(
-            "/bin/sh",
-            vec![script.display().to_string()],
-            Duration::from_secs(2),
-        )
-        .for_host();
-        host.inner
-            .lock()
-            .unwrap()
-            .browsers
-            .insert("owner".into(), Arc::new(Mutex::new(backend)));
-        host.backend("owner")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .start()
-            .unwrap();
-        host.set_focus("owner", Some("first"));
-        host.load("owner", "first").unwrap();
-        let first = host.admit("owner", "first").unwrap();
-        if owns_tab {
-            host.claim_resource(
-                Some(&first),
-                UserDomainResource::BrowserTab {
-                    tab_id: "first-tab".into(),
-                },
-                false,
-            )
-            .unwrap();
-        }
-        host.set_focus("owner", Some("second"));
-        host.load("owner", "second").unwrap();
-        let second = host.admit("owner", "second").unwrap();
-        host.claim_resource(
-            Some(&second),
-            UserDomainResource::BrowserTab {
-                tab_id: "second-tab".into(),
-            },
-            false,
-        )
-        .unwrap();
-        let mut refusals = Vec::new();
-        // Exercise the actual tabless Stop path, and reject tab_id smuggling.
-        for params in [
-            json!({"op":"stop"}),
-            json!({"op":"stop","tab_id":"first-tab"}),
-        ] {
-            refusals.push(host.protected_request_admitted(
-                "owner",
-                Some(&first),
-                "host.browser",
-                params,
-                json!({"values":[],"targets":[],"unknown":false}),
-            ));
-        }
-        let still_running = host
-            .backend("owner")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .health()
-            .unwrap()
-            .state
-            == BrowserControllerProcessState::Ready;
-        let second_can_stop =
-            host.scope_browser_request(Some(&second), "host.browser", &json!({"op":"stop"}));
-        let owner_can_stop =
-            host.scope_browser_request(None, "host.browser", &json!({"op":"stop"}));
-        let first_retained = host.has_grant("owner", "first");
-        host.shutdown().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-        for result in refusals {
-            assert!(
-                matches!(
-                    result,
-                    Err(crate::error::HostFailure::Refused(
-                        crate::error::UserDomainRefusalReason::NotFocusedAgent
-                    ))
-                ),
-                "MP-11: retained global Stop was admitted: {result:?}"
-            );
-        }
-        assert!(
-            still_running,
-            "MP-11: retained Stop shut down the shared controller"
-        );
-        second_can_stop.unwrap();
-        owner_can_stop.unwrap();
-        assert!(first_retained);
-    }
 }
 
 #[test]
@@ -900,7 +762,6 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
         UserDomainResource::BrowserTab {
             tab_id: "tab".into(),
         },
-        false,
     )
     .unwrap();
     host.set_focus("owner", Some("second"));
@@ -1098,7 +959,7 @@ done
                         return false;
                     }
                     // Production authority reaches this host.inner acquisition.
-                    authority_host.is_focused("alice", "agent")
+                    authority_host.has_grant("alice", "agent")
                 });
             let call = || {
                 if op == "takeover" {
@@ -1128,7 +989,7 @@ done
                     if retire {
                         host.revoke_agent("agent");
                     } else {
-                        host.set_focus("alice", None);
+                        host.revoke_grants("alice", None);
                     }
                 });
                 let _ = running.join().unwrap();

@@ -320,30 +320,13 @@ impl KernelRuntimeState {
                 result
             }
             "chariox.events.blocked" => {
-                let task = task_id.into();
-                let prompt = prompt.id().into();
-                let reason = args["reason"].as_str().unwrap_or_default().into();
-                let operation = match args.get("owner_action") {
-                    None => Operation::BlockForQuestion {
-                        task,
-                        prompt,
-                        reason,
+                let result = self.owned.durable_state_store.agent_lifecycle(
+                    Operation::BlockForQuestion {
+                        task: task_id.into(),
+                        prompt: prompt.id().into(),
+                        reason: args["reason"].as_str().unwrap_or_default().into(),
                     },
-                    Some(value) if value.as_str() == Some("browser_access") => {
-                        self.refuse_browser_access_card_after_start_failure(room, actor)?;
-                        Operation::BlockForBrowserAccess {
-                            task,
-                            prompt,
-                            reason,
-                        }
-                    }
-                    _ => {
-                        return Err(ledger::error(
-                            "Choose browser_access for a browser approval",
-                        ))
-                    }
-                };
-                let result = self.owned.durable_state_store.agent_lifecycle(operation)?;
+                )?;
                 if let Outcome::Task(task) = result {
                     self.ensure_task_owner_interaction(task).await?;
                 }

@@ -121,12 +121,8 @@ fn mp10_agent_lists_and_reaches_the_popup_its_click_opened_while_another_agent_i
         ids(&listed)
     );
     assert!(
-        !ids(&listed).contains(&"other-popup".to_string()),
-        "another tab's popup is not"
-    );
-    assert!(
-        !ids(&listed).contains(&"native".to_string()),
-        "a Tab nobody's click opened is not"
+        ids(&listed).contains(&"other-popup".to_string()),
+        "every agent lists every tab"
     );
     host.protected_request(
         "alice",
@@ -206,7 +202,7 @@ done
 }
 
 #[test]
-fn mp08_mp10_mp11_downloads_follow_retained_tab_grants_and_session_cleanup() {
+fn mp08_mp10_mp11_downloads_list_every_tab_and_follow_session_cleanup() {
     let root = std::env::temp_dir().join(format!(
         "chariox-download-grant-{:032x}",
         rand::random::<u128>()
@@ -255,18 +251,16 @@ done
             policy.clone(),
         )
         .unwrap();
-    assert_eq!(state["downloads"].as_array().unwrap().len(), 1);
-    assert_eq!(state["downloads"][0]["download_id"], "a");
-    assert!(!state.to_string().contains("/private/room-b"));
-    assert!(host
-        .protected_request(
-            "alice",
-            Some("mara"),
-            "host.browser",
-            json!({"op":"cancel_download","tab_id":"other","generation":1,"download_id":"b"}),
-            policy
-        )
-        .is_err());
+    // Every agent has the kernel browser: it sees and acts on every tab's downloads.
+    assert_eq!(state["downloads"].as_array().unwrap().len(), 2);
+    host.protected_request(
+        "alice",
+        Some("mara"),
+        "host.browser",
+        json!({"op":"cancel_download","tab_id":"other","generation":1,"download_id":"b"}),
+        policy,
+    )
+    .unwrap();
     host.cleanup_session_downloads("unrelated-room").unwrap();
     assert!(!root.join("cleaned").exists());
     host.backend("alice")
@@ -285,7 +279,7 @@ done
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn owner_approved_browser_recovery_lists_tabs_without_prior_leases_or_focus() {
+async fn an_unfocused_agent_lists_every_tab_without_prior_leases() {
     let root = std::env::temp_dir().join(format!(
         "chariox-owner-tabs-{:032x}",
         rand::random::<u128>()
@@ -315,37 +309,14 @@ async fn owner_approved_browser_recovery_lists_tabs_without_prior_leases_or_focu
         .unwrap();
     assert_eq!(before["tabs"].as_array().unwrap().len(), 2);
     host.revoke_grants("alice", Some("mara"));
-    host.request_grant(
-        "alice",
-        "ben",
-        "another-prompt",
-        Duration::from_secs(3600),
-        None,
-        "another-room",
-    )
-    .unwrap();
-    let background = host
+    host.grant_agent("alice", "ben", Duration::from_secs(3600), "another-room")
+        .unwrap();
+    host.load("alice", "ben").unwrap();
+    assert!(host.inner.lock().unwrap().access.focused("alice").is_none());
+    let unfocused = host
         .protected_request(
             "alice",
             Some("ben"),
-            "host.browser",
-            json!({"op":"state"}),
-            policy.clone(),
-        )
-        .unwrap();
-    assert_eq!(
-        background["tabs"].as_array().unwrap().len(),
-        0,
-        "an ordinary unfocused prompt still has only its retained tabs"
-    );
-    let fence = host.acquisition_fence("alice", "mara");
-    host.request_task_grant("alice", "mara", "verification-task", 1, fence, "room")
-        .unwrap();
-    assert!(host.inner.lock().unwrap().access.focused("alice").is_none());
-    let restored = host
-        .protected_request(
-            "alice",
-            Some("mara"),
             "host.browser",
             json!({"op":"state"}),
             policy,
@@ -354,8 +325,8 @@ async fn owner_approved_browser_recovery_lists_tabs_without_prior_leases_or_focu
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(
-        restored["tabs"].as_array().unwrap().len(),
+        unfocused["tabs"].as_array().unwrap().len(),
         2,
-        "the owner's browser approval includes discovery of the tabs the task can use"
+        "every agent sees the owner's tabs"
     );
 }
