@@ -68,9 +68,10 @@ pub fn event_options(schema: &Value) -> Result<Vec<EventOption>> {
                 "x-chariox-options names must be unique lowercase identifiers",
             ));
         }
-        if option.label.trim().is_empty() || option.label.chars().count() > MAX_OPTION_LABEL_CHARS
-        {
-            return Err(invalid("x-chariox-options labels must be 1 to 64 characters"));
+        if option.label.trim().is_empty() || option.label.chars().count() > MAX_OPTION_LABEL_CHARS {
+            return Err(invalid(
+                "x-chariox-options labels must be 1 to 64 characters",
+            ));
         }
         let field_type = schema
             .pointer(&format!("/properties/{}/type", option.field))
@@ -137,7 +138,9 @@ mod tests {
             )),
             json!({"pr": 976})
         );
-        assert!(event_options(&json!({"type": "object"})).unwrap().is_empty());
+        assert!(event_options(&json!({"type": "object"}))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
