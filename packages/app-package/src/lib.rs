@@ -7,6 +7,7 @@ pub mod dev_bundle;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod developer;
 mod error;
+mod event_options;
 mod json;
 mod manifest;
 pub mod v2;
@@ -27,6 +28,7 @@ use sha2::{Digest, Sha256};
 
 pub use declarations::*;
 pub use error::{ErrorCode, PackageError, Result};
+pub use event_options::*;
 pub use manifest::*;
 
 const INTEGRITY_SCHEMA: &str = "chariox.integrity.v1";

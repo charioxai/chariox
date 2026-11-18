@@ -10,7 +10,12 @@ use crate::transport::runtime_tools::{
 #[serde(deny_unknown_fields)]
 struct Subscribe {
     source: AgentTriggerNotificationSource,
-    prompt: Option<String>,
+    /// What the agent was asked and what it does when woken; shown as why the subscription exists.
+    prompt: String,
+    #[serde(default)]
+    options: Vec<crate::local::NotificationOptionValue>,
+    #[serde(default)]
+    once: bool,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,13 +86,29 @@ impl KernelRuntimeState {
                 let _: Empty = serde_json::from_value(arguments).map_err(invalid)?;
                 self.owned
                     .ensure_owner_action_notification_source(session)?;
+                let guest = self.notification_guest(session.owner_user_id(), agent.owner_user_id());
+                if !guest {
+                    let (stored, _, _) = self
+                        .owned
+                        .durable_state_store
+                        .notification_inventory(session.owner_user_id())?;
+                    self.owned
+                        .sync_app_event_notification_sources(session.owner_user_id(), &stored)?;
+                }
                 let (sources, _, _) = self
                     .owned
                     .durable_state_store
                     .notification_inventory(session.owner_user_id())?;
+                // The owner's agent also follows the owner's App events, whose source is the
+                // installation rather than a Room.
                 let sources = sources
                     .into_iter()
-                    .filter(|s| s.session_id == session.id() && s.enabled)
+                    .filter(|s| {
+                        s.enabled
+                            && (s.session_id == session.id()
+                                || (!guest
+                                    && s.kind == crate::local::NotificationSourceKind::AppEvent))
+                    })
                     .collect::<Vec<_>>();
                 let mut workflows = super::super::workflow_notification_router::summaries(
                     &self.owned.session_store.read(),
@@ -95,7 +116,7 @@ impl KernelRuntimeState {
                 );
                 // The owner's agent sees the owner's sources of the other kernels, as the owner's
                 // list does; a collaborator's agent sees this Room's only.
-                if !self.notification_guest(session.owner_user_id(), agent.owner_user_id()) {
+                if !guest {
                     self.refresh_peer_notification_sources(session.owner_user_id())
                         .await?;
                     workflows.extend(
@@ -122,20 +143,27 @@ impl KernelRuntimeState {
                 self.authorize_current_external_response()?;
                 return Ok(RuntimeToolResult {
                     ok: true,
-                    payload: serde_json::json!({"workflows":workflows.into_iter().map(|source| serde_json::json!({"source":{"workflow":{"source_id":source.source_id}},"display_name":source.display_name,"kernel_id":source.kernel_id,"session_id":source.session_id,"available":source.available})).collect::<Vec<_>>(),"apps":apps}),
+                    payload: serde_json::json!({"workflows":workflows.into_iter().map(|source| serde_json::json!({"source":{"workflow":{"source_id":source.source_id}},"display_name":source.display_name,"kernel_id":source.kernel_id,"session_id":source.session_id,"available":source.available,"options":source.options})).collect::<Vec<_>>(),"apps":apps}),
                 });
             }
             NOTIFICATION_SUBSCRIBE => {
                 let args: Subscribe = serde_json::from_value(arguments).map_err(invalid)?;
+                if args.prompt.trim().is_empty() {
+                    return Err(invalid(
+                        "write in prompt what you were asked and what to do when the notification arrives",
+                    ));
+                }
                 self.create_agent_trigger(
                     crate::local::CreateAgentTriggerRequest {
                         session_id: session.id().into(),
                         agent_id: agent.id().into(),
                         source: crate::local::AgentTriggerSourceRequest::Notification {
                             source: args.source,
+                            options: args.options,
+                            once: args.once,
                         },
                         busy_policy: None,
-                        prompt: args.prompt,
+                        prompt: Some(args.prompt),
                     },
                     agent.owner_user_id(),
                 )

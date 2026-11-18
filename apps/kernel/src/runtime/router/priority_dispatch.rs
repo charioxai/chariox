@@ -523,6 +523,44 @@ impl CommandRouter {
                     &command_caller_user_id(&command),
                 )
             }),
+            LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_notification_subscriptions(&command_caller_user_id(&command))
+            }),
+            LocalDaemonRequest::UpdateNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .update_notification_subscription(
+                            request,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::RemoveNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .remove_notification_subscription(
+                            &request.subscription_id,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::TestNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state.test_notification_subscription(
+                        &request.subscription_id,
+                        &command_caller_user_id(&command),
+                    )
+                })
+            }
+            LocalDaemonRequest::ReadNotificationTrace(request) => boxed_handler(|| async move {
+                self.runtime_state.read_notification_trace(
+                    &request.subscription_id,
+                    &command_caller_user_id(&command),
+                )
+            }),
             request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
             | LocalDaemonRequest::ListRoomListSessions(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);

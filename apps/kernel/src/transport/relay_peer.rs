@@ -2547,6 +2547,7 @@ mod workflow_notification_shapes {
                     name: "Reviewer".into(),
                     display_name: "Reviewer-2".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             },
             RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },

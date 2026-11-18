@@ -954,6 +954,15 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
         LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",
+        LocalDaemonRequest::ListNotificationSubscriptions(_) => "notification_subscriptions.list",
+        LocalDaemonRequest::UpdateNotificationSubscription(_) => {
+            "notification_subscriptions.update"
+        }
+        LocalDaemonRequest::RemoveNotificationSubscription(_) => {
+            "notification_subscriptions.remove"
+        }
+        LocalDaemonRequest::TestNotificationSubscription(_) => "notification_subscriptions.test",
+        LocalDaemonRequest::ReadNotificationTrace(_) => "notification_subscriptions.trace",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
         LocalDaemonRequest::RefreshExternalProviderSessions(_) => {
             "external_provider_session.refresh"

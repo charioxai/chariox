@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+use super::NotificationOptionValue;
 use crate::session::{
     AgentHttpMethod, AgentHttpOptionsRequest, AgentHttpParser, AgentHttpResponseMode,
     AgentTriggerBusyPolicy, AgentTriggerNotificationSource, AgentTriggerRepeat,
@@ -44,6 +45,12 @@ pub enum AgentTriggerSourceRequest {
     /// Subscribes the agent to a workflow exit or an App event; every occurrence is queued.
     Notification {
         source: AgentTriggerNotificationSource,
+        /// Values for the source's declared options; occurrences that differ wake no one.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<NotificationOptionValue>,
+        /// The trigger ends after its first delivered occurrence.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        once: bool,
     },
 }
 

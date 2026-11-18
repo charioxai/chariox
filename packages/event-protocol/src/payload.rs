@@ -82,6 +82,7 @@ pub fn validate_payload_definition(
     };
     let compiled =
         chariox_app_package::compile_schema(schema, true, &limits).map_err(|e| e.to_string())?;
+    chariox_app_package::event_options(schema).map_err(|e| e.to_string())?;
     if examples.len() > 8 {
         return Err("event examples exceed 8 items".into());
     }
@@ -159,6 +160,8 @@ mod tests {
             json!({"$ref":"https://example.com/schema"}),
             json!({"type":"object","additionalProperties":false,"properties":{"self":{"$ref":"#"}}}),
             json!({"type":"object"}),
+            json!({"type":"object","additionalProperties":false,"properties":{"severity":{"type":"string"}},
+                "x-chariox-options":[{"name":"level","label":"Level","type":"number","field":"severity"}]}),
         ] {
             assert!(validate_payload_definition(Some(&schema), &[]).is_err());
         }

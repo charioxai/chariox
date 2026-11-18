@@ -306,6 +306,10 @@ pub enum LocalDaemonResponse {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,
     },
+    NotificationSubscriptions { subscriptions: Vec<NotificationSubscriptionRow> },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {

@@ -152,6 +152,8 @@ impl Rig {
                 source: AgentTriggerNotificationSource::Workflow {
                     source_id: source_id.into(),
                 },
+                options: Vec::new(),
+                once: false,
             },
             busy_policy: None,
             prompt: Some("Triage what the pipeline reports".into()),
@@ -297,6 +299,7 @@ async fn a_notification_trigger_follows_the_availability_of_its_remote_source() 
                     name: "Studio pipeline".into(),
                     display_name: "Studio pipeline".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             })
             .unwrap();
@@ -768,6 +771,8 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
         .runtime
@@ -1157,6 +1162,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1399,6 +1406,8 @@ async fn guest_app_automation_listing_and_removal_keep_target_ownership() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     rig.runtime
         .create_agent_trigger(create, "local")
@@ -1475,6 +1484,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1783,6 +1794,8 @@ async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated {
         trigger: available, ..
@@ -3252,3 +3265,9 @@ async fn the_workflow_actor_publishes_the_trigger_availability_its_command_chang
         "the published projection still shows the trigger available"
     );
 }
+
+#[path = "agent_trigger_notification_options_tests.rs"]
+mod options;
+
+#[path = "notification_subscriptions_tests.rs"]
+mod subscriptions;

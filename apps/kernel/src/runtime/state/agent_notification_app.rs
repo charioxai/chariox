@@ -243,6 +243,7 @@ impl KernelRuntimeState {
         Ok(ResolvedSource {
             kernel_id: self.owned.config_projection.snapshot().daemon_id,
             display_name: format!("{} · {label}", installed.app_id),
+            options: Vec::new(),
         })
     }
 

@@ -20,6 +20,8 @@ const AGENT_QUEUE_ID: &str = "agent";
 pub(super) struct ResolvedSource {
     pub(in crate::runtime::state) kernel_id: String,
     pub(in crate::runtime::state) display_name: String,
+    /// The options the source declares; an App event named by installation declares none here.
+    pub(in crate::runtime::state) options: Vec<crate::local::NotificationSourceOption>,
 }
 
 fn source_has_name(source: &crate::local::WorkflowNotificationSourceSummary, name: &str) -> bool {
@@ -46,7 +48,11 @@ impl KernelRuntimeState {
         caller: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.authorize_current_external_command()?;
-        let crate::local::AgentTriggerSourceRequest::Notification { source } = &request.source
+        let crate::local::AgentTriggerSourceRequest::Notification {
+            source,
+            options,
+            once,
+        } = &request.source
         else {
             return Err(store::error("not a notification trigger"));
         };
@@ -93,6 +99,11 @@ impl KernelRuntimeState {
                     )?
                 }
             }
+            AgentTriggerNotificationSource::App { .. } if !options.is_empty() || *once => {
+                return Err(store::error(
+                    "options and once apply to a source from notification_sources; subscribe to the App event's source_id",
+                ));
+            }
             AgentTriggerNotificationSource::App {
                 installation_id,
                 event_name,
@@ -107,8 +118,9 @@ impl KernelRuntimeState {
                 .await?
             }
         };
+        let picked = store::subscription_settings::picked_options(&resolved.options, options)?;
         // The agent already listens to this workflow: subscribing again keeps the one listener
-        // and takes the new prompt, so each completion reaches the agent once.
+        // and takes the new prompt, options and once, so each completion reaches the agent once.
         let listener = match source {
             AgentTriggerNotificationSource::Workflow { .. } => self
                 .owned
@@ -120,10 +132,22 @@ impl KernelRuntimeState {
                     t.agent_id() == request.agent_id
                         && matches!(t.source(), AgentTriggerSource::Notification { source: s, .. } if s == source)
                 })
-                .map(|t| t.id().to_owned()),
+                .map(|t| {
+                    (
+                        t.id().to_owned(),
+                        notification_subscription_id(t).unwrap_or_default().to_owned(),
+                    )
+                }),
             AgentTriggerNotificationSource::App { .. } => None,
         };
-        if let Some(trigger_id) = listener {
+        if let Some((trigger_id, subscription_id)) = listener {
+            self.owned
+                .durable_state_store
+                .notify(NotificationOperation::Configure {
+                    subscription_id,
+                    options: picked,
+                    once: *once,
+                })?;
             let trigger = self.owned.session_store.write().update_agent_trigger(
                 &request.session_id,
                 &trigger_id,
@@ -173,10 +197,18 @@ impl KernelRuntimeState {
             None
         };
         let subscribed = match &subscription {
-            Some(subscription) => {
-                self.subscribe_agent_notification(&home, subscription.clone())
-                    .await
-            }
+            Some(subscription) => self
+                .subscribe_agent_notification(&home, subscription.clone())
+                .await
+                .and_then(|_| {
+                    self.owned
+                        .durable_state_store
+                        .notify(NotificationOperation::Configure {
+                            subscription_id: subscription.subscription_id.clone(),
+                            options: picked,
+                            once: *once,
+                        })
+                }),
             None => {
                 self.subscribe_app_agent_notification(
                     &owner,
@@ -349,6 +381,7 @@ impl KernelRuntimeState {
             return Ok(ResolvedSource {
                 kernel_id: source.kernel_id.clone(),
                 display_name: named.display_name,
+                options: named.options,
             });
         }
         if guest {
@@ -362,6 +395,7 @@ impl KernelRuntimeState {
             .map(|s| ResolvedSource {
                 kernel_id: s.kernel_id,
                 display_name: s.display_name,
+                options: s.options,
             })
             .ok_or_else(|| store::error("source not available"))
     }
@@ -570,7 +604,10 @@ impl KernelRuntimeState {
             .queue_agent_notification_input(session_id, trigger_id, &receipt, payload)
             .await?
         {
-            self.settle_agent_notification(subscription, &envelope, &prompt_id)?;
+            if self.settle_agent_notification(subscription, &envelope, &prompt_id)? {
+                self.end_spent_notification_trigger(session_id, trigger_id)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -673,12 +710,13 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Settles the receipt with its prompt; true when that was the subscription's one delivery.
     fn settle_agent_notification(
         &self,
         subscription: &WorkflowNotificationSubscription,
         envelope: &crate::local::WorkflowNotificationEnvelope,
         prompt_id: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         self.owned
             .durable_state_store
             .notify(NotificationOperation::AgentQueued {
@@ -688,7 +726,24 @@ impl KernelRuntimeState {
                 prompt_id: prompt_id.into(),
                 session_id: subscription.session_id.clone(),
             })
-            .map(|_| ())
+            .map(|outcome| matches!(outcome, NotificationOutcome::Spent))
+    }
+
+    /// A trigger that ends after one delivery is removed once its prompt is queued.
+    async fn end_spent_notification_trigger(
+        &self,
+        session_id: &str,
+        trigger_id: &str,
+    ) -> Result<(), DaemonError> {
+        let trigger = self
+            .owned
+            .session_store
+            .write()
+            .delete_agent_trigger(session_id, trigger_id)?;
+        self.owned
+            .persist_agent_trigger_session(session_id, "agent_trigger_deleted")?;
+        self.detach_deleted_notification_trigger(&trigger).await;
+        Ok(())
     }
 }
 

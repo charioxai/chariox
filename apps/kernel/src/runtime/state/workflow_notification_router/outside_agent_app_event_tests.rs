@@ -26,6 +26,10 @@ async fn listed(
 }
 
 fn arrive(kernel: &KernelRuntimeState, occurrence: &str, text: &str) {
+    arrive_with(kernel, occurrence, serde_json::json!({"text": text}));
+}
+
+fn arrive_with(kernel: &KernelRuntimeState, occurrence: &str, payload: serde_json::Value) {
     kernel
         .owned
         .durable_state_store
@@ -34,26 +38,14 @@ fn arrive(kernel: &KernelRuntimeState, occurrence: &str, text: &str) {
             installation: "installed".into(),
             route_id: "mail".into(),
             occurrence_id: occurrence.into(),
-            payload: serde_json::json!({"text": text}),
+            payload,
             generation: 1,
             now_ms: crate::session::unix_epoch_ms(),
         })
         .unwrap();
 }
 
-#[tokio::test]
-async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text() {
-    let mut f = Fixture::new();
-    let router = router(&mut f);
-    let kernel = router.runtime_state();
-    let store = kernel.owned.durable_state_store.clone();
-    crate::durable_state::app_state::fixture_inbox_installation(&store, "local");
-    let grant = kernel.insert_access_grant_for_test(&f.session);
-    // An installed App with no route has no event to follow.
-    assert!(listed(&router, &grant)
-        .await
-        .iter()
-        .all(|s| s.kind != NotificationSourceKind::AppEvent));
+fn create_route(store: &crate::durable_state::DurableKernelStateStore) {
     store
         .app_inbox(AppInboxOperation::CreateRoute {
             route: InboxRoute {
@@ -71,6 +63,22 @@ async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text(
             now_ms: 1,
         })
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text() {
+    let mut f = Fixture::new();
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let store = kernel.owned.durable_state_store.clone();
+    crate::durable_state::app_state::fixture_inbox_installation(&store, "local");
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    // An installed App with no route has no event to follow.
+    assert!(listed(&router, &grant)
+        .await
+        .iter()
+        .all(|s| s.kind != NotificationSourceKind::AppEvent));
+    create_route(&store);
     let sources: Vec<_> = listed(&router, &grant)
         .await
         .into_iter()
@@ -137,6 +145,58 @@ async fn an_installed_apps_route_is_listed_followed_and_delivers_the_event_text(
         .await
         .iter()
         .all(|s| s.kind != NotificationSourceKind::AppEvent));
+    drop((router, kernel));
+    cleanup(f);
+}
+
+// NC-06: the options an App's incoming event declares are on its source, and each occurrence
+// carries its values for them, keyed by option name.
+#[tokio::test]
+async fn an_app_events_declared_options_are_listed_and_each_occurrence_carries_their_values() {
+    let mut f = Fixture::new();
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let store = kernel.owned.durable_state_store.clone();
+    crate::durable_state::app_state::fixture_inbox_installation(&store, "local");
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    create_route(&store);
+    let source = listed(&router, &grant)
+        .await
+        .into_iter()
+        .find(|s| s.kind == NotificationSourceKind::AppEvent)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&source).unwrap()["options"],
+        serde_json::json!([
+            {"name":"pr","label":"PR number","type":"number","field":"pull_request"},
+            {"name":"repo","label":"Repository","type":"text","field":"repository"}
+        ])
+    );
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":[source.source_id]}}),
+    )
+    .await
+    .unwrap();
+    arrive_with(
+        &kernel,
+        "pr-976",
+        serde_json::json!({"text": "PR #976 merged", "pull_request": 976}),
+    );
+    kernel.owned.route_workflow_notifications();
+    let outputs: Vec<_> = wait(&router, &grant, 0)
+        .await
+        .into_iter()
+        .map(|event| match event.value {
+            OutsideEventValue::Notification { output, .. } => serde_json::to_value(output).unwrap(),
+            other => panic!("expected a notification, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        outputs,
+        vec![serde_json::json!({"message": "PR #976 merged", "data": {"pr": 976}})]
+    );
     drop((router, kernel));
     cleanup(f);
 }

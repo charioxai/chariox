@@ -79,6 +79,7 @@ pub(super) fn summaries(
                     name: source.name.clone(),
                     display_name: source.display_name.clone(),
                     available: source.available,
+                    options: source.options.clone(),
                 };
             }
             let notifying = sources
@@ -116,6 +117,7 @@ pub(super) fn summaries(
                 },
                 name,
                 available: source.available,
+                options: source.options.clone(),
             }
         })
         .collect()
@@ -193,6 +195,7 @@ impl KernelRuntimeState {
                             name: naming::workflow_name(&workflow),
                             exit_ordinal: 0,
                             display_name: String::new(),
+                            options: Vec::new(),
                         };
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Register(SourceAdmission {
@@ -434,6 +437,7 @@ impl KernelRuntimeState {
                         name: s.name,
                         exit_ordinal: s.exit_ordinal,
                         display_name: s.display_name,
+                        options: s.options,
                     })
             })
             .ok_or_else(|| store::error("source not available"))
