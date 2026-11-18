@@ -15,7 +15,7 @@ Every decision this document proposes names the principle behind it:
 1. Today a native terminal is a faithful provider UI with a kernel behind it, not an agent pane. Prompts, replies, stop and the provider's own permission prompt reach the kernel. Nothing else from the Room reaches the terminal: no kernel cards, no stripes, no Room or agent identity after the launch banner, no Room commands, no notices.
 2. An agent that asks the person a question through a kernel card is stuck in a native terminal until the person opens another client. Live on Claude Code: the terminal showed `Calling chariox · 11s…` and nothing else while the card `Audit card` waited in the kernel.
 3. All three providers have an official surface that can show a kernel card as the provider's own dialog, with no model turn and no screen scraping. Proven in scratch runs on the real terminal UIs for Claude Code (MCP elicitation, over stdio and HTTP) and OpenCode (question events); read in source for Codex (app-server server requests).
-4. The recommended shape is one kernel-owned "pane feed" per agent (identity, settings, state, cards with a kernel-decided "can be answered in a text terminal" flag and a link, stripes, usage, notices) and three thin adapters that only translate that feed into provider-native elements and translate answers back into `RespondToInteraction`. About 8 lane-weeks, of which three adapters can run in parallel.
+4. The recommended shape is one kernel-owned "pane feed" per agent (identity, settings, state, cards with a kernel-decided "can be answered in a text terminal" flag and a link, stripes, usage, notices) and three thin adapters that only translate that feed into provider-native elements and translate answers back into `RespondToInteraction`. About 9 lane-weeks, of which three adapters can run in parallel.
 5. The audit found ten defects on today's path (section 3.6). Three block ordinary use: `chariox codex` defaults to a model Codex no longer serves, `chariox opencode` cannot send a prompt without an OpenCode account even on a free model and shows a bare `502`, and denying a permission in Claude's own dialog leaves the kernel card and the prompt open.
 
 ## 2. How this was checked
@@ -82,7 +82,7 @@ The kernel owns the pseudo-terminal and streams it to the launcher. It writes a 
 | `/model sonnet` in the terminal | Claude switches and saves it as its default; the kernel still says `haiku`. Defect F6. | live |
 | Footer | Claude's own (`manual mode on`). No Room, agent, model as the kernel sees it, cards, stripes or usage. | live |
 | Exit | Claude prints `claude --resume <id>`. Defect F8. | live |
-| Reopen a Room | Resumes the Claude session. | code |
+| Reopen a Room | Starts a new top-level agent. All three launchers resolve the Room and call `spawnNativeAgent` (`SpawnAgent`); a native launch never attaches to an existing agent or provider run (`docs/PROTOCOL.md` 3.3.2). The closed agent's turns are not shown. | code |
 
 ### 3.4 Codex
 
@@ -94,7 +94,7 @@ The launcher starts `codex --remote` against its own proxy in front of the kerne
 | First launch in a new folder | Codex's own folder-trust dialog; no kernel card. | live |
 | Default model | Defect F1: Codex shows "GPT-5.4 Mini is no longer available", the turn fails in the kernel and the terminal sits in "Reconnecting to app-server…". | live |
 | Footer and `/status` | Codex's own, and wrong: the footer said `GPT-6-Luna medium`, later `gpt-5.4-mini medium`; `/status` said "Read Only (Ask for approval)". The kernel run was `gpt-5.4-mini`, effort low, workspace-write. Defect F6. | live |
-| Reopen a Room | Works; the failed prompt was not shown in the reopened transcript. | live |
+| Reopen a Room | Opens, as a new agent (same launcher path as Claude); the failed prompt was not shown in the reopened transcript. | live |
 | Room command typed (`/notifications`) | `Unrecognized command '/notifications'`. It never leaves the terminal. | live |
 | Exit | Codex prints `codex --remote ws://127.0.0.1:<port>/ resume <id>`, a proxy that no longer exists. Defect F8. | live |
 | Prompt, reply, steer, stop | Through the kernel. | code, fixture tests |
@@ -149,7 +149,7 @@ The feature list comes from the web pane source in Cloud at `d8b8df0d49`, `apps/
 | **Transcript** | | | | |
 | 6 | Streaming reply, reasoning, tool rows | Present (live) | Present, projected thread (fixture tests) | Present; not run |
 | 7 | Prompt from another client appears | Present (live) | Present | Present; not run |
-| 8 | Earlier turns on reopen, paging | Present: Claude resume | Partial: reopened empty after a failed turn (live) | Present: OpenCode session; not run |
+| 8 | Earlier turns on reopen, paging | Missing: reopen starts a new agent (code) | Missing: reopen starts a new agent (code); reopened empty after a failed turn (live) | Missing: reopen starts a new agent (code) |
 | 9 | Edit and resend, Continue | Partial: provider's own | Partial: provider's own | Partial: provider's own |
 | 10 | Plan card with Implement | Partial: Claude's own plan approval | Partial | Partial |
 | 11 | Visuals, file references that open the Files view, mentions | Missing | Missing | Missing |
@@ -227,14 +227,14 @@ One row per group of gaps from section 4. "Link" means the fallback of section 6
 | Identity and settings (1, 2, 4) | Kernel-rendered `statusLine`: Room, agent path, model, effort, mode, permissions, placement, as the kernel records them. | `thread/name/updated` carries "Room ▸ agent". Terminal title written by the launcher. | TUI plugin footer slot. Terminal title written by the launcher. | Codex has no custom status line. Claude's is hidden while a dialog is open. |
 | Settings switches (3) | PreModelSwitch and the `permission_mode` field of every hook report the change to the kernel; the kernel's refusal is shown by the hook. Account and placement changes need a relaunch. | The proxy applies the model and effort of the terminal's next `turn/start` to the kernel run, as OpenCode's proxy does today. | Already applied for model and variant. | A provider process keeps its account and placement until it is restarted. |
 | Provider permission prompt (13) | Keep Claude's dialog as the terminal face of the one kernel card. Add the missing close-out: a terminal answer settles the kernel card at once (PostToolUse for "Yes"; for "No" the interruption record in Claude's transcript, which the kernel already reads). | Project every permission card shown in this agent's pane, not only its own running prompt. | Same as today. | Claude's race between hook and dialog is undocumented. |
-| Kernel choice cards (14, 15, 16 without secrets) | MCP elicitation from the Chariox MCP server: no-field form for two choices, one enum field for more, a text field for a typed reply, the asker's name in the message. `notifications/cancelled` when answered elsewhere. | `mcpServer/elicitation/request` in form mode, or `item/tool/requestUserInput`; `serverRequest/resolved` when answered elsewhere. | Synthetic `question.asked`; `question.replied` when answered elsewhere. | Dialog titles are the provider's ("MCP server "chariox" requests your input"). Whether Codex draws a request with no running turn is not verified. |
-| Cards a text terminal cannot answer (16 secrets, 17, 18) | URL-mode elicitation with the link. | A `warning` line with the link (Codex does not draw URL mode). | Question dialog whose only option is "Open in Chariox", or a toast with the link. | A page, a passkey, a payment sheet and a file picker cannot be drawn in a provider's terminal. Secrets must not pass through a provider's form: Link. |
+| Kernel choice cards (14, 15, 16) | MCP elicitation from the Chariox MCP server: no-field form for two choices, one enum field for more, a text field for a typed reply (including a secret the person types and a Vault passphrase), the asker's name in the message. `notifications/cancelled` when answered elsewhere. | `mcpServer/elicitation/request` in form mode, or `item/tool/requestUserInput`; `serverRequest/resolved` when answered elsewhere. | Synthetic `question.asked`; `question.replied` when answered elsewhere. | Dialog titles are the provider's ("MCP server "chariox" requests your input"). Whether Codex draws a request with no running turn is not verified. |
+| Cards a text terminal cannot answer (17, 18) | URL-mode elicitation with the link. | A `warning` line with the link (Codex does not draw URL mode). | Question dialog whose only option is "Open in Chariox", or a toast with the link. | A page, a passkey, a payment sheet and a file picker cannot be drawn in a provider's terminal. The kernel never puts a Vault value into a provider's form; what the person types there is theirs (AGENTS.md, secrets). |
 | First-run dialogs (19) | The kernel reports "waiting for you in the terminal" in the pane feed so other clients say where the person must look. | Same. | Same. | These dialogs exist before any hook or server is attached. |
 | Stripes (20, 21, 22) | Second and third `statusLine` lines: cards waiting, queued prompts, wakes, goal, sub-agents, usage limit. | One `warning` line when a stripe appears or changes. Details through the agent or the link. | TUI plugin sidebar slot. | Codex cannot keep a persistent line. |
 | Room commands (25) | One command, `/chariox <Room command>`, handled by the UserPromptExpansion hook with the same kernel executor agents use (`chariox.room.run_command`). No model turn. | Ask the agent (it runs the command with `chariox.room.run_command`), or `!chariox <Room command>` through the shell escape. | TUI plugin slash commands. | Claude's "blocked by hook" frame wording. Codex rejects unknown slash commands before they leave the terminal (live). |
 | Notices and completion (29) | `statusLine` within its refresh interval; `systemMessage` on the next hook; terminal title, bell and desktop notification from the launcher. | `warning`; terminal title, bell and desktop notification from the launcher. | Toast; same from the launcher. | None. |
 | Usage (27) | Already in the status line input; print it. | Codex's own display, fed by `account/rateLimits/updated`. | Plugin footer. | None. |
-| Exit hint (F8) | The launcher prints `chariox claude <Room>` after the provider exits. | Same. | Same. | The provider's own hint cannot be removed, only followed by the right one. |
+| Resume an existing agent (8) and exit hint (F8) | A launcher option `--agent <name>` attaches the terminal to an existing agent of the Room: the kernel resumes that agent's own provider session (Claude `--resume` of the agent's session, run by the kernel) instead of `SpawnAgent`. The launcher prints `chariox claude <Room> --agent <name>` after the provider exits. | Same, through the agent's app-server thread. | Same, through the agent's OpenCode session. | The provider's own hint cannot be removed, only followed by the right one. Printing the hint without the resume path would open a new conversation. |
 | Visuals, Files, Browser and Terminal views, pane overview, Room switching (11, 30, 31) | Link. | Link. | Link. | Not terminal features. Out of scope by design. |
 
 ### 6.1 The fallback: a link to the same pane
@@ -261,7 +261,7 @@ Decisions:
 
 1. **The kernel builds the feed and its wording; adapters only translate.** Runtime rule 1. Today the stripe and status wording is computed in the web client, so three adapters would each invent their own. (P3: the same words everywhere.)
 2. **One `RuntimeInteraction` per prompt; every answer goes through `RespondToInteraction`.** An adapter never decides. First answer wins, and the adapter closes the provider's dialog when the kernel says the card is settled. (P1: answer anywhere, it disappears everywhere.)
-3. **The kernel, not the adapter, decides which cards a text terminal may answer.** Passkey choices, typed secrets, pages, payments and file picks are link-only. This keeps the Vault rule in one place: a Vault value never passes through a provider's form. (P2 and the secrets rule.)
+3. **The kernel, not the adapter, decides which cards a text terminal may answer.** Passkey choices, pages, payments and file picks are link-only, because a text terminal cannot draw them. A secret or passphrase the person types is answered in the native form like any typed reply: guarding what a person types protects nothing the model would otherwise see (AGENTS.md). The Vault rule stays in one place: the kernel never puts a Vault value into a provider's form, prompt or output. (P2 and the secrets rule.)
 4. **A card that blocks the agent's running turn opens its dialog at once. A card that arrives while the person is idle or typing only appears in the status line or as a notice, and opens on request.** A dialog that pops under the person's fingers can be answered by accident; in Claude Code Enter accepts a no-field form. (P1.)
 5. **Dismissing a dialog in the terminal means "not now".** The card stays open for every client. Only an explicit choice answers it. (P1.)
 6. **Provider-native dialogs, not Chariox-drawn ones.** A Claude user answers a Claude dialog, a Codex user a Codex overlay. No overlay renderer (section 6.2). (P3.)
@@ -311,8 +311,8 @@ Lane-weeks are one lane working for one week. M2, M3 and M4 can run in parallel 
 | M2 Claude Code | Status line, cards by elicitation, permission close-out, `/chariox`, model and mode reports. | 2 |
 | M3 Codex | All permission cards, cards by elicitation request, resolved, warnings, thread name, model applied. | 1.5 |
 | M4 OpenCode | Question cards, toasts, TUI plugin footer, sidebar and command. | 1.5 |
-| M5 Launch and exit | Project, account, environment and "new Room" arguments; terminal title and notification from the launcher; exit hint; drills on a slice and a remote machine. | 1 |
-| | Total | 8.5 |
+| M5 Launch, resume and exit | Project, account, environment and "new Room" arguments; resume an existing agent (`--agent`, kernel-side resume of its provider session); terminal title and notification from the launcher; exit hint; drills on a slice and a remote machine. | 1.5 |
+| | Total | 9 |
 
 ## 9. Validation cells
 
@@ -324,12 +324,12 @@ To be accepted by the owner before implementation starts. Each runs on the real 
 | V2 | Same card, answered on the web pane | The terminal dialog closes within 2 s and the turn continues. All three. |
 | V3 | Person dismisses the dialog | The card stays open on the web pane and is listed in the terminal's status line or notice; nothing is answered. |
 | V4 | Provider permission prompt, answered Yes, No and from the web pane | Every answer settles the one kernel card within 2 s; after "No" the next prompt from the web pane reaches the terminal (F3). |
-| V5 | Vault unlock card and a typed-secret card | The terminal shows one line and a link, never a field; the link opens the pane with the card; no Vault value appears in the terminal, history or logs. |
+| V5 | Vault unlock card and a typed-secret card | The person answers both in the provider's own form (a text field) or through the link; either answer settles the one kernel card; the kernel never puts a Vault value into the terminal, a provider form, history or logs. |
 | V6 | Sub-agent raises a card | The parent's terminal shows it with the sub-agent's name. |
 | V7 | Idle card (a wake fires a question while the person types) | No dialog opens over the typing; the status line or notice shows it; it opens on request. |
 | V8 | Identity and settings | Claude and OpenCode show Room, agent, model, effort, mode and permissions as the kernel records them; a switch made in the terminal shows on the web pane within 2 s; Codex's own footer matches the kernel. |
 | V9 | Room command | `/chariox goal …` (Claude, OpenCode) sets the goal with no model turn and the web pane shows the goal stripe; on Codex asking the agent does the same. |
-| V10 | Launch | `chariox claude --project … --account … --slice …` opens the same Room setup the web client would; exit prints the Chariox command to reopen it. |
+| V10 | Launch | `chariox claude --project … --account … --slice …` opens the same Room setup the web client would; exit prints the Chariox command that resumes the same agent, and running it shows the earlier turns in the provider's terminal. |
 | V11 | Codex: a server request with no running turn | The overlay opens while idle. If it does not, Codex cards outside a turn fall back to a warning line and the link. |
 | V12 | Claude Code over the kernel's own MCP endpoint | An unsolicited elicitation from the kernel's HTTP MCP endpoint opens the dialog (proven with a scratch HTTP server, not yet with the kernel's). |
 
