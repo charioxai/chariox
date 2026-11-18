@@ -228,6 +228,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 449 lets a slice agent resolve a Vault value for its own workspace (`workspace` injection) from the home Vault.
 /// 450 lets a slice agent capture into, generate in, copy within and remove from the home Vault
 /// (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of `InvokeHomeCredentialTool`).
+/// 450 has the relay admit a kernel registration only with the kernel identity key's signature over the
+/// connection's challenge (`DaemonRegister.proof`); 449 is taken by another lane.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

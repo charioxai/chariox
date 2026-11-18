@@ -932,7 +932,7 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
                     let (stream, _) = incoming.unwrap();
                     let accepted = accepted.clone();
                     readers.spawn(async move {
-                        let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return; };
+                        let Ok(socket) = crate::transport::relay_socket_connect::accept_as_relay(stream).await else { return; };
                         let (_, mut read) = socket.split();
                         let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
                         let mut announced = false;

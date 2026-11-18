@@ -10,6 +10,7 @@ mod display_resume_connect;
 mod metadata;
 mod metering;
 mod peer;
+mod registration_proof;
 mod registry;
 mod renewal;
 mod routing;
@@ -71,13 +72,49 @@ fn test_registration_with_token(
         kernel_started_at_ms,
         daemon_alias: None,
         kernel_alias: None,
-        public_key: format!("public-key-{daemon_id}"),
+        public_key: test_public_key(daemon_id),
         capabilities: vec!["kernel_ws".to_string()],
         available_providers: vec!["codex".to_string()],
         provider_accounts: Vec::new(),
         accepting_remote_leases: true,
         leased_agent_count: 0,
         local_session_count: 0,
+    }
+}
+
+/// The identity key a test kernel registers with: one per kernel id.
+pub(super) fn test_identity_key(daemon_id: &str) -> p256::SecretKey {
+    p256::SecretKey::from_slice(&<Sha256 as sha2::Digest>::digest(daemon_id.as_bytes()))
+        .expect("a digest is a valid key")
+}
+
+pub(super) fn test_public_key(daemon_id: &str) -> String {
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    base64::engine::general_purpose::STANDARD.encode(
+        test_identity_key(daemon_id)
+            .public_key()
+            .to_encoded_point(false)
+            .as_bytes(),
+    )
+}
+
+/// Registers as a kernel does: signed with its identity key for this connection's challenge.
+pub(super) fn signed_register(
+    url: &str,
+    handshake: &tokio_tungstenite::tungstenite::handshake::client::Response,
+    registration: DaemonRegistration,
+) -> RelayEnvelope {
+    let challenge = crate::registration_proof::offered_challenge(handshake)
+        .expect("the relay offers a registration challenge");
+    let proof = crate::registration_proof::prove(
+        &test_identity_key(&registration.daemon_id),
+        &crate::registration_proof::dialed_address(url).expect("relay url names a host"),
+        &registration,
+        challenge,
+    );
+    RelayEnvelope::DaemonRegister {
+        registration,
+        proof,
     }
 }
 
