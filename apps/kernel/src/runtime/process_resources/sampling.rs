@@ -1,6 +1,10 @@
+#[cfg(not(target_os = "linux"))]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
+
+#[cfg(target_os = "linux")]
+mod proc_table;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ProcessSample {
@@ -841,8 +845,9 @@ pub(super) struct Row {
     rss: u64,
     cpu: u64,
     age_ms: u64,
-    /// When the process started, as `ps` prints it (whole seconds): unlike the
-    /// elapsed time it is the same at every sample of one process.
+    /// When the process started (clock ticks since boot on Linux, the time `ps`
+    /// prints elsewhere): unlike the elapsed time it is the same at every sample
+    /// of one process.
     birth: String,
     sampled_at_ms: u64,
     command: String,
@@ -851,18 +856,19 @@ pub(super) struct Row {
 /// Why the process table could not be read.
 #[derive(Debug, Clone)]
 pub(super) enum SamplingError {
-    /// The kernel lacks resources to start `ps` or read a process or cgroup.
+    /// The kernel lacks resources to read the process table, a process or a cgroup.
     /// This says nothing about the tree; the next tick may read it.
     Short(i32),
     /// A signal ended `ps` before it answered, as a restart of the kernel does
     /// to the children it leaves behind. The tree is as it was; the next tick
     /// may read it.
+    #[cfg(not(target_os = "linux"))]
     Ended,
     /// The sampler has read no table since it started or resumed; the next
     /// tick may read it.
     Pending,
-    /// Nothing will change by trying again: `ps` is missing, refused or
-    /// answers with columns the monitor cannot read.
+    /// Nothing will change by trying again: /proc is not mounted, or `ps` is
+    /// missing, refused or answers with columns the monitor cannot read.
     Unusable(String),
 }
 impl std::fmt::Display for SamplingError {
@@ -873,6 +879,7 @@ impl std::fmt::Display for SamplingError {
                 "process resource monitor cannot sample for now: {}",
                 std::io::Error::from_raw_os_error(*errno)
             ),
+            #[cfg(not(target_os = "linux"))]
             Self::Ended => f.write_str("process resource monitor's ps was ended by a signal"),
             Self::Pending => {
                 f.write_str("process resource monitor has not read the process table yet")
@@ -903,7 +910,7 @@ fn shortage(error: &std::io::Error) -> Option<i32> {
     }
 }
 
-// The sampler owns ps and publishes a new immutable table. Readers never wait
+// The sampler owns the table reads and publishes a new immutable table. Readers never wait
 // for process creation, pipe I/O or a previous reader's refresh.
 #[derive(Clone)]
 struct RowObservation {
@@ -912,7 +919,7 @@ struct RowObservation {
     started_at: std::time::Instant,
 }
 
-/// Reading the process table costs a `ps` run, so the sampler reads only while
+/// Reading the process table reads every process, so the sampler reads only while
 /// watches read it: it pauses this long after the last read.
 const SAMPLER_IDLE: std::time::Duration = std::time::Duration::from_secs(1);
 const SAMPLER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
@@ -1046,9 +1053,9 @@ thread_local! {
     static TEST_SAMPLER: std::cell::RefCell<Option<Sampler>> = const { std::cell::RefCell::new(None) };
 }
 
-/// A process table read now, within `ps`'s own deadline, never the cached one.
+/// A process table read now, never the cached one.
 fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(format!(
             "the current processes could not be read ({}); the process may still be running, retry",
             std::io::Error::from_raw_os_error(errno)
@@ -1062,7 +1069,7 @@ fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
 }
 
 pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
     #[cfg(test)]
@@ -1074,7 +1081,7 @@ pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, Sampli
 
 #[cfg(unix)]
 fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
     #[cfg(test)]
@@ -1089,7 +1096,7 @@ fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
     sampler().successful_observation()
 }
 
-/// Submitter changes need current ancestry without waiting for a ps child.
+/// Submitter changes need current ancestry without waiting for the next table read.
 pub(super) fn live_groups(root: u32) -> Vec<u32> {
     super::terminal_groups::read(root).unwrap_or_else(|error| {
         crate::logging::error_with_fields(
@@ -1116,14 +1123,17 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
 }
 
 pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(std::io::Error::from_raw_os_error(errno));
     }
     // The first read waits for no tick of the watch.
     let _ = sampler().demand();
-    super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())
+    #[cfg(not(target_os = "linux"))]
+    super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())?;
+    Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn run_ps() -> std::io::Result<std::process::Output> {
     crate::process_spawn::command("ps")
         .env("LC_ALL", "C")
@@ -1131,18 +1141,18 @@ fn run_ps() -> std::io::Result<std::process::Output> {
         .output_with_deadline(std::time::Duration::from_secs(1))
 }
 
-/// Makes starting `ps` fail with an errno for the tree of one root process,
+/// Makes reading the process table fail with an errno for the tree of one root process,
 /// as a kernel at its descriptor limit does. Other trees, and the tests that
 /// watch them, are unaffected.
 #[cfg(not(test))]
-pub(super) mod ps_failure {
+pub(super) mod table_failure {
     pub(super) fn injected(_root: u32) -> Option<i32> {
         None
     }
 }
 
 #[cfg(test)]
-pub(super) mod ps_failure {
+pub(super) mod table_failure {
     static ERRNO: std::sync::Mutex<std::collections::BTreeMap<u32, i32>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -1165,7 +1175,8 @@ pub(super) mod ps_failure {
 
 /// Why `ps` did not answer: a signal ends it for now, an exit status means it
 /// cannot give the columns.
-pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
+#[cfg(not(target_os = "linux"))]
+fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
     if status.code().is_none() {
         return SamplingError::Ended;
     }
@@ -1175,6 +1186,12 @@ pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
     )
 }
 
+#[cfg(target_os = "linux")]
+fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
+    proc_table::read()
+}
+
+#[cfg(not(target_os = "linux"))]
 fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
     let output = run_ps().map_err(|error| match shortage(&error) {
@@ -1223,6 +1240,7 @@ fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     Ok(rows)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn elapsed_ms(text: &str) -> Option<u64> {
     let (days, clock) = text
         .split_once('-')
@@ -1285,6 +1303,7 @@ mod marker_cache_tests {
 #[cfg(all(test, unix))]
 mod snapshot_stall_tests {
     use super::*;
+    use crate::runtime::bounded_process::BoundedCommandExt as _;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1316,7 +1335,7 @@ mod snapshot_stall_tests {
                 return Ok(rows);
             }
             let _ = resumed.recv_timeout(Duration::from_secs(5));
-            Err(SamplingError::Ended)
+            Err(SamplingError::Short(libc::EAGAIN))
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while sampler.rows().is_err() {
@@ -1401,14 +1420,17 @@ mod snapshot_stall_tests {
                 }]);
             }
             if calls > 2 {
-                return Err(SamplingError::Ended);
+                return Err(SamplingError::Short(libc::EAGAIN));
             }
             let script = format!("import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(600)", target.to_string_lossy());
             let result = crate::process_spawn::command("python3")
                 .args(["-c", &script])
                 .output_with_deadline(Duration::from_millis(500));
-            assert!(result.is_err(), "the ps stand-in must hit its deadline");
-            Err(SamplingError::Ended)
+            assert!(
+                result.is_err(),
+                "the table-read stand-in must hit its deadline"
+            );
+            Err(SamplingError::Short(libc::EAGAIN))
         });
         let deadline = Instant::now() + Duration::from_secs(3);
         while !pid_file.exists() {
@@ -1557,9 +1579,9 @@ mod stop_tests {
         let child = fork_child(&mut input, &mut output);
         let identity = inspect(child).unwrap().0;
         tree.observe(&read_process_rows().unwrap()).unwrap();
-        ps_failure::set(shell.id(), Some(libc::EMFILE));
+        table_failure::set(shell.id(), Some(libc::EMFILE));
         let stopped = tree.stop(None, || {}, || {});
-        ps_failure::set(shell.id(), None);
+        table_failure::set(shell.id(), None);
         let still_running = same_process(child, &identity) && shell.try_wait().unwrap().is_none();
         kill_if_still_there(child, &identity);
         let _ = shell.kill();
