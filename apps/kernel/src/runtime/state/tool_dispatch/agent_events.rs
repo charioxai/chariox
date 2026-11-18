@@ -88,6 +88,17 @@ impl KernelRuntimeState {
         name: &str,
         args: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let missing = crate::transport::runtime_tools::missing_agent_event_arguments(name, &args);
+        if !missing.is_empty() {
+            let missing = missing
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ledger::error(format!(
+                "{name} is missing its required argument {missing}; call it again with every required argument"
+            )));
+        }
         let session = self.owned.session_store.get_session(room)?;
         let prompt = self
             .owned

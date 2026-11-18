@@ -1295,10 +1295,15 @@ impl KernelRuntimeState {
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
         #[cfg(test)]
         self.lifecycle_sweeps.record_run();
-        self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
-            .await
+        let swept = self
+            .sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
+            .await;
+        self.owned.agent_wakes.sweep_step.leave();
+        swept
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
+        let step = &self.owned.agent_wakes.sweep_step;
+        step.enter("the lost-workspace check");
         Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
@@ -1306,9 +1311,11 @@ impl KernelRuntimeState {
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
+        step.enter("the wake dead-man check");
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
         }
@@ -1352,11 +1359,14 @@ impl KernelRuntimeState {
             }
         }
         let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        step.enter("leased worker probes");
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
+        step.enter("worker stop obligations");
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
@@ -1674,6 +1684,7 @@ impl KernelRuntimeState {
         let mut busy_recipients = Vec::new();
         let mut vault_wait_recipients = Vec::new();
         let mut held_work = Vec::new();
+        step.enter("the ledger commit");
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1733,11 +1744,14 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
             }
-            if task.state == ExecutionState::Blocked
-                && self
-                    .ensure_task_owner_interaction(task.clone())
-                    .await
-                    .is_err()
+            if task.state != ExecutionState::Blocked {
+                continue;
+            }
+            step.enter(format!("the owner decision of task {}", task.task_id));
+            if self
+                .ensure_task_owner_interaction(task.clone())
+                .await
+                .is_err()
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
@@ -1748,6 +1762,9 @@ impl KernelRuntimeState {
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.
+        // A delivery submits or steers a turn and projects the whole Room, which
+        // grows with the Room: each recipient's runs in its own work, so a Room of
+        // many agents never holds this sweep past its cadence.
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1756,10 +1773,11 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&room).is_err() {
                 continue;
             }
-            if let Err(error) = Box::pin(self.deliver_agent_inbox(&room, &agent)).await {
-                tracing::warn!(%error, room_id=%room, agent_id=%agent, "MP-08/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
-            }
-            let _ = self.owned.session_snapshot(&room);
+            self.spawn_task_work(format!("inbox:{room}:{agent}"), move |state| async move {
+                let delivered = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
+                let _ = state.owned.session_snapshot(&room);
+                delivered
+            });
         }
         Ok(())
     }

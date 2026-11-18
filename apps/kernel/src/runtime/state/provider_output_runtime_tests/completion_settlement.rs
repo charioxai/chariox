@@ -476,6 +476,7 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
         )
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     let retried = store
         .agent_inbox(session.id(), agent.id(), 0)
         .unwrap()
@@ -3506,6 +3507,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
         .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     assert_eq!(
         store.agent_inbox(session.id(), agent.id(), 0).unwrap()[0].state,
         "acknowledged",
