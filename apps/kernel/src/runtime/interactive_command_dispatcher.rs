@@ -57,9 +57,16 @@ pub(crate) fn dispatch_interactive_command<'a>(
                     .resolve_new_session_defaults(&inner.owner_user_id, inner.agent_defaults)
                     .await?;
             }
-            if let Some(defaults) = &explicit_defaults {
+            if let Some(mut defaults) = explicit_defaults {
+                // The saved default is the catalog id the name resolved to, not the name typed.
+                if defaults.model.is_some() {
+                    defaults.model = inner
+                        .agent_defaults
+                        .as_ref()
+                        .and_then(|resolved| resolved.model.clone());
+                }
                 runtime_state
-                    .persist_provider_launch_defaults(defaults)
+                    .persist_provider_launch_defaults(&defaults)
                     .await?;
             }
             session_runtime

@@ -39,6 +39,7 @@ pub(crate) fn seed_account_models(
                     id: model_id.to_string(),
                     name: model_id.to_string(),
                     status: "active".to_string(),
+                    aliases: Vec::new(),
                     limit: None,
                     variants: BTreeMap::new(),
                 },

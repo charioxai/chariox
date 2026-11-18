@@ -1582,6 +1582,7 @@ fn seed_codex_catalog(harness: &LocalRouterTestHarness) {
             id: "gpt-6.1-sol".to_string(),
             name: "GPT-6.1 Sol".to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: ["low", "high"]
                 .iter()
