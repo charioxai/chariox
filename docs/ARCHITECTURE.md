@@ -394,8 +394,12 @@ Every process the kernel starts for an agent (provider runs, kernel jobs and
 watched commands, terminals an agent opens) runs where the kernel's secrets
 are out of reach: its state folder (database, relay credential, every
 provider profile), Vault, credentials, machine identity, relay pairing and
-history. On Linux a Bubblewrap mount namespace covers them with empty folders;
-on macOS a Seatbelt profile denies them. What the launch names as the agent's
+history. Only the secrets are covered, never the folder around them, so
+whatever an agent writes beside a secret reaches the disk. On Linux a
+Bubblewrap mount namespace covers secret folders with empty ones and secret
+files with a socket nobody listens on, so reading one fails; on macOS a
+Seatbelt profile denies them. Files the kernel hands an agent to read, such as
+a workflow node's instruction file, live outside the secrets. What the launch names as the agent's
 own stays reachable: its working folder, its provider profile, its scratch
 folder and program, and, read-only, the kernel registry and local sign-in
 token the chariox CLI uses. A kernel that cannot confine (no `bwrap`, or user

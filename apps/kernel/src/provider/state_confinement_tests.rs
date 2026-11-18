@@ -225,3 +225,84 @@ fn an_endpoint_the_kernel_does_not_start_is_left_alone() {
     };
     assert_eq!(super::confine_launch(launch.clone()).unwrap(), launch);
 }
+
+fn run_confined(kernel: &DummyKernelHome, script: &str) -> String {
+    let launch = crate::provider::managed_isolated_utility_launch(
+        "/bin/sh",
+        vec!["-c".to_string(), script.to_string()],
+        kernel.agent_environment(),
+        Some(kernel.workspace.clone()),
+        "agent-watched-process",
+    )
+    .expect("an agent command launch is planned");
+    let output = crate::provider::command_from_provider_launch(launch)
+        .expect("an agent command is built")
+        .output()
+        .expect("an agent command runs");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn a_file_written_beside_a_vault_in_a_user_folder_reaches_the_disk() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let folder = kernel.workspace.parent().unwrap().join("alice");
+    write(&folder.join("vault.json"), SECRET);
+    write(
+        &folder.join("vault.json.managed-context-key-1.json"),
+        SECRET,
+    );
+    write(&folder.join("notes.txt"), "mine");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.path = folder.join("vault.json").display().to_string();
+    super::configure(&config);
+    let output = run_confined(
+        &kernel,
+        &format!(
+            "cd '{}' && echo new > new.txt && echo more >> notes.txt && ls && cat vault.json; cat vault.json.managed-context-key-1.json",
+            folder.display()
+        ),
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("new.txt")).unwrap_or_default(),
+        "new\n",
+        "a new file beside the Vault is on disk after the agent ends:\n{output}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.txt")).unwrap(),
+        "minemore\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("vault.json")).unwrap(),
+        SECRET
+    );
+    assert!(
+        !output.contains(SECRET),
+        "the Vault reached the agent:\n{output}"
+    );
+    assert!(
+        output.contains("vault.json: No such device or address"),
+        "reading the Vault fails clearly:\n{output}"
+    );
+}
+
+#[test]
+fn a_confined_agent_rereads_its_workflow_node_instructions() {
+    let kernel = DummyKernelHome::new();
+    let config = crate::config::DaemonConfig::for_tests();
+    let file = crate::workflow_node_instructions::node_instruction_file(
+        &config,
+        "room-1",
+        "run-1",
+        "plan",
+        Some("Write the plan."),
+    )
+    .expect("the instruction file is written");
+    assert!(file.starts_with(&kernel.home.display().to_string()));
+    let output = run_confined(&kernel, &format!("cat '{file}'"));
+    assert_eq!(output, "Write the plan.", "{file}");
+}

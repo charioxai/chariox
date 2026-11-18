@@ -7,10 +7,12 @@
 //! chariox CLI keeps the kernel registry and local sign-in token it reads to
 //! reach this kernel, read-only.
 //!
-//! Linux hides them in a mount namespace made by Bubblewrap, which unprivileged
-//! kernels may use where distributions restrict user namespaces. macOS denies
-//! them with a Seatbelt profile. A kernel that cannot confine refuses to start
-//! the process; nothing runs unconfined.
+//! Only the secrets themselves are covered, never the folder around them, so
+//! everything an agent writes next to a secret reaches the disk. Linux covers
+//! them in a mount namespace made by Bubblewrap, which unprivileged kernels may
+//! use where distributions restrict user namespaces. macOS denies them with a
+//! Seatbelt profile. A kernel that cannot confine refuses to start the process;
+//! nothing runs unconfined.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -18,8 +20,8 @@ use std::sync::OnceLock;
 use super::ProviderLaunchResult;
 use crate::error::DaemonError;
 
-/// Entries of the kernel home that hold its secrets.
-const SECRET_HOME_ENTRIES: &[&str] = &[
+/// Folders of the kernel home that hold its secrets.
+const SECRET_HOME_FOLDERS: &[&str] = &[
     "state",
     "credentials",
     "machine",
@@ -51,10 +53,41 @@ const OWN_PATH_ENVIRONMENT: &[&str] = &[
 #[cfg(target_os = "linux")]
 pub(crate) const STATE_CONFINEMENT_MARKER_ENV: &str = "CHARIOX_KERNEL_STATE_CONFINED";
 
-static CONFIGURED_SECRETS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+/// Secret files the kernel's configuration may place anywhere.
+static CONFIGURED_FILES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+/// Secret folders the kernel's configuration may place anywhere.
+static CONFIGURED_FOLDERS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 
-/// Adds the secret locations the kernel's configuration moved out of its home.
+/// The kernel's secrets as they are on disk now.
+struct Secrets {
+    /// Covered whole; outermost first, none inside another.
+    folders: Vec<PathBuf>,
+    /// Covered one by one; none inside a covered folder.
+    files: Vec<PathBuf>,
+}
+
+impl Secrets {
+    fn cover(&self, path: &Path) -> bool {
+        self.folders.iter().any(|folder| path.starts_with(folder))
+    }
+}
+
+/// Records where the configuration keeps secrets, and creates the kernel home's
+/// secret folders, so one the kernel fills later is covered from the start.
 pub(crate) fn configure(config: &crate::config::DaemonConfig) {
+    let home = crate::config::default_config_dir();
+    for folder in SECRET_HOME_FOLDERS {
+        let folder = home.join(folder);
+        if !folder.exists() {
+            if let Err(error) = private_folder(&folder) {
+                crate::logging::warn_with_fields(
+                    "provider.state_confinement",
+                    "could not create a kernel secret folder; agents started before it exists can read it",
+                    serde_json::json!({"folder": folder.display().to_string(), "error": error.to_string()}),
+                );
+            }
+        }
+    }
     let vault = &config.user_config.credential_vault.path;
     let vault = match vault.strip_prefix("~/") {
         Some(suffix) => std::env::var_os("HOME")
@@ -62,18 +95,21 @@ pub(crate) fn configure(config: &crate::config::DaemonConfig) {
             .unwrap_or_else(|| PathBuf::from(vault)),
         None => PathBuf::from(vault),
     };
-    let mut secrets = vec![
+    let _ = CONFIGURED_FILES.set(vec![
         vault,
-        config.private_runtime_state_root(),
-        config.session_history_root(),
-    ];
-    secrets.extend(
-        config
-            .operational_history_path()
-            .parent()
-            .map(Path::to_path_buf),
-    );
-    let _ = CONFIGURED_SECRETS.set(secrets);
+        config.durable_state_path(),
+        config.account_profile_registry_path(),
+        config.operational_history_path(),
+    ]);
+    let _ = CONFIGURED_FOLDERS.set(vec![config.session_history_root()]);
+}
+
+fn private_folder(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
 }
 
 /// The launch, run so that it and everything it starts cannot read the kernel's
@@ -104,10 +140,7 @@ pub(crate) fn confine_command(
     environment: &BTreeMap<String, String>,
     mut own: Vec<PathBuf>,
 ) -> Result<(String, Vec<String>), DaemonError> {
-    let home = canonical_location(&crate::config::default_config_dir()).ok_or_else(|| {
-        confinement_error("the kernel home has no absolute location to hide its secrets in")
-    })?;
-    let secrets = secret_paths(&home);
+    let secrets = secrets();
     own.extend(
         OWN_PATH_ENVIRONMENT
             .iter()
@@ -116,14 +149,14 @@ pub(crate) fn confine_command(
     );
     own.extend(Path::new(&program).parent().map(Path::to_path_buf));
     let own = existing_canonical(own);
-    if let Some(path) = own.iter().find(|path| secrets.contains(path)) {
+    if let Some(path) = own.iter().find(|path| secrets.folders.contains(path)) {
         return Err(confinement_error(format!(
             "{} is the kernel's private folder, so no agent process may work in it; use a folder outside it",
             path.display()
         )));
     }
     let shared = existing_canonical(cli_paths());
-    platform::wrap(program, args, &secrets, &home, &own, &shared)
+    platform::wrap(program, args, &secrets, &own, &shared)
 }
 
 /// The length of a confinement prefix at the start of `args`, through the program.
@@ -131,26 +164,66 @@ pub(crate) fn confinement_prefix_len(args: &[String]) -> Option<usize> {
     platform::prefix_len(args)
 }
 
-/// Every secret location, canonical, outermost first, none inside another.
-fn secret_paths(home: &Path) -> Vec<PathBuf> {
-    let mut secrets = SECRET_HOME_ENTRIES
+/// Every secret that exists now. A secret's siblings that start with its name
+/// (Vault key envelopes, database journals) are secrets too.
+fn secrets() -> Secrets {
+    let home = crate::config::default_config_dir();
+    let mut candidates = SECRET_HOME_FOLDERS
         .iter()
-        .map(|entry| home.join(entry))
+        .map(|folder| home.join(folder))
         .collect::<Vec<_>>();
-    secrets.push(crate::config::default_state_dir());
-    secrets.extend(CONFIGURED_SECRETS.get().into_iter().flatten().cloned());
-    let mut secrets = secrets
-        .into_iter()
-        .filter_map(|path| canonical_location(&path))
-        .collect::<Vec<_>>();
-    secrets.sort_by_key(|path| path.components().count());
-    let mut outermost: Vec<PathBuf> = Vec::new();
-    for path in secrets {
-        if !outermost.iter().any(|secret| path.starts_with(secret)) {
-            outermost.push(path);
+    candidates.push(crate::config::default_state_dir());
+    candidates.extend(CONFIGURED_FOLDERS.get().into_iter().flatten().cloned());
+    candidates.extend(CONFIGURED_FILES.get().into_iter().flatten().cloned());
+    let mut folders = Vec::new();
+    let mut files = Vec::new();
+    for path in candidates
+        .iter()
+        .flat_map(|candidate| named_like(candidate))
+    {
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+        if canonical.is_dir() {
+            folders.push(canonical);
+        } else {
+            files.push(canonical);
         }
     }
-    outermost
+    folders.sort_by_key(|path| path.components().count());
+    let mut outermost: Vec<PathBuf> = Vec::new();
+    for folder in folders {
+        if !outermost.iter().any(|outer| folder.starts_with(outer)) {
+            outermost.push(folder);
+        }
+    }
+    files.sort();
+    files.dedup();
+    files.retain(|file| !outermost.iter().any(|folder| file.starts_with(folder)));
+    Secrets {
+        folders: outermost,
+        files,
+    }
+}
+
+/// `path` and its siblings whose names start with its name, as they exist now.
+fn named_like(path: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(name.as_encoded_bytes())
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// What the chariox CLI reads to reach this kernel.
@@ -161,26 +234,6 @@ fn cli_paths() -> Vec<PathBuf> {
             .join("kernels")
             .join("active"),
     ]
-}
-
-/// The canonical form of a location that may not exist yet: its existing
-/// ancestor resolved, the rest appended.
-fn canonical_location(path: &Path) -> Option<PathBuf> {
-    let path = std::path::absolute(path).ok()?;
-    let mut missing = Vec::new();
-    let mut existing = path.as_path();
-    loop {
-        if let Ok(canonical) = existing.canonicalize() {
-            return Some(
-                missing
-                    .iter()
-                    .rev()
-                    .fold(canonical, |path, name| path.join(name)),
-            );
-        }
-        missing.push(existing.file_name()?.to_os_string());
-        existing = existing.parent()?;
-    }
 }
 
 fn existing_canonical(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -202,99 +255,39 @@ fn confinement_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
 
-    use super::{confinement_error, STATE_CONFINEMENT_MARKER_ENV};
+    use super::{confinement_error, Secrets, STATE_CONFINEMENT_MARKER_ENV};
     use crate::error::DaemonError;
     use crate::runtime::bounded_process::BoundedCommandExt as _;
 
     static WORKING_BUBBLEWRAP: OnceLock<PathBuf> = OnceLock::new();
 
-    /// A secret folder outside the kernel home is covered by an empty one.
-    /// Every other secret is hidden by an empty folder over its parent with the
-    /// parent's other entries mounted back, so a file vanishes as a folder does
-    /// and a secret created later never appears; entries starting with a
-    /// secret's name (Vault key envelopes) go with it. The kernel home is always
-    /// hidden this way. Outer folders come first, so an inner cover hides what
-    /// an outer one mounted back.
+    /// Each secret folder is covered by an empty one and each secret file by a
+    /// socket nobody listens on, so reading it fails instead of looking empty.
+    /// The agent's own paths inside a covered folder are mounted back.
     pub(super) fn wrap(
         program: String,
         args: Vec<String>,
-        secrets: &[PathBuf],
-        home: &Path,
+        secrets: &Secrets,
         own: &[PathBuf],
         shared: &[PathBuf],
     ) -> Result<(String, Vec<String>), DaemonError> {
         let bubblewrap = working_bubblewrap()?;
-        let mut covers: BTreeMap<PathBuf, BTreeSet<OsString>> = BTreeMap::new();
-        for secret in secrets {
-            let parent = secret.parent().filter(|parent| *parent != Path::new("/"));
-            match (parent, secret.file_name()) {
-                (Some(parent), _) if secret.is_dir() && parent != home => {
-                    covers.entry(secret.clone()).or_default();
-                }
-                (Some(parent), Some(name)) => {
-                    covers
-                        .entry(parent.to_path_buf())
-                        .or_default()
-                        .insert(name.to_os_string());
-                }
-                _ => {
-                    return Err(confinement_error(format!(
-                        "{} sits directly in /, so it cannot be hidden from agents; move it into a folder",
-                        secret.display()
-                    )))
-                }
-            }
-        }
-        let mut folders = covers.keys().cloned().collect::<Vec<_>>();
-        folders.sort_by_key(|path| path.components().count());
         let mut wrapped = vec!["--dev-bind".to_string(), "/".to_string(), "/".to_string()];
-        // A folder that does not exist holds nothing to read.
-        for folder in folders.into_iter().filter(|folder| folder.is_dir()) {
-            wrapped.extend(["--tmpfs".to_string(), path_arg(&folder)]);
-            let names = &covers[&folder];
-            if names.is_empty() {
-                continue;
-            }
-            let entries = std::fs::read_dir(&folder).map_err(|error| {
-                confinement_error(format!(
-                    "could not list {} to hide the kernel's secrets in it: {error}",
-                    folder.display()
-                ))
-            })?;
-            for entry in entries {
-                let entry = entry.map_err(|error| {
-                    confinement_error(format!("could not list {}: {error}", folder.display()))
-                })?;
-                let name = entry.file_name();
-                if names.iter().any(|secret| {
-                    name.as_encoded_bytes()
-                        .starts_with(secret.as_encoded_bytes())
-                }) {
-                    continue;
-                }
-                let path = entry.path();
-                match std::fs::read_link(&path) {
-                    Ok(target) => wrapped.extend([
-                        "--symlink".to_string(),
-                        path_arg(&target),
-                        path_arg(&path),
-                    ]),
-                    Err(_) => {
-                        wrapped.extend(["--dev-bind".to_string(), path_arg(&path), path_arg(&path)])
-                    }
-                }
+        for folder in &secrets.folders {
+            wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
+        }
+        if !secrets.files.is_empty() {
+            let stand_in = unreadable_stand_in()?;
+            for file in &secrets.files {
+                wrapped.extend(["--ro-bind".to_string(), path_arg(&stand_in), path_arg(file)]);
             }
         }
         for (paths, bind) in [(shared, "--ro-bind"), (own, "--bind")] {
-            for path in paths {
-                if secrets.iter().any(|secret| path.starts_with(secret)) {
-                    wrapped.extend([bind.to_string(), path_arg(path), path_arg(path)]);
-                }
+            for path in paths.iter().filter(|path| secrets.cover(path)) {
+                wrapped.extend([bind.to_string(), path_arg(path), path_arg(path)]);
             }
         }
         wrapped.extend([
@@ -319,6 +312,40 @@ mod platform {
 
     fn path_arg(path: &Path) -> String {
         path.display().to_string()
+    }
+
+    /// A socket in the kernel's state folder that nobody listens on: opening it
+    /// fails with "No such device or address".
+    fn unreadable_stand_in() -> Result<PathBuf, DaemonError> {
+        use std::os::unix::fs::FileTypeExt as _;
+        let state = crate::config::default_state_dir();
+        let path = state.join("hidden-secret.sock");
+        let is_socket = |path: &Path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+        };
+        if is_socket(&path) {
+            return Ok(path);
+        }
+        let made = super::private_folder(&state).and_then(|()| {
+            let _ = std::fs::remove_file(&path);
+            // Through the folder's descriptor the socket path stays short
+            // whatever the depth of the kernel home.
+            let folder = std::fs::File::open(&state)?;
+            let short = format!(
+                "/proc/self/fd/{}/hidden-secret.sock",
+                std::os::fd::AsRawFd::as_raw_fd(&folder)
+            );
+            std::os::unix::net::UnixListener::bind(short).map(drop)
+        });
+        match made {
+            Ok(()) => Ok(path),
+            // Another launch made it first.
+            Err(_) if is_socket(&path) => Ok(path),
+            Err(error) => Err(confinement_error(format!(
+                "could not make {} to stand in for the kernel's secret files: {error}",
+                path.display()
+            ))),
+        }
     }
 
     /// Bubblewrap from PATH, once it has made a namespace on this machine.
@@ -359,20 +386,19 @@ mod platform {
 mod platform {
     use std::path::{Path, PathBuf};
 
-    use super::confinement_error;
+    use super::{confinement_error, Secrets};
     use crate::error::DaemonError;
 
     const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
     const PROFILE_HEADER: &str = ";; chariox kernel state confinement\n";
 
-    /// Seatbelt denies the secrets by path, a secret's siblings that start with
-    /// its name (Vault key envelopes) with it. The last matching rule wins, so
-    /// the agent's own and the CLI's paths are allowed back after the denials.
+    /// Seatbelt denies the secret folders and files by path. The last matching
+    /// rule wins, so the agent's own and the CLI's paths are allowed back after
+    /// the denials.
     pub(super) fn wrap(
         program: String,
         args: Vec<String>,
-        secrets: &[PathBuf],
-        _home: &Path,
+        secrets: &Secrets,
         own: &[PathBuf],
         shared: &[PathBuf],
     ) -> Result<(String, Vec<String>), DaemonError> {
@@ -382,20 +408,24 @@ mod platform {
             )));
         }
         let mut profile = format!("{PROFILE_HEADER}(version 1)\n(allow default)\n");
-        for secret in secrets {
+        for folder in &secrets.folders {
             profile.push_str(&format!(
-                "(deny file-read* file-write* (regex #\"^{}\"))\n",
-                escaped(secret)
+                "(deny file-read* file-write* (regex #\"^{}(/|$)\"))\n",
+                escaped(folder)
+            ));
+        }
+        for file in &secrets.files {
+            profile.push_str(&format!(
+                "(deny file-read* file-write* (regex #\"^{}$\"))\n",
+                escaped(file)
             ));
         }
         for (paths, operations) in [(own, "file-read* file-write*"), (shared, "file-read*")] {
-            for path in paths {
-                if secrets.iter().any(|secret| path.starts_with(secret)) {
-                    profile.push_str(&format!(
-                        "(allow {operations} (regex #\"^{}(/|$)\"))\n",
-                        escaped(path)
-                    ));
-                }
+            for path in paths.iter().filter(|path| secrets.cover(path)) {
+                profile.push_str(&format!(
+                    "(allow {operations} (regex #\"^{}(/|$)\"))\n",
+                    escaped(path)
+                ));
             }
         }
         let mut wrapped = vec!["-p".to_string(), profile, program];
@@ -423,14 +453,13 @@ mod platform {
 mod platform {
     use std::path::PathBuf;
 
-    use super::confinement_error;
+    use super::{confinement_error, Secrets};
     use crate::error::DaemonError;
 
     pub(super) fn wrap(
         _program: String,
         _args: Vec<String>,
-        _secrets: &[PathBuf],
-        _home: &std::path::Path,
+        _secrets: &Secrets,
         _own: &[PathBuf],
         _shared: &[PathBuf],
     ) -> Result<(String, Vec<String>), DaemonError> {
