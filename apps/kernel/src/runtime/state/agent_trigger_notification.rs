@@ -208,6 +208,7 @@ impl KernelRuntimeState {
                             options: picked,
                             once: *once,
                         })
+                        .map(|_| ())
                 }),
             None => {
                 self.subscribe_app_agent_notification(
