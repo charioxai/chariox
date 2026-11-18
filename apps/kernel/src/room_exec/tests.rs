@@ -278,14 +278,23 @@ async fn exec_room_end_cancels_the_whole_owned_process_tree() {
 
 // A job that leaves the command's tree (its own session, its parent gone) before anything
 // looked at the tree is still the command's: cleanup owns it from the spawn, not from a snapshot.
+// The second command's launcher exits at once, so it is usually gone before ownership is
+// captured and its environment cannot name the claim.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn exec_cleanup_ends_a_job_that_left_the_tree_before_any_snapshot() {
-    let service = RoomExecService::default();
-    let id = open(
-        &service,
+    for script in [
         "(setsid sh -c 'echo $$; exec sleep 60' &) ; sleep 0.3; wait",
-    );
+        "(setsid sh -c 'echo $$; exec sleep 60' &)",
+    ] {
+        ends_with_its_command(script).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn ends_with_its_command(script: &str) {
+    let service = RoomExecService::default();
+    let id = open(&service, script);
     let page = service
         .read("room", &id, 0, Duration::from_secs(5))
         .await
@@ -310,18 +319,20 @@ async fn exec_cleanup_ends_a_job_that_left_the_tree_before_any_snapshot() {
     .await
     .unwrap();
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-    assert!(
-        stat.as_ref().map_or(true, |stat| stat
-            .rsplit_once(')')
+    let ended = stat.as_ref().map_or(true, |stat| {
+        stat.rsplit_once(')')
             .unwrap()
             .1
             .trim_start()
-            .starts_with('Z')),
-        "the detached job must be ended with its command: {stat:?}"
-    );
+            .starts_with('Z')
+    });
     // The test may have failed first: never leave the sleeper running.
     // SAFETY: a PID this test just read from its own child's output.
     unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    assert!(
+        ended,
+        "the detached job must be ended with its command: {stat:?}"
+    );
 }
 
 #[tokio::test]

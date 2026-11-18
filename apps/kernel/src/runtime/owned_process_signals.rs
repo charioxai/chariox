@@ -24,9 +24,10 @@ pub(crate) struct OwnedProcessSignals {
     claim: Claim,
 }
 
-/// The launch claim the root carried in its environment at spawn. Every descendant inherits
-/// it, so a job that left the tree (its own session, its parent gone) before anything looked
-/// at the tree is still found and ended.
+/// The launch claim the spawner put in the root's environment (`CLAIM_VARIABLE`). Every
+/// descendant inherits it, so a job that left the tree (its own session, its parent gone)
+/// before anything looked at the tree is still found and ended. The spawner passes it in:
+/// the root may already be gone, and its environment then proves nothing.
 #[derive(Default)]
 struct Claim {
     marker: Option<Vec<u8>>,
@@ -36,36 +37,58 @@ struct Claim {
 
 impl OwnedProcessSignals {
     pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
-        Self::capture(child, false)
+        Self::capture(child, false, None)
     }
 
     /// Only for a child launched with a successful setsid pre_exec hook.
     /// Retain that launch witness even after macOS clears the exited leader's session flag.
     pub(crate) fn for_session_child(child: &Child) -> io::Result<Self> {
-        Self::capture(child, true)
+        Self::capture(child, true, None)
+    }
+
+    /// `for_session_child` for a child launched with `claim` in `CLAIM_VARIABLE`.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn for_claimed_session_child(child: &Child, claim: &str) -> io::Result<Self> {
+        Self::capture(child, true, Some(claim))
     }
 
     /// A process this kernel did not just spawn (an orphan found by scanning).
     /// Its identity is only as good as the moment of this snapshot.
     pub(crate) fn for_pid(pid: u32) -> io::Result<Self> {
-        Self::capture_pid(pid, false)
+        Self::capture_pid(pid, false, None)
     }
 
-    fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
-        Self::capture_pid(child.id(), launched_exclusive_session)
+    fn capture(
+        child: &Child,
+        launched_exclusive_session: bool,
+        claim: Option<&str>,
+    ) -> io::Result<Self> {
+        Self::capture_pid(child.id(), launched_exclusive_session, claim)
     }
 
-    /// The caller launched this async child with a successful setsid hook.
-    pub(crate) fn for_tokio_session_child(child: &tokio::process::Child) -> io::Result<Self> {
+    /// The caller launched this async child with a successful setsid hook and `claim` in
+    /// `CLAIM_VARIABLE`.
+    pub(crate) fn for_claimed_tokio_session_child(
+        child: &tokio::process::Child,
+        claim: &str,
+    ) -> io::Result<Self> {
         Self::capture_pid(
             child
                 .id()
                 .ok_or_else(|| io::Error::other("child already reaped"))?,
             true,
+            Some(claim),
         )
     }
 
-    fn capture_pid(pid: u32, launched_exclusive_session: bool) -> io::Result<Self> {
+    fn capture_pid(
+        pid: u32,
+        launched_exclusive_session: bool,
+        claim: Option<&str>,
+    ) -> io::Result<Self> {
+        if claim.is_some_and(str::is_empty) {
+            return Err(io::Error::other("the launch claim is missing"));
+        }
         let rows = snapshot()?;
         if pid <= 1 || pid > i32::MAX as u32 {
             return Err(io::Error::other("invalid child PID"));
@@ -87,12 +110,12 @@ impl OwnedProcessSignals {
             exclusive_session: (launched_exclusive_session || identity.session == pid)
                 .then_some(pid),
             owned: BTreeMap::from([(pid, identity.start.clone())]),
-            claim: Claim::default(),
+            claim: Claim {
+                marker: claim.map(|claim| format!("{CLAIM_VARIABLE}={claim}").into_bytes()),
+                unmarked: Default::default(),
+            },
         };
         guard.refresh_from(&rows);
-        if launched_exclusive_session {
-            guard.claim.marker = launch_claim_of(pid)?;
-        }
         Ok(guard)
     }
 
@@ -533,17 +556,6 @@ fn send_process_signal_with(row: &ProcessIdentity, signal: i32) -> io::Result<()
     {
         send_signal_with(row.pid as i32, signal)
     }
-}
-
-/// The launch claim in `pid`'s environment, as its `NAME=value` entry; none when it has none.
-fn launch_claim_of(pid: u32) -> io::Result<Option<Vec<u8>>> {
-    let prefix = format!("{CLAIM_VARIABLE}=").into_bytes();
-    Ok(read_environment(pid)?.and_then(|bytes| {
-        bytes
-            .split(|byte| *byte == 0)
-            .find(|entry| entry.starts_with(&prefix))
-            .map(<[u8]>::to_vec)
-    }))
 }
 
 /// Names the run or command a process belongs to; every descendant inherits it.

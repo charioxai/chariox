@@ -74,18 +74,30 @@ fn individual_owned_signals_do_not_use_reusable_numeric_pids() {
 }
 
 /// A job that left the command's tree (its own session, its parent gone) before anything looked
-/// at the tree is still the command's: the launch claim in the command's environment owns it.
+/// at the tree is still the command's: the launch claim the spawner passed in owns it.
 #[test]
 fn a_job_that_left_the_tree_before_any_snapshot_is_ended_with_its_claimed_launch() {
+    ends_the_detached_job(
+        "(setsid sh -c 'echo $$; exec sleep 60' &); exec sleep 60",
+        false,
+    );
+}
+
+/// The launcher is already gone when ownership is captured, so its environment is empty: the
+/// claim must come from the spawner, not from the live root.
+#[test]
+fn a_job_is_ended_when_its_launcher_exited_before_ownership_was_captured() {
+    ends_the_detached_job("(setsid sh -c 'echo $$; exec sleep 60' &)", true);
+}
+
+fn ends_the_detached_job(script: &str, root_exits_first: bool) {
     use std::io::Read as _;
     use std::os::unix::process::CommandExt as _;
+    const CLAIM: &str = "claimed-launch-test";
     let mut command = crate::process_spawn::command("sh");
     command
-        .args([
-            "-c",
-            "(setsid sh -c 'echo $$; exec sleep 60' &); exec sleep 60",
-        ])
-        .env(CLAIM_VARIABLE, "claimed-launch-test")
+        .args(["-c", script])
+        .env(CLAIM_VARIABLE, CLAIM)
         .stdout(std::process::Stdio::piped());
     // SAFETY: setsid is async-signal-safe and runs before exec.
     unsafe {
@@ -95,7 +107,6 @@ fn a_job_that_left_the_tree_before_any_snapshot_is_ended_with_its_claimed_launch
         });
     }
     let mut child = command.spawn().unwrap();
-    let mut owner = OwnedProcessSignals::for_session_child(&child).unwrap();
     let mut line = Vec::new();
     let mut stdout = child.stdout.take().unwrap();
     let mut byte = [0];
@@ -103,21 +114,45 @@ fn a_job_that_left_the_tree_before_any_snapshot_is_ended_with_its_claimed_launch
         line.push(byte[0]);
     }
     let orphan: i32 = String::from_utf8(line).unwrap().trim().parse().unwrap();
-    // The subshell that started it is gone: it is no descendant and not in the command's session.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let _ = owner.kill_group();
-    let _ = owner.kill_owned_processes();
+    if root_exits_first {
+        assert!(
+            (0..250).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                is_zombie(child.id() as i32)
+            }),
+            "the launcher did not exit"
+        );
+    }
+    let mut owner = OwnedProcessSignals::for_claimed_session_child(&child, CLAIM);
+    if !root_exits_first {
+        // The subshell that started it is gone: it is no descendant and not in the command's session.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    if let Ok(owner) = owner.as_mut() {
+        let _ = owner.kill_group();
+        let _ = owner.kill_owned_processes();
+    }
+    let _ = child.kill();
     let _ = child.wait();
     let ended = (0..100).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::read_to_string(format!("/proc/{orphan}/stat")).map_or(true, |stat| {
-            stat.rsplit_once(')')
-                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
-        })
+        is_zombie_or_gone(orphan)
     });
     if !ended {
         // SAFETY: the live process this test read from its own child's output; never a group.
         unsafe { libc::kill(orphan, libc::SIGKILL) };
     }
+    owner.unwrap();
     assert!(ended, "the detached job outlived its command's cleanup");
+}
+
+fn is_zombie(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    })
+}
+
+fn is_zombie_or_gone(pid: i32) -> bool {
+    !std::path::Path::new(&format!("/proc/{pid}")).exists() || is_zombie(pid)
 }
