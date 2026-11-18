@@ -43,6 +43,7 @@ mod notes;
 mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod pane_feed;
 mod person_inbox;
 mod project_environment;
 mod prompt_control;
@@ -103,6 +104,7 @@ pub use notes::*;
 pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use pane_feed::*;
 pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
@@ -581,4 +583,4 @@ pub use workspace::*;
 /// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
 /// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`.
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1031;

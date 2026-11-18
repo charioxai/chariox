@@ -5,6 +5,7 @@ mod app_host_actions;
 mod critical_approval_passkey;
 mod kernel_operation_interactions;
 mod output_seen;
+mod pane_feed;
 mod person_inbox;
 mod prompt_lifecycle;
 mod prompt_routing;

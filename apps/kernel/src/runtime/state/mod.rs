@@ -1720,6 +1720,7 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
+mod provider_terminal_pane;
 mod spawned_agent_facts;
 pub(crate) use spawned_agent_facts::SpawnedAgentFacts;
 mod agent_goal_context;

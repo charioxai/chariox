@@ -666,6 +666,66 @@ Provider-specific transport:
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
+## 3.3.2.1 Agent Pane Feed (local 1031)
+
+One kernel projection per agent pane: what the web pane shows, in the kernel's words, so a
+provider's own terminal (`chariox claude`, `chariox codex`, `chariox opencode`) shows the same
+thing through thin adapters. Clients render it; they derive nothing.
+
+```text
+Request  GetPaneFeed { session_id, agent_id }                   // pane_feed.get
+Response PaneFeed { feed }
+Request  ReportPaneSettings { session_id, agent_id, model?, effort?,
+                              execution_mode?, permission_level? } // pane_feed.report_settings
+Response PaneFeed { feed }
+Resource pane_feed, params { session_id, agent_id }             // kernel_resources (4.1.1)
+```
+
+`feed`:
+
+- `title`: one line for a terminal title, `Room · agent · N cards waiting · goal`. Codex has no
+  status line, so the launcher keeps it in the terminal title (OSC 0) until every card is settled.
+- `identity`: Room id and name, agent id and name, `parents` (names above a sub-agent, top
+  first), Project, `placement` (the worker machine of a leased agent).
+- `settings` as the kernel records them: provider, account, model, effort, and `execution_mode`
+  and `permission_level` with the Room's defaults applied. A native launch uses the Room's
+  default permission mode, as the web client does.
+- `state`: `idle`, `working`, or `waiting_for_answer` while a card of this pane is open.
+- `goal`: the objective of the agent's running goal.
+- `cards`: the cards shown in this pane (the agent's own, and its sub-agents' through
+  `shown_in_agent_id`), oldest first, with `asker_name` when another agent asks, choices, the
+  typed `reply` (`secret` for a typed secret or the Vault passphrase), `requested_at_ms`, and:
+  - `text_terminal`: decided by the kernel. Choices, a short reply, a typed secret and the Vault
+    unlock passphrase are answered in the provider's own form. A page region, a browser hand-off,
+    a passkey choice, a payment, a file pick, an App confirmation or install, a sudo request and a
+    provider sign-in are not; the terminal shows `open_elsewhere` instead.
+  - `open_elsewhere`: `Open in Chariox: <link>`, or with no Cloud pairing a line naming the Room
+    and agent. Every answer is the usual `RespondToInteraction`; first answer wins.
+- `stripes`: `{ id, kind, text, detail, at_ms }` in the kernel's words, in this order: commands
+  of the agent the kernel holds for memory or disk (`Queued`, "cargo build · waiting for memory,
+  2nd in line"), queued prompts (`Queued`), triggers (`Schedule`, `HTTP`, `Notification`, with
+  `detail` "3 fired · 1 skipped", `Done` or `Offline`), a stopped task (`Task` or `/goal`, `detail`
+  `Stopped`), `/goal · STATE`, `Blocked` (a task blocked on its owner with no card), armed wakes
+  (`/wait-in`, `/wait-every`, `Waiting`), metaagent tasks (`/meta · STATE`, `Blocked`, `Plan`,
+  `Completed`, `/meta · queued`), workflow runs (`Workflow`: "Run #4 waiting on Claude usage
+  limit" for a run its person must look at, else the run's prompt) and `Usage limit`. `at_ms` is
+  a deadline or next run; a client counts down to it in its own clock. Clients derive no stripe.
+- `notices`: the person's unread notices from this agent, newest first.
+- `link`: `<paired Cloud origin>/terminal?session=<Room>&agent=<agent>`, none with no pairing.
+  The web client finds the Room in the person's lists; the link carries no card content.
+
+A card id a client has not seen is new: a launcher whose person is away writes a desktop
+notification (OSC 9) for it. A watched `pane_feed` is read again on every Room and Inbox change,
+so an answer from any client reaches every terminal within a second or two.
+
+`ReportPaneSettings` records what a provider's own terminal changed (its model picker, Claude's
+"always allow" or "auto mode" as the person's choice) so every client shows it. Only an agent a
+provider terminal runs takes it; nothing is applied to the run, which already runs with it.
+
+While a provider's own terminal runs the pane's agent, a provider permission card has no
+deadline: the person sits at that terminal. Its timeout applies again within 5 s of the
+terminal's run ending. Peers are unchanged: the feed is read on the home kernel.
+
 ## 3.3.3 Metaagent Event Prompts
 
 Metaagent event notifications are Chariox runtime-origin prompts. They are not
@@ -2696,7 +2756,7 @@ No minimum version changes for clients that do not use these Environment control
 
 ## 4.1.1 Kernel Resource Subscription
 
-Status: protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
+Status: protocol 1031 adds `pane_feed` (section 3.3.2.1). Protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
 and `app_installations` (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); the other
 resources listed below, `changes`, multi-part snapshots and the conditional
 `AttachSessionView` are not implemented yet. The relay peer protocol is unchanged
@@ -2778,7 +2838,8 @@ Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
 `provider_catalog`, `provider_commands`, `terminal_commands`, `app_installations`,
 `user_app_views`, `extensions`, `notification_sources`, `session_processes`,
 `room_terminals`, `slices`, `user_config`, `dictation_status`,
-`project_environment`. `provider_catalog` and `provider_commands` take the
+`project_environment`, `person_inbox` and `pane_feed` (`{ session_id, agent_id }`, section
+3.3.2.1). `provider_catalog` and `provider_commands` take the
 scope params `{ provider?, account_profiles?, execution_location? }` of
 `GetProviderCatalog`; the params are part of the watch key and of the revision; later `room_list`, which replaces the
 `room_list` scope and its `room_list_changed` /
