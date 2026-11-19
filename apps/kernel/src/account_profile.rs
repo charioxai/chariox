@@ -2093,6 +2093,19 @@ impl ProviderAccountProfileRegistry {
         Ok(project_usage_freshness(result))
     }
 
+    pub(crate) fn ensure_profile_removable(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        deletes_data: bool,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, deletes_data)
+    }
+
     pub fn remove_registration(
         &self,
         owner_user_id: &str,
@@ -2102,6 +2115,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, false)?;
         let removed = take_registration(&mut document, owner_user_id, provider, index);
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(removed.public))
@@ -2130,6 +2144,7 @@ impl ProviderAccountProfileRegistry {
                 "only Chariox-created profile data can be deleted",
             ));
         }
+        ensure_no_credential_dependents(&document, index, true)?;
         let managed_root = self
             .path
             .parent()
@@ -4604,6 +4619,33 @@ fn resolve_stored_profile_mut<'a>(
 ) -> Result<&'a mut StoredProviderAccountProfile, DaemonError> {
     let index = resolved_profile_index(document, owner_user_id, provider, profile_id)?;
     Ok(&mut document.profiles[index])
+}
+
+fn ensure_no_credential_dependents(
+    document: &RegistryDocument,
+    index: usize,
+    deletes_data: bool,
+) -> Result<(), DaemonError> {
+    let source = &document.profiles[index];
+    let dependent = document
+        .profiles
+        .iter()
+        .enumerate()
+        .any(|(other_index, other)| {
+            other_index != index
+                && other.public.provider == source.public.provider
+                && ((other.public.owner_user_id == source.public.owner_user_id
+                    && other.local_credential_source.as_deref()
+                        == Some(source.public.profile_id.as_str()))
+                    || (deletes_data && other.locator.same_credential_scope(&source.locator)))
+        });
+    if dependent {
+        return Err(registry_error("mutate provider account profile", format!(
+            "account profile `{}` supplies credentials to linked profiles; remove those links in Provider Accounts before removing the source or deleting its data",
+            source.public.label,
+        )));
+    }
+    Ok(())
 }
 
 fn take_registration(

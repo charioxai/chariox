@@ -170,6 +170,12 @@ pub(crate) async fn execute_provider_account_request(
                 &request.provider,
                 &request.account_profile,
             )?;
+            registry.ensure_profile_removable(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+                false,
+            )?;
             invalidate_profile_endpoint(
                 &owner_user_id,
                 &request.provider,
@@ -190,6 +196,12 @@ pub(crate) async fn execute_provider_account_request(
                 &owner_user_id,
                 &request.provider,
                 &request.account_profile,
+            )?;
+            registry.ensure_profile_removable(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+                true,
             )?;
             invalidate_profile_endpoint(
                 &owner_user_id,
