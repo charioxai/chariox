@@ -12,6 +12,7 @@ impl Drop for Operation {
 impl Control {
     pub(super) fn new() -> Self {
         Self {
+            step: Mutex::new(Step::Claim),
             first_request: None,
             restore_data: Mutex::new(None),
             stop: AtomicBool::new(false),
@@ -109,6 +110,19 @@ impl Control {
     pub(super) fn budget(self: &Arc<Self>) -> AppOperationBudget {
         let control = self.clone();
         AppOperationBudget::from_supervisor(move || control.stopped())
+    }
+    /// Names the step the start is in, so a deadline says what it waited on.
+    pub(super) fn enter(&self, step: Step) {
+        *self
+            .step
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = step;
+    }
+    pub(super) fn step(&self) -> Step {
+        *self
+            .step
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn finished(&self) -> bool {
         *self
