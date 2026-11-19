@@ -2068,7 +2068,9 @@ impl KernelRuntimeOwnedState {
         };
         // A workflow's responsible agent gets the kernel's own text per run; a steering
         // trigger joins the running turn instead of waiting.
-        if trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
+        // A trigger that is off admits nothing, joined or not.
+        if !trigger.enabled()
+            || trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
             || trigger.responsible_for().is_some()
         {
             return Ok(None);

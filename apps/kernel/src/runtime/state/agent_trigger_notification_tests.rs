@@ -3565,3 +3565,87 @@ mod options;
 
 #[path = "notification_subscriptions_tests.rs"]
 mod subscriptions;
+
+/// A joined occurrence is bound to the prompt it joins in that prompt's own commit: a crash
+/// before the receipt is settled cannot leave the join half-recorded.
+#[tokio::test]
+async fn a_joined_occurrence_is_bound_to_its_prompt_in_the_join_commit() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    let waiting = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &rig.agent_id)
+        .1[0]
+        .id()
+        .to_owned();
+    rig.complete(&workflow, "run-1", "release 1 approved");
+    // The occurrence is accepted, then admitted without the caller's settlement (a crash).
+    rig.runtime.owned.route_workflow_notifications();
+    let db = rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path()).unwrap();
+    let (receipt, payload): (String, String) = db
+        .query_row(
+            "SELECT receipt_id, payload_json FROM app_outbox
+              WHERE state='accepted' AND queued_prompt_id IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let joined = rig
+        .runtime
+        .queue_agent_notification_input(
+            &rig.session_id,
+            &trigger,
+            &receipt,
+            serde_json::from_str(&payload).unwrap(),
+            unpaused(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(joined.as_deref(), Some(waiting.as_str()));
+    assert_eq!(
+        rig.runtime
+            .owned
+            .durable_state_store
+            .admitted_agent_notification_prompt(&receipt)
+            .unwrap()
+            .as_deref(),
+        Some(waiting.as_str()),
+        "the join commit binds the receipt to the prompt it joined"
+    );
+}
+
+/// A trigger that is off admits nothing, not even into its prompt that already waits.
+#[tokio::test]
+async fn a_disabled_trigger_joins_nothing() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    rig.runtime
+        .update_agent_trigger(
+            UpdateAgentTriggerRequest {
+                session_id: rig.session_id.clone(),
+                trigger_id: trigger,
+                busy_policy: None,
+                prompt: None,
+                enabled: Some(false),
+            },
+            "local",
+        )
+        .await
+        .unwrap();
+    rig.complete(&workflow, "run-1", "release 1 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(!queued[0].contains("release 1 approved"), "{}", queued[0]);
+}

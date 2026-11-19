@@ -75,33 +75,51 @@ pub(in crate::durable_state) fn record_prompt_state_in(
         if prompt.prompt_origin() != PromptOrigin::Notification {
             continue;
         }
-        let Some(operation) = prompt
+        // The prompt's own operation and every occurrence that joined it while it waited.
+        let operations = prompt
             .durable_operation_id()
-            .filter(|id| id.starts_with(OPERATION_PREFIX))
-        else {
-            continue;
-        };
-        let Some(receipt) = tx
-            .query_row(
-                "SELECT receipt_id FROM agent_notification_operations WHERE operation_id=?1",
-                [operation],
-                |row| row.get::<_, String>(0),
+            .into_iter()
+            .chain(
+                prompt
+                    .queued_notifications()
+                    .iter()
+                    .map(|notification| notification.operation_id.as_str()),
             )
-            .optional()?
-        else {
-            continue;
-        };
-        tx.execute(
-            "DELETE FROM agent_notification_operations WHERE operation_id=?1",
-            [operation],
-        )?;
-        tx.execute(
-            "UPDATE app_outbox SET queued_prompt_id=?2,queued_session_id=?3,
-               invocation_json=CASE source_kind WHEN 'workflow_completion'
-                 THEN json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) ELSE invocation_json END
-             WHERE receipt_id=?1 AND state IN ('accepted','retryable')",
-            params![receipt, prompt.id(), state.session_id],
-        )?;
+            .filter(|id| id.starts_with(OPERATION_PREFIX))
+            .collect::<std::collections::BTreeSet<_>>();
+        for operation in operations {
+            bind_operation_in(tx, operation, prompt.id(), &state.session_id)?;
+        }
     }
+    Ok(())
+}
+
+fn bind_operation_in(
+    tx: &Transaction<'_>,
+    operation: &str,
+    prompt_id: &str,
+    session_id: &str,
+) -> rusqlite::Result<()> {
+    let Some(receipt) = tx
+        .query_row(
+            "SELECT receipt_id FROM agent_notification_operations WHERE operation_id=?1",
+            [operation],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    tx.execute(
+        "DELETE FROM agent_notification_operations WHERE operation_id=?1",
+        [operation],
+    )?;
+    tx.execute(
+        "UPDATE app_outbox SET queued_prompt_id=?2,queued_session_id=?3,
+           invocation_json=CASE source_kind WHEN 'workflow_completion'
+             THEN json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) ELSE invocation_json END
+         WHERE receipt_id=?1 AND state IN ('accepted','retryable')",
+        params![receipt, prompt_id, session_id],
+    )?;
     Ok(())
 }
