@@ -65,8 +65,8 @@ pub(crate) async fn execute_approve_remote_machine_request(
     let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
     crate::config::DaemonConfig::approve_remote_machine(machine.machine_id.clone())?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
-    let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
-    remote_relay_inventory_projection.update_machine(machine.clone());
+    let live = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
+    let machine = remote_relay_inventory_projection.approve_machine(live);
     Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
 }
 

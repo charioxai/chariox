@@ -240,25 +240,33 @@ impl RemoteRelayInventoryProjectionStore {
         assert!(self.publish_live(self.registry_revision(), inventory, remote_kernels));
     }
 
-    /// An approved machine's record. A live pass needs no compare and set against it: it reads
-    /// the approval from the registry it holds when it publishes.
-    pub(crate) fn update_machine(&self, machine: RemoteMachineRecord) {
+    /// Approval changes trust only: a listed machine keeps what the live pass found, its kernels
+    /// and their protocols among it; a machine no pass has listed yet joins with its live record.
+    /// A live pass needs no compare and set against it: it reads the approval from the registry it
+    /// holds when it publishes.
+    pub(crate) fn approve_machine(&self, live: RemoteMachineRecord) -> RemoteMachineRecord {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(existing) = state
+        let approved = match state
             .remote_machines
             .iter_mut()
-            .find(|existing| existing.machine_id == machine.machine_id)
+            .find(|existing| existing.machine_id == live.machine_id)
         {
-            *existing = filter_remote_machine_product_providers(machine);
-        } else {
-            state
-                .remote_machines
-                .push(filter_remote_machine_product_providers(machine));
-        }
+            Some(existing) => {
+                existing.trust_status = crate::local::RemoteMachineTrustStatus::Approved;
+                existing.pending = false;
+                existing.clone()
+            }
+            None => {
+                let machine = filter_remote_machine_product_providers(live);
+                state.remote_machines.push(machine.clone());
+                machine
+            }
+        };
         crate::local::provider_requests::sort_remote_machines(&mut state.remote_machines);
+        approved
     }
 
     /// A removed machine leaves every list; the caller holds the registry it was removed from.
@@ -387,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_relay_inventory_projection_updates_machine_without_refresh() {
+    fn remote_relay_inventory_projection_approves_machine_without_refresh() {
         use crate::local::{RemoteMachineRecord, RemoteMachineTrustStatus};
 
         let projection = RemoteRelayInventoryProjectionStore::default();
@@ -403,7 +411,10 @@ mod tests {
                     kernel_count: 1,
                     available_providers: vec!["dev-stub".to_string()],
                     provider_accounts: Vec::new(),
-                    kernels: Vec::new(),
+                    kernels: vec![crate::local::RemoteMachineKernel {
+                        kernel_id: "kernel-1".to_string(),
+                        local_protocol: Some(1012),
+                    }],
                 }],
                 ..Default::default()
             },
@@ -425,10 +436,11 @@ mod tests {
         );
         let refreshed_at_ms = projection.refreshed_at_ms();
 
-        projection.update_machine(RemoteMachineRecord {
+        // The approval's live record names no kernels; the listed machine keeps the ones it has.
+        let approved = projection.approve_machine(RemoteMachineRecord {
             machine_id: "machine-1".to_string(),
             machine_alias: Some("builder".to_string()),
-            display_name: "build box".to_string(),
+            display_name: "builder".to_string(),
             trust_status: RemoteMachineTrustStatus::Approved,
             presence: crate::local::RemoteMachinePresence::Online,
             pending: false,
@@ -441,9 +453,16 @@ mod tests {
         assert_eq!(projection.refreshed_at_ms(), refreshed_at_ms);
 
         let (machines, kernels) = projection.snapshot();
-        assert_eq!(machines.len(), 1);
+        assert_eq!(machines, vec![approved]);
         assert_eq!(machines[0].trust_status, RemoteMachineTrustStatus::Approved);
         assert!(!machines[0].pending);
+        assert_eq!(
+            machines[0].kernels,
+            vec![crate::local::RemoteMachineKernel {
+                kernel_id: "kernel-1".to_string(),
+                local_protocol: Some(1012),
+            }]
+        );
         assert!(machines[0].available_providers.is_empty());
         assert_eq!(kernels.len(), 1);
         assert!(kernels[0].available_providers.is_empty());

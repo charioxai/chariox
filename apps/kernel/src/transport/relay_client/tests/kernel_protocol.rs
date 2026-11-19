@@ -1,7 +1,8 @@
 use super::support::*;
 use crate::local::{
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, LocalDaemonResponse,
-    RemoteMachineKernel, LOCAL_DAEMON_PROTOCOL_VERSION,
+    ApproveRemoteMachineRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RemoteMachineKernel, RemoteMachineRecord,
+    RemoteMachineTrustStatus, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 /// Registers like a kernel built before registrations carried their protocol: the field is
@@ -75,6 +76,35 @@ async fn listed_protocol(app: &Arc<Mutex<DaemonApp>>, machine_ref: &str) -> Opti
         panic!("expected one kernel on {machine_ref}, got {kernels:?}");
     };
     kernel.local_protocol
+}
+
+/// Approves a discovered machine the way a client does, through the kernel's command router.
+async fn approve_machine(app: &Arc<Mutex<DaemonApp>>, machine_ref: &str) -> RemoteMachineRecord {
+    let router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(app), 1);
+    let request = LocalDaemonRequest::ApproveRemoteMachine(ApproveRemoteMachineRequest {
+        machine_ref: machine_ref.to_string(),
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+        "approve-machine",
+        crate::runtime::command::KernelCommandSource::LocalCli,
+        router
+            .local_command_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                crate::local::KernelConnectionClass::Terminal,
+            )
+            .await,
+        None,
+        None,
+        &request,
+    );
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("Approve should answer");
+    let LocalDaemonResponse::RemoteMachineApproved { machine } = response else {
+        panic!("expected the approved machine, got {response:?}");
+    };
+    machine
 }
 
 /// The kernels each listed machine names in the machine list clients follow.
@@ -200,6 +230,24 @@ async fn a_remote_kernel_lists_the_protocol_it_registered_with() {
             ),
         ],
         "the machine list names each machine's kernels with their protocols"
+    );
+
+    // Approval changes trust only: the kernels the live pass found stay in the answer and the list.
+    let worker_kernels = vec![RemoteMachineKernel {
+        kernel_id: worker.daemon_id.clone(),
+        local_protocol: Some(LOCAL_DAEMON_PROTOCOL_VERSION),
+    }];
+    let approved = approve_machine(&home_app, &worker.host_machine_id).await;
+    assert_eq!(
+        (&approved.trust_status, approved.pending, &approved.kernels),
+        (&RemoteMachineTrustStatus::Approved, false, &worker_kernels),
+        "the approval answer keeps the machine's kernels: {approved:?}"
+    );
+    let mut machines_after = machine_list_kernels(&home_app).await;
+    machines_after.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        machines_after, machines,
+        "the machine list keeps every kernel and protocol after an approval"
     );
 
     drop(old_socket);
