@@ -16,8 +16,9 @@ const LOOP = /\b(?:while\s*\([^)]*\)|for\s*\(\s*;\s*;\s*\))\s*\{/g
 const PACING = /\bawait\s+(?:delay|sleep|setTimeout|new\s+Promise\s*\(\s*(?:\(\s*)?\w*\s*\)?\s*=>\s*setTimeout)\b/
 const FUNCTION = /\b(?:function\s*\*?\s*(\w+)\s*\([^)]*\)[^{]*|(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]*)?=>\s*)\{/g
 
-// A use of a function: a call, or the function handed over by name (setInterval(refresh, 1000)); not a property.
-const usesName = (name, flags) => new RegExp(`(?<![.\\w$])${name}\\b(?!\\s*:)`, flags)
+const calls = (name, flags) => new RegExp(`\\b${name}\\s*\\(`, flags)
+// A timer handed a function by name runs it each tick: setInterval(refresh, 1000).
+const NAMED_CALLBACK = /^\(\s*(\w+)\s*[,)]/
 
 // The file's functions whose bodies read a pushed read, directly or through another function of the same file.
 function readingFunctions(code) {
@@ -32,7 +33,7 @@ function readingFunctions(code) {
     for (const fn of fns) {
       if (reading.has(fn.name)) continue
       const direct = new RegExp(READ.source).exec(fn.body)?.[1]
-      const through = [...reading.keys()].find(name => usesName(name).test(fn.body))
+      const through = [...reading.keys()].find(name => calls(name).test(fn.body))
       if (direct || through) { reading.set(fn.name, direct ?? reading.get(through)); changed = true }
     }
   }
@@ -67,8 +68,10 @@ export default {
         const body = code.slice(open, end)
         const hits = [...body.matchAll(READ)].map(r => [r.index, r[1]])
         for (const [name, read] of reading) {
-          for (const c of body.matchAll(usesName(name, 'g'))) hits.push([c.index, `${read} (through ${name})`])
+          for (const c of body.matchAll(calls(name, 'g'))) hits.push([c.index, `${read} (through ${name})`])
         }
+        const named = how === 'setInterval' && NAMED_CALLBACK.exec(body)?.[1]
+        if (reading.has(named)) hits.push([body.indexOf(named), `${reading.get(named)} (through ${named})`])
         for (const [at, read] of hits) {
           const line = lineOf(code, open + at)
           if (seen.has(line)) continue
