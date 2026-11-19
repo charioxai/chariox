@@ -109,15 +109,17 @@ mod tests {
             "machine",
             "kernel",
         );
-        setup.begin(
-            "room",
-            "agent",
-            &RoomSetupRequest {
-                git_init: true,
-                new_worktree: true,
-                publish: false,
-            },
-        );
+        setup
+            .begin(
+                "room",
+                "agent",
+                &RoomSetupRequest {
+                    git_init: true,
+                    new_worktree: true,
+                    publish: false,
+                },
+            )
+            .unwrap();
         let outcome = owner
             .submit_prepared_prompt(
                 &session,
@@ -130,15 +132,19 @@ mod tests {
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_none());
 
-        setup.finish("room", RoomSetupStepId::GitInit, Ok(()));
-        setup.finish("room", RoomSetupStepId::Worktree, Err("no commits".into()));
+        setup
+            .finish("room", RoomSetupStepId::GitInit, Ok(()))
+            .unwrap();
+        setup
+            .finish("room", RoomSetupStepId::Worktree, Err("no commits".into()))
+            .unwrap();
         assert!(
             owner
                 .try_claim_idle_queue_promotion(&session, "agent")
                 .is_none(),
             "a failed worktree holds prompts until it is dismissed"
         );
-        assert!(setup.dismiss("room"));
+        assert!(setup.dismiss("room").unwrap());
         assert!(owner
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_some());

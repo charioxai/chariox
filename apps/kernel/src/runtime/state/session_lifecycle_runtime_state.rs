@@ -119,7 +119,7 @@ impl KernelRuntimeState {
             if published.is_ok() {
                 self.spawn_room_setup(session.id(), agent.id(), setup);
             } else {
-                self.owned.room_setup.clear(session.id());
+                self.owned.room_setup.clear(session.id())?;
             }
         }
         published?;

@@ -244,7 +244,7 @@ impl KernelRuntimeOwnedState {
         // Registered before the first projection: no client sees the Room, or can prompt it,
         // without its setup.
         if let Some(setup) = &setup {
-            self.room_setup.begin(session.id(), agent.id(), setup);
+            self.room_setup.begin(session.id(), agent.id(), setup)?;
         }
         session = self.update_session_projection(session);
         self.runtime_projection_changes.record_change();

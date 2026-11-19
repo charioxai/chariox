@@ -72,7 +72,10 @@ impl KernelRuntimeState {
         step: RoomSetupStepId,
         work: impl std::future::Future<Output = Result<(), String>>,
     ) -> bool {
-        self.owned.room_setup.start(session_id, step);
+        if let Err(error) = self.owned.room_setup.start(session_id, step) {
+            tracing::error!(session_id, %error, "room setup could not start durably");
+            return false;
+        }
         self.publish_room_setup(session_id);
         let result = work.await;
         let succeeded = result.is_ok();
@@ -84,7 +87,10 @@ impl KernelRuntimeState {
                 "room setup step failed"
             );
         }
-        self.owned.room_setup.finish(session_id, step, result);
+        if let Err(error) = self.owned.room_setup.finish(session_id, step, result) {
+            tracing::error!(session_id, %error, "room setup result could not be saved");
+            return false;
+        }
         self.publish_room_setup(session_id);
         succeeded
     }
@@ -214,7 +220,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.ensure_room_control(session_id, caller_user_id)?;
-        let dismissed = self.owned.room_setup.dismiss(session_id);
+        let dismissed = self.owned.room_setup.dismiss(session_id)?;
         let session = self.owned.session_snapshot(session_id)?;
         if dismissed {
             self.release_room_prompts(session_id);

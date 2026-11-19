@@ -1,5 +1,4 @@
-//! The live setup of each new Room. Process-local on purpose: a setup interrupted by a restart
-//! is not resumed, and a Room never waits on a setup that no longer runs.
+//! Durable setup of each new Room. Interrupted work becomes an explicit failure on restart.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -10,15 +9,69 @@ use crate::error::DaemonError;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RoomSetupStore {
     rooms: Arc<Mutex<BTreeMap<String, RoomSetup>>>,
+    durable: Option<(crate::durable_state::DurableKernelStateStore, String)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RoomSetup {
     agent_id: String,
     state: RoomSetupState,
 }
 
 impl RoomSetupStore {
+    pub(crate) fn durable(
+        store: crate::durable_state::DurableKernelStateStore,
+        owner: &str,
+    ) -> Result<Self, DaemonError> {
+        let restored = Self {
+            rooms: Default::default(),
+            durable: Some((store.clone(), owner.into())),
+        };
+        for (session, agent_id, mut state) in store.load_room_setups(owner)? {
+            // No setup task survives the process. Never leave a Room waiting on one.
+            if let Some(position) = state.steps.iter().position(|step| {
+                matches!(
+                    step.state,
+                    RoomSetupStepState::Pending | RoomSetupStepState::Running
+                )
+            }) {
+                let step = &mut state.steps[position];
+                step.state = RoomSetupStepState::Failed;
+                step.message = Some(if step.id == RoomSetupStepId::Publish {
+                    "Publishing was interrupted by a kernel restart; retry publishing".into()
+                } else {
+                    "Room setup was interrupted by a kernel restart; check the folder, then dismiss to continue".into()
+                });
+                state.steps.truncate(position + 1);
+            }
+            restored.change(&session, |_| Ok(Some(RoomSetup { agent_id, state })))?;
+        }
+        Ok(restored)
+    }
+
+    fn change(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(Option<RoomSetup>) -> Result<Option<RoomSetup>, DaemonError>,
+    ) -> Result<(), DaemonError> {
+        let mut rooms = self.rooms();
+        let next = update(rooms.get(session_id).cloned())?;
+        if let Some((store, owner)) = &self.durable {
+            store.save_room_setup(
+                owner,
+                session_id,
+                next.as_ref()
+                    .map(|setup| (setup.agent_id.as_str(), &setup.state)),
+            )?;
+        }
+        if let Some(next) = next {
+            rooms.insert(session_id.into(), next);
+        } else {
+            rooms.remove(session_id);
+        }
+        Ok(())
+    }
+
     fn rooms(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, RoomSetup>> {
         self.rooms
             .lock()
@@ -26,16 +79,18 @@ impl RoomSetupStore {
     }
 
     /// Registers the steps a new Room was asked to run on its first agent, all pending.
-    pub(crate) fn begin(&self, session_id: &str, agent_id: &str, request: &RoomSetupRequest) {
-        if let Some(state) = RoomSetupState::pending(request) {
-            self.rooms().insert(
-                session_id.to_string(),
-                RoomSetup {
-                    agent_id: agent_id.to_string(),
-                    state,
-                },
-            );
-        }
+    pub(crate) fn begin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        request: &RoomSetupRequest,
+    ) -> Result<(), DaemonError> {
+        self.change(session_id, |_| {
+            Ok(RoomSetupState::pending(request).map(|state| RoomSetup {
+                agent_id: agent_id.into(),
+                state,
+            }))
+        })
     }
 
     pub(crate) fn state(&self, session_id: &str) -> Option<RoomSetupState> {
@@ -52,8 +107,13 @@ impl RoomSetupStore {
             .is_some_and(|setup| setup.state.holds_prompts())
     }
 
-    pub(crate) fn start(&self, session_id: &str, step: RoomSetupStepId) {
-        self.set_step(session_id, step, RoomSetupStepState::Running, None);
+    pub(crate) fn start(&self, session_id: &str, step: RoomSetupStepId) -> Result<(), DaemonError> {
+        self.change(session_id, |setup| {
+            Ok(setup.map(|mut setup| {
+                apply_step(&mut setup.state, step, RoomSetupStepState::Running, None);
+                setup
+            }))
+        })
     }
 
     /// Ends a step. A failed `git_init` or `worktree` drops the steps after it: they need its
@@ -63,72 +123,69 @@ impl RoomSetupStore {
         session_id: &str,
         step: RoomSetupStepId,
         result: Result<(), String>,
-    ) {
+    ) -> Result<(), DaemonError> {
         let (state, message) = match result {
             Ok(()) => (RoomSetupStepState::Done, None),
             Err(message) => (RoomSetupStepState::Failed, Some(message)),
         };
-        let mut rooms = self.rooms();
-        let Some(setup) = rooms.get_mut(session_id) else {
-            return;
-        };
-        apply_step(&mut setup.state, step, state, message);
-        if state == RoomSetupStepState::Failed && step != RoomSetupStepId::Publish {
-            let position = setup.state.steps.iter().position(|item| item.id == step);
-            if let Some(position) = position {
-                setup.state.steps.truncate(position + 1);
-            }
-        }
-        if setup.state.is_complete() {
-            rooms.remove(session_id);
-        }
-    }
-
-    fn set_step(
-        &self,
-        session_id: &str,
-        step: RoomSetupStepId,
-        state: RoomSetupStepState,
-        message: Option<String>,
-    ) {
-        if let Some(setup) = self.rooms().get_mut(session_id) {
-            apply_step(&mut setup.state, step, state, message);
-        }
+        self.change(session_id, |setup| {
+            Ok(setup.and_then(|mut setup| {
+                apply_step(&mut setup.state, step, state, message);
+                if state == RoomSetupStepState::Failed && step != RoomSetupStepId::Publish {
+                    if let Some(position) =
+                        setup.state.steps.iter().position(|item| item.id == step)
+                    {
+                        setup.state.steps.truncate(position + 1);
+                    }
+                }
+                (!setup.state.is_complete()).then_some(setup)
+            }))
+        })
     }
 
     /// Drops a Room's setup without running it further.
-    pub(crate) fn clear(&self, session_id: &str) {
-        self.rooms().remove(session_id);
+    pub(crate) fn clear(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.change(session_id, |_| Ok(None))
     }
 
     /// The agent of a failed `publish` step, which becomes pending again.
     pub(crate) fn retry_publish(&self, session_id: &str) -> Result<String, DaemonError> {
-        let mut rooms = self.rooms();
-        let failed_publish = rooms.get_mut(session_id).and_then(|setup| {
-            let step = setup.state.steps.iter_mut().find(|step| {
-                step.id == RoomSetupStepId::Publish && step.state == RoomSetupStepState::Failed
-            })?;
+        let mut agent = None;
+        self.change(session_id, |setup| {
+            let mut setup = setup.ok_or_else(nothing_to_retry)?;
+            let step = setup
+                .state
+                .steps
+                .iter_mut()
+                .find(|step| {
+                    step.id == RoomSetupStepId::Publish && step.state == RoomSetupStepState::Failed
+                })
+                .ok_or_else(nothing_to_retry)?;
             step.state = RoomSetupStepState::Pending;
             step.message = None;
-            Some(setup.agent_id.clone())
-        });
-        failed_publish.ok_or_else(|| DaemonError::LocalTransport {
-            operation: "retry room setup",
-            message: "no publish step failed in this room; there is nothing to retry".to_string(),
-        })
+            agent = Some(setup.agent_id.clone());
+            Ok(Some(setup))
+        })?;
+        Ok(agent.expect("retry records its agent after a successful commit"))
     }
 
     /// Clears a failed setup. Returns whether anything was cleared.
-    pub(crate) fn dismiss(&self, session_id: &str) -> bool {
-        let mut rooms = self.rooms();
-        if rooms
-            .get(session_id)
-            .is_some_and(|setup| setup.state.has_failed())
-        {
-            rooms.remove(session_id);
-            return true;
-        }
-        false
+    pub(crate) fn dismiss(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let mut dismissed = false;
+        self.change(session_id, |setup| {
+            Ok(setup.filter(|setup| {
+                dismissed = setup.state.has_failed();
+                !dismissed
+            }))
+        })?;
+        Ok(dismissed)
+    }
+}
+
+fn nothing_to_retry() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "retry room setup",
+        message: "no publish step failed in this room; there is nothing to retry".into(),
     }
 }
 
@@ -159,7 +216,9 @@ mod tests {
     #[test]
     fn nothing_requested_registers_nothing() {
         let store = RoomSetupStore::default();
-        store.begin("room", "agent", &RoomSetupRequest::default());
+        store
+            .begin("room", "agent", &RoomSetupRequest::default())
+            .unwrap();
         assert_eq!(store.state("room"), None);
         assert!(!store.holds_prompts("room"));
     }
@@ -167,7 +226,7 @@ mod tests {
     #[test]
     fn steps_hold_prompts_until_done_then_clear() {
         let store = RoomSetupStore::default();
-        store.begin("room", "agent", &everything());
+        store.begin("room", "agent", &everything()).unwrap();
         assert!(store.holds_prompts("room"));
         for step in [
             RoomSetupStepId::GitInit,
@@ -175,8 +234,8 @@ mod tests {
             RoomSetupStepId::Publish,
         ] {
             assert!(store.holds_prompts("room"));
-            store.start("room", step);
-            store.finish("room", step, Ok(()));
+            store.start("room", step).unwrap();
+            store.finish("room", step, Ok(())).unwrap();
         }
         assert_eq!(store.state("room"), None);
         assert!(!store.holds_prompts("room"));
@@ -185,13 +244,17 @@ mod tests {
     #[test]
     fn failed_worktree_holds_until_dismissed_and_drops_later_steps() {
         let store = RoomSetupStore::default();
-        store.begin("room", "agent", &everything());
-        store.finish("room", RoomSetupStepId::GitInit, Ok(()));
-        store.finish("room", RoomSetupStepId::Worktree, Err("no commits".into()));
+        store.begin("room", "agent", &everything()).unwrap();
+        store
+            .finish("room", RoomSetupStepId::GitInit, Ok(()))
+            .unwrap();
+        store
+            .finish("room", RoomSetupStepId::Worktree, Err("no commits".into()))
+            .unwrap();
         let state = store.state("room").unwrap();
         assert_eq!(state.steps.len(), 2);
         assert!(store.holds_prompts("room"));
-        assert!(store.dismiss("room"));
+        assert!(store.dismiss("room").unwrap());
         assert!(!store.holds_prompts("room"));
         assert_eq!(store.state("room"), None);
     }
@@ -199,14 +262,20 @@ mod tests {
     #[test]
     fn failed_publish_never_holds_and_retries_as_pending() {
         let store = RoomSetupStore::default();
-        store.begin("room", "agent", &everything());
-        store.finish("room", RoomSetupStepId::GitInit, Ok(()));
-        store.finish("room", RoomSetupStepId::Worktree, Ok(()));
-        store.finish(
-            "room",
-            RoomSetupStepId::Publish,
-            Err("not logged in".into()),
-        );
+        store.begin("room", "agent", &everything()).unwrap();
+        store
+            .finish("room", RoomSetupStepId::GitInit, Ok(()))
+            .unwrap();
+        store
+            .finish("room", RoomSetupStepId::Worktree, Ok(()))
+            .unwrap();
+        store
+            .finish(
+                "room",
+                RoomSetupStepId::Publish,
+                Err("not logged in".into()),
+            )
+            .unwrap();
         assert!(!store.holds_prompts("room"));
         assert!(store.state("room").unwrap().has_failed());
         assert_eq!(store.retry_publish("room").unwrap(), "agent");
@@ -218,8 +287,68 @@ mod tests {
     #[test]
     fn dismiss_without_failure_changes_nothing() {
         let store = RoomSetupStore::default();
-        store.begin("room", "agent", &everything());
-        assert!(!store.dismiss("room"));
+        store.begin("room", "agent", &everything()).unwrap();
+        assert!(!store.dismiss("room").unwrap());
         assert!(store.holds_prompts("room"));
+    }
+    #[test]
+    fn durable_failure_retries_on_its_original_agent_and_completion_stays_cleared() {
+        let root = crate::test_temp_dir::TestTempDir::new("room-setup-durable");
+        let db =
+            crate::durable_state::DurableKernelStateStore::open(root.join("kernel.db")).unwrap();
+        let setup = RoomSetupRequest {
+            publish: true,
+            ..Default::default()
+        };
+        let store = RoomSetupStore::durable(db.clone(), "kernel").unwrap();
+        store.begin("room", "first-agent", &setup).unwrap();
+        store
+            .finish("room", RoomSetupStepId::Publish, Err("no login".into()))
+            .unwrap();
+        let failed = store.state("room");
+        drop(store);
+        assert_eq!(
+            RoomSetupStore::durable(db.clone(), "other-kernel")
+                .unwrap()
+                .state("room"),
+            None
+        );
+        let restored = RoomSetupStore::durable(db.clone(), "kernel").unwrap();
+        assert_eq!(restored.state("room"), failed);
+        assert_eq!(restored.retry_publish("room").unwrap(), "first-agent");
+        restored
+            .finish("room", RoomSetupStepId::Publish, Ok(()))
+            .unwrap();
+        drop(restored);
+        assert_eq!(
+            RoomSetupStore::durable(db, "kernel").unwrap().state("room"),
+            None
+        );
+    }
+
+    #[test]
+    fn interrupted_steps_fail_without_waiting_on_a_dead_task_and_dismiss_stays_cleared() {
+        let root = crate::test_temp_dir::TestTempDir::new("room-setup-interrupted");
+        let db =
+            crate::durable_state::DurableKernelStateStore::open(root.join("kernel.db")).unwrap();
+        let store = RoomSetupStore::durable(db.clone(), "kernel").unwrap();
+        store.begin("room", "agent", &everything()).unwrap();
+        store.start("room", RoomSetupStepId::GitInit).unwrap();
+        drop(store);
+        let restored = RoomSetupStore::durable(db.clone(), "kernel").unwrap();
+        let state = restored.state("room").unwrap();
+        assert_eq!(state.steps.len(), 1);
+        assert_eq!(state.steps[0].state, RoomSetupStepState::Failed);
+        assert!(state.steps[0]
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("interrupted"));
+        assert!(restored.dismiss("room").unwrap());
+        drop(restored);
+        assert_eq!(
+            RoomSetupStore::durable(db, "kernel").unwrap().state("room"),
+            None
+        );
     }
 }
