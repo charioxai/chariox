@@ -108,11 +108,14 @@ impl DisplayPackets {
     }
 
     pub(super) fn create() -> Result<Self, String> {
+        Self::create_in(&std::env::temp_dir())
+    }
+
+    pub(super) fn create_in(base: &std::path::Path) -> Result<Self, String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            let root = std::env::temp_dir()
-                .join(format!("chariox-display-{:032x}", rand::random::<u128>()));
+            let root = base.join(format!("chariox-display-{:032x}", rand::random::<u128>()));
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&root)
@@ -125,7 +128,10 @@ impl DisplayPackets {
             Ok(Self { root, directory })
         }
         #[cfg(not(unix))]
-        Err("MP-10: native packet path requires Unix".into())
+        {
+            let _ = base;
+            Err("MP-10: native packet path requires Unix".into())
+        }
     }
 
     /// L3: unlink a packet the kernel refused without reading it.

@@ -16,6 +16,29 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Relay registration proof (relay peer 449)
+
+A relay token and a kernel's public key do not make a kernel. The relay answers
+every WebSocket upgrade with a fresh 32-byte challenge in the
+`x-chariox-registration-challenge` response header. `daemon_register` carries
+`proof`: the kernel identity key's P-256 ECDSA signature (SHA-256, 64-byte
+`r‖s`, base64) over the JSON array `["chariox-relay-registration-v1", <relay
+address>, <kernel id>, <hex SHA-256 of the relay token>, <challenge>]`. The relay
+address is the upgrade's `Host` header, lowercased: the kernel takes it from the
+relay URL it dials and the relay reads it from the same request, so a proof made
+for one relay is refused by another.
+
+The relay verifies the proof against the registration's `public_key` after the
+token check and before it binds a realm, admits the kernel or displaces the live
+connection of the same kernel. A refused proof closes only the refused socket,
+with the reason, and logs `relay_registration_proof_refused`. One challenge
+admits one registration: a second `daemon_register` on the same socket is closed
+with `relay connection already registered; reconnect to register again`. A
+heartbeat renews the token but cannot change the proven key; a heartbeat
+registration with another `public_key` closes the socket with `daemon identity
+key changed; reconnect to register it`. A kernel refuses a relay that offers no
+challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -3378,6 +3401,8 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- relay peer 449: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
+- relay peer 449: `ResolveHomeCredentialSecret.injection` accepts `{kind: "workspace", target}` (a Vault use target) so an agent that runs on a slice fills `chariox.vault.use_env` and `chariox.vault.write_file` from the home Vault; the local protocol is unchanged.
 - protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
   {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
   expected_revision}` give the owner a pause that outlives a deployment handover
@@ -3395,6 +3420,11 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+  and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
+  changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
+  kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
+  credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
@@ -3404,6 +3434,16 @@ Workflow trigger and deployment direction:
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
+- protocol 1012: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+  answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
+  (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
+  types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
+  status never carry the value, and the login record masks it if the provider echoes it. The entry must be a
+  secret bound to the provider's own site (`provider_enrollment_vault_origin`, today `https://opencode.ai`), allowed
+  for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
+  refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
+  client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
+  Person and owner-agent callers only. Web requires 1012 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -4096,6 +4136,26 @@ Workflow trigger and deployment direction:
   id and the process. A grant that lasts until its holder exits keeps its covered
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
+
+  Protocol 1012: a grant holder answers the person's cards for them. `RespondToInteraction`
+  from a local grant holder, from the same agent forwarded through the person's gateway, or
+  from an agent driving a Room through reach settles any open card of the person, in any of
+  their Rooms and from any agent depth, except the cards the person keeps for every choice:
+  secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
+  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
+  Those are refused with
+  `kernel_access_human_only` and stay open; outside events carry them as pointers and every
+  other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
+  answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
+  `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
+  answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
+  CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
+  (both take `--kernel NAME`).
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
@@ -5332,6 +5392,13 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 `browser-state-wait-unchanged-1008.json` pins the reply (`mp08_browser_state_wait_unchanged_1008_snapshot`).
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
+
+Local 1012: every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
+`known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
+is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
+of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
+12.5 KB on every read. `browser-favicon-cache-1012.json` pins the shape (`mp08_mp10_browser_favicon_cache_1012_shape_and_hash`).
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
@@ -7438,6 +7505,22 @@ Following it uses the same outside grant, subscription, receipt and acknowledgem
 kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
 
+### A watcher as a notification source — local 1012
+
+NC-14 / NC-15 / NC-21: `NotificationSourceKind` gains `watcher`. A watcher is a script this kernel runs
+for the owner; it has one source (`source_id` `watcher_<id>`, `workflow_id` the watcher id,
+`exit_node_id` `event`, `name` / `display_name` the watcher's name, `session_id` the Room it was made in),
+enabled while the watcher exists. `Watcher(WatcherRequest)` with `create {session_id, manifest, script}`,
+`update {watcher_id, manifest, script}` (back to draft), `dry_run`, `activate`, `pause {paused}`,
+`check_now`, `rename {watcher_id, name}` (keeps its dry run), `remove {watcher_id}` and `list {}` answers `Watcher {watcher}`, `WatcherDryRun {result}`,
+`WatcherRemoved {watcher_id}` or `Watchers {watchers, followers}`. `followers` are the owner's
+subscriptions to these watchers that this kernel holds, on any kernel and in any Room. A summary's `dry_run` is the last dry run of the
+current revision (null after a change); activation requires it. A run's events, cursor, reading and health commit in one write; occurrence ids are
+`<run>.<commit>:<n>`. Health is `ok | failing | gap | noisy` (30 events in 10 minutes, then one a minute);
+entering a non-ok state wakes the creating agent once with a `watcher_health` inbox event. Agent tools:
+`chariox.watcher.create|dry_run|activate|status|remove`. Focused check:
+`cargo test -p chariox-kernel --lib watcher`.
+
 ### A tool call's picture count in the outline preview — local 1000
 
 MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`
@@ -7963,3 +8046,51 @@ agent's kernel reads or changes a workflow of a Room on another kernel) and
 `ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
 workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
 subscribes through the existing notification path).
+
+### Every agent has the kernel browser — local 1012 / relay peer 449
+
+The kernel browser, the Computer and the owner's trusted Apps need no card: an
+agent's `chariox.load_kernel_browser` grants and loads at once, in any turn and
+at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
+`allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
+`UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
+`user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
+
+### The person's Inbox and subscriptions — local 1012 / relay peer 449
+
+`GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
+`{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
+interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
+`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
+run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
+delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,
+snoozes and wakes cards, and `SetInboxMute{origin:{session_id, agent_id}, muted}` mutes one agent's notices; needs-you cards cannot be muted.
+
+`ListNotificationSubscriptions` answers `NotificationSubscriptions{subscriptions, responsibilities}`: one row per
+subscription whose subscriber lives on this kernel (`subscription`, `source` or null when it is gone,
+`subscriber_name`, `prompt`, `options`, `once`, `paused`, `fired`, `last_fired_at_ms`, `loop_stopped_at_ms`,
+`responsible_for`, `health`), and one row per workflow whose runs that need the person come to the Inbox.
+`health` is `ok`, `paused`, `loop_stopped`, `options_changed`, `subscriber_gone` or `source_gone`.
+`UpdateNotificationSubscription{subscription_id, change}` pauses (`paused{paused}`) or moves the subscription to
+another agent of the same Room (`subscriber{agent_id}`), and `RemoveNotificationSubscription{subscription_id}`
+removes it; both answer the new list. `TestNotificationSubscription{subscription_id}` is a dry run of the
+source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
+sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
+`NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
+
+A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
+a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those
+values wake the subscriber. A pick the source does not declare is refused when subscribing; when the source later
+drops a picked option the subscription holds delivery with `options_changed`. `once` ends the subscription after
+its first delivery. On one kernel a subscription to the subscriber's own source, or one that closes a cycle, is
+refused; across kernels a delivery caused by the subscription itself is answered `LoopDropped` and flagged.
+Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
+`person-inbox-1012.json` and its SHA-256 test pin the shape.

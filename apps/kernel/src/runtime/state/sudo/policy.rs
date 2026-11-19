@@ -294,6 +294,7 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             // MP-08/MP-10/MP-11 F6: credential enrollment remains owner input.
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
             | LocalDaemonRequest::StartSliceProviderLogin(_)
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)

@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::provider::launch_contract::overrides_mark_sub_agent;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
 
 use super::mcp_config::{request_has_claude_mcp_config, CLAUDE_MCP_CONFIG_PLACEHOLDER};
@@ -7,6 +8,13 @@ use super::mcp_config::{request_has_claude_mcp_config, CLAUDE_MCP_CONFIG_PLACEHO
 /// `[A-Za-z0-9_-]` replaced by `_`; the runtime server is named `chariox`.
 pub(crate) const CLAUDE_PERMISSION_PROMPT_TOOL: &str = "mcp__chariox__chariox_permission_prompt";
 const CLAUDE_RUNTIME_TOOLS_PATTERN: &str = "mcp__chariox__*";
+
+/// A sub-agent starts on a brief its parent already wrote, so it gets the tools
+/// that do the work, not Claude's whole built-in set (about 9k tokens of tool
+/// descriptions on every call), and no project instruction files (the parent
+/// put what the task needs into the brief). Runtime tools are not built in, and
+/// ToolSearch loads the ones the worker's start leaves out.
+const SUB_AGENT_BUILTIN_TOOLS: &str = "Bash,Read,Edit,Write,Glob,Grep,ToolSearch";
 
 pub(super) fn claude_launch_args(
     request: &LaunchProviderRequest,
@@ -25,6 +33,13 @@ pub(super) fn claude_launch_args(
     )?;
     if request_uses_metaagent_tools_only(request) {
         args.extend(["--tools".to_string(), String::new()]);
+    } else if overrides_mark_sub_agent(&request.provider_config_overrides) {
+        args.extend([
+            "--tools".to_string(),
+            SUB_AGENT_BUILTIN_TOOLS.to_string(),
+            "--setting-sources".to_string(),
+            "user".to_string(),
+        ]);
     }
     Ok(args)
 }
@@ -172,7 +187,7 @@ fn append_claude_execution_config_args(
     }
 }
 
-pub(super) fn normalized_claude_model(model: &str) -> String {
+pub(crate) fn normalized_claude_model(model: &str) -> String {
     let model = model.trim();
     for prefix in ["claude/", "claude-headless/", "claude-p/"] {
         if let Some(stripped) = model.strip_prefix(prefix) {
@@ -208,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_agent_keeps_every_tool_claude_gives_an_agent() {
+    fn a_sub_agent_starts_with_the_working_tools_and_no_project_instructions() {
         let launch = |sub_agent| {
             claude_launch_args(
                 &LaunchProviderRequest::new("session", "agent", "claude", "default", "sonnet")
@@ -216,7 +231,13 @@ mod tests {
             )
             .expect("Claude args should build")
         };
-        assert_eq!(launch(true), launch(false));
+        let agent = launch(false);
+        assert!(!agent
+            .iter()
+            .any(|arg| arg == "--tools" || arg == "--setting-sources"));
+        let worker = launch(true);
+        assert!(has_pair(&worker, "--tools", SUB_AGENT_BUILTIN_TOOLS));
+        assert!(has_pair(&worker, "--setting-sources", "user"));
     }
 
     #[test]

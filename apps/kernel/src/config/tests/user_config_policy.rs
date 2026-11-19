@@ -21,7 +21,6 @@ fn machine_pairing_metadata_preserves_approval_state() {
     );
     assert_eq!(entries[0].paired_at_ms, Some(42));
     assert!(entries[0].approved);
-    assert!(!entries[0].forgotten);
 }
 
 #[test]

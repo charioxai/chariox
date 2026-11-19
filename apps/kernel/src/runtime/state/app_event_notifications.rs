@@ -2,10 +2,14 @@
 //! occurrence per event the route accepts. An outside agent follows an App's events directly.
 use super::*;
 use crate::durable_state::workflow_notifications::naming;
-use crate::local::{NotificationSourceKind, WorkflowNotificationSource};
+use crate::local::{NotificationSourceKind, NotificationSourceOption, WorkflowNotificationSource};
 use chariox_app_runtime::app_inbox::InboxRoute;
 
-fn source_of(kernel: &str, route: &InboxRoute) -> WorkflowNotificationSource {
+fn source_of(
+    kernel: &str,
+    route: &InboxRoute,
+    options: Vec<NotificationSourceOption>,
+) -> WorkflowNotificationSource {
     use sha2::{Digest, Sha256};
     let (name, display_name) = naming::app_event_names(
         &route.event_name,
@@ -38,6 +42,7 @@ fn source_of(kernel: &str, route: &InboxRoute) -> WorkflowNotificationSource {
         name,
         exit_ordinal: 0,
         display_name,
+        options,
     }
 }
 
@@ -59,8 +64,10 @@ impl KernelRuntimeOwnedState {
                 crate::durable_state::workflow_notifications::error(error.to_string())
             })?;
         let mut live = std::collections::BTreeSet::new();
+        let mut catalogs = std::collections::BTreeMap::new();
         for route in &routes {
-            let source = source_of(&kernel, route);
+            let options = self.app_event_options(owner, route, &mut catalogs)?;
+            let source = source_of(&kernel, route, options);
             live.insert(source.source_id.clone());
             self.register_notification_source_if_changed(stored, source)?;
         }
@@ -74,5 +81,48 @@ impl KernelRuntimeOwnedState {
             self.register_notification_source_if_changed(stored, gone)?;
         }
         Ok(())
+    }
+
+    /// A generator-fed route offers the options of the publisher schema it pinned when it was
+    /// admitted; an owner-fed route those of the App's own incoming event.
+    fn app_event_options(
+        &self,
+        owner: &str,
+        route: &InboxRoute,
+        catalogs: &mut std::collections::BTreeMap<
+            String,
+            chariox_app_runtime::app_inbox::IncomingCatalog,
+        >,
+    ) -> Result<Vec<NotificationSourceOption>, DaemonError> {
+        let invalid = |error: String| {
+            crate::durable_state::workflow_notifications::error(format!(
+                "App event {} declares unusable options: {error}",
+                route.event_name
+            ))
+        };
+        if let Some(source) = &route.source {
+            let Some(schema) = &source.payload_schema_json else {
+                return Ok(Vec::new());
+            };
+            let schema: serde_json::Value =
+                serde_json::from_str(schema).map_err(|error| invalid(error.to_string()))?;
+            return chariox_app_package::event_options(&schema)
+                .map_err(|error| invalid(error.to_string()));
+        }
+        if !catalogs.contains_key(&route.installation_id) {
+            let (_, catalog) = self
+                .durable_state_store
+                .active_app_incoming_catalog(owner, &route.installation_id)
+                .map_err(|error| {
+                    crate::durable_state::workflow_notifications::error(format!(
+                        "App event {} cannot list its options: the App's active release could not be read ({error:?}). Update or reinstall the App.",
+                        route.event_name
+                    ))
+                })?;
+            catalogs.insert(route.installation_id.clone(), catalog);
+        }
+        Ok(catalogs[&route.installation_id]
+            .options(&route.event_name)
+            .to_vec())
     }
 }

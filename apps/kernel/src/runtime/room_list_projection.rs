@@ -2400,11 +2400,12 @@ mod tests {
                 machine_alias: Some("peer".to_string()),
                 display_name: "peer".to_string(),
                 trust_status: RemoteMachineTrustStatus::Approved,
-                online: true,
+                presence: crate::local::RemoteMachinePresence::Online,
                 pending: false,
                 kernel_count: 1,
                 available_providers: vec!["dev-stub".to_string()],
                 provider_accounts: Vec::new(),
+                kernels: Vec::new(),
             }],
             vec![RelayKernelPresence {
                 kernel_id: "kernel-peer".to_string(),
@@ -2419,6 +2420,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "peer-public-key".to_string(),
+                local_protocol: None,
             }],
             vec![crate::local::TerminalRecord {
                 terminal_id: "terminal-1".to_string(),

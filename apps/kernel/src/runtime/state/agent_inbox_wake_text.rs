@@ -1,7 +1,7 @@
-//! The prompt that wakes an agent for its inbox: counts and kinds only, so
-//! payloads and agent-authored text stay in the inbox, which the agent reads
-//! with a tool whose result is marked untrusted. The one exception is the
-//! task a parent gives its sub-agent: that message is the sub-agent's prompt.
+//! The pointer part of a wake prompt: counts and kinds only, for the events whose text
+//! `agent_inbox_inline` could not carry. Their payloads and agent-authored text stay in the
+//! inbox, which the agent reads with a tool whose result is marked untrusted. A parent's
+//! message to its sub-agent is the exception: it is the sub-agent's prompt.
 use crate::durable_state::agent_lifecycle::InboxEvent;
 
 const LABELS_SHOWN: usize = 3;

@@ -524,7 +524,7 @@ mod tests {
             1,
         );
         let inventory = RemoteRelayInventoryProjectionStore::default();
-        inventory.update(Vec::new(), vec![kernel()]);
+        inventory.update(Default::default(), vec![kernel()]);
         let response = execute_resolve_kernel_client_connection_request(
             &router.runtime_state(),
             &projection,
@@ -586,7 +586,7 @@ mod tests {
             }
             let app = crate::app::DaemonApp::bootstrap(config).unwrap();
             app.remote_relay_inventory_projection_store()
-                .update(Vec::new(), vec![kernel()]);
+                .update(Default::default(), vec![kernel()]);
             let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
                 Arc::new(tokio::sync::Mutex::new(app)),
                 1,
@@ -709,6 +709,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "public-key".to_string(),
+            local_protocol: None,
         }
     }
 
@@ -723,7 +724,7 @@ mod tests {
             false,
             Duration::from_secs(1),
             || async move {
-                refresh_projection.update(Vec::new(), vec![kernel()]);
+                refresh_projection.update(Default::default(), vec![kernel()]);
                 Ok(())
             },
         )
@@ -737,7 +738,7 @@ mod tests {
     #[tokio::test]
     async fn cached_kernel_connection_resolve_skips_inventory_refresh() {
         let projection = RemoteRelayInventoryProjectionStore::default();
-        projection.update(Vec::new(), vec![kernel()]);
+        projection.update(Default::default(), vec![kernel()]);
 
         let resolved = resolve_relay_kernel_presence_with_refresh(
             &projection,
@@ -755,7 +756,7 @@ mod tests {
     #[tokio::test]
     async fn stale_cached_kernel_connection_revalidates_inventory() {
         let projection = RemoteRelayInventoryProjectionStore::default();
-        projection.update(Vec::new(), vec![kernel()]);
+        projection.update(Default::default(), vec![kernel()]);
         let refresh_projection = projection.clone();
 
         let error = resolve_relay_kernel_presence_with_refresh(
@@ -764,7 +765,7 @@ mod tests {
             false,
             Duration::from_secs(1),
             || async move {
-                refresh_projection.update(Vec::new(), Vec::new());
+                refresh_projection.update(Default::default(), Vec::new());
                 Ok(())
             },
         )
@@ -784,7 +785,10 @@ mod tests {
         let mut stale_duplicate = selected_kernel.clone();
         stale_duplicate.kernel_id = "kernel-stale".to_string();
         stale_duplicate.machine_id = "machine-stale".to_string();
-        projection.update(Vec::new(), vec![selected_kernel.clone(), stale_duplicate]);
+        projection.update(
+            Default::default(),
+            vec![selected_kernel.clone(), stale_duplicate],
+        );
         let refresh_projection = projection.clone();
         let mut alias_request = request();
         alias_request.kernel_ref = "shared".to_string();
@@ -796,7 +800,7 @@ mod tests {
             false,
             Duration::from_secs(1),
             || async move {
-                refresh_projection.update(Vec::new(), vec![selected_kernel]);
+                refresh_projection.update(Default::default(), vec![selected_kernel]);
                 Ok(())
             },
         )

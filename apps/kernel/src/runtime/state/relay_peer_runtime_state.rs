@@ -1236,7 +1236,7 @@ impl KernelRuntimeState {
         // The account is worker-owned; never acknowledge it for a stale lease.
         self.with_app_side_effect(|app| {
             RemoteLeaseRuntime::new(app)
-                .validate_remote_provider_account_context(&context, &profile.owner_user_id)
+                .validate_remote_provider_account_result(&context, &profile.owner_user_id)
         })
         .await?;
         Ok(profile)

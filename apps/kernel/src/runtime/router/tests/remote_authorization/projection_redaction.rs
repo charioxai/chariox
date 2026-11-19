@@ -254,17 +254,21 @@ async fn collaborator_room_list_directory_redaction_inner() {
         .unwrap();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     router.remote_relay_inventory_projection.update(
-        vec![crate::local::RemoteMachineRecord {
-            machine_id: "private-machine".into(),
-            machine_alias: Some("private-host".into()),
-            display_name: "private-host".into(),
-            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
-            online: true,
-            pending: false,
-            kernel_count: 1,
-            available_providers: vec!["codex".into()],
-            provider_accounts: vec![],
-        }],
+        crate::local::RemoteMachineInventory {
+            machines: vec![crate::local::RemoteMachineRecord {
+                machine_id: "private-machine".into(),
+                machine_alias: Some("private-host".into()),
+                display_name: "private-host".into(),
+                trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+                presence: crate::local::RemoteMachinePresence::Online,
+                pending: false,
+                kernel_count: 1,
+                available_providers: vec!["codex".into()],
+                provider_accounts: vec![],
+                kernels: Vec::new(),
+            }],
+            ..Default::default()
+        },
         vec![chariox_relay::protocol::RelayKernelPresence {
             kernel_id: "private-kernel".into(),
             machine_id: "private-machine".into(),
@@ -278,6 +282,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
             leased_agent_count: 0,
             local_session_count: 5,
             public_key: "public-fixture-key".into(),
+            local_protocol: None,
         }],
     );
     for request in [LocalDaemonRequest::GetRoomListSnapshot(
@@ -325,7 +330,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
             assert!(!events.contains("private-kernel"));
             assert!(!events.contains("private-machine"));
             assert!(events.contains(&session_id));
-            let machines = router.relay_remote_machines_snapshot(&caller);
+            let machines = router.relay_remote_machines_snapshot(&caller).machines;
             assert_eq!(!machines.is_empty(), visible);
         }
     }

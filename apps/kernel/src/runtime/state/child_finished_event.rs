@@ -32,6 +32,23 @@ impl KernelRuntimeState {
             .agent_deadline(&task.room_id, &task.agent_id)?
             .is_some_and(|deadline| deadline.state == crate::local::AgentDeadlineState::Reached);
         let outcome = self.owned.finished_task_outcome(task, failure);
+        // A blocked `chariox.agents.run` call takes the end in place of the inbox event.
+        if self
+            .owned
+            .agent_run_waiters
+            .claim(
+                child.id(),
+                super::agent_run_waiters::WorkerEnd {
+                    task: task.clone(),
+                    outcome: outcome.clone(),
+                    deadline_reached,
+                    public_answer: public_answer.cloned(),
+                },
+            )
+            .await
+        {
+            return Ok(());
+        }
         let mut event = ledger::occurrence(
             &task.room_id,
             parent.id(),

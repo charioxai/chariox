@@ -259,8 +259,6 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
     }
 }

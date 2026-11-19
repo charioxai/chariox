@@ -1502,9 +1502,7 @@ fn approved_live_remote_machines(
         .filter_map(|machine| {
             registry
                 .iter()
-                .find(|entry| {
-                    entry.machine_id == machine.machine_id && entry.approved && !entry.forgotten
-                })
+                .find(|entry| entry.machine_id == machine.machine_id && entry.approved)
                 .map(|_| machine.clone())
         })
         .collect()

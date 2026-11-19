@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, RoomListLaunchTarget,
-    RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
+    LocalDaemonRequest, OfflineMachineRecord, PasskeyPrompt, RelayStatus, RemoteMachineRecord,
+    RoomListLaunchTarget, RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
@@ -185,7 +185,7 @@ pub(crate) enum KernelEvent {
     },
     ProviderRunChanged {
         session_id: String,
-        provider_run: Option<PublicProviderRun>,
+        provider_run: Option<Box<PublicProviderRun>>,
     },
     SessionMetadataChanged {
         session_id: String,
@@ -204,6 +204,7 @@ pub(crate) enum KernelEvent {
     },
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
+        offline_machines: Vec<OfflineMachineRecord>,
     },
     RoomListChanged {
         inventory_version: String,
@@ -247,7 +248,7 @@ pub(crate) enum KernelEvent {
     },
     WorkflowRunUpdated {
         session_id: String,
-        workflow_run: WorkflowRun,
+        workflow_run: Box<WorkflowRun>,
     },
     Heartbeat {
         session_id: String,
@@ -753,7 +754,10 @@ pub(crate) fn provider_run_changed_event(
     }
     Some(KernelEvent::ProviderRunChanged {
         session_id: snapshot.session.id().to_string(),
-        provider_run: snapshot.provider_run.as_ref().map(PublicProviderRun::from),
+        provider_run: snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| Box::new(PublicProviderRun::from(run))),
     })
 }
 
@@ -931,7 +935,7 @@ pub(crate) fn workflow_run_updated_events(
         .into_iter()
         .map(|workflow_run| KernelEvent::WorkflowRunUpdated {
             session_id: snapshot.session.id().to_string(),
-            workflow_run,
+            workflow_run: Box::new(workflow_run),
         })
         .collect()
 }

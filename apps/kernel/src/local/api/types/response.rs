@@ -25,6 +25,11 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
+    Watcher { watcher: WatcherSummary },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
+    WatcherDryRun { result: WatcherDryRun },
+    WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
@@ -37,6 +42,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
+    OwnerInteractionsListed { interactions: Vec<OwnerInteraction> },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
@@ -290,7 +296,7 @@ pub enum LocalDaemonResponse {
     SliceStateReset { slice: SliceRecord, removed_state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceBackupCreated { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, instructions: String, },
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
-    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
+    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, offline_machines: Vec<OfflineMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
     /// A direct current relay registration observation. This does not prove
     /// historical heartbeat-ID absence or full MP-10 acceptance.
@@ -302,6 +308,17 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
+    NotificationSubscriptions {
+        subscriptions: Vec<NotificationSubscriptionRow>,
+        responsibilities: Vec<PersonResponsibilityRow>,
+    },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {
@@ -318,10 +335,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
-    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
+    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, workspace_empty: bool, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
-    WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
     WorkspaceGitOverview { overview: WorkspaceGitOverview, },
     WorkspaceFilesListed { listing: WorkspaceRepoFileListing, },
     WorkspaceFileContent { content: WorkspaceFileContent, },
@@ -336,7 +352,7 @@ pub enum LocalDaemonResponse {
     WorkspaceCommitMessageGenerated { message: String, },
     WorkspaceGitActionCompleted { result: WorkspaceGitActionResult, },
     RemoteMachineApproved { machine: RemoteMachineRecord, },
-    RemoteMachineForgotten { machine: RemoteMachineRecord, },
+    RemoteMachineForgotten { machine_id: String, display_name: String, },
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },
@@ -356,6 +372,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
+    ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },

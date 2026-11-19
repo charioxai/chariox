@@ -1549,7 +1549,7 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
     assert_eq!(message.sequence, message_sequence);
     assert_eq!(message.source_id, healthy_agent_id);
     assert_eq!(message.kind, "message");
-    assert_eq!(message.state, "accepted");
+    assert_eq!(message.state, "acknowledged");
     let message_prompt_id = message
         .prompt_id
         .clone()

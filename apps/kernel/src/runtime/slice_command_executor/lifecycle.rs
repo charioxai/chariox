@@ -605,12 +605,10 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
-    if let Some(
-        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            ..
-        },
-    ) = &initial_record.development
+    if let Some((project_id, _)) = initial_record
+        .development
+        .as_ref()
+        .and_then(|development| development.single_source_project())
     {
         let checkouts: Vec<std::path::PathBuf> = runtime_state
             .slice_repository_selections(&initial_record)?
@@ -1619,6 +1617,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-public-key".into(),
+            local_protocol: None,
         };
         activate_hosted_slice_relay_token(
             &DaemonConfigProjectionStore::new(config.clone()),
@@ -1746,6 +1745,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "authenticated-worker-key".to_string(),
+            local_protocol: None,
         };
 
         let relaunch_worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")
@@ -1814,6 +1814,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-key".to_string(),
+            local_protocol: None,
         };
         assert!(!hosted_slice_activation_presence_ready(None, "worker-key")
             .expect("offline worker should remain pending"));

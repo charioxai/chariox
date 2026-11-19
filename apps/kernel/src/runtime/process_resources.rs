@@ -535,9 +535,12 @@ impl PreparedDomain {
                         }
                         false
                     }
+                    // The sampler has just resumed: the tree says nothing, so
+                    // read again next tick.
+                    Err(sampling::SamplingError::Pending) => false,
                     // A signal ended `ps` (a hot reload ends the children the
-                    // kernel leaves behind while a sample runs): the tree
-                    // says nothing, so read again next tick.
+                    // kernel leaves behind while a sample runs): the same.
+                    #[cfg(not(target_os = "linux"))]
                     Err(sampling::SamplingError::Ended) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(

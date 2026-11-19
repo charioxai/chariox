@@ -29,24 +29,22 @@ pub(crate) fn parse_card_action(
     Ok(request)
 }
 
-/// A request that only reads what the asking agent's Room already shows it. It asks nothing
-/// of the person: a card is for work that changes something. Everything else, including a read
-/// that is not listed here, still waits for the person.
-pub(crate) fn is_read_only(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::ListSessions(_)
-            | LocalDaemonRequest::ResolveSession(_)
-            | LocalDaemonRequest::GetSessionState(_)
-            | LocalDaemonRequest::ListSessionMembers(_)
-            | LocalDaemonRequest::ListAgents(_)
-            | LocalDaemonRequest::ListDescendants(_)
-            | LocalDaemonRequest::GetAgentDeadline(_)
-            | LocalDaemonRequest::ListWorkflows(_)
-            | LocalDaemonRequest::ListWorkflowRuns(_)
-            | LocalDaemonRequest::GetWorkflowRun(_)
-            | LocalDaemonRequest::GetDaemonHealth(_)
-    )
+/// The Room a request only reads, when it is a read of one Room. The asking agent's own Room
+/// already shows it that data, so the read asks nothing of the person. A read that reaches
+/// further (every Room, a name lookup across Rooms, the daemon, another Room) names no Room or
+/// another one: like a write, it waits for the person's passkey card.
+pub(crate) fn room_read(request: &LocalDaemonRequest) -> Option<&str> {
+    match request {
+        LocalDaemonRequest::GetSessionState(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListSessionMembers(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListAgents(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListDescendants(r) => Some(&r.session_id),
+        LocalDaemonRequest::GetAgentDeadline(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListWorkflows(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListWorkflowRuns(r) => Some(&r.session_id),
+        LocalDaemonRequest::GetWorkflowRun(r) => Some(&r.session_id),
+        _ => None,
+    }
 }
 
 fn shorten(text: &str, limit: usize) -> String {

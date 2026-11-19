@@ -65,12 +65,14 @@ async fn relay_with_kernel() -> (
             .unwrap();
     });
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
+    let (mut daemon, daemon_handshake) = connect_async_with_retry(&url).await.unwrap();
     daemon
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_handshake,
+                test_registration("daemon-a", "machine-1", "Linux", 10),
+            ))
             .unwrap()
             .into(),
         ))

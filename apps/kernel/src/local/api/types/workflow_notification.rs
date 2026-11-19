@@ -45,6 +45,38 @@ pub struct WorkflowNotificationSource {
     /// `name`, or `name-<exit_ordinal>` when more than one exit of the workflow notifies.
     #[serde(default)]
     pub display_name: String,
+    /// What a subscriber may pick to hear only some occurrences; declared by an App's event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<NotificationSourceOption>,
+}
+
+/// One option a source declares, compared against the same-named value of each occurrence's
+/// `data`.
+pub type NotificationSourceOption = chariox_app_package::EventOption;
+
+/// A value a subscriber picks for one of the source's options: only occurrences that carry
+/// exactly this value wake the subscriber.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationOptionValue {
+    pub name: String,
+    pub value: serde_json::Value,
+}
+
+/// What one occurrence did for one subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationTraceOutcome {
+    /// The subscriber was woken.
+    Delivered,
+    /// A picked option did not match; `detail` names it.
+    Filtered,
+    /// The person paused the subscription.
+    Paused,
+    /// The source no longer declares the picked options.
+    OptionsChanged,
+    /// The occurrence was caused by this subscription's own delivery.
+    LoopStopped,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowNotificationSubscription {
@@ -114,6 +146,8 @@ pub struct WorkflowNotificationSourceSummary {
     pub name: String,
     pub display_name: String,
     pub available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<NotificationSourceOption>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,4 +178,6 @@ pub enum NotificationSourceKind {
     WorkflowRun,
     /// An event an installed App's route accepted.
     AppEvent,
+    /// An event a watcher's script reported.
+    Watcher,
 }

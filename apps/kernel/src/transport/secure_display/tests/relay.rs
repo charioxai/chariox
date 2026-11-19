@@ -24,13 +24,14 @@ async fn encrypted_display_fragments_round_trip_through_real_relay_websockets() 
             .await
     });
     let run = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let (mut daemon, _) = connect_async(format!("ws://{address}")).await.unwrap();
-        daemon.send(Message::Text(serde_json::json!({
-            "kind": "daemon_register", "registration": {
+        let relay_url = format!("ws://{address}");
+        let (mut daemon, handshake) = connect_async(&relay_url).await.unwrap();
+        daemon.send(Message::Text(crate::transport::relay_socket_connect::stand_in_kernel_register(
+            &relay_url, &handshake, serde_json::json!({
                 "auth_token": "drill-token", "daemon_id": "display-kernel", "machine_id": "local-drill",
-                "public_key": "registration-key", "capabilities": [],
-            }
-        }).to_string().into())).await.unwrap();
+                "capabilities": [],
+            }),
+        ).into())).await.unwrap();
         daemon.send(Message::Text(serde_json::json!({
             "kind": "daemon_display_tunnel_register", "registration": {
                 "tunnel_id": "encrypted-display", "expires_at_ms": u64::MAX,

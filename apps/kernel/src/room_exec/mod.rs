@@ -34,7 +34,6 @@ pub(crate) use place_command::{
 };
 
 pub const CHUNK_BYTES: usize = 256 * 1024;
-const MAX_PER_ROOM: usize = 16;
 const MAX_PER_KERNEL: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,16 +281,8 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         if records.len() >= MAX_PER_KERNEL
             || self.inner.running.load(Ordering::Acquire) >= MAX_PER_KERNEL
-            || records
-                .values()
-                .filter(|record| record.intent.session_id == session_id)
-                .count()
-                >= MAX_PER_ROOM
         {
-            return Err(error(
-                "exec_limit",
-                "use RoomTerminal exec_list to find and exec_close a collected or abandoned command before starting another",
-            ));
+            return Err(error("exec_limit", limit_message(&records)));
         }
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
@@ -654,6 +645,37 @@ impl RoomExecService {
             });
         self.report_work();
     }
+}
+
+/// Names what fills the kernel's command limit and the tool that frees each part: job tools cannot
+/// close a retained ordinary command, and RoomTerminal cannot end a job.
+fn limit_message(records: &BTreeMap<String, Arc<Record>>) -> String {
+    let (mut jobs, mut finished, mut running) = (0, 0, 0);
+    for record in records.values() {
+        if record.job {
+            jobs += 1;
+        } else if matches!(
+            *record.state.lock().expect("exec state poisoned"),
+            ExecState::Finished
+        ) {
+            finished += 1;
+        } else {
+            running += 1;
+        }
+    }
+    let mut remedies = Vec::new();
+    if finished + running > 0 {
+        remedies.push(
+            "use RoomTerminal exec_list to find and exec_close a collected or abandoned command",
+        );
+    }
+    if jobs > 0 {
+        remedies.push("end a job with chariox.jobs.cancel once chariox.jobs.status shows it is no longer needed");
+    }
+    format!(
+        "this kernel holds its limit of {MAX_PER_KERNEL} commands ({jobs} jobs, {running} other running commands, {finished} other finished commands); {}, then try again",
+        remedies.join(" or ")
+    )
 }
 
 fn input_error(failure: mpsc::error::TrySendError<Option<Vec<u8>>>) -> DaemonError {

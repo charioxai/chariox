@@ -52,7 +52,7 @@ async fn captures_and_reads_bound_worker_screenshot() {
 
     create_running_slice(&fixture).await;
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id": &room,
@@ -286,7 +286,7 @@ async fn rejects_cross_room_attachment() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
     create_running_slice(&fixture).await;
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id": &room,
@@ -328,7 +328,7 @@ async fn rejects_oversized_chunk_request() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
     create_running_slice(&fixture).await;
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id": &room,

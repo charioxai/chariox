@@ -1751,6 +1751,24 @@ mod tests {
         }
     }
 
+    /// The number of workers an orchestrator starts decides the cost of a delegation
+    /// (8 workers cost 2.3x the same task in 4): the note and the tool both say one
+    /// worker per independent area.
+    #[test]
+    fn delegation_guidance_caps_workers_at_the_independent_areas() {
+        let description = crate::transport::runtime_tools::agent_run_tool_specs()
+            .remove(0)
+            .description;
+        for text in [RUNTIME_BASE, description.as_str()] {
+            assert!(text.contains("one whole independent area"), "{text}");
+            assert!(
+                text.contains("no more workers than there are independent areas"),
+                "{text}"
+            );
+            assert!(text.contains("never one per file or step"), "{text}");
+        }
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let _dir = temp_prompt_root("materializes");

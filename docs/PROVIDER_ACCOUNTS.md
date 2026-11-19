@@ -112,3 +112,9 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 ## Explicit account copy to another kernel
 
 MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+
+## Signing in from a Vault entry
+
+An API-key provider sign-in (OpenCode Go and Zen) takes a Vault entry instead of a pasted key. `provider login <provider> [account-profile] --method opencode_go_api_key --vault <credential_id>` starts the sign-in and sends the entry; Web Provider Accounts offers **Use a Vault entry** next to the paste field, listing the owner's entries for the provider's site. The kernel reads the value, types it into the provider's own login terminal and lets `opencode auth login` finish; the value never reaches a model, the status, history, a log or a tool result, and the login screen stays masked.
+
+The provider-to-site map is one function, `provider_enrollment_vault_origin` (OpenCode: `https://opencode.ai`). The entry must be a secret bound to exactly that site for browser or HTTP use, so an entry the owner created for the site and one `chariox.vault.copy_for_use` made for it both work, with no copy step. An entry for another site is refused with the site it must be bound to. No other Vault use widens: the entry is read only for this sign-in.

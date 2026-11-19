@@ -4,9 +4,12 @@ use std::future::Future;
 
 use futures_util::FutureExt;
 
+use crate::config::DaemonConfig;
+use crate::runtime::machine_presence;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
+use crate::session::unix_epoch_ms;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
@@ -54,9 +57,38 @@ pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<bool>>) 
     }
 }
 
-pub(super) fn clear_remote_inventory_projection(router: &CommandRouter) {
-    router.clear_remote_relay_inventory_projection();
+/// The relay is unreachable: the projection falls back to the machines the kernel remembers, which
+/// keep aging into Reconnecting and Offline without a relay query.
+pub(super) fn retain_remembered_remote_machines(router: &CommandRouter) {
+    if let Err(error) = router.retain_remembered_remote_machines() {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "remembered machines could not be projected",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
 }
+
+pub(crate) fn retain_remembered_machines(
+    host_machine_id: &str,
+    projection: &RemoteRelayInventoryProjectionStore,
+) -> Result<(), DaemonError> {
+    // The projection is written while the registry is held, so a Remove that lands between the
+    // registry read and the projection write cannot be undone by this pass.
+    DaemonConfig::update_machine_registry(|registry| {
+        projection.retain_remembered(machine_presence::reconcile(
+            registry,
+            Vec::new(),
+            &projection.online_machine_ids(),
+            host_machine_id,
+            unix_epoch_ms(),
+        ));
+    })
+}
+
+/// A Remove or Approve can land while a live pass awaits the relay; the pass then starts over,
+/// this many times at most.
+const LIVE_PASS_ATTEMPTS: usize = 3;
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
     router: Arc<CommandRouter>,
@@ -126,18 +158,57 @@ pub(crate) async fn refresh_remote_inventory_projection(
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
 ) -> Result<(), DaemonError> {
     let main = relay_state.map(MainConnection::new);
-    let main = main.as_ref();
     let mut runtime_config = config_projection.snapshot();
     if runtime_config.relay_url.is_none() || runtime_config.relay_token.is_none() {
-        projection.clear();
-        return Ok(());
+        return retain_remembered_machines(&runtime_config.host_machine_id, &projection);
     }
     runtime_config.relay_request_timeout_ms = runtime_config
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
+    for _ in 0..LIVE_PASS_ATTEMPTS {
+        let started_revision = projection.registry_revision();
+        let (listed, remote_kernels) =
+            live_pass(&runtime_config, &projection, main.as_ref()).await?;
+        let published = DaemonConfig::update_machine_registry(|registry| {
+            // Compare and set: a pass that a Remove or Approve overtook does not publish.
+            if projection.registry_revision() != started_revision {
+                return false;
+            }
+            let inventory = machine_presence::reconcile(
+                registry,
+                listed,
+                &projection.online_machine_ids(),
+                &runtime_config.host_machine_id,
+                unix_epoch_ms(),
+            );
+            projection.publish_live(started_revision, inventory, remote_kernels)
+        })?;
+        if published {
+            return Ok(());
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "refresh remote machines",
+        message: format!(
+            "the machine registry changed during each of {LIVE_PASS_ATTEMPTS} passes; the next refresh tries again"
+        ),
+    })
+}
 
+/// What the relay lists now: the machines a client can reach and their live kernels.
+async fn live_pass(
+    runtime_config: &DaemonConfig,
+    projection: &RemoteRelayInventoryProjectionStore,
+    main: Option<&MainConnection>,
+) -> Result<
+    (
+        Vec<crate::local::RemoteMachineRecord>,
+        Vec<chariox_relay::protocol::RelayKernelPresence>,
+    ),
+    DaemonError,
+> {
     let visible_kernel_ids = if let Some(profile) =
-        crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+        crate::runtime::cloud_relay_control::active_cloud_profile(runtime_config)
     {
         let directory = relay_discovery::authorization::visible_directory(profile).await?;
         if let Some(directory) = &directory {
@@ -147,7 +218,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
     } else {
         None
     };
-    let live_machines = relay_discovery::list_live_machines_over(&runtime_config, main).await?;
+    let live_machines = relay_discovery::list_live_machines_over(runtime_config, main).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
@@ -160,10 +231,10 @@ pub(crate) async fn refresh_remote_inventory_projection(
     let mut remote_kernels = Vec::new();
     for machine in remote_machines
         .iter()
-        .filter(|machine| machine.online && machine.kernel_count > 0)
+        .filter(|machine| machine.kernel_count > 0)
     {
         let kernels = relay_discovery::list_live_kernels_for_machine_over(
-            &runtime_config,
+            runtime_config,
             main,
             &machine.machine_id,
         )
@@ -177,21 +248,25 @@ pub(crate) async fn refresh_remote_inventory_projection(
             })
             .collect();
         remote_kernels
-            .extend(validate_live_relay_kernels(&runtime_config, &known_kernel_ids, kernels).await);
+            .extend(validate_live_relay_kernels(runtime_config, &known_kernel_ids, kernels).await);
     }
     for machine in &mut remote_machines {
-        machine.kernel_count = remote_kernels
+        machine.kernels = remote_kernels
             .iter()
             .filter(|kernel| kernel.machine_id == machine.machine_id)
-            .count();
+            .map(|kernel| crate::local::RemoteMachineKernel {
+                kernel_id: kernel.kernel_id.clone(),
+                local_protocol: kernel.local_protocol,
+            })
+            .collect();
+        machine.kernel_count = machine.kernels.len();
     }
-    let remote_machines = listed_remote_machines(
+    let listed = listed_remote_machines(
         remote_machines,
         &runtime_config.host_machine_id,
         visible_kernel_ids.is_some(),
     );
-    projection.update(remote_machines, remote_kernels);
-    Ok(())
+    Ok((listed, remote_kernels))
 }
 
 /// A machine is listed for the kernels a client can reach on it. This kernel is "local" to its
@@ -280,11 +355,12 @@ mod tests {
             machine_alias: None,
             display_name: machine_id.into(),
             trust_status: crate::local::RemoteMachineTrustStatus::Approved,
-            online: true,
+            presence: crate::local::RemoteMachinePresence::Online,
             pending: false,
             kernel_count,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
+            kernels: Vec::new(),
         };
         let ids = |machines: Vec<crate::local::RemoteMachineRecord>| {
             machines

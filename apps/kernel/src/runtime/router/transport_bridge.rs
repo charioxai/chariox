@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::local::{RelayStatus, RemoteMachineInventory};
 use crate::provider::OpenCodeProviderCatalog;
 use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
 use crate::slice::SliceRecord;
@@ -147,6 +147,16 @@ impl CommandRouter {
             .session_projection_session_change_sequence(session_id)
     }
 
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.runtime_state.person_inbox_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_person_inbox_change_after(sequence)
+            .await;
+    }
+
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
         self.runtime_state
             .wait_for_session_projection_change_after(sequence)
@@ -271,17 +281,26 @@ impl CommandRouter {
     pub(crate) fn relay_remote_machines_snapshot(
         &self,
         caller: &crate::runtime::command::KernelCaller,
-    ) -> Vec<RemoteMachineRecord> {
+    ) -> RemoteMachineInventory {
         if self.relay_owner_directory_allowed(caller) {
             self.transport_remote_machines_snapshot()
         } else {
-            Vec::new()
+            RemoteMachineInventory::default()
         }
     }
 
-    pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
-        let (machines, _) = self.remote_relay_inventory_projection.snapshot();
-        machines
+    pub(crate) fn transport_remote_machines_snapshot(&self) -> RemoteMachineInventory {
+        self.remote_relay_inventory_projection.inventory()
+    }
+
+    /// A local client follows the machine list for as long as it holds the watch.
+    pub(crate) fn watch_remote_machines(&self) -> crate::runtime::projection::RemoteInventoryWatch {
+        self.remote_relay_inventory_projection.watch()
+    }
+
+    /// Whether a local client follows the machine list now.
+    pub(crate) fn remote_machines_watched(&self) -> bool {
+        self.remote_relay_inventory_projection.watched()
     }
 
     pub(crate) fn kernel_resource_changes(
@@ -308,8 +327,11 @@ impl CommandRouter {
         self.runtime_state.list_slices()
     }
 
-    pub(crate) fn clear_remote_relay_inventory_projection(&self) {
-        self.remote_relay_inventory_projection.clear();
+    pub(crate) fn retain_remembered_remote_machines(&self) -> Result<(), DaemonError> {
+        crate::transport::relay_client::retain_remembered_machines(
+            &self.config_projection.snapshot().host_machine_id,
+            &self.remote_relay_inventory_projection,
+        )
     }
 
     pub(crate) async fn refresh_remote_relay_inventory_projection(
@@ -434,6 +456,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "unauthenticated-key".to_string(),
+            local_protocol: None,
         };
 
         assert!(!worker_presence_is_authenticated(&relay_state, &worker));

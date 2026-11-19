@@ -172,9 +172,11 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
         .await;
         assert!(matches!(metadata.next().await, Some(Ok(Message::Close(_)))));
         let _ = metadata.close(None).await;
-        let mut socket = accept_async(listener.accept().await.unwrap().0)
-            .await
-            .unwrap();
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(
+            listener.accept().await.unwrap().0,
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             receive(&mut socket).await,
             RelayEnvelope::DaemonRegister { .. }

@@ -8,6 +8,13 @@ use crate::config::{validate_credentials, UserCredentialConfig, UserCredentialSo
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
+/// Whether a write may move the use an entry declared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UseChange {
+    Refused,
+    Allowed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CharioxCredentialRegistry {
     root: PathBuf,
@@ -61,7 +68,24 @@ impl CharioxCredentialRegistry {
         &self,
         credential: UserCredentialConfig,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
-        self.validate_upsert(&credential)
+        self.write(credential, UseChange::Refused)
+    }
+
+    /// The owner's own change of an entry's Kind and Use: the only write that may move a
+    /// declared use. Agents and every other writer go through `upsert`.
+    pub(crate) fn rebind(
+        &self,
+        credential: UserCredentialConfig,
+    ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        self.write(credential, UseChange::Allowed)
+    }
+
+    fn write(
+        &self,
+        credential: UserCredentialConfig,
+        change: UseChange,
+    ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        self.validate_write(&credential, change)
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "credential.upsert",
                 message: error.to_string(),
@@ -85,13 +109,29 @@ impl CharioxCredentialRegistry {
         &self,
         credential: &UserCredentialConfig,
     ) -> Result<(), DaemonError> {
+        self.validate_write(credential, UseChange::Refused)
+    }
+
+    pub(crate) fn validate_rebind(
+        &self,
+        credential: &UserCredentialConfig,
+    ) -> Result<(), DaemonError> {
+        self.validate_write(credential, UseChange::Allowed)
+    }
+
+    fn validate_write(
+        &self,
+        credential: &UserCredentialConfig,
+        change: UseChange,
+    ) -> Result<(), DaemonError> {
         validate_credential_registration(credential)?;
         if let Some(previous) = self.get(&credential.id)? {
             let binding = previous
                 .metadata
                 .as_ref()
                 .and_then(|m| m.use_binding.as_ref());
-            if binding.is_some()
+            if change == UseChange::Refused
+                && binding.is_some()
                 && binding
                     != credential
                         .metadata

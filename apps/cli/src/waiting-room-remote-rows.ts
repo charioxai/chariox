@@ -189,7 +189,6 @@ export function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
 export function waitingRoomRemoteMachineCanDelete(machine: WaitingRoomRemoteMachine) {
   return !machine.displayFreshness && (machine.online === false
     || machine.pending === true
-    || machine.trust_status === "forgotten"
     || machine.kernel_count === 0)
 }
 

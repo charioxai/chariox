@@ -187,10 +187,10 @@ pub use prompt_signals::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    setup_turn_origin, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
-    FinishedProviderPromptSubmitJob, ProviderNativeInteractionBridge,
-    ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    run_room_commands_on_fresh_claude, setup_turn_origin, FinishedProviderOutputPollJob,
+    FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
     ProviderRunOperationPermit,
 };
@@ -433,7 +433,7 @@ pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> b
 pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && run.client_interface().is_chariox()
+    run.adapter_key() == "claude" && !provider_run_uses_claude_native_bridge(run)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -446,7 +446,9 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     SessionCommand,
     /// A setup turn the person asked for (publishing a new Room): it runs commands in the run's
     /// folder under the run's permissions, its approvals reach the person like any agent's, and
-    /// the whole answer comes back so a closing verdict line is never lost.
+    /// the whole answer comes back so a closing verdict line is never lost. A Claude run with no
+    /// structured I/O (headless) runs it on a fresh `claude -p` child that may run only `git`
+    /// and `gh`.
     RoomCommands,
 }
 
@@ -805,6 +807,7 @@ mod tests {
     #[test]
     fn runtime_structured_utility_prompt_is_provider_policy() {
         let structured_claude = provider_run("claude", "claude");
+        let headless_claude = provider_run("claude", "claude-headless");
         let native_claude = provider_run_with_client_interface(
             "claude",
             "claude",
@@ -815,6 +818,9 @@ mod tests {
 
         assert!(provider_run_uses_runtime_structured_utility_prompt(
             &structured_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &headless_claude
         ));
         assert!(!provider_run_uses_runtime_structured_utility_prompt(
             &native_claude

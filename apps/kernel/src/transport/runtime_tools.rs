@@ -4,6 +4,7 @@ use serde_json::Value;
 mod agent_events;
 mod agent_messaging_tools;
 mod agent_peek_tools;
+mod agent_run_tool;
 mod credential_tools;
 mod extension_tools;
 mod jobs;
@@ -17,9 +18,12 @@ mod terminal_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
-pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};
+pub(crate) use agent_events::{
+    agent_event_tool_specs, canonical_agent_event_tool_name, missing_agent_event_arguments,
+};
 pub use agent_messaging_tools::*;
 pub use agent_peek_tools::*;
+pub use agent_run_tool::*;
 pub use credential_tools::*;
 pub use extension_tools::*;
 pub use meta_tool_args::*;
@@ -253,5 +257,7 @@ pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runti
 
 mod notification_tools;
 pub use notification_tools::{
-    notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
+    is_notification_tool, notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE,
+    NOTIFICATION_UNSUBSCRIBE, NOTIFY_PERSON, WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN,
+    WATCHER_REMOVE, WATCHER_STATUS,
 };

@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
+    pub(super) fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         if config.kernel_runtime_role != crate::config::KernelRuntimeRole::General
             || config.daemon_id.starts_with("slice:")
@@ -532,12 +532,10 @@ impl KernelRuntimeState {
                                 return Err(store::error("notification target changed"));
                             }
                         }
-                        match self.owned.durable_state_store.notify(
-                            NotificationOperation::Accept {
-                                subscription: sub,
-                                envelope,
-                            },
-                        )? {
+                        match self.owned.notify_traced(NotificationOperation::Accept {
+                            subscription: sub,
+                            envelope,
+                        })? {
                             NotificationOutcome::Ack(ack) => {
                                 Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
                             }
@@ -707,7 +705,7 @@ mod tests {
         runtime
             .owned
             .notification_inventory_projection
-            .update(vec![], vec![presence]);
+            .update(Default::default(), vec![presence]);
     }
 
     fn peer(

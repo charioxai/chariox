@@ -55,6 +55,11 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "charioxmoveartifact":
     case "moveartifact":
       return `${verb("Moved", "Moving")} ${toolTitleShort(path) ?? "a file"}`
+    case "charioxnotifyperson":
+    case "notifyperson": {
+      const title = toolTitleString(input, "title")
+      return title ? `${verb("Notified you", "Notifying you")}: ${title}` : verb("Notified you", "Notifying you")
+    }
     case "charioxvisualshow":
     case "visualshow":
     case "charioxcharioxvisualshow":

@@ -372,8 +372,8 @@ try {
   }
   const selection={target:{relayRealmId:realm,machineId:target.identity.machineId,kernelId:target.identity.kernelId,
     relayPublicKey:presences.get(target.identity.kernelId).metadata.relay_public_key,keyThumbprint:target.identity.publicKeyThumbprint},
-    contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:kernelOnly?{kind:'empty'}:{kind:'source_project',projectId:session.project_id,
-      repositories:[{role:'primary',workspaceId:session.workspace_id,worktreeId:null}]}}}
+    contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:kernelOnly?{kind:'empty'}:{kind:'source_projects',projects:[{projectId:session.project_id,
+      repositories:[{role:'primary',workspaceId:session.workspace_id,worktreeId:null}]}]}}}
   const selectionPath=path.join(root,'selection.json');await writeFile(selectionPath,JSON.stringify(selection))
   async function cli(name,kernel,args) {
     const result=await run(name,path.join(binaryDir,'chariox-cli'),['context',...args,'--kernel-url',kernel.url],kernel.env)
@@ -468,7 +468,7 @@ try {
       assert(decided>0&&decided<=32,`MP-08 offered a bounded set of ${ignoredFiles} ignored files, got ${decided}`)
       steps.push({name:'ignored-inventory-bounded-prefix-decided-by-real-codex',mpItems:['MP-08','MP-10','MP-11'],ignoredFiles,decided,unreviewedOffered,model:'gpt-6-luna low'})
       // Nothing drops silently: the unreviewed files stay behind unless the owner brought them all.
-      const imported=launch.development.repositories[0].workspacePath
+      const imported=launch.development.projects[0].repositories[0].workspacePath
       let arrived=0
       for(const part of await readdir(path.join(imported,'scratch-out')).catch(()=>[]))arrived+=(await readdir(path.join(imported,'scratch-out',part))).length
       if(bringUnreviewed) {
@@ -479,7 +479,7 @@ try {
       steps.push({name:'ignored-files-arrival',mpItems:['MP-08','MP-10','MP-11'],bringUnreviewed,arrived})
     }
     if(projectReview) {
-      const imported=launch.development.repositories[0].workspacePath
+      const imported=launch.development.projects[0].repositories[0].workspacePath
       assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)
       assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
     }
@@ -500,12 +500,12 @@ try {
       const repeated=await copy('05-owner-repeat')
       assert.notEqual(repeated.contextId,approved.contextId);assert.equal(repeated.phase,'completed',JSON.stringify(repeated));assert(repeated.receipt)
       const again=(await cli('06-owner-repeat-launch',target,['launch-target',repeated.contextId,repeated.planDigest])).ManagedContextLaunchTarget.target
-      assert.notEqual(again.development.projectId,launch.development.projectId)
-      const repeatedWorkspace=again.development.repositories[0].workspacePath
-      assert.notEqual(repeatedWorkspace,launch.development.repositories[0].workspacePath)
+      assert.notEqual(again.development.projects[0].projectId,launch.development.projects[0].projectId)
+      const repeatedWorkspace=again.development.projects[0].repositories[0].workspacePath
+      assert.notEqual(repeatedWorkspace,launch.development.projects[0].repositories[0].workspacePath)
       assert.equal(await readFile(path.join(repeatedWorkspace,'bootstrap.sh'),'utf8'),ordinary)
-      assert.equal(await readFile(path.join(launch.development.repositories[0].workspacePath,'bootstrap.sh'),'utf8'),ordinary)
-      steps.push({name:'owner-repeat-copy-adds-distinct-target-project',mpItems:['MP-07','MP-08','MP-10'],first:launch.development.projectId,repeated:again.development.projectId})
+      assert.equal(await readFile(path.join(launch.development.projects[0].repositories[0].workspacePath,'bootstrap.sh'),'utf8'),ordinary)
+      steps.push({name:'owner-repeat-copy-adds-distinct-target-project',mpItems:['MP-07','MP-08','MP-10'],first:launch.development.projects[0].projectId,repeated:again.development.projects[0].projectId})
     }
   } else if(vaultTransfer) {
     const cancelled=await copy('02-vault-cancel',false,true)
@@ -514,7 +514,7 @@ try {
     const approved=await copy('03-vault-approved')
     assert.equal(approved.phase,'completed');assert(approved.receipt)
     const launch=(await cli('04-vault-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
-    const imported=launch.development.repositories[0].workspacePath
+    const imported=launch.development.projects[0].repositories[0].workspacePath
     const file=duplicateJson?'settings.json':'bootstrap.ps1'
     const expected=scenario.endsWith('-history')?(duplicateJson?Buffer.from('{}'):safeScript):(duplicateJson?duplicateBytes:canary)
     assert((await readFile(path.join(imported,file))).equals(expected),'MP-11 Vault restored exact workspace bytes')
@@ -539,7 +539,7 @@ try {
   // MP-08/MP-10: inject on the first copy into a fresh target.
   const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
   const launch=(await cli('03-target-launch',target,['launch-target',broken.contextId,broken.planDigest])).ManagedContextLaunchTarget.target
-  const imported=launch.development.repositories[0].workspacePath
+  const imported=launch.development.projects[0].repositories[0].workspacePath
   assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)
   assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
   await writeFile(path.join(evidence,'03-imported-files.json'),JSON.stringify({bootstrapSha256:createHash('sha256').update(ordinary).digest('hex'),overlay:true,launch},null,2))

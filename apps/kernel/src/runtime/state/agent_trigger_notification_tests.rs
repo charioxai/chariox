@@ -11,6 +11,15 @@ use crate::session::{
     WorkflowRun, WorkflowRunStatus,
 };
 
+/// A direct admission under a subscription nobody paused.
+fn unpaused() -> super::agent_trigger_notification::NotificationHold<'static> {
+    super::agent_trigger_notification::NotificationHold {
+        subscription_id: "unpaused",
+        occurrence_id: "unpaused",
+        title: String::new(),
+    }
+}
+
 struct Rig {
     _root: crate::test_support::TestWorktree,
     runtime: KernelRuntimeState,
@@ -152,6 +161,8 @@ impl Rig {
                 source: AgentTriggerNotificationSource::Workflow {
                     source_id: source_id.into(),
                 },
+                options: Vec::new(),
+                once: false,
             },
             busy_policy: None,
             prompt: Some("Triage what the pipeline reports".into()),
@@ -297,6 +308,7 @@ async fn a_notification_trigger_follows_the_availability_of_its_remote_source() 
                     name: "Studio pipeline".into(),
                     display_name: "Studio pipeline".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             })
             .unwrap();
@@ -768,6 +780,8 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
         .runtime
@@ -1071,13 +1085,20 @@ async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
             trigger.id(),
             "wf_receipt_retry",
             payload.clone(),
+            unpaused(),
         )
         .await
         .unwrap()
         .unwrap();
     let second = rig
         .runtime
-        .queue_agent_notification_input(&rig.session_id, trigger.id(), "wf_receipt_retry", payload)
+        .queue_agent_notification_input(
+            &rig.session_id,
+            trigger.id(),
+            "wf_receipt_retry",
+            payload,
+            unpaused(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -1157,6 +1178,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1399,6 +1422,8 @@ async fn guest_app_automation_listing_and_removal_keep_target_ownership() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     rig.runtime
         .create_agent_trigger(create, "local")
@@ -1475,6 +1500,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1693,8 +1720,7 @@ async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association
             &rig.session_id,
             trigger.id(),
             &receipt.receipt_id,
-            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}),
-        )
+            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}), unpaused())
         .await
         .unwrap()
         .unwrap();
@@ -1783,6 +1809,8 @@ async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated {
         trigger: available, ..
@@ -2222,7 +2250,7 @@ async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
             let trigger = rig.app_trigger(&catalog).await;
             let emitted = rig.emit_app(catalog.clone(), &trigger, "general-steer");
             let queued = if late_association {
-                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), &emitted.receipt_id, serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}})).await.unwrap().unwrap()
+                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), &emitted.receipt_id, serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}}), unpaused()).await.unwrap().unwrap()
             } else {
                 rig.runtime
                     .route_app_agent_installation("local", catalog.clone())
@@ -2397,6 +2425,7 @@ impl Rig {
                 subscription.trigger_id.as_deref().unwrap(),
                 &receipt,
                 serde_json::to_value(&envelope).unwrap(),
+                unpaused(),
             )
             .await
             .unwrap()
@@ -2422,8 +2451,7 @@ impl Rig {
                 &self.session_id,
                 trigger.id(),
                 &receipt.receipt_id,
-                serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"unsettled"}}),
-            )
+                serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"unsettled"}}), unpaused())
             .await
             .unwrap()
             .expect("the App notification prompt is admitted");
@@ -3252,3 +3280,9 @@ async fn the_workflow_actor_publishes_the_trigger_availability_its_command_chang
         "the published projection still shows the trigger available"
     );
 }
+
+#[path = "agent_trigger_notification_options_tests.rs"]
+mod options;
+
+#[path = "notification_subscriptions_tests.rs"]
+mod subscriptions;

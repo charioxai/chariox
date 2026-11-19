@@ -1,19 +1,14 @@
 use crate::error::DaemonError;
 use crate::local::{
-    CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
-    CreateWorkspaceDirectoryRequest, CreateWorkspacePullRequestRequest,
-    CreateWorkspaceWorktreeRequest, DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PushWorkspaceBranchRequest,
-    SearchWorkspaceDirectoriesRequest,
+    CommitWorkspaceChangesRequest, CreateWorkspaceDirectoryRequest, CreateWorkspaceWorktreeRequest,
+    DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
+    ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, SearchWorkspaceDirectoriesRequest,
 };
 use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::room_list_projection::infer_room_list_launch_target;
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::workspace_git_actions::{
-    commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
-    push_workspace_branch,
-};
+use crate::runtime::workspace_git_actions::commit_workspace_changes;
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
 use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
@@ -43,9 +38,6 @@ pub(crate) async fn execute_workspace_command_request(
             execute_delete_workspace_worktree_request(request, session_projection, runtime_state)
                 .await
         }
-        LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
-            execute_create_workspace_pull_request_request(request)
-        }
         LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
             execute_get_workspace_git_overview_request(request)
         }
@@ -57,12 +49,6 @@ pub(crate) async fn execute_workspace_command_request(
         }
         LocalDaemonRequest::CommitWorkspaceChanges(request) => {
             execute_commit_workspace_changes_request(request)
-        }
-        LocalDaemonRequest::PushWorkspaceBranch(request) => {
-            execute_push_workspace_branch_request(request)
-        }
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(request) => {
-            execute_commit_and_push_workspace_changes_request(request)
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "workspace request",
@@ -111,6 +97,9 @@ pub(crate) fn execute_list_workspace_worktrees_request(
             .map(|target| target.worktree_id.as_str()),
     )?;
     Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
+        workspace_empty: crate::runtime::workspace_git_common::workspace_is_empty(
+            &request.workspace_id,
+        ),
         workspace_id: request.workspace_id,
         worktrees,
     })
@@ -166,20 +155,6 @@ pub(crate) async fn execute_delete_workspace_worktree_request(
     })
 }
 
-pub(crate) fn execute_create_workspace_pull_request_request(
-    request: CreateWorkspacePullRequestRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let pull_request = create_workspace_pull_request(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.title.as_deref(),
-        request.body.as_deref(),
-        request.base_ref.as_deref(),
-        request.draft,
-    )?;
-    Ok(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-}
-
 pub(crate) fn execute_get_workspace_git_overview_request(
     request: GetWorkspaceGitOverviewRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -223,29 +198,49 @@ pub(crate) fn execute_commit_workspace_changes_request(
     let result = commit_workspace_changes(
         &request.workspace_id,
         &request.worktree_id,
+        &request.files,
         &request.message,
-    )?;
+        request.branch.as_deref(),
+        None,
+    )?
+    .result;
     Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
 }
 
-pub(crate) fn execute_push_workspace_branch_request(
-    request: PushWorkspaceBranchRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = push_workspace_branch(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.force_with_lease,
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
-}
+#[cfg(test)]
+mod tests {
+    use super::execute_list_workspace_worktrees_request;
+    use crate::local::{ListWorkspaceWorktreesRequest, LocalDaemonResponse};
 
-pub(crate) fn execute_commit_and_push_workspace_changes_request(
-    request: CommitAndPushWorkspaceChangesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = commit_and_push_workspace_changes(
-        &request.workspace_id,
-        &request.worktree_id,
-        &request.message,
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceGitActionCompleted { result })
+    fn workspace_empty(path: &std::path::Path) -> bool {
+        let reply = execute_list_workspace_worktrees_request(ListWorkspaceWorktreesRequest {
+            workspace_id: path.display().to_string(),
+        })
+        .expect("worktrees listed");
+        match reply {
+            LocalDaemonResponse::WorkspaceWorktreesListed {
+                workspace_empty, ..
+            } => workspace_empty,
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_listing_says_whether_the_workspace_is_empty() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-workspace-empty-{}", std::process::id()));
+        let empty = root.join("empty");
+        let filled = root.join("filled");
+        let missing = root.join("missing");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&filled).unwrap();
+        std::fs::write(filled.join("README.md"), "x").unwrap();
+        assert!(workspace_empty(&empty));
+        assert!(!workspace_empty(&filled));
+        assert!(
+            !workspace_empty(&missing),
+            "a folder that does not exist is not empty"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

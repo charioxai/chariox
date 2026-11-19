@@ -3,6 +3,7 @@ import type {
   PasskeyPrompt,
   PasskeyPromptClosure,
   ProviderAccountSummary,
+  RemoteMachineKernel,
   SliceRecord,
   RoomListSessionSummary,
   WorkflowDesignOpForwarded,
@@ -115,12 +116,18 @@ export type KernelEvent =
       machine_id: string
       machine_alias?: string | null
       display_name: string
-      trust_status: "approved" | "pending" | "forgotten"
-      online: boolean
+      trust_status: "approved" | "pending"
+      presence: "online" | "reconnecting"
       pending: boolean
       kernel_count: number
       available_providers?: string[]
       provider_accounts?: ProviderAccountSummary[]
+      kernels?: RemoteMachineKernel[]
+    }>
+    offline_machines: Array<{
+      machine_id: string
+      display_name: string
+      last_seen_ms: number
     }>
   }
   | {

@@ -650,6 +650,7 @@ fn d1_opaque_app_fixture(generator: &str) {
         name: "Reviewer".into(),
         exit_ordinal: 0,
         display_name: String::new(),
+        options: Vec::new(),
     };
     store
         .notify(NotificationOperation::Register(SourceAdmission {

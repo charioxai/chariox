@@ -78,6 +78,19 @@ impl VaultUseTarget {
         })
     }
 
+    /// The use in the words of the Vault window and its Activity.
+    pub(crate) fn summary(&self) -> String {
+        match self {
+            Self::Site { origin } | Self::Totp { origin } | Self::WebAuthn { origin, .. } => {
+                origin.clone()
+            }
+            Self::CommandEnvironment { name, origin } => format!("{name} for {origin}"),
+            Self::CommandStdin { origin } => format!("stdin for {origin}"),
+            Self::File { path } => path.clone(),
+            Self::AnySite => "any site".into(),
+        }
+    }
+
     /// Checks one exact use. Any site is never a requested or agent-declared use: only the
     /// owner's payment card binding names it (`VaultUseBinding::validate`).
     pub(crate) fn validate(&self) -> Result<(), DaemonError> {

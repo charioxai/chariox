@@ -389,7 +389,7 @@ async fn environment_tools_use_the_authenticated_agent_checkout() {
         "check must inspect the agent files"
     );
     runtime.owned.notification_inventory_projection.update(
-        vec![],
+        Default::default(),
         vec![chariox_relay::protocol::RelayKernelPresence {
             kernel_id: "source-kernel".into(),
             machine_id: "source-machine".into(),
@@ -403,6 +403,7 @@ async fn environment_tools_use_the_authenticated_agent_checkout() {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "00".repeat(32),
+            local_protocol: None,
         }],
     );
     let update = runtime

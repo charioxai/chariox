@@ -31,16 +31,16 @@ async fn stalled_connections_from_one_address_do_not_delay_a_kernel_registration
         );
     }
 
-    let (mut socket, _) = timeout(
-        Duration::from_secs(2),
-        connect_async(format!("ws://{addr}")),
-    )
-    .await
-    .expect("the kernel handshake completes while the storm is stalled")
-    .expect("kernel connects");
-    let register = RelayEnvelope::DaemonRegister {
-        registration: test_registration_with_token("daemon-1", "machine-1", "Linux", 1, "secret"),
-    };
+    let url = format!("ws://{addr}");
+    let (mut socket, handshake) = timeout(Duration::from_secs(2), connect_async(url.as_str()))
+        .await
+        .expect("the kernel handshake completes while the storm is stalled")
+        .expect("kernel connects");
+    let register = signed_register(
+        &url,
+        &handshake,
+        test_registration_with_token("daemon-1", "machine-1", "Linux", 1, "secret"),
+    );
     socket
         .send(Message::Text(
             serde_json::to_string(&register).unwrap().into(),

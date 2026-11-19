@@ -127,6 +127,9 @@ mod machine_acquisition;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
+mod slice_home_pin;
+pub(super) use slice_home_pin::provisioned_slice_home;
+mod provider_login_vault;
 mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -136,6 +139,7 @@ mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
 mod vault_command;
+pub(crate) use vault_command::HomeVaultCaptureAnswer;
 mod vault_generate;
 mod vault_use;
 mod visual;
@@ -217,6 +221,7 @@ mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_setup_git;
 mod room_setup_publish;
 mod room_setup_runtime;
 mod room_shared_display;
@@ -392,6 +397,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    /// The watcher runs of this kernel life.
+    watcher_runs: Arc<watchers::WatcherRuns>,
     managed_activity_transitions:
         managed_activity_persistence::ManagedActivityTransitionState,
     // Serializes local activity-bearing mutations with their durable observation. Callers must
@@ -426,6 +433,7 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -468,6 +476,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    agent_run_waiters: agent_run_waiters::AgentRunWaiters,
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
@@ -582,12 +591,16 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod notification_subscriptions;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod usage_limit_stop_transitions;
 mod wake_driver;
+mod watchers;
+#[cfg(test)]
+mod watchers_tests;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -620,6 +633,7 @@ mod active_prompt_steering;
 mod external_command_authority;
 mod gateway_requester;
 mod project_runtime_state;
+pub(crate) use project_runtime_state::{ManagedContextRegistrationFailure, RetainedProjects};
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
@@ -723,6 +737,7 @@ mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
+mod kernel_browser_favicons;
 mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
@@ -757,6 +772,8 @@ mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+#[cfg(test)]
+mod vault_leased_run_tests;
 
 mod capability_grant_runtime;
 mod workflow;
@@ -1300,6 +1317,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                watcher_runs: Default::default(),
                 managed_activity_transitions,
                 managed_activity_mutation_lock,
                 managed_kernel_quiescence,
@@ -1324,6 +1342,7 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
@@ -1366,6 +1385,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                agent_run_waiters: Default::default(),
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
@@ -1718,6 +1738,7 @@ mod agent_goal_migration;
 mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_inline;
 mod agent_inbox_leased_steer;
 mod agent_inbox_sender;
 mod agent_inbox_wake_text;
@@ -1729,7 +1750,13 @@ mod agent_lifecycle_runtime;
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_queued_messages;
+mod agent_run;
+#[cfg(test)]
+mod agent_run_test_support;
+mod agent_run_waiters;
 mod agent_subtree_cascade;
+pub(crate) use agent_run::WorkerCaller;
+pub(crate) use agent_run_waiters::WorkerEnd;
 mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;
@@ -1772,12 +1799,15 @@ mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
 #[cfg(test)]
+mod lifecycle_sweep_load_tests;
+#[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
 mod pump_stall_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;

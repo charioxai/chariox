@@ -376,9 +376,22 @@ impl BrowserControllerProcessStdioBackend {
         );
         // L3: native workers this controller spawns hand whole frames straight to the pump.
         let direct_frames = match &display_packets {
-            // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
-            Some(packets) => display_frames::DirectFrames::listen(packets.clone()).ok(),
-            None => None,
+            // Linux only (admission reads the peer's credentials). Without a channel Node
+            // publishes every frame, slower; the log says why.
+            Some(packets) if cfg!(target_os = "linux") => {
+                match display_frames::DirectFrames::listen(packets.clone()) {
+                    Ok(frames) => Some(frames),
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.browser_controller",
+                            "native frame channel unavailable; Node publishes every frame",
+                            serde_json::json!({ "error": error }),
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
         };
         if let Some(frames) = &direct_frames {
             command.env("CHARIOX_BROWSER_DISPLAY_FRAMES", frames.path());
@@ -812,7 +825,17 @@ impl BrowserControllerProcessStdioBackend {
             .try_wait()
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
         drop(child);
-        if status.is_some() {
+        if let Some(status) = status {
+            // A controller killed by a signal (the OOM killer) writes no error line of its own.
+            crate::logging::warn_with_fields(
+                "daemon.browser_controller",
+                "browser controller exited on its own",
+                serde_json::json!({
+                    "process_id": process_id,
+                    "code": status.code(),
+                    "signal": std::os::unix::process::ExitStatusExt::signal(&status),
+                }),
+            );
             // MD-2: reparented descendants must match identities recorded while owned.
             if self.host {
                 process.owned_group.signal();
@@ -3102,6 +3125,54 @@ done
         assert_eq!(restarted.runtime_generation, 2);
         assert_eq!(restarted.restart_count, 1);
         supervisor.stop().expect("restarted controller stops");
+    }
+
+    #[test]
+    fn a_controller_that_dies_on_its_own_logs_its_exit_code_or_signal() {
+        let logs = crate::logging::capture::start();
+        let exit_after_health = "#!/bin/sh\nIFS= read -r request\nid=${request#*:}\nid=${id%%,*}\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\"\nIFS= read -r request\nexit 3\n";
+        for (script, kill, expected) in [
+            (exit_after_health, false, ["\"code\":3", "\"signal\":null"]),
+            (
+                responsive_controller_script(),
+                true,
+                ["\"code\":null", "\"signal\":9"],
+            ),
+        ] {
+            let tool = TestTool::new(script);
+            let mut backend = BrowserControllerProcessStdioBackend::new(
+                tool.path(),
+                Vec::new(),
+                HEALTHY_TEST_CONTROLLER_TIMEOUT,
+            );
+            let process_id = backend
+                .start()
+                .expect("controller starts")
+                .process_id
+                .expect("process id");
+            if kill {
+                assert_eq!(unsafe { libc::kill(process_id as i32, libc::SIGKILL) }, 0);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while backend.health().map(|health| health.state)
+                != Ok(BrowserControllerProcessState::Unhealthy)
+            {
+                assert!(std::time::Instant::now() < deadline, "the exit is seen");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let exited = logs
+                .records()
+                .into_iter()
+                .find(|record| {
+                    record.contains("browser controller exited on its own")
+                        && record.contains(&format!("\"process_id\":{process_id}"))
+                })
+                .expect("the exit is logged");
+            assert!(
+                expected.iter().all(|field| exited.contains(field)),
+                "{exited}"
+            );
+        }
     }
 
     #[test]

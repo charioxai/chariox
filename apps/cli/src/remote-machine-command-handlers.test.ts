@@ -121,8 +121,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
     forgetRemoteMachine: async (machineRef) => ({
       machine_id: machineRef,
       display_name: "New Name",
-      trust_status: "forgotten",
-      online: false,
     }),
     listRemoteMachineKernels: async () => [{
       kernel_id: "kernel-2",

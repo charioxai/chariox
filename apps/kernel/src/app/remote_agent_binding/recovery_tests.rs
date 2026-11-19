@@ -135,6 +135,7 @@ impl Fixture {
                 leased_agent_count: if index == 0 { 8 } else { 0 },
                 local_session_count: 0,
                 public_key: worker_config.relay_public_key.clone(),
+                local_protocol: None,
             };
             let worker = Arc::new(Mutex::new(DaemonApp::bootstrap(worker_config).unwrap()));
             let state = worker.lock().await.relay_client_state();
@@ -225,7 +226,7 @@ impl Fixture {
             .expect("worker should register");
         }
         home.remote_relay_inventory_projection_store()
-            .update(Vec::new(), presences.clone());
+            .update(Default::default(), presences.clone());
         let binding = RemoteAgentBinding {
             worker_kernel_id: presences[0].kernel_id.clone(),
             worker_machine_id: presences[0].machine_id.clone(),
@@ -407,7 +408,7 @@ async fn slice_recovery_off_lock_unavailable_worker_cannot_fail_over_to_other_ro
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), presences);
+        .update(Default::default(), presences);
     let plan = fixture
         .home
         .lock()
@@ -430,7 +431,7 @@ async fn slice_recovery_synchronous_unavailable_worker_cannot_fail_over_to_other
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), presences);
+        .update(Default::default(), presences);
     assert!(fixture
         .home
         .lock()
@@ -620,7 +621,7 @@ async fn spawn_target_accepts_the_machine_alias_the_person_sees() {
     let mut presence = fixture.presences[1].clone();
     presence.machine_alias = Some("hkb-kernel".into());
     home.remote_relay_inventory_projection_store()
-        .update(Vec::new(), vec![presence.clone()]);
+        .update(Default::default(), vec![presence.clone()]);
     let selected = home
         .select_remote_kernel_by_ref_with_config(
             "hkb-kernel",
@@ -636,7 +637,7 @@ async fn spawn_target_asks_the_relay_when_the_inventory_has_not_synced() {
     let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let home = fixture.home.lock().await;
     home.remote_relay_inventory_projection_store()
-        .update(Vec::new(), Vec::new());
+        .update(Default::default(), Vec::new());
     let wanted = &fixture.presences[1];
     let live = crate::transport::relay_discovery::list_live_kernels_for_machine(
         home.config(),
@@ -659,7 +660,7 @@ async fn spawn_target_refusal_names_what_the_relay_lists_when_the_inventory_is_e
     let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let home = fixture.home.lock().await;
     home.remote_relay_inventory_projection_store()
-        .update(Vec::new(), Vec::new());
+        .update(Default::default(), Vec::new());
     let live = crate::transport::relay_discovery::list_live_machines(home.config())
         .await
         .unwrap();
@@ -692,7 +693,9 @@ async fn refusing_relay() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         while let Ok((stream, _)) = listener.accept().await {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
                 let _ = socket.next().await;
                 let refusal = chariox_relay::protocol::RelayEnvelope::Close {
                     reason: "relay token does not allow requested action".into(),
@@ -747,7 +750,7 @@ async fn spawn_target_refusal_names_the_usable_kernels() {
     let mut presence = fixture.presences[1].clone();
     presence.machine_alias = Some("hkb-kernel".into());
     home.remote_relay_inventory_projection_store()
-        .update(Vec::new(), vec![presence.clone()]);
+        .update(Default::default(), vec![presence.clone()]);
     let error = home
         .select_remote_kernel_by_ref_with_config(
             "no-such-machine",

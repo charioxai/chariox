@@ -40,8 +40,10 @@ mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
+mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
@@ -63,6 +65,7 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
+mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -97,8 +100,10 @@ pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -120,6 +125,7 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
+pub use watcher::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -566,5 +572,26 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
+/// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
+/// snoozed and muted by the kernel (`SetInboxCardState`, `SetInboxMute`), with a card for a failed or waiting run
+/// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
+/// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
+/// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`; a
+/// watcher is a notification source (docs/PROTOCOL.md, "A watcher as a notification source"); every agent has
+/// the kernel browser with no card (task `owner_action` is only `"question"`, grants carry no `prompt_id`); each
+/// Browser Tab names its icon by `favicon_hash`: a `state` read carries no icon PNG, and a `state_wait` carries
+/// one only when its `known_favicons` lacks the hash; `SendProviderLoginVaultEntry` →
+/// `ProviderLoginVaultEntrySent`: a running API-key provider login takes a Vault entry by handle and the kernel
+/// types its value into the login; an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions` lists the
+/// person's open cards with why the person keeps one (`person_only`); `OwnerVault` `update` changes an
+/// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
+/// managed context copy carries several source Projects (`source_projects`); a remote machine has a `presence` (`online`, `reconnecting` for ten
+/// minutes after its connection drops), a machine gone longer is listed in the inventory's `offline_machines`, and
+/// `ForgetRemoteMachine` (Remove) deletes it from the kernel's machine registry; a remote kernel, and each
+/// listed machine's `kernels`, carry the `local_protocol` the kernel registered with at the relay (absent for a
+/// kernel older than the field).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

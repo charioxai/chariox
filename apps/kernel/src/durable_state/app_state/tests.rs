@@ -420,7 +420,11 @@ fn package_build_ui(
                 events.push(json!({"name":"received","direction":"incoming",
                         "schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,
                         "properties":{"text":{"type":"string"},"source":{},"occurred_at":{"type":"string"},
-                            "metadata":{},"artifacts":{"type":"array"},"reply_context":{}}}}));
+                            "metadata":{},"artifacts":{"type":"array"},"reply_context":{},
+                            "pull_request":{"type":"integer"},"repository":{"type":"string"}},
+                        "x-chariox-options":[
+                            {"name":"pr","label":"PR number","type":"number","field":"pull_request"},
+                            {"name":"repo","label":"Repository","type":"text","field":"repository"}]}}));
             }
             serde_json::to_vec(&json!({ "events": events })).unwrap()
         }),
