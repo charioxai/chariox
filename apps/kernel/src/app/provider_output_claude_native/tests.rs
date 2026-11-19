@@ -4498,6 +4498,7 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert!(context.len() < 48_000, "{}", context.len());
 }
 
+mod compaction;
 mod workspace_scope;
 // MP-08 / MP-10 / MP-11: native PTY dispatch must use the same validated
 // skill bridge as structured runs, including rejection before any PTY write.
