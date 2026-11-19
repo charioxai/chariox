@@ -18,6 +18,7 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+mod awaiting_rows;
 mod cancel_fence;
 mod context_delivery;
 mod hidden_context;
@@ -1310,6 +1311,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     ),
                 };
                 if let Some(merge_key) = live_row {
+                    if let Some(context_file) =
+                        provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                    {
+                        awaiting_rows::note_replaced(context_file, &merge_key);
+                    }
                     fanout.fan_out_live_reply_replacement(
                         session_id,
                         provider_run_id,
@@ -1780,8 +1786,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
 
     /// The live row a transcript block replaces when the reader no longer
     /// knows it: a kernel restart empties the reader, while history keeps the
-    /// row streamed for the prompt, still the terminal's plain text. Only the
-    /// prompt's newest live row is taken, and only when the block continues it.
+    /// row streamed for the prompt, still the terminal's plain text. Only a row
+    /// still waiting for its block is taken (a replaced one keeps its key but
+    /// is finished), the prompt's newest, and only when the block continues it.
     fn live_row_streamed_before_a_restart(
         &self,
         session_id: &str,
@@ -1789,24 +1796,30 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         prompt_id: Option<&str>,
         text: &str,
     ) -> Option<String> {
-        let prefix = format!(
-            "claude-transcript:{}:assistant:live-{}-",
-            provider_run.id(),
-            prompt_id?
-        );
+        let context_file = provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
+        let merge_key = awaiting_rows::newest_waiting(
+            context_file,
+            &format!(
+                "claude-transcript:{}:assistant:live-{}-",
+                provider_run.id(),
+                prompt_id?
+            ),
+        )?;
         let row = self
             .app
             .operational_history_store()
             .latest_transcript_by_merge_key_prefix(
                 session_id,
                 provider_run.agent_instance_id()?,
-                &prefix,
+                &merge_key,
             )
             .ok()??
             .to_session_history_entry()?;
-        (row.text != text && live_reply::drawn_from(&row.text, text))
-            .then_some(row.merge_key)
-            .flatten()
+        (row.merge_key.as_deref() == Some(merge_key.as_str())
+            && live_reply::drawn_from(&row.text, text))
+        .then_some(merge_key)
     }
 
     /// Reads the terminal output of a headless run for the reply Claude is
@@ -1843,13 +1856,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let recipients = self.app.attachments.list_session_attachment_ids(session_id);
         let fanout = ProviderOutputFanout::new(self.app);
         for delta in deltas {
+            let merge_key = format!(
+                "claude-transcript:{provider_run_id}:{}",
+                delta.merge_key_suffix
+            );
+            if let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+            {
+                awaiting_rows::note_streaming(context_file, &merge_key);
+            }
             fanout.fan_out_live_reply(
                 session_id,
                 provider_run_id,
-                format!(
-                    "claude-transcript:{provider_run_id}:{}",
-                    delta.merge_key_suffix
-                ),
+                merge_key,
                 recipients.clone(),
                 &delta.text,
                 &delta.text_so_far,

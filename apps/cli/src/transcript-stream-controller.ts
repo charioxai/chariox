@@ -138,7 +138,8 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     const nextEntries = result.entries as TranscriptEntry[]
     const updatedEntry = findUpdatedEntry(nextEntries, result.updatedEntryId)
 
-    if (result.kind === "merged" && updatedEntry) {
+    // A replacement that folded a split row into one changed the rows, not one row's text.
+    if (result.kind === "merged" && updatedEntry && nextEntries.length === currentEntries.length) {
       deps.setEntries(nextEntries)
       deps.persistVisibleTranscriptEntries(nextEntries)
       deps.updateTranscriptEntry(updatedEntry.id, updatedEntry.text, updatedEntry.sourceText)

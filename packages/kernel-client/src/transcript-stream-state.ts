@@ -290,36 +290,33 @@ function mergeProviderChunk(
     mergeAdjacentUnkeyedRoles,
   } = options
 
+  if (mergeKey && metadata.replaces) {
+    return replaceKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
+  }
+
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
       // Text never folds back above a later tool row: it continues as a new
-      // entry after the tool, in output order. A replacement keeps its row's place.
-      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning") && !metadata.replaces) {
+      // entry after the tool, in output order.
+      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning")) {
         break
       }
       if (
         candidate?.role !== role
         || candidate.mergeKey !== mergeKey
-        // The merge key names one prompt's row, so a late replacement still finds it.
-        || !sameStreamingMergeIdentity(candidate, {
-          currentTurnId: metadata.replaces ? null : currentTurnId,
-          providerRunId,
-          metadata,
-        })
+        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId, metadata })
       ) {
         continue
       }
-      const kind = metadata.replaces
-        ? replaceMergedText(candidate, normalized, normalizedSource)
-        : applyMergedChunk(
-          candidate,
-          role,
-          normalized,
-          normalizedSource,
-          historyEntryIndex,
-          metadata.historySequence,
-        )
+      const kind = applyMergedChunk(
+        candidate,
+        role,
+        normalized,
+        normalizedSource,
+        historyEntryIndex,
+        metadata.historySequence,
+      )
       if (kind === "noop") {
         return { kind, entry: candidate }
       }
@@ -376,21 +373,47 @@ function sameStreamingMergeIdentity(
   return true
 }
 
-function replaceMergedText(
-  candidate: MutableTranscriptStreamEntry,
-  normalized: string,
-  normalizedSource: string | undefined,
-): "noop" | "merged" {
-  if (candidate.text === normalized && candidate.sourceText === normalizedSource) {
-    return "noop"
+/**
+ * The whole text of a keyed row: its first fragment takes it and the fragments
+ * a tool row split off are dropped. The merge key names one prompt's row, so a
+ * replacement that lands after later rows or in a later turn still finds it.
+ */
+function replaceKeyedRow(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string
+    metadata: TranscriptStreamMetadata
+    providerRunId: string | null | undefined
+  },
+): { readonly kind: "noop" | "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  const fragments = entries.flatMap((candidate, index) =>
+    candidate.role === options.role
+    && candidate.mergeKey === options.mergeKey
+    && sameStreamingMergeIdentity(candidate, { currentTurnId: null, providerRunId: options.providerRunId, metadata: options.metadata })
+      ? [index]
+      : [])
+  const [first, ...rest] = fragments
+  if (first === undefined) {
+    return null
   }
-  candidate.text = normalized
-  if (normalizedSource === undefined) {
-    delete candidate.sourceText
+  const row = entries[first]!
+  if (rest.length === 0 && row.text === options.normalized && row.sourceText === options.normalizedSource) {
+    return { kind: "noop", entry: row }
+  }
+  for (const index of rest.reverse()) {
+    entries.splice(index, 1)
+  }
+  row.text = options.normalized
+  if (options.normalizedSource === undefined) {
+    delete row.sourceText
   } else {
-    candidate.sourceText = normalizedSource
+    row.sourceText = options.normalizedSource
   }
-  return "merged"
+  applyStreamMetadata(row, options.metadata, { preserveExisting: true })
+  return { kind: "merged", entry: row }
 }
 
 function applyMergedChunk(

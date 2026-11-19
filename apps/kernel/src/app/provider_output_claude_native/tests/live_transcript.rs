@@ -760,3 +760,60 @@ fn a_reply_streamed_before_a_kernel_restart_is_replaced_not_shown_twice() {
     assert_eq!(turn.live_rows(), [reply], "one row, the transcript's");
     assert_eq!(turn.stored_replies(), [reply]);
 }
+
+#[test]
+fn a_reply_longer_than_one_live_record_is_replaced_whole() {
+    let mut turn = running_turn("streamed-long-reply");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● The long answer:",
+        "",
+        "  First paragraph of it.",
+        "",
+        "  Second paragraph.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let tail = "More of the **answer**, line after line.\n".repeat(1000);
+    let reply =
+        format!("The long answer:\n\nFirst paragraph of it.\n\nSecond paragraph.\n\n{tail}");
+    assert!(
+        reply.len()
+            > 2 * crate::provider_output_policy::output_bounds::MAX_PROVIDER_OUTPUT_RECORD_BYTES
+    );
+    turn.append_transcript(assistant_text("reply", &reply));
+    turn.pass();
+    assert_eq!(
+        turn.live_rows(),
+        [reply.as_str()],
+        "clients get the whole reply, not its first 16 KiB"
+    );
+}
+
+#[test]
+fn a_later_block_of_a_prompt_that_opens_like_an_adopted_one_keeps_its_own_row() {
+    let mut turn = running_turn("streamed-two-blocks");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Checked the files.",
+        "",
+        "  All of them pass.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let first = "Checked the files.\n\nAll of them pass.";
+    turn.append_transcript(assistant_text("first", first));
+    turn.pass();
+    // A second text block Claude never drew, opening like the first.
+    let second = "Checked the files.\n\nAll of them pass. The build is green too.";
+    turn.append_transcript(assistant_text("second", second));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [first, second], "two blocks, two rows");
+    assert_eq!(turn.stored_replies(), [first, second]);
+}

@@ -6,7 +6,7 @@ use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
 use crate::provider::ProviderProcessServiceStore;
 use crate::provider_output_policy::output_bounds::{
     bounded_terminal_output_bytes, should_log_provider_output_truncation,
-    terminal_output_delta_bytes,
+    terminal_output_delta_bytes, MAX_PROVIDER_OUTPUT_RECORD_BYTES,
 };
 use crate::provider_output_policy::tool_history::{
     bounded_history_entry, is_unread_output_history_entry,
@@ -248,7 +248,13 @@ impl ProviderOutputFanout {
             &merge_key,
             bytes,
         );
-        let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
+        // A replacement is a row's whole text: it goes out whole, in records
+        // of the bounded size (see `live_record_pieces`).
+        let bounded_bytes = if replaces {
+            delta_bytes.clone()
+        } else {
+            bounded_terminal_output_bytes(&kind, &delta_bytes)
+        };
         if bounded_bytes.len() < delta_bytes.len() {
             let kind_label = format!("{kind:?}");
             if let Some(suppressed_logs) = should_log_provider_output_truncation(
@@ -348,24 +354,36 @@ impl ProviderOutputFanout {
             }
         }
         let notify_trace = kind != TerminalOutputKind::ProviderTerminal;
-        let record = self
-            .terminal
-            .fan_out_outputs(vec![crate::terminal::TerminalOutputAppend {
+        let recipient_attachment_ids: std::sync::Arc<[String]> = recipient_attachment_ids.into();
+        let pieces = if replaces {
+            live_record_pieces(&bounded_bytes)
+        } else {
+            vec![bounded_bytes]
+        };
+        let outputs = pieces
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| crate::terminal::TerminalOutputAppend {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),
-                prompt_id: prompt_metadata.prompt_id,
+                prompt_id: prompt_metadata.prompt_id.clone(),
                 prompt_origin: prompt_metadata.prompt_origin,
-                source_attachment_id: prompt_metadata.source_attachment_id,
-                kind,
-                merge_key,
-                sequence,
-                recipient_attachment_ids: recipient_attachment_ids.into(),
-                bytes: bounded_bytes,
-                replaces,
-            }])
-            .pop()
-            .expect("one output yields one record");
+                source_attachment_id: prompt_metadata.source_attachment_id.clone(),
+                kind: kind.clone(),
+                merge_key: merge_key.clone(),
+                sequence: if index == 0 { sequence } else { None },
+                recipient_attachment_ids: recipient_attachment_ids.clone(),
+                bytes,
+                replaces: replaces && index == 0,
+            })
+            .collect();
+        let record = self
+            .terminal
+            .fan_out_outputs(outputs)
+            .into_iter()
+            .next()
+            .expect("an output yields a record");
         if notify_trace {
             self.notify_metaagent_trace_activity(session_id, agent_id);
         }
@@ -766,4 +784,22 @@ impl ProviderOutputFanout {
             }
         }
     }
+}
+
+/// A replacement's text in records of at most the bounded record size, cut
+/// between characters: the first record replaces the row, the others add to it
+/// in order, all in one batch, so a client ends with the whole text.
+fn live_record_pieces(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut pieces = Vec::new();
+    let mut rest = bytes;
+    while rest.len() > MAX_PROVIDER_OUTPUT_RECORD_BYTES {
+        let mut cut = MAX_PROVIDER_OUTPUT_RECORD_BYTES;
+        while cut > 0 && (rest[cut] & 0b1100_0000) == 0b1000_0000 {
+            cut -= 1;
+        }
+        pieces.push(rest[..cut].to_vec());
+        rest = &rest[cut..];
+    }
+    pieces.push(rest.to_vec());
+    pieces
 }
