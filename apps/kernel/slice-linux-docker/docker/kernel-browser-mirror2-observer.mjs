@@ -55,8 +55,10 @@ export function sanitizeMirrorCss(text, base, resource) {
   // (`a[href*="cookie" i]`, `:not([href^="#"])`) reads that one, a presence test still the href. Only a selector changes:
   // a `[href=` in a string, a comment, another attribute's value or a declaration (a style attribute has only those)
   // stays as the page wrote it, so a statement's `[href=` is rewritten once its `{` shows it was a selector.
-  if (/\[\s*href\s*[~|^$*]?=/i.test(out)) {
-    const value = /\[(\s*)href(?=\s*[~|^$*]?=)/iy, selectors = [];
+  // An element's src travels as a resource key, so a selector on its value (w3.org's `img[src*="logos/W3C"]`) reads
+  // `chariox-src` the same way.
+  if (/\[\s*(?:href|src)\s*[~|^$*]?=/i.test(out)) {
+    const value = /\[(\s*)(href|src)(?=\s*[~|^$*]?=)/iy, selectors = [];
     let pending = [];
     for (let i = 0; i < out.length; i++) {
       const c = out[i];
@@ -70,8 +72,8 @@ export function sanitizeMirrorCss(text, base, resource) {
     let rewritten = '', from = 0;
     for (const at of selectors) {
       value.lastIndex = at;
-      const [token, space] = value.exec(out);
-      rewritten += `${out.slice(from, at)}[${space}chariox-href`;
+      const [token, space, name] = value.exec(out);
+      rewritten += `${out.slice(from, at)}[${space}chariox-${name.toLowerCase()}`;
       from = at + token.length;
     }
     out = rewritten + out.slice(from);
@@ -140,7 +142,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const SHADOW_HOSTS = new Set('article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
-    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined chariox-href chariox-density'.split(' '));
+    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined chariox-href chariox-src chariox-density'.split(' '));
     // Attribute denylist (audit 2026-10-10): every other attribute travels. Names the UA renders or
     // exposes keep values up to 64 KB; any other value up to 1 KB. Credential-like names never travel.
     const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
@@ -220,22 +222,23 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
-    // A link's own href value travels (as `chariox-href`) only once a sheet of this document selects on it: the
-    // sanitizer's rewrite shows that, once per sheet it cleans. The links sent before then re-mark as href changes
-    // at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
-    let hrefValues = false, hrefStale = [];
+    // An element's own href or src value travels (as `chariox-href`, `chariox-src`) only once a sheet of this document
+    // selects on it: the sanitizer's rewrite shows that, once per sheet it cleans. The elements sent before then re-mark
+    // as changes of that value at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
+    const valueNames = new Set();
+    let valueStale = [];
     const sheetCss = (text, base, doc) => {
       const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
-      if (!hrefValues && /\[\s*chariox-href\s*[~|^$*]?=/i.test(out)) {
-        hrefValues = true;
-        for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute('href')) hrefStale.push(node);
-        if (hrefStale.length) wake();
+      for (const name of ['href', 'src']) if (!valueNames.has(name) && new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)) {
+        valueNames.add(name);
+        for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute(name)) valueStale.push([node, name === 'href' ? 'href' : 'chariox-src']);
+        if (valueStale.length) wake();
       }
       return out;
     };
-    const markHrefStale = () => {
-      for (const node of hrefStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add('href'); }
-      hrefStale = [];
+    const markValuesStale = () => {
+      for (const [node, name] of valueStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add(name); }
+      valueStale = [];
     };
     const sheetText = (sheet, base, depth = 0, clean = null, keep = null, rejectLossy = false) => {
       let out = '', chunk = '';
@@ -300,7 +303,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       };
       const matches = selector => {
         // A cross-origin sheet is pruned after the sanitizer: its href values and `:target` read as the page wrote them.
-        const plain = selector.replace(/\[(\s*)chariox-href(?=\s*[~|^$*]?=)/gi, '[$1href').replace(/\[chariox-target\]/g, '').replace(DYNAMIC, '');
+        const plain = selector.replace(/\[(\s*)chariox-(href|src)(?=\s*[~|^$*]?=)/gi, '[$1$2').replace(/\[chariox-target\]/g, '').replace(DYNAMIC, '');
         if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
         try { return split(plain, c => c === ',').some(member => used(member.trim())); } catch { return true; }
       };
@@ -596,8 +599,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
         // The value a stylesheet's href selector reads (see sanitizeMirrorCss), under the bounds of any other attribute.
         const own = node.getAttribute('href');
-        if (hrefValues && own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
+        if (valueNames.has('href') && own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
       }
+      const src = valueNames.has('src') ? node.getAttribute('src') : null;
+      if (src !== null && src.length <= 1024 && !/javascript:|url\s*\(/i.test(src)) attrs['chariox-src'] = src;
       if (html && node.localName === 'img') { const { density } = imageChoice(node); if (density !== 1) attrs['chariox-density'] = String(density); }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
       if (viewportHost(node)) attrs.style = `${attrs.style ? `${attrs.style};` : ''}position:fixed!important;inset:0 auto auto 0!important`;
@@ -985,7 +990,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const snapshot = (known = [], options = {}) => {
       retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null; viewerDensity = [1, 2].includes(options.density) ? options.density : 0;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
-      hrefStale = [];
+      valueStale = [];
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
       // local id range without walking the previous (possibly huge) document.
@@ -1085,7 +1090,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
       if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
-      markHrefStale();
+      markValuesStale();
       const urgent = records.length > 0 || Object.values(dirty).some(set => set.size > 0);
       if (!continuation) budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];
@@ -1131,9 +1136,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
             const keyed = node.namespaceURI === SVG && ['image', 'use'].includes(node.localName), key = keyed ? (node.localName === 'image' ? svgImageKey(node) : spriteKey(node)) : null;
             if (keyed) imageOp(node, id, ops, key);
             if (!key || node.localName === 'use') ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
-            if (hrefValues) ops.push({ op: 'attr', id, name: 'chariox-href', value: attrs['chariox-href'] ?? null });
+            if (valueNames.has('href')) ops.push({ op: 'attr', id, name: 'chariox-href', value: attrs['chariox-href'] ?? null });
             continue;
           }
+          if ((name === 'src' || name === 'chariox-src') && valueNames.has('src')) ops.push({ op: 'attr', id, name: 'chariox-src', value: attrs['chariox-src'] ?? null });
           if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
@@ -1574,7 +1580,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || hrefStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged

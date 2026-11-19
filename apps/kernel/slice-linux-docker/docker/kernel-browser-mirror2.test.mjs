@@ -108,6 +108,15 @@ test('MP-10: an href value selector reads chariox-href; strings, comments, other
   assert.equal(sanitizeMirrorCss('color: red; --x: [href=help]', 'https://site.example/', () => null), 'color: red; --x: [href=help]', 'a style attribute has no selector');
 });
 
+// w3.org (browserfidelity r12): an element's src travels as a resource key, so a selector on its value reads `chariox-src`.
+test('MP-10: a src value selector reads chariox-src; a presence test, strings, comments and declarations stay', () => {
+  const css = '.head img[src*="logos/W3C"] { width: 120px; } img[ SRC ^= "/c/" ], img[src$=".svg" i]:not([src*="red"]) { width: 9px; } img[src] { width: 3px; } iframe[srcdoc="x"] { color: red; } '
+    + '.a::after { content: "[src=x]"; } /* img[src*="y"] */ .c { --x: [src=help]; } img[data-src="x"] { color: red; } a[href*="x"] img[src="/e.png"] { color: blue; }';
+  assert.equal(sanitizeMirrorCss(css, 'https://site.example/', () => null),
+    '.head img[chariox-src*="logos/W3C"] { width: 120px; } img[ chariox-src ^= "/c/" ], img[chariox-src$=".svg" i]:not([chariox-src*="red"]) { width: 9px; } img[src] { width: 3px; } iframe[srcdoc="x"] { color: red; } '
+    + '.a::after { content: "[src=x]"; } /* img[src*="y"] */ .c { --x: [src=help]; } img[data-src="x"] { color: red; } a[chariox-href*="x"] img[chariox-src="/e.png"] { color: blue; }');
+});
+
 // Owner rule (2026-10-09): no value scanning in page CSS; only Vault-filled
 // plain text fields are masked (by node identity, in the observer).
 test('MP-11: executable CSS is invalidated; page CSS text is not value-scanned', () => {

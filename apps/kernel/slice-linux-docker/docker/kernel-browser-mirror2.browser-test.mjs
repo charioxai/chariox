@@ -1082,6 +1082,35 @@ test("MP-10: a sheet added after first paint that selects on an href value sends
   assert.equal(added?.attrs["chariox-href"], "/later", "MP-10: a link added afterwards carries its value");
 }));
 
+// w3.org (browserfidelity r12): the W3C logo is sized by `.head img[src*="logos/W3C"]`; the viewer's img src is a resource
+// key, so the page's own src value travels inert as `chariox-src` once a sheet selects on it, and follows a change.
+const srcValues = '<style>img{width:10px;height:10px} .head img[src*="logos/W3C"]{width:120px;height:120px}</style><div class="head"><img id="logo" src="/logos/W3C.svg"><img id="other" src="/x.svg"></div><iframe id="f" src="about:blank"></iframe><p id="x" chariox-src="/logos/W3C">x</p>';
+const srcOps = packet => (packet.ops ?? []).filter(op => op.op === "attr" && op.name === "chariox-src");
+test("MP-10: a selector on an element's src value reads the page's own src in the viewer (chariox-src), also after it changes", () => mirrored(srcValues, async ({ next, evaluate }) => {
+  const snapshot = await next(), byId = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row]));
+  assert.equal(byId.get("logo").attrs["chariox-src"], "/logos/W3C.svg", "MP-10: the logo carries its own src value");
+  assert.equal(byId.get("other").attrs["chariox-src"], "/x.svg");
+  assert.equal(byId.get("x").attrs["chariox-src"], undefined, "MP-10: a page's own chariox-src never travels");
+  assert.equal(byId.get("logo").attrs.src, undefined, "MP-10: the src itself still never travels");
+  await evaluate("document.getElementById('other').setAttribute('src','/logos/W3C-2.svg');true");
+  let op; for (let i = 0; i < 4 && !op; i++) op = srcOps(await next(2000)).find(op => op.id === byId.get("other").id);
+  assert.equal(op?.value, "/logos/W3C-2.svg", "MP-10: a changed src value reaches the viewer");
+}));
+test("MP-10: a page whose sheets never select on a src value sends no src value", () => mirrored('<style>img[src]{width:12px}</style><img id="a" src="/a.svg"><p id="t">t</p>', async ({ next, evaluate }) => {
+  const snapshot = await next();
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-src"] !== undefined), [], "MP-10: no element carries its src value");
+  await evaluate("document.getElementById('a').setAttribute('src','/b.svg');document.getElementById('t').textContent='u';true");
+  const later = []; for (let i = 0; i < 4 && !later.some(packet => packet.ops?.some(op => op.op === "text")); i++) later.push(await next(2000));
+  assert.deepEqual(later.flatMap(srcOps), [], "MP-10: a src change sends no src value either");
+}));
+test("MP-10: a sheet added after first paint that selects on a src value sends the images already shown their values", () => mirrored('<img id="a" src="/logos/W3C.svg"><img id="b" src="/b.svg">', async ({ next, evaluate }) => {
+  const snapshot = await next(), ids = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row.id]));
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-src"] !== undefined), []);
+  await evaluate(`document.head.append(Object.assign(document.createElement("style"),{textContent:'img[src*="W3C"]{width:120px}'}));true`);
+  const values = new Map(); for (let i = 0; i < 4 && values.size < 2; i++) for (const op of srcOps(await next(2000))) values.set(op.id, op.value);
+  assert.deepEqual(Object.fromEntries(values), { [ids.get("a")]: "/logos/W3C.svg", [ids.get("b")]: "/b.svg" }, "MP-10: every image already sent gets its src value");
+}));
+
 // Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
 const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
 test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
