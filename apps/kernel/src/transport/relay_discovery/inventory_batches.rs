@@ -84,6 +84,11 @@ fn merge(into: &mut RelayEnvelope, next: RelayEnvelope) -> Result<(), DaemonErro
                     }
                 }
                 existing.available_providers.sort();
+                for kernel in machine.update_needed_kernels {
+                    if !existing.update_needed_kernels.contains(&kernel) {
+                        existing.update_needed_kernels.push(kernel);
+                    }
+                }
             } else {
                 all.push(machine);
             }
@@ -167,6 +172,7 @@ mod tests {
                     organization_name: Some(organization.into()),
                     subscription_type: None,
                 }],
+                update_needed_kernels: Vec::new(),
             }]),
             kernels: None,
             kernel: None,

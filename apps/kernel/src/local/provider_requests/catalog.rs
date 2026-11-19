@@ -2380,6 +2380,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-a".to_string(),
@@ -2387,6 +2388,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-b".to_string(),
@@ -2394,6 +2396,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
         ];
 
@@ -2429,6 +2432,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote".to_string(),
@@ -2440,6 +2444,7 @@ exit 2
                     "dev-stub".to_string(),
                 ],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
         ];
 

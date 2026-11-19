@@ -374,6 +374,7 @@ async fn eighty_six_targets_use_bounded_metadata_grants() {
                             kernel_count: count,
                             available_providers: vec![],
                             provider_accounts: vec![],
+                            update_needed_kernels: Vec::new(),
                         }]),
                         kernels: None,
                         kernel: None,
