@@ -269,13 +269,14 @@ pub(crate) fn submit_claude_prompt(
     state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
-    // Claude folds a prompt written during its own turn into it; the turn now answers the prompt.
-    state.own_turn = false;
+    // A write does not end the notification turn Claude is still producing, or reset its stream.
     state.turn_watchdog.begin(Instant::now());
-    state.active_stream_message_id = None;
-    state.emitted_text_by_block.clear();
-    state.tool_transcript.clear();
-    state.completed_text_blocks.clear();
+    if !state.own_turn {
+        state.active_stream_message_id = None;
+        state.emitted_text_by_block.clear();
+        state.tool_transcript.clear();
+        state.completed_text_blocks.clear();
+    }
     Ok(())
 }
 
@@ -315,7 +316,12 @@ pub(crate) fn drain_claude_events(
                 apply_claude_message(run.id(), state, value, &mut batch);
                 // One batch holds at most one turn's end, and nothing of the turn after it, so
                 // the kernel settles each turn before it sees the next one start.
-                if batch.prompt_completed {
+                if batch.prompt_completed
+                    || matches!(
+                        batch.provider_own_turn,
+                        ProviderOwnTurnSignal::Ended | ProviderOwnTurnSignal::StartedAndEnded
+                    )
+                {
                     break;
                 }
             }

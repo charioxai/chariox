@@ -442,6 +442,16 @@ fn apply_result_message(
         batch.resolved_usage = Some(usage);
     }
     if !result_answers_active_prompt(state, value) {
+        // The notification result ends its turn even when a prompt is already queued in Claude.
+        // Keep that prompt active: only the result naming its uuid can complete it.
+        if state.own_turn {
+            batch.provider_own_turn = match batch.provider_own_turn {
+                ProviderOwnTurnSignal::Running => ProviderOwnTurnSignal::StartedAndEnded,
+                _ => ProviderOwnTurnSignal::Ended,
+            };
+            state.own_turn = false;
+            state.tool_transcript.clear();
+        }
         return;
     }
     let subtype = value

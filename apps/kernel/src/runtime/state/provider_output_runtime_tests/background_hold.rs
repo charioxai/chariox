@@ -1089,36 +1089,47 @@ fn message_answer(team: &Team, message_prompt: &str) -> String {
     .join("\n")
 }
 
-// Transition T5 / H4 (review 5971171601): the message's prompt is written into the notification
-// turn before it was adopted (Claude folds it in; the batch reports no own turn). The held task's
-// turn will not run as its own: it finishes now, once, with the notification output it streamed
-// while pending, and the message's answer is the message's alone.
-#[tokio::test]
-async fn a_prompt_written_into_a_pending_held_turn_finishes_the_held_task() {
+// A prompt write cannot end the notification turn it joins (review 5972527077).
+// The held task keeps every batch through the result; the prompt reads from its fold boundary.
+async fn folded_turn_finishes_at_result(signal: ProviderOwnTurnSignal) {
     let (team, message_prompt) = held_turn_pending_behind_a_message("background-hold-folded").await;
+    team.runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &team.room,
+            &team.child,
+            &message_prompt,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(team.child_run.clone()),
+            None,
+        )
+        .unwrap();
+    apply_own_turn(&team, signal, false, vec![text_chunk("more notification")]).await;
+    assert!(
+        working(&team),
+        "a prompt write does not finish the notification turn"
+    );
+    assert!(finishes_of_task(&team).is_empty());
     apply_own_turn(
         &team,
-        ProviderOwnTurnSignal::None,
-        false,
-        vec![text_chunk("status: the server is done")],
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk(
+            "the log shows a clean shutdown; status: the server is done",
+        )],
     )
     .await;
-    assert!(!working(&team), "the held task finished");
-    assert_eq!(
-        running_prompt(&team).as_deref(),
-        Some(message_prompt.as_str())
-    );
+    assert!(!working(&team), "the held task finished at the result");
     let finishes = finishes_of_task(&team);
     assert_eq!(finishes.len(), 1, "{finishes:?}");
-    assert!(finishes[0].contains("started the server"), "{finishes:?}");
-    assert!(
-        finishes[0].contains("the server exited with code 0"),
-        "the finish carries the notification the pending turn streamed: {finishes:?}"
-    );
-    assert!(
-        !finishes[0].contains("status: the server is done"),
-        "the message's answer is not the held task's: {finishes:?}"
-    );
+    for text in [
+        "started the server",
+        "the server exited with code 0",
+        "more notification",
+        "the log shows a clean shutdown",
+    ] {
+        assert!(finishes[0].contains(text), "missing {text}: {finishes:?}");
+    }
     let answer = message_answer(&team, &message_prompt);
     assert!(answer.contains("status: the server is done"), "{answer}");
     assert!(
@@ -1127,6 +1138,16 @@ async fn a_prompt_written_into_a_pending_held_turn_finishes_the_held_task() {
     );
     sweep(&team).await;
     assert_eq!(finishes_of_task(&team).len(), 1);
+}
+
+#[tokio::test]
+async fn a_prompt_written_into_a_pending_held_turn_finishes_only_after_its_result() {
+    folded_turn_finishes_at_result(ProviderOwnTurnSignal::None).await;
+}
+
+#[tokio::test]
+async fn a_delivered_prompt_folds_inside_the_held_notification_until_its_result() {
+    folded_turn_finishes_at_result(ProviderOwnTurnSignal::Running).await;
 }
 
 // Transition T6 (review 5971171601): the notification turn ends before it was adopted. The held
@@ -1262,4 +1283,41 @@ async fn a_held_tasks_finish_reads_its_resumed_turn_past_a_message_in_between() 
         !finishes[0].contains("status: the server still runs"),
         "the message's reply is not the held task's answer: {finishes:?}"
     );
+}
+
+// A cancelled/failed provider reports a completed batch with no own-turn signal. That explicit
+// end must clear a pending binding too; an empty poll with None cannot end it.
+#[tokio::test]
+async fn a_pending_held_turn_is_released_when_the_provider_ends_without_its_own_result() {
+    let (team, _) = held_turn_pending_behind_a_message("background-hold-pending-cancelled").await;
+    apply_own_turn(&team, ProviderOwnTurnSignal::None, true, Vec::new()).await;
+    assert!(
+        !working(&team),
+        "the ended provider cannot retain a pending held turn"
+    );
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    assert!(
+        !team.runtime.owned.prompt_state_owner.provider_turn_pending(
+            &session,
+            &team.child,
+            &team.child_run,
+        ),
+        "an ended own turn cannot be adopted after the prompt settles"
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
+    sweep(&team).await;
+    assert!(
+        !team
+            .runtime
+            .owned
+            .prompt_state_owner
+            .provider_turn_running(&session, &team.child,),
+        "the sweep cannot adopt the ended notification turn"
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
 }

@@ -12,9 +12,8 @@
 //!   it was recorded with, so the turn's output is its own;
 //! - T3/T4 a prompt still queued or being delivered -> Pending with its binding; adopted with
 //!   that binding when the agent has no prompt left, by the settlement or a later batch;
-//! - T5 a prompt is written into the running own turn (Claude folds it in: the batch reports no
-//!   own turn) -> None; that prompt's turn answers, from a boundary of its own when a held
-//!   segment opened after its first one;
+//! - T5 a prompt is written into a pending held turn -> Folded inside the held segment; its
+//!   steering boundary starts its answer without ending the notification turn or its output;
 //! - T6 the turn ends while Pending -> None, logged; the prompt it waited for holds its output,
 //!   unless the turn is bound to a held task (below);
 //! - T7/T8 an Adopted turn ends, is cancelled or its process exits -> the ordinary settlement
@@ -27,20 +26,16 @@
 //! reads every segment of its prompt and no reply to a prompt in between. A pending held turn
 //! gets that boundary at its first batch (one step on the record: `open_pending_held_segment`),
 //! so its output is the held task's even before adoption. A held task whose turn never runs as
-//! its own (T5, T6, T9 still pending) finishes when the record drops it, and only after the batch
+//! its own (T5 folded, T6, T9 still pending) finishes at its result, and only after the batch
 //! that dropped it is in history: `follow_provider_own_turn` hands that release to its caller.
 //! Any other adopted turn (binding Fresh) gets its own task and its own history boundary, which
 //! its answer is read from.
 use super::*;
 use crate::provider::ProviderOwnTurnSignal;
-use crate::runtime::prompt_state::{
-    OwnTurnBinding, PendingOwnTurn, PendingTurnOutput, ProviderTurnAdoption,
-};
+use crate::runtime::prompt_state::{OwnTurnBinding, PendingOwnTurn, ProviderTurnAdoption};
 
 /// What history shows where a turn the provider started on its own begins.
 const PROVIDER_OWN_TURN_TEXT: &str = "Background command finished";
-/// What history shows where a prompt written into a held notification turn is answered.
-const PROMPT_AFTER_OWN_TURN_TEXT: &str = "Continues after the background command";
 
 /// A held task whose notification turn left the record before it was adopted. It finishes once
 /// the batch that ended the turn is in history, so its answer holds the turn's output.
@@ -66,14 +61,22 @@ impl KernelRuntimeState {
         let Some(agent_id) = run.agent_instance_id() else {
             return Ok(None);
         };
+        let session = owned.session_store.get_session(session_id)?;
+        // Consume the recorded delivery edge before this batch's output. A prompt delivered
+        // before the own turn began is not a fold into that turn.
+        self.fold_delivered_prompt_into_pending_held_turn(&session, agent_id, provider_run_id)?;
         let signal = batch.provider_own_turn;
         match signal {
-            ProviderOwnTurnSignal::None | ProviderOwnTurnSignal::Ended => {
-                return self.end_provider_own_turn(session_id, agent_id, signal);
+            ProviderOwnTurnSignal::None if batch.prompt_completed => {
+                // Cancellation/process exit ends the turn without Claude's own result.
+                return self.end_provider_own_turn(session_id, agent_id, provider_run_id);
+            }
+            ProviderOwnTurnSignal::None => return Ok(None),
+            ProviderOwnTurnSignal::Ended => {
+                return self.end_provider_own_turn(session_id, agent_id, provider_run_id);
             }
             ProviderOwnTurnSignal::Running | ProviderOwnTurnSignal::StartedAndEnded => {}
         }
-        let session = owned.session_store.get_session(session_id)?;
         let ended_now = crate::app::ended_background_call_ids(&batch.chunks);
         self.adopt_provider_started_turn(session_id, provider_run_id, &ended_now)?;
         let preceding_turn_ended = owned
@@ -116,72 +119,42 @@ impl KernelRuntimeState {
                 crate::session::unix_epoch_ms(),
             )?;
         }
+        // A receipt can precede opening the held segment, which must come before the fold.
+        self.fold_delivered_prompt_into_pending_held_turn(&session, agent_id, provider_run_id)?;
         if signal == ProviderOwnTurnSignal::StartedAndEnded
             && owned
                 .prompt_state_owner
                 .provider_turn_pending(&session, agent_id, provider_run_id)
         {
             // T9 with a prompt still ahead of it: the turn is over before it could be adopted.
-            return self.end_provider_own_turn(session_id, agent_id, signal);
+            return self.end_provider_own_turn(session_id, agent_id, provider_run_id);
         }
         Ok(None)
     }
 
-    /// The batch reports no own turn running: a turn still waiting for adoption leaves the
-    /// record (T5, T6). A prompt written into it answers from a boundary of its own; the held
-    /// task it was bound to is returned, to finish once this batch is in history, since its
-    /// notification turn will not run as its own.
+    /// The provider result ends a pending or folded notification turn. Take its binding once;
+    /// the caller finishes its held task only after this batch is in history.
     fn end_provider_own_turn(
         &self,
         session_id: &str,
         agent_id: &str,
-        signal: ProviderOwnTurnSignal,
+        provider_run_id: &str,
     ) -> Result<Option<HeldRelease>, DaemonError> {
         let owned = &self.owned;
         let session = owned.session_store.get_session(session_id)?;
         let Some(PendingOwnTurn {
             provider_run_id: pending_run,
             binding,
-            output,
+            output: _,
         }) = owned
             .prompt_state_owner
-            .end_provider_turn(&session, agent_id)
+            .end_provider_turn(&session, agent_id, provider_run_id)
         else {
             return Ok(None);
         };
-        if signal == ProviderOwnTurnSignal::None {
-            // T5: the held segment began after the boundary of the prompt now written into the
-            // turn; that prompt's answer follows a boundary of its own again.
-            if let (
-                PendingTurnOutput::HeldSegment {
-                    behind: Some(behind),
-                },
-                Some(active),
-            ) = (
-                &output,
-                owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent_id),
-            ) {
-                if active.id() == behind {
-                    owned.append_resumed_prompt_history(
-                        session_id,
-                        active.source_attachment_id(),
-                        agent_id,
-                        PROMPT_AFTER_OWN_TURN_TEXT,
-                        active.id(),
-                        crate::session::unix_epoch_ms(),
-                    )?;
-                }
-            }
-        }
         crate::logging::info_with_fields(
             "runtime.agent_lifecycle",
-            if signal == ProviderOwnTurnSignal::None {
-                "a prompt was written into the provider's own turn before it was adopted; that prompt's turn answers it"
-            } else {
-                "the provider's own turn ended before it was adopted; the prompt it waited for holds its output"
-            },
+            "the provider's own turn ended before it was adopted; its held task finishes after history is flushed",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
@@ -361,6 +334,35 @@ impl KernelRuntimeState {
                 "held_task": matches!(binding, OwnTurnBinding::Held { .. }),
             }),
         );
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    fn fold_delivered_prompt_into_pending_held_turn(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        if let Some((held, prompt)) =
+            owned
+                .prompt_state_owner
+                .take_folded_held_boundary(session, agent_id, provider_run_id)
+        {
+            owned.append_steering_prompt_history(
+                session.id(),
+                provider_run_id,
+                &held,
+                prompt.source_attachment_id(),
+                agent_id,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+                prompt.prompt_origin(),
+            )?;
+        }
         Ok(())
     }
 }

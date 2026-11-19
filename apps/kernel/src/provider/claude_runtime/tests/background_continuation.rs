@@ -315,3 +315,79 @@ fn an_own_turn_that_starts_and_ends_within_one_drain_is_reported() {
     );
     write_json_line(&mut binding.state.stdin, &json!({"finish": true})).unwrap();
 }
+
+// A prompt arriving after the own-turn start must not clear its running signal.
+#[test]
+fn a_prompt_write_keeps_the_notification_turn_running_until_its_result() {
+    let worktree = crate::test_support::TestWorktree::new("claude-write-during-own-turn");
+    let run = RuntimeProviderRun::new(
+        "write-during-own-turn-run",
+        &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "claude-write-during-own-turn".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec![
+                "-c".into(),
+                (CLAUDE_PROMPT_TURN_THEN_OWN_TURN.to_string()
+                    + r#"IFS= read -r release
+uuid=$(printf '%s' "$finish" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_answer","content":[{"type":"text","text":"ANSWERED ONCE"}]}}'
+printf '{"type":"result","subtype":"success","session_id":"s1","user_message_uuids":["%s"]}\n' "$uuid"
+IFS= read -r end
+"#),
+                "fixture".into(),
+            ],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(worktree.path().to_path_buf()),
+            structured_endpoint: None,
+        },
+    );
+    let mut binding = initialize_claude_runtime(&run).unwrap();
+    let prompt = |text| {
+        crate::prompt_assembly::PromptEnvelope::new(
+            text,
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        )
+    };
+    submit_claude_prompt(&run, &mut binding.state, &prompt("start")).unwrap();
+    drain_until(&run, &mut binding.state, "first result", |b| {
+        b.prompt_completed
+    });
+    write_json_line(&mut binding.state.stdin, &json!({"release": true})).unwrap();
+    drain_until(&run, &mut binding.state, "notification output", |b| {
+        prints(b, "NOTIFIED")
+    });
+    submit_claude_prompt(&run, &mut binding.state, &prompt("status")).unwrap();
+    assert!(
+        binding.state.own_turn,
+        "writing a prompt cannot end Claude's notification turn"
+    );
+    let batches = drain_until(&run, &mut binding.state, "notification result", |b| {
+        b.provider_own_turn == ProviderOwnTurnSignal::Ended
+    });
+    assert!(
+        !batches.iter().any(|b| b.prompt_completed),
+        "the notification result does not answer the queued prompt"
+    );
+    assert!(
+        binding.state.active_turn_id.is_some(),
+        "the written prompt still awaits its result"
+    );
+    write_json_line(&mut binding.state.stdin, &json!({"release": true})).unwrap();
+    let answer = drain_until(&run, &mut binding.state, "prompt result", |b| {
+        b.prompt_completed
+    });
+    assert_eq!(
+        answer.iter().filter(|b| prints(b, "ANSWERED ONCE")).count(),
+        1
+    );
+    assert!(answer
+        .iter()
+        .all(|b| b.provider_own_turn == ProviderOwnTurnSignal::None));
+    assert!(binding.state.active_turn_id.is_none());
+}
