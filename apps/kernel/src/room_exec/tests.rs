@@ -735,3 +735,37 @@ async fn offload_exec_close_stdin_after_fast_exit_still_drains_outcome() {
     assert_eq!(outcome, ExecOutcome::Exited { code: 7 });
     service.close("room", &id).unwrap();
 }
+
+#[tokio::test]
+async fn a_closed_exec_leaves_no_detached_job_running() {
+    let root = std::env::temp_dir().join(format!("exec-detached-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let pid_file = root.join("exec.pid");
+    let service = RoomExecService::default();
+    let id = open(
+        &service,
+        &format!(
+            "nohup {} </dev/null >/dev/null 2>&1 &",
+            crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8897),
+        ),
+    );
+    let (_, _, outcome) = collect(&service, &id).await;
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+    let read_pid = || {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while read_pid().is_none() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let pid = read_pid().expect("the detached job started");
+    service.close("room", &id).unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let alive = crate::test_support::process_alive(pid);
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    std::fs::remove_dir_all(&root).ok();
+    assert!(!alive, "a detached job outlived its closed exec");
+}

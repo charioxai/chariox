@@ -677,4 +677,75 @@ mod kernel_terminal_access {
         };
         assert!(terminals.is_empty());
     }
+
+    /// What `chariox exec` sends on a kernel with no Room: open the command, wait for it to
+    /// finish, close. A command that leaves a detached job must not outlive that close.
+    #[tokio::test]
+    async fn a_one_shot_kernel_exec_leaves_no_detached_job_after_its_close() {
+        let fixture = fixture("kernel-exec-detached");
+        let directory = std::env::temp_dir().join(format!("kernel-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let pid_file = directory.join("job.pid");
+        let script = format!(
+            "nohup {} </dev/null >/dev/null 2>&1 & sleep 1",
+            crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8898),
+        );
+        let caller = owner();
+        let call = |operation| {
+            fixture.runtime.kernel_terminal_for_client(
+                &caller,
+                KernelTerminalRequest {
+                    directory: None,
+                    operation,
+                },
+            )
+        };
+        let opened = call(RoomTerminalOperation::Open {
+            cols: 200,
+            rows: 50,
+            title: None,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .await
+        .expect("the command opens");
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { terminal },
+        } = opened
+        else {
+            panic!("unexpected {opened:?}");
+        };
+        let waited = call(RoomTerminalOperation::Wait {
+            terminal_id: terminal.terminal_id.clone(),
+            watches: vec![crate::room_terminal::RoomTerminalWatch::Finished],
+            after_offset: Some(0),
+            timeout_ms: 20_000,
+        })
+        .await
+        .expect("the wait answers");
+        assert!(
+            matches!(
+                waited,
+                LocalDaemonResponse::RoomTerminal {
+                    result: RoomTerminalResult::Waited { ref waited }
+                } if waited.fired.is_some()
+            ),
+            "{waited:?}"
+        );
+        let pid = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .expect("the detached job started");
+        let started = crate::test_support::process_alive(pid);
+        call(RoomTerminalOperation::Close {
+            terminal_id: terminal.terminal_id,
+        })
+        .await
+        .expect("the terminal closes");
+        let alive = crate::test_support::process_alive(pid);
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        std::fs::remove_dir_all(&directory).ok();
+        assert!(started, "the detached job did not start");
+        assert!(!alive, "the detached job outlived the closed exec");
+    }
 }

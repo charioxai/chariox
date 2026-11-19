@@ -1840,7 +1840,6 @@ async fn a_detached_job_ends_with_its_room() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let started = job_running(&detached);
     service.end_scope("room-2");
-    crate::runtime::process_resources::stop_released(Some("room-2"), None);
     let running = job_running(&detached);
     if let Some(pid) = std::fs::read_to_string(&detached)
         .ok()
@@ -1852,6 +1851,105 @@ async fn a_detached_job_ends_with_its_room() {
     }
     assert!(started, "the detached job did not start");
     assert!(!running, "a detached job outlived its Room");
+}
+
+/// A command that starts a detached job and exits: the pump releases the job to the
+/// process-resources registry and the terminal ends with nothing running in it.
+async fn open_ended_terminal_with_detached_job(
+    service: &RoomTerminalService,
+    scope: TerminalScope,
+    root: &Path,
+    pid_file: &Path,
+    seconds: u32,
+) -> String {
+    let script = format!(
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", pid_file.display()), seconds),
+    );
+    let id = service
+        .open(OpenRoomTerminal {
+            project_environment: Default::default(),
+            scope: scope.clone(),
+            working_directory: root.to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list(scope.clone())[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !job_running(pid_file) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    id
+}
+
+fn kill_job(pid_file: &Path) {
+    if let Some(pid) = std::fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+#[tokio::test]
+async fn closing_an_ended_kernel_terminal_ends_the_job_it_left_running() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("kernel-close.pid");
+    let id = open_ended_terminal_with_detached_job(
+        &service,
+        TerminalScope::Kernel,
+        root.path(),
+        &detached,
+        8895,
+    )
+    .await;
+    let started = job_running(&detached);
+    service
+        .close(TerminalScope::Kernel, &id, &TerminalActor::User)
+        .unwrap();
+    let running = job_running(&detached);
+    kill_job(&detached);
+    assert!(started, "the detached job did not start");
+    assert!(
+        !running,
+        "a detached job outlived its closed kernel terminal"
+    );
+}
+
+#[tokio::test]
+async fn closing_an_ended_room_terminal_ends_the_job_it_left_running() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("room-close.pid");
+    let id = open_ended_terminal_with_detached_job(
+        &service,
+        TerminalScope::room("room-3"),
+        root.path(),
+        &detached,
+        8896,
+    )
+    .await;
+    let started = job_running(&detached);
+    service.close("room-3", &id, &TerminalActor::User).unwrap();
+    let running = job_running(&detached);
+    kill_job(&detached);
+    assert!(started, "the detached job did not start");
+    assert!(!running, "a detached job outlived its closed Room terminal");
 }
 
 #[test]
