@@ -75,6 +75,12 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     profile_id: &str,
     client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    let source_profile_id = if crate::provider::canonical_provider_family(provider).is_some() {
+        profiles.credential_source_profile_id(owner_user_id, provider, profile_id)?
+    } else {
+        profile_id.to_string()
+    };
+    let profile_id = source_profile_id.as_str();
     if crate::provider::canonical_provider_family(provider) != Some("claude")
         || client_interface == crate::provider::ProviderClientInterface::NativeTui
         || provider_account_credential_registered(owner_user_id, provider, profile_id)?
@@ -112,13 +118,18 @@ fn claude_login_runs_agents(
 /// rule as `resolve_provider_account_credentials_for_launch`: an enrolled
 /// credential is resolved first, including when a native login is available.
 pub(crate) fn launch_uses_vault_credential(
-    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     profile_id: &str,
     _client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<bool, DaemonError> {
-    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
+    let source_profile_id = if crate::provider::canonical_provider_family(provider).is_some() {
+        profiles.credential_source_profile_id(owner_user_id, provider, profile_id)?
+    } else {
+        profile_id.to_string()
+    };
+    provider_account_credential_uses_vault(owner_user_id, provider, &source_profile_id)
 }
 
 /// Whether a Chariox-held launch credential is registered for the account.

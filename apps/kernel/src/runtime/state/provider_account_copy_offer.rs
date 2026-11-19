@@ -177,6 +177,26 @@ impl KernelRuntimeState {
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         let caller = &command_caller_user_id(command);
         let config = self.config_snapshot().await;
+        if request.source_kernel_id == config.daemon_id {
+            let own_key =
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+            if request.source_key_thumbprint != own_key {
+                return Err(failure("provider_account_copy_unauthorized"));
+            }
+            return self
+                .copy_provider_account_to_kernel(
+                    caller,
+                    crate::local::CopyProviderAccountToKernelRequest {
+                        provider: request.provider,
+                        account_profile: request.account_profile,
+                        operation_id: request.operation_id,
+                        target_kernel_id: config.daemon_id,
+                        target_key_thumbprint: own_key,
+                        replace: request.replace,
+                    },
+                )
+                .await;
+        }
         let owner = enrolled_owner(&config, caller)?;
         let binding = ProviderAccountCopyBinding {
             operation_id: request.operation_id,

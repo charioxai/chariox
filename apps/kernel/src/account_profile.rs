@@ -695,6 +695,9 @@ pub struct ProviderAccountProfile {
     pub origin: ProviderAccountProfileOrigin,
     pub is_default: bool,
     pub auth_state: ProviderAccountAuthState,
+    /// Actionable native sign-in failure, without provider output or credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_error: Option<String>,
     /// Versioned credential-kind contract (v1). `None` on records written
     /// before the contract existed; readers must treat it as not-reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1479,6 +1482,9 @@ impl ProviderAccountProfileRegistry {
                             (index != profile_index
                                 && candidate.public.owner_user_id == owner_user_id
                                 && candidate.public.provider == provider
+                                && !candidate.locator.same_credential_scope(
+                                    &document.profiles[profile_index].locator,
+                                )
                                 && candidate.public.auth_state
                                     == ProviderAccountAuthState::Authenticated
                                 && normalized_account_identity(
@@ -1520,6 +1526,11 @@ impl ProviderAccountProfileRegistry {
         let profile = &mut document.profiles[profile_index];
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
+        profile.public.auth_error = matches!(
+            auth_state,
+            ProviderAccountAuthState::Error | ProviderAccountAuthState::Expired
+        )
+        .then(|| native_sign_in_advice(&profile.public));
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
         profile.public.detected_provider_version = detected_provider_version;
@@ -1531,6 +1542,21 @@ impl ProviderAccountProfileRegistry {
             refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         }
         let result = document.profiles[profile_index].public.clone();
+        let scope = document.profiles[profile_index].locator.clone();
+        for (index, peer) in document.profiles.iter_mut().enumerate() {
+            if index == profile_index || peer.public.provider != provider
+                || !peer.locator.same_credential_scope(&scope)
+            {
+                continue;
+            }
+            // One native credential has one authentication state, including across aliases.
+            peer.public.auth_state = result.auth_state;
+            peer.public.auth_error = result.auth_error.as_ref().map(|_| native_sign_in_advice(&peer.public));
+            peer.public.identity_summary = result.identity_summary.clone();
+            peer.public.plan = result.plan.clone();
+            peer.public.detected_provider_version = result.detected_provider_version.clone();
+            peer.public.last_validated_at_ms = result.last_validated_at_ms;
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1546,6 +1572,7 @@ impl ProviderAccountProfileRegistry {
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
+        profile.public.auth_error = None;
         profile.public.identity_summary = None;
         profile.public.plan = None;
         profile.public.services.clear();
@@ -1733,9 +1760,12 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<BTreeMap<String, String>, DaemonError> {
         let provider = normalize_provider(provider)?;
+        let source_profile_id =
+            self.credential_source_profile_id(owner_user_id, provider, profile_id)?;
         let (origin, locator, materialized_replica) = {
             let document = self.read_document()?;
-            let profile = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+            let profile =
+                resolve_stored_profile(&document, owner_user_id, provider, &source_profile_id)?;
             (
                 profile.public.origin,
                 profile.locator.clone(),
@@ -4128,6 +4158,7 @@ fn new_public_profile(
         origin,
         is_default,
         auth_state: ProviderAccountAuthState::Unknown,
+        auth_error: None,
         credential_kind,
         credential_kind_not_reported_reason,
         identity_summary: None,
@@ -4139,6 +4170,13 @@ fn new_public_profile(
         materializations: Vec::new(),
         context_transfer: ProviderAccountContextTransfer::Available,
     }
+}
+
+pub(crate) fn native_sign_in_advice(profile: &ProviderAccountProfile) -> String {
+    format!(
+        "{} could not use the sign-in for `{}`; sign in again in Provider Accounts on this machine",
+        profile.provider, profile.label,
+    )
 }
 
 fn normalize_provider(provider: &str) -> Result<&'static str, DaemonError> {

@@ -812,6 +812,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
         origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
         is_default: false,
         auth_state: crate::account_profile::ProviderAccountAuthState::Authenticated,
+        auth_error: None,
         identity_summary: None,
         plan: Some("pro".to_string()),
         detected_provider_version: None,

@@ -31,6 +31,9 @@ impl ProviderAccountProfileRegistry {
         credential: &ProviderAccountCopyCredential,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         binding.validate()?;
+        if binding.source_kernel_id == binding.target_kernel_id {
+            return self.install_account_link(owner, binding);
+        }
         let map_storage = |_| failure("provider_account_copy_install_failed");
         let mut guard = self.write_document().map_err(map_storage)?;
         let digest = format!("{:x}", Sha256::digest(credential.value().as_bytes()));
@@ -188,6 +191,107 @@ impl ProviderAccountProfileRegistry {
         self.persist_locked(&next).map_err(map_storage)?;
         *guard = next;
         Ok(ProviderAccountCopyReceipt::installed(binding))
+    }
+
+    fn install_account_link(
+        &self,
+        owner: &str,
+        binding: &ProviderAccountCopyBinding,
+    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+        let mut document = self.write_document()?;
+        let source = find_stored_profile(
+            &document,
+            owner,
+            &binding.provider,
+            &binding.source_profile_id,
+        )
+        .filter(|source| {
+            source.public.profile_id == binding.source_profile_id
+                && source.public.auth_state == ProviderAccountAuthState::Authenticated
+        })
+        .cloned()
+        .ok_or_else(|| failure("provider_account_copy_profile"))?;
+        let id = binding.target_profile_id();
+        let existing = document.profiles.iter().position(|stored| {
+            stored.public.owner_user_id == owner
+                && stored.public.provider == binding.provider
+                && stored.public.profile_id == id
+        });
+        if let Some(recorded) = document.account_copies.iter().find(|recorded| {
+            recorded.binding.source_kernel_id == binding.source_kernel_id
+                && recorded.binding.source_key_thumbprint == binding.source_key_thumbprint
+                && recorded.binding.operation_id == binding.operation_id
+        }) {
+            if recorded.binding == *binding
+                && recorded.phase == AccountCopyPhase::Installed
+                && existing.is_some_and(|index| document.profiles[index].locator == source.locator)
+            {
+                return Ok(ProviderAccountCopyReceipt::installed(binding));
+            }
+            return Err(failure("provider_account_copy_conflict"));
+        }
+        if existing.is_some() && !binding.replace {
+            return Err(failure("provider_account_copy_conflict"));
+        }
+        let mut linked = source;
+        linked.public.profile_id = id.clone();
+        linked.public.label = format!("Linked account {}", &id[5..13]);
+        linked.public.origin = ProviderAccountProfileOrigin::Linked;
+        linked.public.is_default = false;
+        linked.public.usage.profile_id = id;
+        linked.public.materializations.clear();
+        linked.label_source = Some(ProviderAccountLabelSource::Explicit);
+        linked.materialized_replica = false;
+        linked.pending_native_validation = false;
+        linked.legacy_unpinned_replica = false;
+        linked.replica_previous_default_profile_id = None;
+        linked.replica_root_identity = None;
+        linked.managed_context_replica = None;
+        linked.transferred_from = Some(TransferredAccountOrigin {
+            source_kernel_id: binding.source_kernel_id.clone(),
+            source_profile_id: binding.source_profile_id.clone(),
+        });
+        if let Some(index) = existing {
+            document.profiles[index] = linked;
+        } else {
+            document.profiles.push(linked);
+        }
+        document.account_copies.push(AccountCopyRecord {
+            binding: binding.clone(),
+            credential_sha256: String::new(),
+            phase: AccountCopyPhase::Installed,
+        });
+        self.persist_locked(&document)?;
+        Ok(ProviderAccountCopyReceipt::installed(binding))
+    }
+
+    pub(crate) fn credential_source_profile_id(
+        &self,
+        owner: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<String, DaemonError> {
+        let document = self.read_document()?;
+        let provider = normalize_provider(provider)?;
+        let mut source = resolve_stored_profile(&document, owner, provider, profile_id)?;
+        let mut visited = std::collections::BTreeSet::new();
+        while source.public.origin == ProviderAccountProfileOrigin::Linked {
+            let Some(origin) = &source.transferred_from else {
+                break;
+            };
+            if !visited.insert(source.public.profile_id.as_str()) {
+                return Err(registry_error(
+                    "resolve linked account",
+                    "the linked account forms a cycle; remove the link and create it again",
+                ));
+            }
+            source = find_stored_profile(&document, owner, provider, &origin.source_profile_id)
+                .filter(|candidate| candidate.locator.same_credential_scope(&source.locator))
+                .ok_or_else(|| registry_error("resolve linked account", format!(
+                    "source account `{}` is unavailable; sign in again to that account on this machine, or remove this link and create it again", origin.source_profile_id,
+                )))?;
+        }
+        Ok(source.public.profile_id.clone())
     }
 }
 

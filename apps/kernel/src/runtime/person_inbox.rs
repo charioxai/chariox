@@ -20,6 +20,8 @@ use crate::session::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod provider_account;
+
 /// What an agent sends with `chariox.notify_person`.
 pub(crate) struct PersonNotice {
     pub(crate) title: String,
@@ -188,21 +190,23 @@ impl OwnedInbox {
             .iter()
             .map(|session| session.id())
             .collect::<BTreeSet<_>>();
-        let owners = sessions
+        let account_owner = runtime_state.provider_account_authority_owner_user_id(caller_user_id);
+        let mut owners = sessions
             .iter()
-            .map(|session| session.owner_user_id())
+            .map(|session| session.owner_user_id().to_string())
             .collect::<BTreeSet<_>>();
+        owners.insert(account_owner.clone());
         let mut state = PersonInboxState::default();
         for owner in owners {
             let owned = runtime_state
                 .durable_state_store()
-                .person_inbox_state(owner, now_ms)?;
-            state.notices.extend(
-                owned
-                    .notices
-                    .into_iter()
-                    .filter(|notice| session_ids.contains(notice.session_id.as_str())),
-            );
+                .person_inbox_state(&owner, now_ms)?;
+            state
+                .notices
+                .extend(owned.notices.into_iter().filter(|notice| {
+                    session_ids.contains(notice.session_id.as_str())
+                        || (owner == account_owner && provider_account::action(notice).is_some())
+                }));
             state.snoozes.extend(owned.snoozes);
             state.mutes.extend(
                 owned
@@ -275,6 +279,7 @@ impl OwnedInbox {
             })
             .collect::<Vec<_>>();
         cards.extend(self.state.notices.iter().map(|notice| {
+            let action = provider_account::action(notice);
             let agent_name = self
                 .sessions
                 .iter()
@@ -290,7 +295,8 @@ impl OwnedInbox {
                     agent_name,
                     title,
                     body: folded_body(notice),
-                    link: notice.link.clone(),
+                    link: action.is_none().then(|| notice.link.clone()).flatten(),
+                    action,
                     priority: notice.priority,
                     created_at_ms: notice.created_at_ms,
                     read: notice.read,

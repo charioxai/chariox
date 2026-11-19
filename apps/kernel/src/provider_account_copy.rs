@@ -22,7 +22,7 @@ pub struct ProviderAccountCopyBinding {
 
 impl ProviderAccountCopyBinding {
     pub(crate) fn validate(&self) -> Result<(), crate::error::DaemonError> {
-        if self.provider != "claude"
+        if !["claude", "codex", "opencode"].contains(&self.provider.as_str())
             || ![
                 &self.operation_id,
                 &self.source_profile_id,
@@ -34,7 +34,8 @@ impl ProviderAccountCopyBinding {
             || ![&self.source_key_thumbprint, &self.target_key_thumbprint]
                 .into_iter()
                 .all(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
-            || self.source_kernel_id == self.target_kernel_id
+            || (self.source_kernel_id == self.target_kernel_id
+                && self.source_key_thumbprint != self.target_key_thumbprint)
         {
             return Err(failure("invalid_request"));
         }
@@ -122,15 +123,15 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
 pub(crate) fn failure_message(code: &str) -> &'static str {
     match code {
         "provider_account_copy_unauthorized" => "Account copy requires enrolled kernels with the same owner, realm and pinned keys.",
-        "provider_account_copy_profile" => "Select an exact authenticated Claude profile with a Vault-backed credential on the source kernel.",
+        "provider_account_copy_profile" => "Select an exact authenticated account on the source kernel. If it is missing or signed out, sign in there and retry the copy.",
         "provider_account_copy_unavailable" => "The target kernel is unavailable; reconnect it and retry the same operation.",
         "provider_account_copy_unsupported" => "Upgrade the target kernel to support provider account copy before retrying.",
         "provider_account_copy_vault_locked" => "Unlock the kernel Vault through Chariox, then retry the same account copy.",
         "provider_account_copy_target_vault_locked" => "The receiving kernel's Vault is locked; unlock it, then retry the same account copy. Nothing was copied.",
         "provider_account_copy_cancelled" => "Account copy was cancelled or expired; no login was transferred.",
         "provider_account_copy_conflict" => "A target profile or operation already exists; use a new operation with explicit replacement to replace the profile.",
-        "provider_account_copy_rejected" => "Official Claude verification rejected the account; authorize the source account again.",
-        "provider_account_copy_verification_failed" => "Official Claude verification did not complete; check Claude availability and retry.",
+        "provider_account_copy_rejected" => "The official provider rejected the account; sign in to the source account again.",
+        "provider_account_copy_verification_failed" => "The official provider could not check the account; check its availability and retry.",
         "provider_account_copy_install_failed" => "Account installation did not finish; retry the same operation to recover.",
         _ => "Invalid provider account copy request.",
     }

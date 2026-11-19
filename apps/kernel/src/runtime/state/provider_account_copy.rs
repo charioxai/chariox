@@ -27,25 +27,11 @@ impl KernelRuntimeState {
         request: crate::local::CopyProviderAccountToKernelRequest,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         let config = self.config_snapshot().await;
-        let enrollment = config
-            .cloud_relay
-            .as_ref()
-            .ok_or_else(|| failure("provider_account_copy_unauthorized"))?;
-        if ![
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            enrollment.user_id.as_str(),
-        ]
-        .contains(&caller)
-            || enrollment.user_id.is_empty()
-            || enrollment.realm_id.is_empty()
-            || enrollment.kernel_id.as_deref() != Some(config.daemon_id.as_str())
-            || enrollment.kernel_public_key_thumbprint.as_deref()
-                != Some(
-                    crate::runtime::terminal_pairings::public_key_thumbprint(
-                        &config.relay_public_key,
-                    )
-                    .as_str(),
-                )
+        if caller != crate::session::DEFAULT_LOCAL_USER_ID
+            && config
+                .cloud_relay
+                .as_ref()
+                .is_none_or(|profile| profile.user_id != caller)
         {
             return Err(failure("provider_account_copy_unauthorized"));
         }
@@ -69,7 +55,36 @@ impl KernelRuntimeState {
             .map_err(|_| failure("provider_account_copy_profile"))?;
         if profile.profile_id != binding.source_profile_id
             || profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
-            || !crate::provider::provider_account_credential_uses_vault(
+        {
+            return Err(failure("provider_account_copy_profile"));
+        }
+        if binding.target_kernel_id == config.daemon_id {
+            if caller != crate::session::DEFAULT_LOCAL_USER_ID
+                && config
+                    .cloud_relay
+                    .as_ref()
+                    .is_none_or(|profile| profile.user_id != caller)
+            {
+                return Err(failure("provider_account_copy_unauthorized"));
+            }
+            let profiles = self.provider_account_profile_registry().clone();
+            let receipt = tokio::task::spawn_blocking(move || {
+                profiles.install_account_copy(
+                    &config,
+                    &owner,
+                    &binding,
+                    &ProviderAccountCopyCredential::new(String::new()),
+                )
+            })
+            .await
+            .map_err(|_| failure("provider_account_copy_install_failed"))??;
+            self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                .await;
+            self.record_room_list_change();
+            return Ok(receipt);
+        }
+        if binding.provider == "claude"
+            && !crate::provider::provider_account_credential_uses_vault(
                 &owner,
                 &binding.provider,
                 &profile.profile_id,
@@ -77,6 +92,28 @@ impl KernelRuntimeState {
             .map_err(|_| failure("provider_account_copy_profile"))?
         {
             return Err(failure("provider_account_copy_profile"));
+        }
+        let enrollment = config
+            .cloud_relay
+            .as_ref()
+            .ok_or_else(|| failure("provider_account_copy_unauthorized"))?;
+        if ![
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            enrollment.user_id.as_str(),
+        ]
+        .contains(&caller)
+            || enrollment.user_id.is_empty()
+            || enrollment.realm_id.is_empty()
+            || enrollment.kernel_id.as_deref() != Some(config.daemon_id.as_str())
+            || enrollment.kernel_public_key_thumbprint.as_deref()
+                != Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config.relay_public_key,
+                    )
+                    .as_str(),
+                )
+        {
+            return Err(failure("provider_account_copy_unauthorized"));
         }
         let enrolled =
             crate::managed_context::owner_authority::authorize_account_copy_peer(&config, &binding)
@@ -242,6 +279,15 @@ impl KernelRuntimeState {
             self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
             self.record_room_list_change();
+            let receipt = result.as_ref().expect("successful account copy");
+            let owner = self
+                .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
+            let profile = self.provider_account_profile_registry().get(
+                &owner,
+                &receipt.provider,
+                &receipt.account_profile,
+            )?;
+            self.notify_provider_account_sign_in(&profile, true).await?;
         }
         result
     }

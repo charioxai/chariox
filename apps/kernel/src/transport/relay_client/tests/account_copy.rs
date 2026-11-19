@@ -162,6 +162,109 @@ fn account_copy_source_and_encrypted_install_drill() {
 }
 
 #[test]
+fn account_copy_same_kernel_links_share_the_source_credential() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("same-kernel-account-link", move || async move {
+        let _home = RelayTestHome::new();
+        let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
+        let config = config(&root, "linked");
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config.clone()).unwrap()));
+        let profiles = app.lock().await.provider_account_profile_registry().clone();
+        let router = CommandRouter::with_interactive_capacity_from_app(app, 16);
+        let key =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+        for provider in ["codex", "claude", "opencode"] {
+            let source = profiles
+                .create_managed("local", provider, "Source")
+                .unwrap();
+            let source = profiles
+                .update_observation(
+                    "local",
+                    provider,
+                    &source.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    Some(format!("{provider}@example.invalid")),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let environment = profiles
+                .resolve_environment("local", provider, &source.profile_id)
+                .unwrap();
+            let request = serde_json::json!({"CopyProviderAccountToKernel":{
+                "provider":provider,"account_profile":source.profile_id,
+                "operation_id":format!("link-{provider}"),"target_kernel_id":config.daemon_id,
+                "target_key_thumbprint":key,"replace":false
+            }});
+            let response = source_request(&router, request.clone()).await.unwrap();
+            let id = response["ProviderAccountCopied"]["receipt"]["account_profile"]
+                .as_str()
+                .unwrap();
+            assert_ne!(id, source.profile_id);
+            let linked = profiles.get("local", provider, id).unwrap();
+            assert_eq!(
+                linked.origin,
+                crate::account_profile::ProviderAccountProfileOrigin::Linked
+            );
+            assert_eq!(
+                linked.auth_state,
+                crate::account_profile::ProviderAccountAuthState::Authenticated
+            );
+            assert_eq!(
+                profiles.resolve_environment("local", provider, id).unwrap(),
+                environment,
+                "a same-kernel link shares the credential instead of copying its refresh lineage"
+            );
+            assert_eq!(
+                source_request(&router, request.clone()).await.unwrap(),
+                response
+            );
+            assert_eq!(source_request(&router, serde_json::json!({"CopyProviderAccountFromKernel":{
+                "provider":provider,"account_profile":source.profile_id,
+                "operation_id":format!("link-{provider}"),"source_kernel_id":config.daemon_id,
+                "source_key_thumbprint":key,"replace":false
+            }})).await.unwrap(), response);
+            let mut conflict = request.clone();
+            conflict["CopyProviderAccountToKernel"]["operation_id"] =
+                format!("second-{provider}").into();
+            assert_code(
+                source_request(&router, conflict).await,
+                "provider_account_copy_conflict",
+                "synthetic",
+            );
+            profiles
+                .update_observation(
+                    "local",
+                    provider,
+                    id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    source.identity_summary.clone(),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                profiles
+                    .get("local", provider, &source.profile_id)
+                    .unwrap()
+                    .auth_state,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                "linked identities are the same credential source, not competing logins"
+            );
+            let mut missing = request;
+            missing["CopyProviderAccountToKernel"]["account_profile"] = "missing".into();
+            assert_code(
+                source_request(&router, missing).await,
+                "provider_account_copy_profile",
+                "synthetic",
+            );
+        }
+    });
+}
+
+#[test]
 fn account_copy_verification_allows_unrelated_profile_operations() {
     crate::test_support::isolated_env_test!();
     run_account_copy_drill(CopyScenario::RegistryAccess);
