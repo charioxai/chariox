@@ -181,6 +181,8 @@ pub(crate) struct InboxEvent {
     pub prompt_id: Option<String>,
     pub target_prompt_id: Option<String>,
     pub provider_run_id: Option<String>,
+    #[serde(default)]
+    pub arrived_at_ms: Option<u64>,
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
     /// When the owner last sent this delivery again; it keeps a leased resend's prompt id fresh.
