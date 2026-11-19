@@ -173,6 +173,10 @@ async fn held_job_drill(
         "{finished}"
     );
     assert_eq!(
+        std::fs::read_to_string(finished["result"]["log"].as_str().unwrap()).unwrap(),
+        "before\npartial-line\nafter\n",
+    );
+    assert_eq!(
         finished["result"]["files_back"],
         json!(["result.txt"]),
         "{finished}"
