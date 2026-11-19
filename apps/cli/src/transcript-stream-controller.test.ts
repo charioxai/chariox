@@ -39,6 +39,28 @@ test("transcript stream controller merges assistant chunks in place", () => {
   assert.equal(harness.persisted.length, 1)
 })
 
+// #1425: a replacement that folds a row split by a tool row into one changes the
+// rows, so the mounted transcript is reconciled rather than one entry updated.
+test("transcript stream controller reconciles a replacement that folds a split row", () => {
+  const harness = streamHarness({
+    entries: [
+      entry(1, "assistant", "First", { mergeKey: "live-1" }),
+      entry(2, "tool", "Bash ls"),
+      entry(3, "assistant", " second", { mergeKey: "live-1" }),
+    ],
+    entryCounter: 3,
+  })
+
+  harness.controller.appendProviderChunk("assistant", "First second. Done.", "live-1", undefined, { replaces: true })
+
+  assert.deepEqual(harness.entries.map((item) => [item.role, item.text]), [
+    ["assistant", "First second. Done."],
+    ["tool", "Bash ls"],
+  ])
+  assert.equal(harness.updatedEntries.length, 0)
+  assert.equal(harness.reconciled.length, 1)
+})
+
 test("transcript stream controller ignores late output already present in hydrated history", () => {
   const historyEntry = entry(1, "assistant", "complete response", {
     turnId: 2,

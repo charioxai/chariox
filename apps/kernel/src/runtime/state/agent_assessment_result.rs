@@ -304,6 +304,7 @@ impl KernelRuntimeOwnedState {
                 merge_key: None,
                 recipient_attachment_ids: std::sync::Arc::from(recipients),
                 bytes: bytes.clone(),
+                replaces: false,
             }]);
         // Not attributed to the hidden check turn (its id would hide the entry),
         // and not to the work turn (it would change that turn's public outputs).

@@ -182,42 +182,70 @@ extension CharioxAppModel {
   func appendTerminalOutput(_ records: [TerminalOutputRecord]) {
     var pendingKind: TranscriptEntry.Kind?
     var pendingAgentID: String?
+    var pendingMergeKey: String?
     var pendingText = ""
 
     func flushPending() {
       guard let kind = pendingKind, !pendingText.isEmpty else { return }
-      appendTranscript(kind: kind, agentID: pendingAgentID, text: pendingText)
+      appendTranscript(kind: kind, agentID: pendingAgentID, mergeKey: pendingMergeKey, text: pendingText)
       pendingKind = nil
       pendingAgentID = nil
+      pendingMergeKey = nil
       pendingText = ""
     }
 
     for record in records where !record.text.isEmpty {
       let kind = TranscriptEntry.Kind(terminalKind: record.kind)
-      if pendingKind == kind, pendingAgentID == record.agentID {
+      if record.replaces == true {
+        flushPending()
+        appendTranscript(
+          kind: kind, agentID: record.agentID, mergeKey: record.mergeKey, text: record.text,
+          replaces: true)
+      } else if pendingKind == kind, pendingAgentID == record.agentID,
+        pendingMergeKey == record.mergeKey
+      {
         pendingText += record.text
       } else {
         flushPending()
         pendingKind = kind
         pendingAgentID = record.agentID
+        pendingMergeKey = record.mergeKey
         pendingText = record.text
       }
     }
     flushPending()
   }
 
-  func appendTranscript(kind: TranscriptEntry.Kind, agentID: String?, text: String) {
+  /// Output under a merge key continues that key's row wherever it is, or
+  /// replaces its text; output without one continues the last row of its kind.
+  func appendTranscript(
+    kind: TranscriptEntry.Kind, agentID: String?, mergeKey: String? = nil, text: String,
+    replaces: Bool = false
+  ) {
     guard !text.isEmpty else { return }
-    if kind.mergesAdjacentOutput,
+    if let mergeKey,
+      let index = transcriptEntries.lastIndex(where: {
+        $0.mergeKey == mergeKey && $0.kind == kind && $0.agentID == agentID
+      })
+    {
+      if replaces {
+        transcriptEntries[index].text = text
+      } else {
+        transcriptEntries[index].text += text
+      }
+      return
+    }
+    if mergeKey == nil, kind.mergesAdjacentOutput,
       let lastIndex = transcriptEntries.indices.last,
       transcriptEntries[lastIndex].kind == kind,
-      transcriptEntries[lastIndex].agentID == agentID
+      transcriptEntries[lastIndex].agentID == agentID,
+      transcriptEntries[lastIndex].mergeKey == nil
     {
       transcriptEntries[lastIndex].text += text
       return
     }
     transcriptEntries.append(
-      TranscriptEntry(kind: kind, agentID: agentID, text: text)
+      TranscriptEntry(kind: kind, agentID: agentID, mergeKey: mergeKey, text: text)
     )
     if transcriptEntries.count > 500 {
       transcriptEntries.removeFirst(transcriptEntries.count - 500)

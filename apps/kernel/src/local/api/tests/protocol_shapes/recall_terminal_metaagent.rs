@@ -343,6 +343,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                         ),
                     },
                 ),
+                replaces: false,
             },
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
@@ -362,6 +363,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                 pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
                 bytes: b"\x1b[2Jfullscreen".to_vec(),
                 external_observation_metadata: None,
+                replaces: true,
             },
         ],
     };
@@ -369,6 +371,13 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/TerminalOutput/records/0/record_id"),
         Some(&serde_json::json!(7))
+    );
+    // Protocol 1071: a record that replaces its merge key's row says so; one
+    // that is added to it leaves the field out.
+    assert_eq!(snapshot.pointer("/TerminalOutput/records/0/replaces"), None);
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/1/replaces"),
+        Some(&serde_json::json!(true))
     );
     // MP-08 / MP-10 (panes R5): live records carry their history sequence
     // since local protocol 508; records without a history row omit it.
@@ -434,7 +443,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a89f6930effd0f870e6a3afc57bfded2d2138bd9d973d5b7e194022e89b87a1b"
+        "67ea2b4232684c99f1888312832ff887a6fe50f31cf20a4bd503fb874f7bd8e1"
     );
 }
 

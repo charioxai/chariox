@@ -503,6 +503,15 @@ pub(crate) fn provider_reported_transcript_on_kernel(
     super::reported_transcript_file::ProviderReportedTranscript::open(path, confined)
 }
 
+/// Where a transcript path the provider reported lives on this kernel, when the
+/// run may read it; the file itself may not exist yet.
+pub(crate) fn provider_reported_transcript_location(
+    run: &RuntimeProviderRun,
+    reported_path: &str,
+) -> Option<PathBuf> {
+    provider_reported_path_binding(run, reported_path).map(|(path, _)| path)
+}
+
 fn provider_reported_path_binding(
     run: &RuntimeProviderRun,
     reported_path: &str,

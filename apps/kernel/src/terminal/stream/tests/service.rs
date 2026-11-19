@@ -73,6 +73,7 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         sequence: None,
         recipient_attachment_ids: Arc::from(Vec::<String>::new()),
         bytes: b"detached tool result".to_vec(),
+        replaces: false,
     }]);
     terminal.record_assistant_message_completion(
         "session-1",
@@ -129,6 +130,7 @@ fn completion_check_turn_is_not_delivered_to_clients() {
         sequence: None,
         recipient_attachment_ids: Arc::from(recipients()),
         bytes: b"{\"status\":\"continue\"}".to_vec(),
+        replaces: false,
     }]);
     assert!(terminal
         .drain_output_records("session-1", "attachment-1")
@@ -424,6 +426,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"one".to_vec(),
+            replaces: false,
         },
         TerminalOutputAppend {
             session_id: "session-1".to_string(),
@@ -437,6 +440,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"two".to_vec(),
+            replaces: false,
         },
     ]);
     assert_eq!(records.records.len(), 2);
@@ -473,6 +477,7 @@ fn batch_output_coalescing_keeps_reused_merge_keys_in_separate_prompts() {
                 merge_key: Some("assistant".to_string()),
                 recipient_attachment_ids: Arc::from(vec!["attachment-viewer".to_string()]),
                 bytes: prompt_id.as_bytes().to_vec(),
+                replaces: false,
             })
             .collect(),
     );
@@ -579,6 +584,7 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
                 sequence: None,
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: format!("chunk-{index}").into_bytes(),
+                replaces: false,
             })
             .collect(),
     );
@@ -680,6 +686,7 @@ fn output_drain_size_estimator_bounds_scoped_json() {
         ],
         bytes: vec![0, 9, 10, 99, 100, 255],
         external_observation_metadata: None,
+        replaces: false,
     };
 
     let scoped = scoped_output_record(&record, 7, "attachment-2");
@@ -1461,6 +1468,7 @@ fn stalled_attachment_retains_six_thousand_history_deltas() {
             sequence: Some(sequence),
             recipient_attachment_ids: vec!["attachment-1".into()].into(),
             bytes: b"x".to_vec(),
+            replaces: false,
         }]);
     }
     let mut records = Vec::new();
@@ -1496,6 +1504,7 @@ fn output_records_preserve_distinct_history_sequences() {
         sequence,
         recipient_attachment_ids: vec!["attachment-1".to_string()].into(),
         bytes: bytes.to_vec(),
+        replaces: false,
     };
     let mut terminal = TerminalStreamService::new();
     terminal.fan_out_outputs(vec![append(Some(10), b"hello ")]);
