@@ -465,6 +465,20 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        // The inbox owns queued messages. Older Room checkpoints sometimes
+        // included the live projection, whose shape changed independently.
+        connection
+            .execute(
+                "UPDATE durable_state_owner_checkpoint_entities
+                 SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
+                 WHERE entity_kind='sessions'
+                 AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL",
+                [],
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.migrate_room_checkpoint",
+                message: error.to_string(),
+            })?;
         storage_full::initialize(&connection)?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;

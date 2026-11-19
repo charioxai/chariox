@@ -213,6 +213,30 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
 
 // Queued agent messages carry the prompt text another agent sent: they follow agent trace visibility.
 #[test]
+fn cutover_checkpoint_excludes_live_queued_message_projection() {
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_queued_agent_messages(vec![crate::session::QueuedAgentMessage {
+        id: "agent-message-1".into(),
+        agent_id: "agent".into(),
+        sender: "peer".into(),
+        preview: "fixture projection".into(),
+        truncated: false,
+    }]);
+
+    let checkpoint = serde_json::to_value(session.durable_runtime_snapshot()).unwrap();
+    assert!(checkpoint.get("queued_agent_messages").is_none());
+    assert_eq!(session.queued_agent_messages().len(), 1);
+}
+
+#[test]
 fn queued_agent_messages_follow_agent_trace_visibility() {
     use crate::agent::{AgentInstance, GridPosition};
     let mut session = RuntimeSession::new(
