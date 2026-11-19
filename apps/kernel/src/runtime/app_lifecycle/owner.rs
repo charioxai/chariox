@@ -24,6 +24,18 @@ pub(super) struct Context {
     #[cfg(test)]
     pub claim_checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+impl Context {
+    /// The budget for the kernel-side steps of this start. Tests that cannot
+    /// wait the real limit shorten it through the fixture platform.
+    pub(super) fn budget(&self) -> AppOperationBudget {
+        #[cfg(test)]
+        if let Some(limit) = self.fixture.as_ref().and_then(|fixture| fixture.budget) {
+            let control = self.control.clone();
+            return AppOperationBudget::within(limit, move || control.stopped());
+        }
+        self.control.budget()
+    }
+}
 enum Admitted {
     Restart(ActiveStartAdmission),
     First {
@@ -70,7 +82,7 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     // The claim is a writer operation: it holds a shared App slot through the
     // claim and, if it fails, through the deferred stop write below.
     let operation = queue(&context.control, &context.admission);
-    let claim_budget = context.control.budget();
+    let claim_budget = context.budget();
     #[cfg(test)]
     let claim_budget = match &context.claim_checkpoint {
         Some(observe) => claim_budget.fixture_observe_checks(observe.clone()),
@@ -183,6 +195,22 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
             ),
         ),
         Ok(Err(_)) if context.control.stopped() => (WorkerPhase::Stopped, None),
+        Ok(Err(LifecycleError::Deadline)) => {
+            let step = context.control.step().code();
+            crate::logging::warn_with_fields(
+                "app.worker",
+                "App start ran out of its budget",
+                serde_json::json!({
+                    "installation_id": context.installation,
+                    "step": step,
+                    "budget_ms": crate::runtime::app_operation_budget::SUPERVISOR_LIMIT.as_millis(),
+                }),
+            );
+            (
+                WorkerPhase::Failed,
+                Some(LifecycleError::Deadline.failure_code(context.control.step())),
+            )
+        }
         Ok(Err(error)) => (WorkerPhase::Failed, Some(error.to_string())),
         Err(_) => (WorkerPhase::Failed, Some("app_lifecycle_supervisor".into())),
     };

@@ -5,6 +5,9 @@ use chariox_app_runtime::worker_peer::BrokerRequest;
 use std::sync::Arc;
 use tokio::time::Instant;
 
+/// What kernel-owned background work may spend on its own steps.
+pub(crate) const SUPERVISOR_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(crate) struct AppOperationBudget {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -33,8 +36,17 @@ impl AppOperationBudget {
     /// predicate observes retained lifecycle cancellation; it grants no authority
     /// and neither its deadline nor cancellation source comes from an App.
     pub(crate) fn from_supervisor(cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self::within(SUPERVISOR_LIMIT, cancelled)
+    }
+
+    /// The same budget with a caller-chosen limit, for tests that cannot wait
+    /// the full limit.
+    pub(crate) fn within(
+        limit: std::time::Duration,
+        cancelled: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            deadline: Instant::now() + limit,
             resource: None,
             cancelled: Arc::new(cancelled),
         }
