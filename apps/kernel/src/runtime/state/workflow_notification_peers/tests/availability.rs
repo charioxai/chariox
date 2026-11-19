@@ -156,6 +156,7 @@ impl Drill {
                 subscription_id.into(),
                 "reviewer".into(),
                 None,
+                crate::session::AgentTriggerBusyPolicy::Queue,
             )
             .unwrap();
         self.trigger_id = trigger.id().to_owned();

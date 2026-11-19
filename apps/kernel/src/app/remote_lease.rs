@@ -369,6 +369,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(())
     }
 
+    pub(crate) fn execution_lease_owner(&self, lease_id: &str) -> Result<String, DaemonError> {
+        self.app
+            .execution_leases
+            .get(lease_id)
+            .map(|lease| lease.owner_user_id.clone())
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
+    }
+
     pub(crate) fn consume_execution_lease_authorization(
         &mut self,
         lease_id: &str,
@@ -806,10 +816,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session.workspace_id() == workspace_id
                     && session.worktree_id() == worktree
                     && session.owner_user_id() == lease.owner_user_id
-                    && session.project_id()
-                        == source_project
-                            .map(|project| project.id())
-                            .unwrap_or_default()
+                    && match source_project {
+                        Some(project) => session.project_id() == project.id(),
+                        None => session.project().is_hidden_scope(),
+                    }
             });
         let session = match existing_session {
             Some(session) => {
@@ -1653,6 +1663,7 @@ mod tests {
     use super::*;
     mod catalog_admission;
     mod profile_admission;
+    mod skill_names;
 
     #[test]
     fn codex_leased_agent_creation_refuses_endpoint_capacity_before_mutation() {

@@ -164,7 +164,7 @@ async fn native_hook_context_case(steering: bool) {
         std::fs::write(format!("{}.managed-inputs",context.display()),serde_json::json!({
             "prompt_id":"steering-request","origin_prompt_id":active.id(),
             "prompt":"steering continuation","hidden_system_context":"current-steering-control native-steering-room-secret",
-            "attachments":[],
+            "attachments":[],"skill_context":"",
         }).to_string()).unwrap();
         std::fs::write(&events,[
             serde_json::json!({"hook_event_name":"SessionStart","session_id":"new-claude-session"}).to_string(),

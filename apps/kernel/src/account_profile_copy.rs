@@ -162,8 +162,14 @@ impl ProviderAccountProfileRegistry {
             });
         public.auth_state = ProviderAccountAuthState::Authenticated;
         public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
+        // A remote launch from the source kernel with this account runs on this copy.
+        let transferred_from = Some(TransferredAccountOrigin {
+            source_kernel_id: binding.source_kernel_id.clone(),
+            source_profile_id: binding.source_profile_id.clone(),
+        });
         if let Some(index) = existing {
             next.profiles[index].public = public;
+            next.profiles[index].transferred_from = transferred_from;
         } else {
             next.profiles.push(StoredProviderAccountProfile {
                 public,
@@ -175,7 +181,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
-                transferred_from: None,
+                transferred_from,
             });
         }
         next.account_copies[operation].phase = AccountCopyPhase::Installed;

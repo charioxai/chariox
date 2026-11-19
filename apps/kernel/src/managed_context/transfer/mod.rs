@@ -40,8 +40,19 @@ const MAX_IDENTIFIER_BYTES: usize = 4096;
 const MAX_DESTINATION_BYTES: usize = 16 * 1024;
 const MAX_TRANSFER_TTL_MS: u64 = 30 * 60 * 1_000;
 const COMPLETED_TRANSFER_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
-pub(crate) const MAX_IMPORT_RECEIPT_BYTES: usize = 128 * 1024;
-const MAX_PERSISTED_IMPORT_BYTES: usize = MAX_IMPORT_RECEIPT_BYTES * 3 + 16 * 1024;
+/// One import receipt holds a publication receipt per Project and 64 KiB for everything else.
+pub(crate) const fn max_import_receipt_bytes(projects: usize) -> usize {
+    let projects = if projects == 0 { 1 } else { projects };
+    64 * 1024 + projects * crate::managed_context::development::MAX_PUBLICATION_RECEIPT_BYTES
+}
+const fn max_persisted_import_bytes(projects: usize) -> usize {
+    max_import_receipt_bytes(projects) * 3 + 16 * 1024
+}
+/// Size guards for a receipt of any admissible plan; capacity reservations use the plan's own Project count.
+pub(crate) const MAX_IMPORT_RECEIPT_BYTES: usize =
+    max_import_receipt_bytes(crate::managed_context::package::MAX_MANAGED_CONTEXT_PROJECTS);
+const MAX_PERSISTED_IMPORT_BYTES: usize =
+    max_persisted_import_bytes(crate::managed_context::package::MAX_MANAGED_CONTEXT_PROJECTS);
 const STATE_CAPACITY_MARGIN_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,11 +588,11 @@ impl ManagedContextTransferStore {
             return Err(error);
         }
         drop(state);
-        crate::managed_context::development::cleanup_development_context_publication_staging(
+        crate::managed_context::development::cleanup_development_context_staging_units(
             &destination_root,
             transfer_id,
         )?;
-        crate::managed_context::development::cleanup_development_context_publication(
+        crate::managed_context::development::cleanup_present_development_context_publications(
             &destination_root,
             transfer_id,
         )?;
@@ -999,7 +1010,7 @@ impl ManagedContextTransferStore {
                 crate::managed_context::package::cleanup_package_components(
                     &self.archive_path(transfer_id),
                 )?;
-                crate::managed_context::development::cleanup_development_context_publication_staging(
+                crate::managed_context::development::cleanup_development_context_staging_units(
                     &entry.destination_root,
                     transfer_id,
                 )?;
@@ -1082,33 +1093,45 @@ fn launch_target_from_receipt(
                     .into_owned(),
             }
         }
-        ManagedContextImportedDevelopment::FromSource {
-            project_id,
-            receipt,
-        } => {
-            let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                project_id: expected_project_id,
-                ..
+        ManagedContextImportedDevelopment::FromSource { projects } => {
+            let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects {
+                projects: expected_projects,
             } = &entry.plan.development
             else {
                 return Err(transfer_error(
                     "managed context import receipt contains unexpected development context",
                 ));
             };
-            if project_id != expected_project_id || receipt.project_id != *expected_project_id {
+            if projects.len() != expected_projects.len()
+                || projects
+                    .iter()
+                    .zip(expected_projects)
+                    .any(|(imported, expected)| {
+                        imported.project_id != expected.project_id
+                            || imported.receipt.project_id != expected.project_id
+                    })
+            {
                 return Err(transfer_error(
                     "managed context import receipt project does not match",
                 ));
             }
-            // MP-07 / MP-08: each owner copy publishes a fresh transfer
-            // directory, so it becomes its own target Project instead of
-            // conflicting with an earlier copy of the same source Project.
-            let target_project_id = if entry.plan.destination.is_some() {
-                format!("copy-{}", entry.plan.context_id)
-            } else {
-                project_id.clone()
-            };
-            development_launch_target(&target_project_id, receipt)?
+            let targets = projects
+                .iter()
+                .enumerate()
+                .map(|(index, imported)| {
+                    // MP-07 / MP-08: each owner copy publishes a fresh transfer
+                    // directory, so every Project becomes its own target Project
+                    // instead of conflicting with an earlier copy of the same
+                    // source Project.
+                    let target_project_id = if entry.plan.destination.is_some() {
+                        format!("copy-{}-{index}", entry.plan.context_id)
+                    } else {
+                        imported.project_id.clone()
+                    };
+                    development_launch_target(&target_project_id, &imported.receipt)
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?;
+            ManagedContextDevelopmentLaunchTarget::FromSource { projects: targets }
         }
     };
     Ok(ManagedContextLaunchTarget {
@@ -1124,7 +1147,7 @@ fn launch_target_from_receipt(
 fn development_launch_target(
     project_id: &str,
     receipt: &crate::managed_context::development::DevelopmentContextPublicationReceipt,
-) -> Result<crate::local::ManagedContextDevelopmentLaunchTarget, DaemonError> {
+) -> Result<crate::local::ManagedContextProjectLaunchTarget, DaemonError> {
     let destination_root = receipt
         .repositories
         .first()
@@ -1161,14 +1184,12 @@ fn development_launch_target(
             })
         })
         .collect::<Result<Vec<_>, DaemonError>>()?;
-    Ok(
-        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-            project_id: project_id.to_string(),
-            destination_root,
-            primary_repository_id: receipt.primary_repository_id.clone(),
-            repositories,
-        },
-    )
+    Ok(crate::local::ManagedContextProjectLaunchTarget {
+        project_id: project_id.to_string(),
+        destination_root,
+        primary_repository_id: receipt.primary_repository_id.clone(),
+        repositories,
+    })
 }
 
 fn recover_launch_target_from_publication(
@@ -1185,10 +1206,10 @@ fn recover_launch_target_from_publication(
                 .into_owned();
             crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path }
         }
-        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } => {
+        development @ crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects { .. } => {
+            let (project_id, repositories) = development.single_source_project().ok_or_else(|| {
+                transfer_error("schema-3 managed context publication recovery supports one Project")
+            })?;
             let workspace_parent = transfer_root
                 .parent()
                 .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?
@@ -1201,7 +1222,9 @@ fn recover_launch_target_from_publication(
             .ok_or_else(|| {
                 transfer_error("schema-3 managed context publication could not be recovered")
             })?;
-            development_launch_target(project_id, &receipt)?
+            crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                projects: vec![development_launch_target(project_id, &receipt)?],
+            }
         }
     };
     Ok(crate::local::ManagedContextLaunchTarget {
@@ -1258,8 +1281,8 @@ fn ensure_state_capacity_with_receipt_reservations(
                 ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
             )
         })
-        .count()
-        .saturating_mul(MAX_PERSISTED_IMPORT_BYTES);
+        .map(|entry| max_persisted_import_bytes(entry.plan.development.source_project_count()))
+        .fold(0usize, usize::saturating_add);
     let required = persisted_state_size(state)?
         .saturating_add(future_receipts)
         .saturating_add(STATE_CAPACITY_MARGIN_BYTES);

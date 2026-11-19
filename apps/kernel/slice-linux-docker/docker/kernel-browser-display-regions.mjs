@@ -32,6 +32,9 @@ export function subscribeRegion(host,command,scope,signal,options={}) {
 async function subscribeReservedRegion(host,command,scope,signal,{Capture=NativeWindowRegionCapture}={}) {
  assertNotCancelled(signal);
  const target=checkedTarget(command.target);
+ // A browser with no display of its own (headless, or not on Linux) has no window to read a region from, now or later:
+ // say so once instead of refusing as a stale reference the viewer retries.
+ if(!host.chromium?.display)throw Error('MP-08: region video needs the browser\'s own display');
  // State advertisement is not admission: a terminal can guess a window epoch.
  // Only managed lockdown proves Chrome cannot replace this unmasked band
  // with same-size fullscreen page pixels.

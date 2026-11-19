@@ -6,6 +6,7 @@ pub mod config;
 pub mod frame_transport;
 pub mod meter;
 pub mod protocol;
+pub mod registration_proof;
 pub mod revocation_sync;
 pub mod server;
 pub mod stun;

@@ -672,6 +672,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
+        LocalDaemonRequest::ListOwnerInteractions(_) => "kernel_access.owner_interactions",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",
         LocalDaemonRequest::UnsubscribeEvents(_) => "events.unsubscribe",
@@ -771,6 +772,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelEnvironmentOperation(_) => "project.environment.operation.cancel",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::SetProjectPinned(_) => "project.pin",
+        LocalDaemonRequest::CreateProject(_) => "project.create",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
@@ -873,13 +875,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveScript(_) => "script.remove",
         LocalDaemonRequest::GetScript(_) => "script.get",
         LocalDaemonRequest::ListScripts(_) => "script.list",
-        LocalDaemonRequest::InstallSkill(_) => "skill.install",
-        LocalDaemonRequest::UpsertSkill(_) => "skill.upsert",
-        LocalDaemonRequest::UpdateSkill(_) => "skill.update",
-        LocalDaemonRequest::UninstallSkill(_) => "skill.uninstall",
-        LocalDaemonRequest::ImportSkills(_) => "skill.import",
-        LocalDaemonRequest::GetSkill(_) => "skill.get",
-        LocalDaemonRequest::ListSkills(_) => "skill.list",
+
+        LocalDaemonRequest::SkillsV2(_) => "skills.v2",
         LocalDaemonRequest::RelayStatus(_) => "relay.status",
         LocalDaemonRequest::ConfigureRelay(_) => "relay.configure",
         LocalDaemonRequest::CloudRelayStatus(_) => "cloud_relay.status",
@@ -951,6 +948,18 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
+        LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
+        LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",
+        LocalDaemonRequest::ListNotificationSubscriptions(_) => "notification_subscriptions.list",
+        LocalDaemonRequest::UpdateNotificationSubscription(_) => {
+            "notification_subscriptions.update"
+        }
+        LocalDaemonRequest::RemoveNotificationSubscription(_) => {
+            "notification_subscriptions.remove"
+        }
+        LocalDaemonRequest::TestNotificationSubscription(_) => "notification_subscriptions.test",
+        LocalDaemonRequest::ReadNotificationTrace(_) => "notification_subscriptions.trace",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
         LocalDaemonRequest::RefreshExternalProviderSessions(_) => {
             "external_provider_session.refresh"
@@ -966,7 +975,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
         LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
         LocalDaemonRequest::DeleteWorkspaceWorktree(_) => "workspace.worktree.delete",
-        LocalDaemonRequest::CreateWorkspacePullRequest(_) => "workspace.pull_request.create",
         LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
         LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
         LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
@@ -975,8 +983,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
         LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",
@@ -991,6 +997,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartProviderLogin(_) => "provider.login.start",
         LocalDaemonRequest::GetProviderLoginStatus(_) => "provider.login.status",
         LocalDaemonRequest::SendProviderLoginInput(_) => "provider.login.input",
+        LocalDaemonRequest::SendProviderLoginVaultEntry(_) => "provider.login.vault_entry",
         LocalDaemonRequest::CancelProviderLogin(_) => "provider.login.cancel",
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
         LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",
@@ -1068,6 +1075,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
         LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
         LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
+        LocalDaemonRequest::Watcher(_) => "notification.watcher",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",

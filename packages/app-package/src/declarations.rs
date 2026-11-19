@@ -187,6 +187,7 @@ impl Declarations {
                 );
             }
             validate_schema(&event.payload_schema, true, limits)?;
+            crate::event_options(&event.payload_schema)?;
             if let Some(filter) = &event.filter_schema {
                 validate_schema(filter, true, limits)?;
             }

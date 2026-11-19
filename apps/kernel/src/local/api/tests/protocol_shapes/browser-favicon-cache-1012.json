@@ -1,0 +1,39 @@
+{
+  "local_protocol": 1060,
+  "peer_protocol": 498,
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "state_wait",
+        "after": "0123456789abcdef.4",
+        "wait_ms": 10000,
+        "known_favicons": [
+          "0123456789abcdef"
+        ]
+      }
+    }
+  },
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "generation": 7,
+        "revision": "fedcba9876543210.5",
+        "tabs": [
+          {
+            "tab_id": "held",
+            "favicon_hash": "0123456789abcdef"
+          },
+          {
+            "tab_id": "new",
+            "favicon_hash": "89abcdef01234567",
+            "favicon_png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/SAcpIQAAAABJRU5ErkJggg=="
+          },
+          {
+            "tab_id": "plain",
+            "favicon_hash": null
+          }
+        ]
+      }
+    }
+  }
+}

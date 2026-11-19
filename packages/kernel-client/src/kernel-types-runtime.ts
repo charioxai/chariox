@@ -207,6 +207,8 @@ export type AppConfirmationFrame = {
   publisher_id: string
   publisher_name: string
   action_name: string
+  /** The exact input the kernel runs on Confirm, formatted by the kernel (pretty JSON as the agent supplied it, cut with a byte count). */
+  input: string
   /** The App's own rows for this exact input, when no App Tab shows the preview. Plain text. */
   preview?: { label: string; value: string }[]
 }
@@ -408,6 +410,7 @@ export type SessionConfigState = {
 }
 
 export type CharioxUserConfig = {
+  skills?: { metadata_budget_percent: number }
   version: number
   agents?: { offload_without_asking?: boolean }
   slices?: {
@@ -694,6 +697,18 @@ export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelA
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+/** Protocol 1012: one open card of the owner; `person_only` says why only the person answers it. */
+export type OwnerInteraction = {
+  /** The card's Room; absent for a card outside any Room (answered with AnswerUserDomainInteraction). */
+  session_id?: string
+  interaction_id: string
+  title?: string
+  message: string
+  choices: { id: string; label: string }[]
+  reply_choice_id?: string
+  person_only?: string
+}
+export type OwnerInteractionsListedResponse = { OwnerInteractionsListed: { interactions: OwnerInteraction[] } }
 
 export type KernelSudoTurn = {
   entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string

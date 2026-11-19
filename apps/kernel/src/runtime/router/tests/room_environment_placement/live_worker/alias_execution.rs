@@ -48,7 +48,7 @@ async fn real_relay_denies_before_contact_and_moves_canonically() {
 }
 
 async fn check_alias_execution(fixture: &LiveWorker) {
-    dispatch_json(&fixture.home, bind(&fixture.rooms[0], "desktop"))
+    dispatch_bind_room(&fixture.home, bind(&fixture.rooms[0], "desktop"))
         .await
         .unwrap();
     let slices = fixture.home.app.lock().await.slices().clone();

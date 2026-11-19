@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::config::vault_kind::VaultKind;
 use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
     UserCredentialUse, UserCredentialVaultConfig,
@@ -48,6 +49,7 @@ pub(crate) use vault::{
     create_chariox_encrypted_vault_for_test, expire_chariox_encrypted_vault_for_test,
     fail_next_vault_dir_sync_for_test,
 };
+pub(crate) use vault::{is_vault_companion, normalize_vault_path};
 
 #[cfg(test)]
 pub(crate) fn set_chariox_encrypted_vault_secret_for_test(
@@ -405,6 +407,19 @@ impl RuntimeSecretService {
         Ok(Zeroizing::new(value.replace("${secret}", &secret)))
     }
 
+    /// The bare token of an account's entry, for the one caller that cannot
+    /// use the `Authorization` header: `git push` to the same origin's
+    /// repositories. It goes to git by environment and is scrubbed from git's
+    /// output; the App never sees it.
+    pub(crate) fn app_account_token(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.validate_app_account(credential_id, origin)?;
+        Ok(Zeroizing::new(self.resolve_secret(credential)?))
+    }
+
     pub(crate) fn prepare_http_request_with_credential(
         &self,
         request: CredentialHttpRequest,
@@ -620,7 +635,12 @@ impl RuntimeSecretService {
         let credential = self.credential(credential_id)?;
         let binding = credential.metadata.as_ref().and_then(|m| m.use_binding.as_ref())
             .ok_or_else(|| secret_error("credential_policy", "this Vault entry has no declared use; capture it again for one exact destination".into()))?;
-        binding.require(target)?;
+        binding.require(target).map_err(|refusal| {
+            match VaultKind::refusal_for(credential, requested) {
+                Some(message) => secret_error("credential_policy", message),
+                None => refusal,
+            }
+        })?;
         self.ensure_use_allowed(credential, requested)?;
         if !matches!(
             credential.injection,
@@ -822,6 +842,58 @@ impl RuntimeSecretService {
                 format!("credential `{credential_id}` is not configured for provider launch"),
             ));
         }
+        self.resolve_secret(credential).map(Zeroizing::new)
+    }
+
+    /// The checks before a Vault entry's value is typed into a provider's own
+    /// login: a secret bound to exactly this site, for browser or HTTP use. Nothing
+    /// else is a source, so no other Vault use widens.
+    pub(crate) fn validate_provider_login_secret(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        let binding = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.use_binding.as_ref())
+            .ok_or_else(|| {
+                secret_error(
+                    "credential_policy",
+                    format!(
+                        "this Vault entry has no declared use; create it for the site {origin}"
+                    ),
+                )
+            })?;
+        let bound = crate::config::VaultUseTarget::Site {
+            origin: origin.to_string(),
+        };
+        if binding.target != bound || binding.value_kind != crate::config::VaultValueKind::Secret {
+            return Err(secret_error(
+                "credential_policy",
+                format!("this sign-in takes a Vault entry bound to the site {origin}; pick or create that one"),
+            ));
+        }
+        // A person's entry allows Browser use; one `copy_for_use` made for the site allows Http.
+        // Either was declared for this exact site, so either may sign in to it.
+        self.ensure_use_allowed(credential, UserCredentialUse::Browser)
+            .or_else(|_| self.ensure_use_allowed(credential, UserCredentialUse::Http))
+            .map_err(|_| {
+                secret_error(
+                    "credential_policy",
+                    format!("this Vault entry may not be used to sign in to {origin}"),
+                )
+            })?;
+        Ok(credential)
+    }
+
+    pub(crate) fn provider_login_secret_input(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.validate_provider_login_secret(credential_id, origin)?;
         self.resolve_secret(credential).map(Zeroizing::new)
     }
 
@@ -1264,7 +1336,9 @@ impl RuntimeSecretService {
             ) {
                 return Err(secret_error(
                     "credential_policy",
-                    "this Vault entry was created for a different use".into(),
+                    VaultKind::refusal_for(credential, requested).unwrap_or_else(|| {
+                        "this Vault entry was created for a different use".into()
+                    }),
                 ));
             }
         }
@@ -1273,10 +1347,12 @@ impl RuntimeSecretService {
         }
         Err(secret_error(
             "credential_policy",
-            format!(
-                "credential `{}` is not allowed for {:?}",
-                credential.id, requested
-            ),
+            VaultKind::refusal_for(credential, requested).unwrap_or_else(|| {
+                format!(
+                    "credential `{}` is not allowed for {:?}",
+                    credential.id, requested
+                )
+            }),
         ))
     }
 

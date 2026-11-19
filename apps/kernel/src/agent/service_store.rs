@@ -559,6 +559,16 @@ impl AgentServiceStore {
             .set_agent_substitution_timeout(agent_id, timeout_ms)
     }
 
+    pub fn set_worker_model_selection(
+        &self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_worker_model_selection(agent_id, model, effort)
+    }
+
     pub fn bind_remote_execution(
         &self,
         agent_id: &str,
@@ -630,14 +640,6 @@ impl AgentServiceStore {
 
     pub fn revoke_mcp(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
         self.write().revoke_mcp(agent_ref, name)
-    }
-
-    pub fn grant_skill(&self, agent_ref: &str, name: String) -> Result<AgentInstance, DaemonError> {
-        self.write().grant_skill(agent_ref, name)
-    }
-
-    pub fn revoke_skill(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
-        self.write().revoke_skill(agent_ref, name)
     }
 
     pub fn revoke_extension(

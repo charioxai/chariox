@@ -164,15 +164,16 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     });
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
 
-    let (mut old_socket, _) = connect_async_with_retry(&url)
+    let (mut old_socket, old_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("old kernel should connect");
-    let (mut replacement_socket, _) = connect_async_with_retry(&url)
+    let (mut replacement_socket, replacement_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("replacement kernel should connect");
-    for (socket, registration) in [
+    for (socket, handshake, registration) in [
         (
             &mut old_socket,
+            &old_socket_handshake,
             test_registration_with_token(
                 "kernel-old",
                 "machine-old",
@@ -183,6 +184,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
         ),
         (
             &mut replacement_socket,
+            &replacement_socket_handshake,
             test_registration_with_token(
                 "kernel-replacement",
                 "machine-replacement",
@@ -194,7 +196,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                serde_json::to_string(&signed_register(&url, handshake, registration))
                     .expect("registration should serialize")
                     .into(),
             ))

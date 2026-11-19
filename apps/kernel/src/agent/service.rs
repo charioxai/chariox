@@ -177,7 +177,7 @@ impl AgentService {
         Ok(created_agents)
     }
 
-    /// A child above its parent's current limit, or beyond the fan-out caps, is refused where
+    /// A child above its parent's current limit, or beyond the depth and team caps, is refused where
     /// it is created, so nothing can change between the check and the effect.
     fn check_authority_limit(
         &self,
@@ -192,20 +192,7 @@ impl AgentService {
         let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
             return Ok(());
         };
-        let unfinished_work = self
-            .durable_state
-            .as_ref()
-            .map(|state| state.agents_with_unfinished_work(&request.session_id))
-            .transpose()?
-            .unwrap_or_default();
-        super::authority_limit::check_spawn(
-            request,
-            parent,
-            &agents,
-            earlier_in_batch,
-            session,
-            &unfinished_work,
-        )
+        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
     }
 
     pub(crate) fn create_agent_for_session(
@@ -1114,6 +1101,25 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    /// The model and variant the worker chose for a remote agent: the worker runs it, so its
+    /// choice is the agent's.
+    pub fn set_worker_model_selection(
+        &mut self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_model(model);
+        agent.set_effort(effort);
+        Ok(agent.clone())
+    }
+
     pub fn bind_remote_execution(
         &mut self,
         agent_id: &str,
@@ -1290,30 +1296,6 @@ impl AgentService {
         Ok(agent.clone())
     }
 
-    pub fn grant_skill(
-        &mut self,
-        agent_ref: &str,
-        name: String,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.grant_extension(agent_ref, ExtensionGrant::new(ExtensionKind::Skill, name))
-    }
-
-    pub fn revoke_skill(
-        &mut self,
-        agent_ref: &str,
-        name: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent_id = self.resolve_agent_id(agent_ref)?;
-        let agent = self
-            .store
-            .get_mut(&agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_ref.to_string(),
-            })?;
-        agent.revoke_extension(ExtensionKind::Skill, name);
-        Ok(agent.clone())
-    }
-
     pub fn revoke_extension(
         &mut self,
         agent_ref: &str,
@@ -1466,7 +1448,6 @@ mod workflow_copy_alias_tests {
         agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
         agent.set_account_profile(Some("acct-primary".to_string()));
         agent.grant_mcp("home_browser");
-        agent.grant_skill("dataviz");
         service.store.insert(agent)
     }
 

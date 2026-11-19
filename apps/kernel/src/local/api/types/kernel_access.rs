@@ -76,6 +76,10 @@ pub struct AppConfirmationFrame {
     pub publisher_id: String,
     pub publisher_name: String,
     pub action_name: String,
+    /// The exact input the kernel runs when the person confirms, formatted by the kernel:
+    /// stable pretty JSON, as the agent supplied it, cut with a "N more bytes" note when large.
+    /// Shown next to the App's preview; a client never rebuilds it.
+    pub input: String,
     /// The App's own rows for this exact input, shown under the frame as the App's words.
     /// Present when no App Tab shows the preview; the kernel bounds them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,6 +296,37 @@ pub struct KernelAccessGrant {
     /// Protocol 641: the live background processes the grant covers by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covered: Vec<CoveredProcess>,
+}
+
+/// Protocol 1012: the caller's owner's open cards, for a terminal or an external agent's grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListOwnerInteractionsRequest {}
+
+/// One open card of the owner, as an external agent may act on it for them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerInteraction {
+    /// The card's Room, answered with `RespondToInteraction`. Absent for a card outside any Room
+    /// (an App's host offer while a user view is open), answered with `AnswerUserDomainInteraction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub interaction_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub message: String,
+    pub choices: Vec<OwnerInteractionChoice>,
+    /// The choice that takes a text reply (`custom_reply`), when the card asks for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_choice_id: Option<String>,
+    /// Why only the person answers this card; absent when an external agent may answer it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_only: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerInteractionChoice {
+    pub id: String,
+    pub label: String,
 }
 
 /// Protocol 415: a grant holder requests a human-authorized turn. Identity and

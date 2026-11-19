@@ -1,0 +1,19 @@
+{
+  "local": 1060,
+  "relayPeer": 498,
+  "requests": [
+    {
+      "SendProviderLoginVaultEntry": {
+        "login_id": "login-1",
+        "credential_id": "cred-1"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "ProviderLoginVaultEntrySent": {
+        "login_id": "login-1"
+      }
+    }
+  ]
+}

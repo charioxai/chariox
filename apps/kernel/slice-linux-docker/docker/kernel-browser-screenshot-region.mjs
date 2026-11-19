@@ -1,8 +1,10 @@
 // MP-08/MP-10/MP-11: an agent's screenshot of one element, a viewport region or the whole page.
 // An element or region is cut from the same masked viewport capture a plain screenshot returns, so Vault masking is
 // unchanged. A page that fits uses this same masked capture; taller pages cannot reuse viewport-clipped masks.
+// These are model captures: they mask every Vault fill whatever the display audience.
 import { assertCurrentDocument } from './browser-controller-actions.mjs';
 import { measurePageProtection } from './browser-protection-regions.mjs';
+import { captureProtectedDisplay } from './kernel-browser-region-protection.mjs';
 import { AgentToolRefusal } from './kernel-browser-refusal.mjs';
 import { topLevelNodeId, withLiveNode } from './kernel-browser-node-ref.mjs';
 
@@ -64,7 +66,7 @@ async function fullPage(host, tab) {
   const protectedPage = host.protection.targets.some(target => target.target_id === tab.target_id) ||
     [...(host.browser.fillTargets?.values() ?? [])].some(target => target.target_id === tab.target_id);
   if (protectedPage && width <= viewport.width && pageHeight <= viewport.height && visual?.pageX === 0 && visual?.pageY === 0) {
-    return { ...await host.displayScreenshot(tab, { x: 0, y: 0, width, height, scale: 1 / density }), page_height: pageHeight };
+    return { ...await captureProtectedDisplay(host, tab, { x: 0, y: 0, width, height, scale: 1 / density }, true, true), page_height: pageHeight };
   }
   // One image pixel per CSS pixel, whatever the page density. A page whose PNG does not fit gets smaller encodings.
   const shoot = ({ format, quality, factor }) => connection.send('Page.captureScreenshot', {
@@ -98,5 +100,5 @@ export async function regionScreenshot(host, tab, command) {
   }
   const page = host.pageSize(tab.tab_id);
   const clip = chosen[0] === 'clip' ? checkedClip(command.clip, page) : await elementClip(host, tab, command.node_ref, page);
-  return { ...await host.displayScreenshot(tab, clip), clip };
+  return { ...await captureProtectedDisplay(host, tab, clip, true, true), clip };
 }

@@ -142,9 +142,18 @@ impl CodexPromptFixture {
         std::env::set_var("CHARIOX_CODEX_BIN", &executable);
         let harness = LocalRouterTestHarness::new();
         let profile = harness.with_app(|app| {
-            app.provider_account_profile_registry()
+            let profile = app
+                .provider_account_profile_registry()
                 .create_managed("local", "codex", label)
-                .unwrap()
+                .unwrap();
+            crate::test_support::seed_account_models(
+                &app.provider_catalog_projection_store(),
+                "local",
+                "codex",
+                &profile.profile_id,
+                &["gpt-6-luna"],
+            );
+            profile
         });
         let (session, agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(

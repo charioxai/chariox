@@ -416,7 +416,7 @@ async fn prepare_home_slice_room_display(
         )
         .expect("mark the home-owned headed slice running");
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id":&room,
@@ -562,9 +562,9 @@ async fn launch_remote_room_provider(
             workflow_context: None,
             git_context: None,
             required_mcps: Vec::new(),
-            required_skills: None,
             remote_extension_manifest: remote_extension_manifest.clone(),
             provider_launch_credential: None,
+            native_skill_selections: Default::default(),
         },
     )
     .await

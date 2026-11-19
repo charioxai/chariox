@@ -742,7 +742,7 @@ fn a_follow_kept_past_its_turn_is_listed_and_unsubscribed_in_a_later_turn() {
             .await
             .expect("the later turn lists subscriptions");
         assert!(
-            listed["peer_follows"]
+            listed["other_tasks"]
                 .as_array()
                 .is_some_and(|f| f.iter().any(|r| r["id"] == id.as_str())),
             "the follow kept past its turn is listed: {listed}"

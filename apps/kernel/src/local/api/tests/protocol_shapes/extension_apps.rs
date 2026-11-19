@@ -11,7 +11,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
         crate::test_support::expected_local_protocol_version()
     );
     let args = ListExtensionsArgs {
-        kind: Some("app".into()),
+        kind: Some(crate::transport::runtime_tools::ExtensionListKind::App),
         apps_cursor: Some("app-099".into()),
     };
     let snapshot = json!({"kind":"app","apps_cursor":"app-099"});
@@ -29,7 +29,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
         json!({
             "type":"object",
             "properties": {
-                "kind":{"type":"string","enum":["mcp","skill","script","connector","app","all"]},
+                "kind":{"type":"string","enum":["mcp","script","connector","app","all"]},
                 "apps_cursor":{"type":"string","minLength":1,"maxLength":128}
             },
             "additionalProperties":false
@@ -111,14 +111,13 @@ fn capability_app_authority_protocol_462_shape_and_hash() {
     grant.app_grant = Some(crate::extension::AppCapabilityGrant {
         grant_id: "grant-1".into(),
         expires_at_ms: 28_800_001,
-        prompt_id: Some("prompt-1".into()),
         delegated_by_agent_id: Some("parent".into()),
         delegated_from_grant_id: Some("grant-parent".into()),
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
-        "f3c23ca0b26737a55b1bb6edd84edcedcf5c43ea52daa4b23207763218f9ca38"
+        "3a9d9b8ac64edd1e5814bc2d1bf0e66a857d86de57a5dc7b3a4b7cdd26fc47e3"
     );
     assert_eq!(
         serde_json::from_value::<crate::extension::ExtensionGrant>(value).unwrap(),

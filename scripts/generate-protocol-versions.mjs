@@ -13,8 +13,10 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
-  "apps/kernel/src/local/api/tests/protocol_shapes/agent-browser-owner-action-993.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/provider-catalog-aliases-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/provider-login-vault-entry-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-accounts-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-event-routing-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-standing-1011.json",
@@ -23,6 +25,7 @@ const currentSnapshots = [
   "apps/kernel/src/agent_move/protocol-639-241.json",
   "fixtures/cross-room-cards-protocol.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-list-1011.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/person-inbox-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",
@@ -36,6 +39,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-visited-links-629.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-pointer-cursor-document-mode-920.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-done-text-1011.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-favicon-cache-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-verification-992.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/client-app-view-999.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/kernel-browser-vault-fill-941.json",

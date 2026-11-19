@@ -30,7 +30,7 @@ export interface WorkflowPublicationDeploymentExtensionCredentialSlot {
 
 export interface WorkflowPublicationDeploymentExtensionRequirement {
   readonly id: string
-  readonly kind: "mcp" | "skill" | "script" | "connector"
+  readonly kind: "mcp" | "script" | "connector"
   readonly name: string
   readonly version: string
   readonly content_digest: string
@@ -419,7 +419,7 @@ function validateDeploymentExtensions(value: unknown): WorkflowPublicationDeploy
     const id = requireString(extension.id, `${label}.id`)
     const kind = requireString(extension.kind, `${label}.kind`)
     const name = requireString(extension.name, `${label}.name`)
-    if (!new Set(["mcp", "skill", "script", "connector"]).has(kind) || id !== `${kind}:${name}`) {
+    if (!new Set(["mcp", "script", "connector"]).has(kind) || id !== `${kind}:${name}`) {
       throw new Error(`${label} identity is invalid`)
     }
     requireSha256(extension.version, `${label}.version`)

@@ -1,9 +1,11 @@
 //! Completion of a retained wait after its last outcome has been handled.
 use super::*;
 
-pub(super) fn finish(
+/// Whether `task` waits on nothing more: every source it waited on ended and every outcome was
+/// handled. It still ends only when the agent holds nothing else (`finish`).
+pub(super) fn is_settled(
     tx: &Transaction<'_>,
-    task: &mut AgentTaskExecution,
+    task: &AgentTaskExecution,
 ) -> Result<bool, DaemonError> {
     if task.state != ExecutionState::Waiting
         || task.goal.is_some()
@@ -41,8 +43,23 @@ pub(super) fn finish(
         params![task.room_id, task.agent_id, task.task_id, encode(&wait.registration_ids)?],
         |row| row.get(0),
     ).map_err(sql)?;
-    if unhandled {
+    Ok(!unhandled)
+}
+
+pub(super) fn finish(
+    tx: &Transaction<'_>,
+    task: &mut AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    if !is_settled(tx, task)? {
         return Ok(false);
+    }
+    // The agent's parent hears the end when the agent stops working, not while it still does: a
+    // turn or a message turn runs beside this task, another task still waits on a source or
+    // owes its owner an answer. A task that is itself settled holds nothing back.
+    for other in live_tasks(tx, &task.room_id, &task.agent_id)? {
+        if other.task_id != task.task_id && !is_settled(tx, &other)? {
+            return Ok(false);
+        }
     }
     // A pending deadline/recheck is no longer work once the wait has ended.
     // Admitted or uncertain deliveries retain their normal reconciliation.
@@ -76,4 +93,25 @@ pub(super) fn finish(
     task.wait = None;
     task.reason = RESOLVED_WAIT_REASON.into();
     Ok(true)
+}
+
+/// A turn that ends may have been the work that held back another task's finished wait.
+pub(super) fn finish_agent_waits(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<(), DaemonError> {
+    loop {
+        let mut finished = false;
+        for mut task in live_tasks(tx, room, agent)? {
+            if finish(tx, &mut task)? {
+                task.revision += 1;
+                save(tx, &task)?;
+                finished = true;
+            }
+        }
+        if !finished {
+            return Ok(());
+        }
+    }
 }

@@ -24,6 +24,9 @@ pub(crate) struct AgentWakeMonitor {
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
     stall_fault: Option<PathBuf>,
+    /// What the scheduler loop and the lifecycle sweep wait on, named in their stall reports.
+    pub(super) scheduler_step: super::supervision_step::SupervisionStep,
+    pub(super) sweep_step: super::supervision_step::SupervisionStep,
     pub(super) leased_polls: std::sync::Mutex<BTreeSet<String>>,
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
     /// Sources of every other kind; watched processes stay with `processes`.
@@ -41,6 +44,8 @@ impl AgentWakeMonitor {
             tick_failure_alerted: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             processes: Default::default(),
+            scheduler_step: Default::default(),
+            sweep_step: Default::default(),
             leased_polls: Default::default(),
             drivers: Default::default(),
         };
@@ -55,6 +60,15 @@ impl AgentWakeMonitor {
     fn scheduler_silent_ms(&self, now: u64) -> u64 {
         let tick = self.scheduler_tick_ms.load(Ordering::Acquire);
         now.saturating_sub(tick.max(self.started_at_ms))
+    }
+
+    /// Why the lifecycle sweep has not passed its dead-man check since `since`.
+    fn sweep_stall_report(&self, since: u64) -> String {
+        let held = match self.sweep_step.current() {
+            Some((step, entered)) => format!("its pass waits on {step} since {}", iso(entered)),
+            None => "no pass has started since".into(),
+        };
+        format!("Kernel supervision sweep stalled since {}: {held}; wake delivery checks are degraded; timers still fire", iso(since))
     }
 }
 
@@ -108,16 +122,19 @@ impl KernelRuntimeState {
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
+            let step = &self.owned.agent_wakes.scheduler_step;
             if maintenance.is_empty() {
                 let state = self.clone();
                 maintenance.spawn(async move { state.run_disk_maintenance().await });
             }
+            step.enter("deadline cleanup");
             if let Err(error) = self
                 .tick_agent_deadlines(crate::session::unix_epoch_ms())
                 .await
             {
                 tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
             }
+            step.enter("usage limit resumes");
             if let Err(error) = self
                 .tick_usage_limit_stops(crate::session::unix_epoch_ms())
                 .await
@@ -129,13 +146,20 @@ impl KernelRuntimeState {
                 let state = self.clone();
                 orphan_sweep.spawn(async move { state.end_orphaned_sub_agents().await });
             }
+            step.enter("agent tree publication");
             self.publish_changed_agent_trees();
+            step.enter("watched process recovery");
             if !worker_recovered {
                 worker_recovered = self
-                    .recover_worker_leased_processes(crate::session::unix_epoch_ms())
+                    .recover_worker_processes(
+                        crate::hot_reload::take_watched(),
+                        crate::session::unix_epoch_ms(),
+                    )
                     .is_ok();
             }
+            step.enter("watched process waits");
             self.deliver_process_waits();
+            step.enter("the wake tick");
             let monitor = &self.owned.agent_wakes;
             let paused = monitor.stall_fault.as_ref().is_some_and(|p| p.exists());
             if !paused
@@ -178,9 +202,12 @@ impl KernelRuntimeState {
                     && now.saturating_sub(sweep) > 3 * SWEEP_MS
                     && !monitor.sweep_stall_alerted.swap(true, Ordering::AcqRel)
                 {
-                    self.notify_wake_owners(None, |_| format!("Kernel supervision sweep stalled since {}: wake delivery checks are degraded; timers still fire", iso(sweep)));
+                    let report = monitor.sweep_stall_report(sweep);
+                    tracing::warn!(%report, "MP-08/MP-09/MP-10/MP-11 A03: lifecycle sweep stalled");
+                    self.notify_wake_owners(None, |_| report.clone());
                 }
             }
+            step.leave();
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(WAKE_TICK_MS)) => {},
                 result = maintenance.join_next() => {
@@ -288,7 +315,13 @@ impl KernelRuntimeState {
             } else {
                 iso(tick)
             };
-            self.notify_wake_owners(Some(&timers), |_| format!("Wake alert: scheduler stalled (no tick since {since}); the kernel sweep fires due wakes until it recovers"));
+            let held = match monitor.scheduler_step.current() {
+                Some((step, entered)) => format!("; it waits on {step} since {}", iso(entered)),
+                None => String::new(),
+            };
+            let report = format!("Wake alert: scheduler stalled (no tick since {since}{held}); the kernel sweep fires due wakes until it recovers");
+            tracing::warn!(%report, "MP-08/MP-09/MP-10/MP-11 A03: wake scheduler stalled");
+            self.notify_wake_owners(Some(&timers), |_| report.clone());
         }
         if timers.iter().any(|w| {
             w.next_due_ms
@@ -344,6 +377,14 @@ impl KernelRuntimeState {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agent_wakes_last_swept_for_test(&self, at_ms: u64) {
+        self.owned
+            .agent_wakes
+            .sweep_ms
+            .store(at_ms, Ordering::Release);
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {

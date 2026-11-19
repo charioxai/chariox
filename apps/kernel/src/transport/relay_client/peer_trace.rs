@@ -71,13 +71,19 @@ impl RelayPeerRequestTrace {
         from_daemon_id: Option<&str>,
     ) {
         let fields = self.fields(status, error, from_daemon_id);
-        if error.is_some() {
+        if let Some(error) = error {
+            // A peer that keeps refusing the same request with the same answer (a protocol
+            // version it does not speak) is logged once, not on every pump cycle.
+            if status == "relay_error" && self.is_repeated_refusal(error) {
+                return;
+            }
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "relay peer request completed",
                 fields,
             );
         } else {
+            self.forget_refusal();
             crate::logging::info_with_fields(
                 "daemon.relay_client",
                 "relay peer request completed",
@@ -85,7 +91,33 @@ impl RelayPeerRequestTrace {
             );
         }
     }
+
+    /// Whether this peer's last refusal of this kind of request had the same words. Success
+    /// clears the entry: a refusal after it is news.
+    fn is_repeated_refusal(&self, error: &str) -> bool {
+        let Some(peer) = self.target_daemon_id.clone() else {
+            return false;
+        };
+        let mut last = LAST_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        last.insert((peer, self.request_kind), error.to_string())
+            .is_some_and(|previous| previous == error)
+    }
+
+    fn forget_refusal(&self) {
+        if let Some(peer) = self.target_daemon_id.clone() {
+            LAST_REFUSALS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&(peer, self.request_kind));
+        }
+    }
 }
+
+/// What each peer last refused each kind of request with: one entry per peer and kind.
+static LAST_REFUSALS: std::sync::Mutex<std::collections::BTreeMap<(String, &'static str), String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 fn request_kind(request: &RelayPeerRequest) -> &'static str {
     match request {
@@ -192,6 +224,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         }
         RelayPeerRequest::InvokeHomeCredentialTool { .. } => "invoke_home_credential_tool",
         RelayPeerRequest::ResolveHomeCredentialSecret { .. } => "resolve_home_credential_secret",
+        RelayPeerRequest::CaptureForHomeVault { .. } => "capture_for_home_vault",
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { .. } => "apply_workspace_live_sync_change",
         RelayPeerRequest::ForwardNativeTurnInteraction { .. } => "forward_native_turn_interaction",
         RelayPeerRequest::UpdateNativeInteraction { .. } => "update_native_interaction",
@@ -209,6 +242,9 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
             "pull_project_environment_registration"
         }
         RelayPeerRequest::EnsureRemoteSkillPackages { .. } => "ensure_remote_skill_packages",
+        RelayPeerRequest::ReadLeasedSkillNativeInventory { .. } => {
+            "read_leased_skill_native_inventory"
+        }
         RelayPeerRequest::RequestProviderAccountCopy { .. } => "request_provider_account_copy",
         RelayPeerRequest::InstallProviderAccountCopy { .. } => "install_provider_account_copy",
         RelayPeerRequest::EnsureRemoteProviderAccount { .. } => "ensure_remote_provider_account",
@@ -292,5 +328,76 @@ mod tests {
         assert_eq!(fields["timeout_ms"], 15_000);
         assert!(fields["relay_rtt_ms"].as_u64().is_some());
         assert!(!fields.to_string().contains("private-"));
+    }
+
+    fn trace_to(peer: &str, request_id: &str) -> RelayPeerRequestTrace {
+        RelayPeerRequestTrace::new(
+            request_id,
+            &RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: 0,
+            },
+            &ClientTarget {
+                daemon_id: Some(peer.into()),
+                daemon_alias: None,
+            },
+            "persistent",
+            3_000,
+        )
+    }
+
+    // A peer on another protocol answers the same refusal every pump cycle: one warning
+    // per peer and answer, and a different answer or a refusal after a success is news.
+    #[test]
+    fn a_peer_that_repeats_its_refusal_is_logged_once() {
+        let capture = crate::logging::capture::start();
+        let peer = "kernel-repeated-refusal-test";
+        let refused = "local transport `workflow.notifications` failed: workflow notification requires peer protocol 442";
+        let warnings = || {
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.contains(peer) && record.contains(refused))
+                .count()
+        };
+        for cycle in 0..3 {
+            trace_to(peer, &format!("cycle-{cycle}")).log_completed(
+                "relay_error",
+                Some(refused),
+                Some(peer),
+            );
+        }
+        assert_eq!(warnings(), 1);
+        let other = "kernel-other-peer-test";
+        trace_to(other, "other-peer").log_completed("relay_error", Some(refused), Some(other));
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.contains(other) && record.contains(refused))
+                .count(),
+            1
+        );
+        trace_to(peer, "answer-changed").log_completed(
+            "relay_error",
+            Some("requires peer protocol 444"),
+            Some(peer),
+        );
+        trace_to(peer, "ok").log_completed("success", None, Some(peer));
+        trace_to(peer, "after-success").log_completed("relay_error", Some(refused), Some(peer));
+        assert_eq!(warnings(), 2);
+        // A timeout carries no answer to compare, so every one is logged.
+        for cycle in 0..2 {
+            trace_to(peer, &format!("slow-{cycle}")).log_completed(
+                "timeout",
+                Some("timed out"),
+                None,
+            );
+        }
+        let timeouts = capture
+            .records()
+            .iter()
+            .filter(|record| record.contains(peer) && record.contains("timed out"))
+            .count();
+        assert_eq!(timeouts, 2);
     }
 }

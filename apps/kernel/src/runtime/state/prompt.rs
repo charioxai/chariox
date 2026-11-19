@@ -3,7 +3,7 @@
 //! This module owns local prompt completion once provider output settlement arrives, plus the
 //! queued prompt activation that may follow completion.
 
-use super::owned::OwnedPromptCompletion;
+use super::owned::{NextPromptDispatch, OwnedPromptCompletion};
 use super::*;
 
 impl KernelRuntimeOwnedState {
@@ -576,6 +576,24 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.clone(),
+            agent_id: agent_id.to_string(),
+            prompt_id: started_next.id().to_string(),
+            target_active_prompt_id: None,
+            source_attachment_id,
+            prompt: started_next.prompt().to_string(),
+            hidden_system_context: started_next.hidden_system_context().to_string(),
+            attachments: started_next.attachments().to_vec(),
+            prompt_origin: started_next.prompt_origin(),
+            external_provider: started_next.external_provider().map(str::to_string),
+            external_provider_session_id: started_next
+                .external_provider_session_id()
+                .map(str::to_string),
+            external_provider_turn_id: started_next.external_provider_turn_id().map(str::to_string),
+            steering: false,
+        };
         // A substitute run serves only its own turn; the next one goes through
         // the dispatcher, which moves it to the agent's configured profile.
         if self
@@ -591,14 +609,9 @@ impl KernelRuntimeOwnedState {
                 started_next.prompt(),
                 false,
             )?;
-            let granted_skill_context =
-                self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let mut hidden_system_context = join_hidden_context(
-                &self.hidden_context_with_failed_requests(
-                    agent_id,
-                    started_next.hidden_system_context(),
-                ),
-                &granted_skill_context,
+            let mut hidden_system_context = self.hidden_context_with_failed_requests(
+                agent_id,
+                started_next.hidden_system_context(),
             );
             if self.config_projection.snapshot().room_agent_tools
                 && !self
@@ -653,9 +666,16 @@ impl KernelRuntimeOwnedState {
                 ),
                 false,
             ) {
-                let _ = self.cancel_active_prompt_only(session_id, agent_id);
-                let _ = self.clear_prompt_activity(&provider_run_id);
-                return Err(error);
+                // The previous turn completed; this one settles failed with the reason.
+                let _ = self.session_snapshot(session_id)?;
+                return Ok(Some(OwnedPromptCompletion {
+                    completion: crate::session::PromptCompletion {
+                        completed,
+                        started_next: Some(started_next),
+                    },
+                    released_claim: false,
+                    dispatch: Some(NextPromptDispatch::Failed(dispatch, error)),
+                }));
             }
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
@@ -675,26 +695,7 @@ impl KernelRuntimeOwnedState {
                 started_next: Some(started_next.clone()),
             },
             released_claim: false,
-            dispatch: Some(crate::app::KernelPromptDispatch {
-                session_id: session_id.to_string(),
-                provider_run_id,
-                agent_id: agent_id.to_string(),
-                prompt_id: started_next.id().to_string(),
-                target_active_prompt_id: None,
-                source_attachment_id,
-                prompt: started_next.prompt().to_string(),
-                hidden_system_context: started_next.hidden_system_context().to_string(),
-                attachments: started_next.attachments().to_vec(),
-                prompt_origin: started_next.prompt_origin(),
-                external_provider: started_next.external_provider().map(str::to_string),
-                external_provider_session_id: started_next
-                    .external_provider_session_id()
-                    .map(str::to_string),
-                external_provider_turn_id: started_next
-                    .external_provider_turn_id()
-                    .map(str::to_string),
-                steering: false,
-            }),
+            dispatch: Some(NextPromptDispatch::Submit(dispatch)),
         }))
     }
 

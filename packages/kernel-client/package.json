@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./kernel-types-skills-v2": "./dist/kernel-types-skills-v2.js",
+    "./ipc-skills-v2-requests": "./dist/ipc-skills-v2-requests.js",
     "./relay-auth-renewal": "./dist/relay-auth-renewal.js",
     "./relay-authorization": "./dist/relay-authorization.js",
     ".": "./dist/index.js",

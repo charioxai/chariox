@@ -610,3 +610,52 @@ async fn meta_resume_request_append_failure_rolls_back() {
 async fn meta_abort_request_append_failure_rolls_back() {
     assert_meta_request_append_failure_rolls_back("abort").await;
 }
+
+// MP-08 / MP-10 / MP-11: queued Meta selections use the existing atomic session journal.
+#[test]
+fn skill_meta_queue_commits_private_user_intent_and_restores_from_the_durable_event() {
+    let (runtime, _, session_id, agent_id) = meta_runtime();
+    let selection = crate::skill::v2::SkillSelection::Chariox {
+        skill_id: "review".into(),
+        name: "review".into(),
+        catalog_revision: 3,
+    };
+    let (task, _) = runtime
+        .enqueue_metaagent_task_with_skills(
+            &session_id,
+            &agent_id,
+            "attachment",
+            "Review",
+            vec![],
+            crate::session::SkillIntent {
+                selections: vec![selection.clone()],
+                user_syntax: true,
+            },
+        )
+        .unwrap();
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .unwrap();
+    let event = events
+        .iter()
+        .rev()
+        .find(|event| event.payload["reason"] == "metaagent_task_queued")
+        .unwrap();
+    let mut restored: crate::session::RuntimeSession =
+        serde_json::from_value(event.payload["session"].clone()).unwrap();
+    assert!(restored
+        .queued_metaagent_tasks()
+        .front()
+        .unwrap()
+        .skill_selections()
+        .is_empty());
+    let private: Vec<crate::session::DurablePromptPrivateState> =
+        serde_json::from_value(event.payload["prompt_private_states"].clone()).unwrap();
+    restored.restore_durable_prompt_private_states(&private);
+    let queued = restored.queued_metaagent_tasks().front().unwrap();
+    assert_eq!(queued.id(), task.id());
+    assert_eq!(queued.skill_selections(), &[selection]);
+    assert!(queued.user_skill_syntax());
+}

@@ -23,6 +23,7 @@ pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
 };
+mod project_id;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -54,6 +55,7 @@ pub use agent_config::{
     SESSION_AGENT_PERMISSION_CONFIG_KEY,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_id::{EmptyProjectId, ProjectId};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
@@ -101,8 +103,8 @@ pub use types::{
     RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
     RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
-    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
-    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, SkillIntent,
+    WorkflowArtifactRef, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
     WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,

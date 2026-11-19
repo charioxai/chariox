@@ -5,6 +5,7 @@ fn caller_operation_collision_does_not_replay_a_private_workflow_entry() {
     let owner = PromptStateOwner::default();
     let session = RuntimeSession::new(
         "session",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

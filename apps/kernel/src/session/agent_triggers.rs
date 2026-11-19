@@ -185,6 +185,7 @@ impl TriggerDelivery {
 pub struct ReplacedListener {
     prompt: String,
     enabled: bool,
+    busy_policy: AgentTriggerBusyPolicy,
 }
 
 impl ReplacedListener {
@@ -194,6 +195,10 @@ impl ReplacedListener {
 
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn busy_policy(&self) -> AgentTriggerBusyPolicy {
+        self.busy_policy
     }
 }
 
@@ -324,6 +329,7 @@ impl AgentTrigger {
         subscription_id: String,
         display_name: String,
         prompt: String,
+        busy_policy: AgentTriggerBusyPolicy,
         now_ms: u64,
     ) -> Self {
         Self {
@@ -336,7 +342,7 @@ impl AgentTrigger {
                 display_name,
                 source_available: true,
             },
-            busy_policy: AgentTriggerBusyPolicy::Queue,
+            busy_policy,
             prompt,
             enabled: true,
             created_at_ms: now_ms,
@@ -398,6 +404,7 @@ impl AgentTrigger {
         ReplacedListener {
             prompt: self.prompt.clone(),
             enabled: self.enabled,
+            busy_policy: self.busy_policy,
         }
     }
 

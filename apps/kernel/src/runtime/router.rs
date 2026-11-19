@@ -50,6 +50,7 @@ mod relay_collaborator_gate;
 mod relay_peer_bridge;
 mod room_exec_place;
 mod runtime_tool_bridge;
+mod skills_v2_dispatch;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 pub(in crate::runtime) use slice_relay_token_bridge::{
@@ -256,6 +257,8 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod normal_stack;
+    #[cfg(unix)]
+    mod provider_login_vault_entry;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;

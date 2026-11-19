@@ -5,6 +5,7 @@ pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 mod agent_tree_projection;
 pub(crate) mod agent_utility_executor;
+mod app_approved_operations;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -49,6 +50,7 @@ pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+mod app_workspace_broker;
 pub(crate) mod bounded_process;
 pub(crate) mod browser_artifact;
 pub(crate) mod browser_controller_action;
@@ -122,6 +124,7 @@ pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub(crate) mod perf_timing;
+pub(crate) mod person_inbox;
 pub mod process_health;
 pub(crate) mod process_resources;
 pub mod projection;
@@ -135,6 +138,7 @@ pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
 mod provider_login_input;
 mod provider_login_terminal;
+mod provider_login_vault_entry;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;
 pub(crate) mod provider_usage_refresh;

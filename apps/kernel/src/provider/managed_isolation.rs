@@ -293,14 +293,28 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     Ok(())
 }
 
-/// The arguments of a fresh provider child that starts empty-handed. A managed
-/// launch keeps its bubblewrap prefix through the provider program and starts
-/// in the namespace's empty `/tmp` rather than the workspace; an unmanaged one
-/// is just the provider's own arguments.
+/// Where a fresh provider child starts inside a managed launch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreshChildFolder {
+    /// The namespace's empty `/tmp`: the child reads nothing of the workspace.
+    Empty,
+    /// The run's own folder: the child works on the files the person asked about.
+    RunFolder,
+}
+
+/// The arguments of a fresh provider child. A managed launch keeps its bubblewrap prefix through
+/// the provider program and starts in `folder`; an unmanaged one keeps its state confinement
+/// prefix before the provider's own arguments and starts where the run does.
 pub(crate) fn fresh_provider_child_args(
     current: &[String],
     provider_args: Vec<String>,
+    folder: FreshChildFolder,
 ) -> Vec<String> {
+    if let Some(prefix) = super::state_confinement::confinement_prefix_len(current) {
+        let mut args = current[..prefix].to_vec();
+        args.extend(provider_args);
+        return args;
+    }
     let separator = current.iter().position(|arg| arg == "--");
     let Some(separator) = separator.filter(|separator| {
         current[..*separator]
@@ -310,9 +324,11 @@ pub(crate) fn fresh_provider_child_args(
         return provider_args;
     };
     let mut args = current[..current.len().min(separator + 2)].to_vec();
-    if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
-        if let Some(directory) = args.get_mut(chdir + 1) {
-            *directory = "/tmp".to_string();
+    if folder == FreshChildFolder::Empty {
+        if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
+            if let Some(directory) = args.get_mut(chdir + 1) {
+                *directory = "/tmp".to_string();
+            }
         }
     }
     args.extend(provider_args);
@@ -910,8 +926,12 @@ fn append_managed_runtime_user_anchor(
 }
 
 #[cfg(target_os = "linux")]
-fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
-    let mut candidates = Vec::new();
+/// MP-08 / MP-10 / MP-11: `skill_cache_roots` are the authenticated current
+/// execution's kernel-materialized Skills; no other execution's cache is exposed.
+fn managed_trusted_read_only_paths(
+    skill_cache_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, DaemonError> {
+    let mut candidates = skill_cache_roots.to_vec();
     let default_slice_root = Path::new("/opt/chariox-slice");
     if default_slice_root.exists() {
         candidates.push(default_slice_root.to_path_buf());
@@ -1093,7 +1113,13 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         launch.pty_env_remove.sort();
         launch.pty_env_remove.dedup();
-        return Ok(launch);
+        // The wrapper must know the scratch path before it masks the parent.
+        crate::agent_temp::attach_environment(
+            &request.session_id,
+            request.agent_id.as_deref(),
+            &mut launch.pty_env,
+        );
+        return super::state_confinement::confine_launch(launch, &request.skill_cache_roots);
     }
 
     let Some(program) = launch.pty_program.take() else {
@@ -1150,7 +1176,7 @@ pub(crate) fn apply_managed_provider_isolation(
                 managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES)
             })
             .unwrap_or_default();
-        let trusted_read_only_paths = managed_trusted_read_only_paths()?;
+        let trusted_read_only_paths = managed_trusted_read_only_paths(&request.skill_cache_roots)?;
         let runtime_command_roots = managed_runtime_command_roots()?;
 
         let resolver = managed_resolver_binding()?;
@@ -2299,6 +2325,43 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
+
+    // MP-08 / MP-10 / MP-11: a managed provider reads only the bundled files of
+    // its own execution; another lease's materialized skills stay masked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_provider_reads_only_its_own_skill_execution_root() {
+        let _env = crate::env_lock::lock();
+        let home = std::env::temp_dir().join(format!(
+            "chariox-skill-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = home.join("state/skill-materializations/home-kernel");
+        let own = base.join("execution-own");
+        let other = base.join("execution-other");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let trusted = managed_trusted_read_only_paths(std::slice::from_ref(&own))
+            .expect("trusted paths should resolve");
+        restore_env("CHARIOX_HOME", previous);
+        let own = own.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+        assert!(
+            trusted.iter().any(|path| own.starts_with(path)),
+            "{trusted:?}"
+        );
+        assert!(
+            !trusted.iter().any(|path| other.starts_with(path)),
+            "another execution's skill cache must stay masked: {trusted:?}"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
     include!("managed_isolation/protected_account_tests.rs");
 
     use super::*;
@@ -2968,7 +3031,7 @@ mod tests {
 
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         let trusted =
-            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
+            managed_trusted_read_only_paths(&[]).expect("configured trusted paths should resolve");
         append_managed_trusted_read_only_paths(&mut args, &trusted, &mut created);
         let current_runtime = Path::new("/run/chariox-current-runtime");
         append_bind(&mut args, current_runtime, current_runtime, &mut created);
@@ -4621,7 +4684,7 @@ mod tests {
 
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
-        let trusted = managed_trusted_read_only_paths()
+        let trusted = managed_trusted_read_only_paths(&[])
             .expect("configured publication path should not need a trusted bind");
         let detected = managed_configured_slice_publication_root()
             .expect("configured publication root should resolve");
@@ -5357,7 +5420,7 @@ printf 'managed account environment probe passed\n'
             .expect("selected configured publication should resolve");
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
-        let trusted = managed_trusted_read_only_paths()
+        let trusted = managed_trusted_read_only_paths(&[])
             .expect("configured publication should not be trusted wholesale");
         assert_eq!(
             managed_configured_slice_publication_root()
@@ -5520,7 +5583,7 @@ printf 'managed account environment probe passed\n'
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
         let trusted_read_only =
-            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
+            managed_trusted_read_only_paths(&[]).expect("configured trusted paths should resolve");
         let mut args = managed_namespace_args(None, |_| true, None).0;
         let mut created = BTreeSet::new();
         append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
@@ -5672,7 +5735,7 @@ printf 'managed account environment probe passed\n'
     }
 
     #[test]
-    fn path1_ordinary_provider_launch_is_unwrapped_and_scrubs_managed_controls() {
+    fn path1_ordinary_provider_launch_is_only_state_confined_and_scrubs_managed_controls() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
@@ -5733,8 +5796,10 @@ printf 'managed account environment probe passed\n'
             .expect("ordinary kernel launch should not require managed isolation");
         restore_env(MANAGED_PROVIDER_ISOLATION_ENV, previous_isolation);
 
-        assert_eq!(prepared.pty_program.as_deref(), Some("/bin/sh"));
-        assert_eq!(prepared.pty_args, ["-c", "printf ordinary"]);
+        let program = super::super::state_confinement::confinement_prefix_len(&prepared.pty_args)
+            .expect("an ordinary launch keeps the kernel's state out of reach");
+        assert_eq!(prepared.pty_args[program - 1], "/bin/sh");
+        assert_eq!(prepared.pty_args[program..], ["-c", "printf ordinary"]);
         assert_eq!(prepared.working_directory, Some(PathBuf::from("/tmp")));
         assert_eq!(
             prepared.pty_env.get("ORDINARY_FS").map(String::as_str),

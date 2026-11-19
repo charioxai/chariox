@@ -10,12 +10,12 @@ import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-m
 import {captureDocumentOwner} from './browser-controller-frames.mjs';
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
+import { worldContext } from './browser-focus-world.mjs';
 // VAUDIT S3 / AU-03: the owner's own view shows Vault fills and captures as the page does. Only the
 // mask inputs change; staleness still follows the live protection policy's identity.
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
 export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
-import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
-import { losslessRegion } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, halvePixels, maskPixels, regionPixels } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
@@ -36,6 +36,9 @@ const FONT_REFRESH_MS = 1000;
 const MOVED = Symbol('document moved');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// Stills (base64 PNG) in one packet; with its resources and body the packet stays under one relay reply (MAX_REPLY_BYTES,
+// 1 MiB): a larger reply is refused on every retry and the viewer stays on its old frame (vimeo, browserfidelity r3).
+const STILL_PACKET_BYTES = 512 * 1024;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
 // clicking so an echo never waits behind more than one slice on the socket.
@@ -122,7 +125,7 @@ function dataUrlBytes(url) {
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.
-export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)), 0);
+export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box, ink }) => { const [x, y, w, h] = ink ?? box; return sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)); }, 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
 export const regionOverBudget = (boxes, viewport) => regionArea(boxes, viewport) > 0.6 * viewport.width * viewport.height;
 
@@ -224,12 +227,12 @@ export class Mirror2 {
     const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame, { timeoutMs: patience?.() });
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
-      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId, { timeoutMs: patience?.() });
+      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, ...worldContext(world), returnByValue: true }, sessionId, { timeoutMs: patience?.() });
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
     this.host.timing?.('mirror2_world_install', installAt);
-    const out = { connection, sessionId, contextId: world.contextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
+    const out = { connection, sessionId, contextId: world.contextId, uniqueContextId: world.uniqueContextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
     const cssAt = timestamp();
     await this.watchCss(out, frameTree.frame.id, stream.id, patience);
     this.host.timing?.('mirror2_world_css', cssAt);
@@ -259,7 +262,7 @@ export class Mirror2 {
   // `json`: the page returns the value as one JSON string. A large snapshot or drain crosses CDP several times faster
   // that way than as a by-value object (the inspector's object serialization runs on the renderer's main thread).
   async evaluate(world, expression, awaitPromise = false, timeoutMs, json = false) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
+    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, ...worldContext(world), returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
@@ -283,7 +286,7 @@ export class Mirror2 {
     this.regions.retireStream(stream);
     stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);
     const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
-    for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
+    for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, ...worldContext(world), returnByValue: true }, world.sessionId).catch(() => {});
   }
   stream(stream) {
     this.host.timing?.(`mirror2_subscribe ${this.service.streams.size}`, timestamp());
@@ -1018,16 +1021,19 @@ export class Mirror2 {
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
+    // A lease captures the browser's native window: a headless browser (always on macOS) has none, so the still stays.
     const viewport = this.host.pageSize(tab.tab_id);
-    if (!boxes.length || regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || this.host.chromium?.display && regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
-    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
+    // A still that does not fit what is left of the packet's budget, even at the lowest density, follows at the next refresh.
+    let budget = STILL_PACKET_BYTES;
+    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); };
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
-      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
+      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${budget})`, true).catch(() => null);
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
@@ -1036,20 +1042,25 @@ export class Mirror2 {
     }
     if (!shots.length) return out;
     boxes = shots;
-    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
-    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
+    // A closed root's still covers what its content paints (ink), placed relative to its host's box.
+    const area = b => b.ink ?? b.box;
+    const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => area(b)[1]))));
+    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => area(b)[0] + area(b)[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => area(b)[1] + area(b)[3]))));
     if (x1 <= x0 || y1 <= y0) return [];
     const clip = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scale: 1 };
     const masks = await captureRegionMasks(world.connection, world.sessionId);
     const captured = await this.host.screenshot(tab, clip);
     const protectedRegions = await masks.afterCapture({ width: viewport.width * scale, height: viewport.height * scale });
     const frame = maskPixels(decodePng(captured.data_base64, scale), protectedRegions.map(r => [r.x - clip.x * scale, r.y - clip.y * scale, r.width, r.height]));
-    for (const { id, box } of boxes) {
-      const left = Math.max(box[0], x0), top = Math.max(box[1], y0), right = Math.min(box[0] + box[2], x1), bottom = Math.min(box[1] + box[3], y1);
+    for (const b of boxes) {
+      const { id, box } = b, [ax, ay, aw, ah] = area(b);
+      const left = Math.max(ax, x0), top = Math.max(ay, y0), right = Math.min(ax + aw, x1), bottom = Math.min(ay + ah, y1);
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;
-      send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: losslessRegion(frame, x, y, w, h).data_base64 });
+      let still = regionPixels(frame, x, y, w, h), data;
+      while ((data = encodePng(still.width, still.height, still.pixels)).length > budget && (still.width > 1 || still.height > 1)) still = halvePixels(still);
+      if (data.length <= budget) send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: data });
     }
     return out;
   }

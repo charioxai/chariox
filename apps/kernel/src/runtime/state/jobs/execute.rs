@@ -1,3 +1,4 @@
+use super::never_fit::Shortfall;
 use super::pending_return::PendingReturn;
 use super::remote::Remote;
 use super::*;
@@ -9,9 +10,9 @@ use zeroize::Zeroizing;
 /// Output is protected as complete lines, including values that cross relay chunk boundaries.
 pub(super) struct Output {
     pending: Vec<u8>,
-    tail: String,
+    pub(super) tail: String,
     file: std::fs::File,
-    log: String,
+    pub(super) log: String,
     discarding_line: bool,
 }
 
@@ -98,7 +99,19 @@ impl Output {
         }
         Ok(())
     }
-    fn page(
+    /// Writes a notice of the kernel's own. A line the producer left unfinished ends first and the
+    /// discard of an over-long line stops, so the notice is neither joined to it nor swallowed.
+    pub(super) fn notice(
+        &mut self,
+        state: &KernelRuntimeState,
+        room: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        self.discarding_line = false;
+        self.push(state, room, &[], true)?;
+        self.push(state, room, text.as_bytes(), true)
+    }
+    pub(super) fn page(
         &mut self,
         state: &KernelRuntimeState,
         room: &str,
@@ -305,9 +318,16 @@ impl KernelRuntimeState {
                 .expect("job move")
                 .remove(&record.job_id)
         });
+        // A job this machine can never run still asks other machines first, whatever the policy.
+        let shortfall = Shortfall::of(
+            &record.request.needs,
+            admission.capacity(),
+            std::thread::available_parallelism().map_or(u32::MAX, |cpus| cpus.get() as u32),
+        );
         let remote = self.remote_jobs_enabled()
             && (force_remote
                 || requested
+                || shortfall.is_some()
                 || match policy {
                     OffloadPolicy::Off => false,
                     OffloadPolicy::WhenBusy => busy,
@@ -315,6 +335,14 @@ impl KernelRuntimeState {
                 });
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
+        }
+        if let (Some(shortfall), false) = (&shortfall, remote) {
+            return self.refuse_never_fit(
+                record,
+                output,
+                shortfall,
+                "remote jobs are switched off on this kernel (CHARIOX_REMOTE_JOBS)",
+            );
         }
         if remote {
             let requested_origin = self.job_wake_driver.as_ref().and_then(|driver| {
@@ -377,6 +405,15 @@ impl KernelRuntimeState {
                         .complete_remote_job(record, output, result, was_cancelled)
                         .await;
                 }
+                Err(error) if shortfall.is_some() => {
+                    let answer = if is_capacity_failure(&error) {
+                        "no other machine can take it".into()
+                    } else {
+                        format!("asking another machine failed: {error}")
+                    };
+                    let shortfall = shortfall.as_ref().expect("guarded");
+                    return self.refuse_never_fit(record, output, shortfall, &answer);
+                }
                 Err(error) if is_capacity_failure(&error) => {
                     record.placement = JobPlacement::Local;
                     record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
@@ -403,6 +440,27 @@ impl KernelRuntimeState {
             }
             result => result,
         }
+    }
+
+    /// The one result every client shows for a job no machine can ever run.
+    fn refuse_never_fit(
+        &self,
+        record: &mut Record,
+        output: &mut Output,
+        shortfall: &Shortfall,
+        answer: &str,
+    ) -> Result<JobResult, DaemonError> {
+        record.placement = JobPlacement::Local;
+        record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
+        output.push(
+            self,
+            &record.room_id,
+            shortfall.refusal(answer).as_bytes(),
+            true,
+        )?;
+        let mut result = failed(record, String::new());
+        result.outcome = JobOutcome::CapacityUnavailable;
+        Ok(result)
     }
 
     pub(super) async fn complete_remote_job(
@@ -564,6 +622,7 @@ impl KernelRuntimeState {
                         message: "Queued job moved".into(),
                     });
                 }
+                note_failed_end(self, record, output, &outcome)?;
                 return Ok(result_from_exit(record, outcome, stopped));
             }
         }
@@ -768,6 +827,7 @@ impl KernelRuntimeState {
                 }
             }
         };
+        note_failed_end(self, record, output, &outcome)?;
         let mut result = result_from_exit(record, outcome, stopped);
         // The command's end is saved before any of its files are accepted.
         record.advance(StageEvent::End(result.outcome))?;
@@ -873,10 +933,31 @@ fn uncollected_stop(
     } else {
         "Job cancelled. Command output is partial and returned files are unavailable.\n"
     };
-    output.push(state, &record.room_id, notice.as_bytes(), true)?;
+    output.notice(state, &record.room_id, notice)?;
     let mut result = failed(record, String::new());
     result.outcome = outcome;
     Ok(result)
+}
+/// A command that ended without an exit status says why in its output, so the job never ends
+/// with no exit code and no reason.
+fn note_failed_end(
+    state: &KernelRuntimeState,
+    record: &Record,
+    output: &mut Output,
+    exit: &ExecOutcome,
+) -> Result<(), DaemonError> {
+    if let Some(notice) = failed_end_notice(exit) {
+        output.notice(state, &record.room_id, &notice)?;
+    }
+    Ok(())
+}
+pub(super) fn failed_end_notice(exit: &ExecOutcome) -> Option<String> {
+    match exit {
+        ExecOutcome::Failed { message } => Some(format!(
+            "The command ended without an exit status: {message}\n"
+        )),
+        _ => None,
+    }
 }
 fn result_from_exit(record: &Record, exit: ExecOutcome, stopped: Option<JobOutcome>) -> JobResult {
     let mut result = failed(record, String::new());

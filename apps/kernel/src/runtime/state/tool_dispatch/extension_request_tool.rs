@@ -3,7 +3,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 use super::capability_registry::{
     connector_registry, environment_registry_for_workspace, mcp_registry_for_workspace,
-    script_registry_for_workspace, skill_registry_for_workspace,
+    script_registry_for_workspace,
 };
 
 impl KernelRuntimeState {
@@ -13,14 +13,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         session_id: &str,
         arguments: serde_json::Value,
-        include_skill_package: bool,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<crate::transport::runtime_tools::RequestExtensionArgs>(
             arguments,
         )
@@ -29,26 +22,20 @@ impl KernelRuntimeState {
             message: format!("invalid tool arguments: {error}"),
         })?;
         if agent.remote_execution().is_some() && agent.owner_user_id() != session.owner_user_id() {
-            return Ok((
-                crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: false,
-                    payload: serde_json::json!({
-                        "error": "home-owned extensions for collaborator remote agents must be granted by the home session owner",
-                        "agent_ref": agent.agent_ref(),
-                        "kind": args.kind,
-                        "name": args.name,
-                        "authority": "home",
-                        "owner_user_id": session.owner_user_id(),
-                    }),
-                },
-                None,
-            ));
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "home-owned extensions for collaborator remote agents must be granted by the home session owner",
+                    "agent_ref": agent.agent_ref(),
+                    "kind": args.kind,
+                    "name": args.name,
+                    "authority": "home",
+                    "owner_user_id": session.owner_user_id(),
+                }),
+            });
         }
 
-        let mut skill_payload = serde_json::Value::Null;
-        let mut skill_package = None;
         let mcp_registry = mcp_registry_for_workspace(session.workspace_id());
-        let skill_registry = skill_registry_for_workspace(session.workspace_id());
         let (agent, effective_when, requires_provider_restart) = match args.kind.as_str() {
             "app" => {
                 let grant = crate::extension::ExtensionGrant {
@@ -76,36 +63,30 @@ impl KernelRuntimeState {
                     .get_agent(agent.id())?
                     .has_extension_grant(crate::extension::ExtensionKind::App, &args.name)
                 {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: true,
-                            payload: serde_json::json!({
-                                "granted": true,
-                                "kind": "app",
-                                "name": args.name,
-                                "agent_ref": agent.agent_ref(),
-                                "effective": "already_bound",
-                                "requires_provider_restart": false,
-                                "note": "This App is already bound to you. Nothing changed and no reload follows. Its tools are listed while the App can start; a catalog refresh from an earlier binding change applies after the current turn.",
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: true,
+                        payload: serde_json::json!({
+                            "granted": true,
+                            "kind": "app",
+                            "name": args.name,
+                            "agent_ref": agent.agent_ref(),
+                            "effective": "already_bound",
+                            "requires_provider_restart": false,
+                            "note": "This App is already bound to you. Nothing changed and no reload follows. Its tools are listed while the App can start; a catalog refresh from an earlier binding change applies after the current turn.",
+                        }),
+                    });
                 }
                 let Some(permit) = self
                     .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
                     .await?
                 else {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "granted": false, "kind": "app", "name": args.name,
-                                "reason": {"kind": "permission_denied", "message": "The App binding was not approved."}
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "granted": false, "kind": "app", "name": args.name,
+                            "reason": {"kind": "permission_denied", "message": "The App binding was not approved."}
+                        }),
+                    });
                 };
                 let granted_agent = self
                     .grant_agent_app_for_tool(
@@ -155,17 +136,14 @@ impl KernelRuntimeState {
             }
             "mcp" => {
                 if mcp_registry.get(&args.name)?.is_none() {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": format!("MCP `{}` is not installed", args.name),
-                                "kind": "mcp",
-                                "name": args.name,
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("MCP `{}` is not installed", args.name),
+                            "kind": "mcp",
+                            "name": args.name,
+                        }),
+                    });
                 }
                 let granted_agent = self
                     .grant_agent_mcp(agent.id(), args.name.clone(), agent.owner_user_id())
@@ -190,43 +168,6 @@ impl KernelRuntimeState {
                 );
                 (granted_agent, "after_provider_reload", true)
             }
-            "skill" => {
-                let Some(skill) = skill_registry.get(&args.name)? else {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": format!("skill `{}` is not installed", args.name),
-                                "kind": "skill",
-                                "name": args.name,
-                            }),
-                        },
-                        None,
-                    ));
-                };
-                if include_skill_package {
-                    skill_package = skill_registry.package(&args.name)?;
-                }
-                if args.return_body.unwrap_or(true) {
-                    let body = std::fs::read_to_string(&skill.path).map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_extension",
-                            message: format!("failed to read skill `{}` body: {error}", skill.name),
-                        }
-                    })?;
-                    skill_payload = serde_json::json!({
-                        "name": skill.name,
-                        "description": skill.description,
-                        "short_description": skill.short_description,
-                        "path": skill.path,
-                        "body": body
-                    });
-                }
-                let granted_agent = self
-                    .grant_agent_skill(agent.id(), args.name.clone(), agent.owner_user_id())
-                    .await?;
-                (granted_agent, "now", false)
-            }
             "script" => {
                 let environment =
                     args.environment
@@ -237,33 +178,27 @@ impl KernelRuntimeState {
                         })?;
                 let script_registry = script_registry_for_workspace(session.workspace_id());
                 if script_registry.get(&args.name)?.is_none() {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": format!("script `{}` is not registered", args.name),
-                                "kind": "script",
-                                "name": args.name,
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("script `{}` is not registered", args.name),
+                            "kind": "script",
+                            "name": args.name,
+                        }),
+                    });
                 }
                 let environment_registry =
                     environment_registry_for_workspace(session.workspace_id());
                 if environment_registry.get(&environment)?.is_none() {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": format!("environment `{environment}` is not registered"),
-                                "kind": "script",
-                                "name": args.name,
-                                "environment": environment,
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("environment `{environment}` is not registered"),
+                            "kind": "script",
+                            "name": args.name,
+                            "environment": environment,
+                        }),
+                    });
                 }
                 let granted_agent = self
                     .grant_agent_extension(
@@ -286,17 +221,14 @@ impl KernelRuntimeState {
             "connector" => {
                 let connector_registry = connector_registry()?;
                 if connector_registry.get(&args.name)?.is_none() {
-                    return Ok((
-                        crate::transport::runtime_tools::RuntimeToolResult {
-                            ok: false,
-                            payload: serde_json::json!({
-                                "error": format!("connector `{}` is not registered", args.name),
-                                "kind": "connector",
-                                "name": args.name,
-                            }),
-                        },
-                        None,
-                    ));
+                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("connector `{}` is not registered", args.name),
+                            "kind": "connector",
+                            "name": args.name,
+                        }),
+                    });
                 }
                 let max_safety = crate::connector::ConnectorSafety::parse(args.allow.as_deref())?;
                 if let Some(credential) = args.credential.as_deref() {
@@ -325,15 +257,12 @@ impl KernelRuntimeState {
                 }
             }
             _ => {
-                return Ok((
-                    crate::transport::runtime_tools::RuntimeToolResult {
-                        ok: false,
-                        payload: serde_json::json!({
-                            "error": "kind must be one of: mcp, skill, script, connector, app"
-                        }),
-                    },
-                    None,
-                ));
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({
+                        "error": "kind must be one of: mcp, script, connector, app"
+                    }),
+                });
             }
         };
 
@@ -352,18 +281,12 @@ impl KernelRuntimeState {
                 _ => "The extension grant is persisted."
             }
         });
-        if args.kind == "app" {
+        if args.kind == crate::extension::ExtensionKind::App {
             payload["tools_available"] = serde_json::json!(false);
             if requires_provider_restart {
                 payload["note"] = serde_json::json!("Chariox will refresh its shared runtime tool catalog after this turn and resume the request. The App's current binding and permissions are checked again on every call.");
             }
         }
-        if !skill_payload.is_null() {
-            payload["skill"] = skill_payload;
-        }
-        Ok((
-            crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
-            skill_package,
-        ))
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
 }

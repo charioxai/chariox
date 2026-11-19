@@ -46,21 +46,9 @@ pub(super) async fn execute_list_slices_request(
                 && slice.status == crate::slice::SliceStatus::Running
         })
         .collect::<Vec<_>>();
-    let detected = tokio::task::spawn_blocking(move || {
-        candidates
-            .into_iter()
-            .filter_map(|slice| {
-                crate::slice::inspect_local_docker_slice_provider_auth(&slice, "all", None)
-                    .ok()
-                    .map(|provider_auth| (slice, provider_auth))
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.auth.inspect",
-        message: format!("slice provider auth inspection task failed: {error}"),
-    })?;
+    let detected = runtime_state
+        .inspect_running_slice_provider_auth(candidates)
+        .await?;
     for (slice, provider_auth) in detected {
         let merged = merge_detected_provider_auth(slice.provider_auth.clone(), provider_auth);
         if merged != slice.provider_auth {
@@ -605,12 +593,10 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
-    if let Some(
-        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            ..
-        },
-    ) = &initial_record.development
+    if let Some((project_id, _)) = initial_record
+        .development
+        .as_ref()
+        .and_then(|development| development.single_source_project())
     {
         let checkouts: Vec<std::path::PathBuf> = runtime_state
             .slice_repository_selections(&initial_record)?

@@ -14,7 +14,6 @@ pub enum ExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
-    BrowserAccess,
     /// The agent itself asked the owner something and waits for the answer.
     Question,
 }
@@ -44,6 +43,15 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
+    /// settled obligation and a retained wait or wake prompt are only its record.
+    pub(crate) fn owns_unfinished_work(&self) -> bool {
+        self.goal.is_some()
+            || self
+                .obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+    }
     /// Who began stopping this turn, as recorded when the cancellation began. A path that only
     /// settles a cancellation consumes this; it never makes a new owner Stop.
     pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {
@@ -425,11 +433,6 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
-    BlockForBrowserAccess {
-        task: String,
-        prompt: String,
-        reason: String,
-    },
     /// An agent's own question to the owner: the card carries a reply box, not Resume.
     BlockForQuestion {
         task: String,
@@ -645,10 +648,12 @@ pub(crate) enum Operation {
         run: String,
         node: String,
     },
-    /// Private owner-turn admission; never cancels resources or delivery receipts.
+    /// A later turn of the agent (`later_prompt`) supersedes its interrupted task; never
+    /// cancels open work, resources or delivery receipts.
     RetireRestartFailure {
         task: String,
         revision: u64,
+        later_prompt: String,
         now: u64,
     },
     OwnerResponse {

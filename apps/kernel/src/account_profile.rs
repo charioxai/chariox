@@ -36,8 +36,8 @@ mod authority;
 pub(crate) use authority::{
     bind_provider_account_authority, copy_provider_account_selection,
     provider_account_authority_for_launch, provider_account_authority_for_run,
-    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
-    ResolvedProviderAccount,
+    provider_account_authority_owner_for_lease, provider_account_authority_owner_for_profile,
+    provider_account_selection_for_run, ResolvedProviderAccount,
 };
 
 const REGISTRY_VERSION: u32 = 1;
@@ -635,6 +635,21 @@ pub fn supported_provider_enrollment_methods(provider: &str) -> &'static [&'stat
     }
 }
 
+/// The one origin a Vault entry must be bound to for the kernel to type it into
+/// this API-key login. Methods that take no API key have none.
+pub(crate) fn provider_enrollment_vault_origin(
+    provider: &str,
+    method: Option<&str>,
+) -> Option<&'static str> {
+    match (
+        crate::provider::canonical_provider_family(provider)?,
+        method?,
+    ) {
+        ("opencode", "opencode_go_api_key" | "opencode_zen_api_key") => Some("https://opencode.ai"),
+        _ => None,
+    }
+}
+
 /// Validates a client-selected enrollment method against what the provider
 /// adapter actually supports. `None` keeps the provider's historical default.
 pub fn validate_provider_enrollment_method(
@@ -987,7 +1002,7 @@ struct StoredProviderAccountProfile {
     replica_root_identity: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
-    /// Which account of which kernel a managed-context transfer installed here, so a lease from that kernel can use it instead of making a second copy.
+    /// Which account of which kernel a managed-context transfer or an account copy installed here, so a lease from that kernel can use it instead of making a second copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transferred_from: Option<TransferredAccountOrigin>,
 }
@@ -1389,6 +1404,13 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
+        // OpenCode runs its free models with no account, as plain `opencode`
+        // does. The running server's connected catalog refuses a model that
+        // needs an account and names the models that are available.
+        if provider == "opencode" {
+            self.get(owner_user_id, provider, agent.provider_account_profile())?;
+            return Ok(());
+        }
         self.require_authenticated(
             owner_user_id,
             provider,
@@ -3079,7 +3101,7 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
-    /// The profile a managed-context transfer installed from `source_profile_id` of `source_kernel_id`, if it is still here.
+    /// The profile a managed-context transfer or an account copy installed from `source_profile_id` of `source_kernel_id`, if it is still here.
     pub(crate) fn transferred_profile(
         &self,
         owner_user_id: &str,
@@ -3101,6 +3123,21 @@ impl ProviderAccountProfileRegistry {
                     })
             })
             .map(|stored| stored.public.clone()))
+    }
+
+    /// Whether `profile_id` of `owner_user_id` is a login a managed-context transfer or an account copy installed here.
+    pub(crate) fn is_transferred_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            find_stored_profile(&document, owner_user_id, provider, profile_id)
+                .is_some_and(|stored| stored.transferred_from.is_some()),
+        )
     }
 
     fn materialize_replica_internal(
@@ -4915,6 +4952,11 @@ fn enforce_codex_file_credentials(codex_home: &Path) -> Result<(), DaemonError> 
     }
     let mut config = lines.join("\n");
     config.push('\n');
+    // Every resolve of the default profile lands here, including the external
+    // session poller's pass every two seconds; a settled file needs no fsync.
+    if config == existing {
+        return Ok(());
+    }
     atomic_write_private(&config_path, config.as_bytes())
 }
 
@@ -7275,6 +7317,34 @@ mod tests {
                 );
             }
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolving_the_default_codex_profile_leaves_a_settled_config_in_place() {
+        use std::os::unix::fs::MetadataExt;
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+        let config_path = Path::new(&environment["CODEX_HOME"]).join("config.toml");
+        let settled = fs::metadata(&config_path).unwrap().ino();
+
+        registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+
+        assert_eq!(fs::metadata(&config_path).unwrap().ino(), settled);
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            "cli_auth_credentials_store = \"file\"\n"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

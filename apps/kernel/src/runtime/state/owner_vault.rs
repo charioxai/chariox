@@ -1,5 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: owner controls on the canonical Vault registry.
+use super::vault_command::site_bearer_use;
 use super::*;
+use crate::config::vault_kind::VaultKind;
 use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
     UserCredentialSourceConfig, UserCredentialUse, VaultUseBinding, VaultUseTarget, VaultValueKind,
@@ -36,6 +38,66 @@ fn owner_value(
     Ok(card.canonical())
 }
 
+/// The hosts, uses and injection a Kind gives an entry bound to `target`.
+fn entry_shape(
+    kind: VaultKind,
+    target: &VaultUseTarget,
+) -> Result<
+    (
+        Vec<String>,
+        Vec<UserCredentialUse>,
+        UserCredentialInjectionConfig,
+    ),
+    DaemonError,
+> {
+    Ok(match (target, kind) {
+        // One card serves every site; each payment asks the owner.
+        (VaultUseTarget::AnySite, VaultKind::PaymentCard) => (
+            vec![],
+            vec![UserCredentialUse::Browser],
+            UserCredentialInjectionConfig::Browser,
+        ),
+        (VaultUseTarget::Site { origin }, VaultKind::Password) => (
+            vec![origin.clone()],
+            vec![UserCredentialUse::Browser],
+            UserCredentialInjectionConfig::Browser,
+        ),
+        (VaultUseTarget::Site { origin }, VaultKind::ApiKey) => {
+            let (host, allowed_use, injection) = site_bearer_use(origin)?;
+            (vec![host], vec![allowed_use], injection)
+        }
+        (VaultUseTarget::Totp { origin }, VaultKind::TwoFactorCode) => (
+            vec![origin.clone()],
+            vec![UserCredentialUse::Browser],
+            UserCredentialInjectionConfig::Totp(crate::config::TotpConfig::default()),
+        ),
+        (
+            VaultUseTarget::CommandEnvironment { origin, .. }
+            | VaultUseTarget::CommandStdin { origin },
+            VaultKind::CommandSecret,
+        ) => (
+            vec![origin.clone()],
+            vec![UserCredentialUse::Env],
+            UserCredentialInjectionConfig::Env,
+        ),
+        (VaultUseTarget::File { .. }, VaultKind::FileSecret) => (
+            vec![],
+            vec![UserCredentialUse::File],
+            UserCredentialInjectionConfig::File,
+        ),
+        _ => return Err(failure("Choose the matching kind for this use.")),
+    })
+}
+
+fn owner_kind(label: &str, use_binding: &VaultUseBinding) -> Result<VaultKind, DaemonError> {
+    use_binding.validate()?;
+    let kind = VaultKind::from_label(label).ok_or_else(|| failure("Choose a secret kind."))?;
+    if (kind == VaultKind::PaymentCard) != (use_binding.value_kind == VaultValueKind::PaymentCard) {
+        return Err(failure("Choose the matching kind for this use."));
+    }
+    Ok(kind)
+}
+
 fn owner_credential(
     owner: String,
     name: String,
@@ -45,52 +107,8 @@ fn owner_credential(
     if name.trim().is_empty() || name.len() > 200 {
         return Err(failure("Enter a name up to 200 characters."));
     }
-    use_binding.validate()?;
-    let created_by_kind = match kind {
-        "Password" => "owner_password",
-        "API key" => "owner_api_key",
-        "2FA code" => "owner_totp",
-        "Command secret" => "owner_command",
-        "File secret" => "owner_file",
-        "Payment card" => "owner_payment_card",
-        _ => return Err(failure("Choose a secret kind.")),
-    };
-    if (kind == "Payment card") != (use_binding.value_kind == VaultValueKind::PaymentCard) {
-        return Err(failure("Choose the matching kind for this use."));
-    }
-    let (allowed_hosts, allowed_uses, injection) = match (&use_binding.target, kind) {
-        // One card serves every site; each payment asks the owner.
-        (VaultUseTarget::AnySite, "Payment card") => (
-            vec![],
-            vec![UserCredentialUse::Browser],
-            UserCredentialInjectionConfig::Browser,
-        ),
-        (VaultUseTarget::Site { origin }, "Password" | "API key") => (
-            vec![origin.clone()],
-            vec![UserCredentialUse::Browser],
-            UserCredentialInjectionConfig::Browser,
-        ),
-        (VaultUseTarget::Totp { origin }, "2FA code") => (
-            vec![origin.clone()],
-            vec![UserCredentialUse::Browser],
-            UserCredentialInjectionConfig::Totp(crate::config::TotpConfig::default()),
-        ),
-        (
-            VaultUseTarget::CommandEnvironment { origin, .. }
-            | VaultUseTarget::CommandStdin { origin },
-            "Command secret",
-        ) => (
-            vec![origin.clone()],
-            vec![UserCredentialUse::Env],
-            UserCredentialInjectionConfig::Env,
-        ),
-        (VaultUseTarget::File { .. }, "File secret") => (
-            vec![],
-            vec![UserCredentialUse::File],
-            UserCredentialInjectionConfig::File,
-        ),
-        _ => return Err(failure("Choose the matching kind for this use.")),
-    };
+    let kind = owner_kind(kind, &use_binding)?;
+    let (allowed_hosts, allowed_uses, injection) = entry_shape(kind, &use_binding.target)?;
     let id = format!("owner-{:032x}", rand::random::<u128>());
     let now = crate::session::unix_epoch_ms();
     Ok(UserCredentialConfig {
@@ -102,7 +120,7 @@ fn owner_credential(
         injection,
         metadata: Some(UserCredentialMetadataConfig {
             use_binding: Some(use_binding),
-            created_by_kind: Some(created_by_kind.into()),
+            created_by_kind: Some(kind.created_by_kind().into()),
             created_by_id: Some(owner),
             vault_key: Some(id),
             created_at_ms: Some(now),
@@ -110,6 +128,39 @@ fn owner_credential(
             ..Default::default()
         }),
     })
+}
+
+/// The entry with a new Kind and Use, same id and value. Fails with the reason the saved
+/// value cannot serve them.
+fn rekinded_credential(
+    previous: &UserCredentialConfig,
+    label: &str,
+    use_binding: VaultUseBinding,
+) -> Result<UserCredentialConfig, DaemonError> {
+    let current = VaultKind::of(previous)
+        .filter(|_| VaultKind::made_by_owner(previous))
+        .ok_or_else(|| {
+            failure("Only entries made in the Vault window can change their Kind and Use.")
+        })?;
+    let kind = owner_kind(label, &use_binding)?;
+    if let Some(refusal) = current.change_refusal(kind) {
+        return Err(failure(&refusal));
+    }
+    let (allowed_hosts, allowed_uses, injection) = entry_shape(kind, &use_binding.target)?;
+    let mut entry = previous.clone();
+    entry.allowed_hosts = allowed_hosts;
+    entry.allowed_uses = allowed_uses;
+    entry.injection = injection;
+    let metadata = entry.metadata.get_or_insert_default();
+    metadata.use_binding = Some(use_binding);
+    metadata.created_by_kind = Some(kind.created_by_kind().into());
+    metadata.updated_at_ms = Some(crate::session::unix_epoch_ms());
+    Ok(entry)
+}
+
+/// "Password, https://a.example" for the Activity row of a change.
+fn kind_and_use(kind: VaultKind, binding: &VaultUseBinding) -> String {
+    format!("{}, {}", kind.label(), binding.target.summary())
 }
 
 impl KernelRuntimeState {
@@ -142,6 +193,7 @@ impl KernelRuntimeState {
                     entry,
                     Some(value.as_str()),
                     "Created by owner",
+                    BindingChange::Keep,
                 )?;
                 OwnerVaultResult::Saved { id }
             }
@@ -164,6 +216,7 @@ impl KernelRuntimeState {
                     entry,
                     Some(value.as_str()),
                     "Created by owner",
+                    BindingChange::Keep,
                 )?;
                 OwnerVaultResult::Saved { id }
             }
@@ -218,8 +271,41 @@ impl KernelRuntimeState {
                     entry,
                     Some(value.as_str()),
                     "Replaced by owner",
+                    BindingChange::Keep,
                 )?;
                 self.forget_vault_payment_grants(&id);
+                OwnerVaultResult::Saved { id }
+            }
+            OwnerVaultRequest::Update {
+                id,
+                kind,
+                use_binding,
+            } => {
+                let previous = registered_entry(&registry, &id)?;
+                let entry = rekinded_credential(&previous, &kind, use_binding)?;
+                let value = service
+                    .vault_secret_for_dictation(vault_key(&previous)?)?
+                    .ok_or_else(|| failure("This entry has no saved value. Replace it first."))?;
+                let describe = |entry: &UserCredentialConfig| {
+                    let binding = entry.metadata.as_ref().and_then(|m| m.use_binding.as_ref());
+                    VaultKind::of(entry)
+                        .zip(binding)
+                        .map_or_else(String::new, |(kind, binding)| kind_and_use(kind, binding))
+                };
+                let event = format!(
+                    "Kind and Use changed by owner: {} -> {}",
+                    describe(&previous),
+                    describe(&entry)
+                );
+                commit_entry(
+                    &service,
+                    &registry,
+                    Some(previous),
+                    entry,
+                    Some(value.as_str()),
+                    &event,
+                    BindingChange::Rebind,
+                )?;
                 OwnerVaultResult::Saved { id }
             }
             OwnerVaultRequest::Delete { id } => {
@@ -238,6 +324,7 @@ impl KernelRuntimeState {
                     entry,
                     None,
                     "Deleted by owner",
+                    BindingChange::Keep,
                 )?;
                 self.forget_vault_payment_grants(&id);
                 OwnerVaultResult::Deleted { id }
@@ -262,6 +349,13 @@ fn vault_key(entry: &UserCredentialConfig) -> Result<&str, DaemonError> {
     }
 }
 
+/// Whether a commit may move the use the entry declared: only the owner's Update does.
+#[derive(Clone, Copy)]
+pub(in crate::runtime::state) enum BindingChange {
+    Keep,
+    Rebind,
+}
+
 /// Registry, encrypted value and Activity commit together or restore their previous state.
 pub(in crate::runtime::state) fn commit_entry(
     service: &crate::secret::RuntimeSecretService,
@@ -270,6 +364,7 @@ pub(in crate::runtime::state) fn commit_entry(
     entry: UserCredentialConfig,
     replacement: Option<&str>,
     event: &str,
+    binding: BindingChange,
 ) -> Result<(), DaemonError> {
     let normalized = replacement
         .map(|value| crate::secret::normalize_vault_credential_input(entry.clone(), value))
@@ -278,14 +373,21 @@ pub(in crate::runtime::state) fn commit_entry(
         Some((entry, value)) => (entry.clone(), Some(value.as_str())),
         None => (entry, replacement),
     };
-    registry.validate_upsert(&entry)?;
+    let write = |entry: UserCredentialConfig| match binding {
+        BindingChange::Keep => registry.upsert(entry),
+        BindingChange::Rebind => registry.rebind(entry),
+    };
+    match binding {
+        BindingChange::Keep => registry.validate_upsert(&entry)?,
+        BindingChange::Rebind => registry.validate_rebind(&entry)?,
+    }
     let key = vault_key(&entry)?;
     let previous_value = service.vault_secret_for_dictation(key)?;
     let commit = (|| {
         match replacement {
             Some(value) => {
                 service.set_vault_secret(key, value)?;
-                registry.upsert(entry.clone())?;
+                write(entry.clone())?;
             }
             None => {
                 service.delete_vault_secret(key)?;
@@ -300,7 +402,7 @@ pub(in crate::runtime::state) fn commit_entry(
             None => service.delete_vault_secret(key),
         };
         let rollback_entry = match previous {
-            Some(previous) => registry.upsert(previous).map(|_| ()),
+            Some(previous) => write(previous).map(|_| ()),
             None => {
                 if registry.get(&entry.id)?.is_some() {
                     registry.remove(&entry.id).map(|_| ())

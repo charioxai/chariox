@@ -318,7 +318,15 @@ async fn sudo_task_consent_covers_three_operations_and_another_session_without_a
     }
     // A live window covers the whole kernel, so another session needs no
     // second passkey either.
-    let other = crate::session::RuntimeSession::new("outside-task", None, "w", "wt", "m", "k");
+    let other = crate::session::RuntimeSession::new(
+        "outside-task",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state.owned.session_store.write().restore_session(other);
     let outside = tokio::time::timeout(
         Duration::from_millis(500),

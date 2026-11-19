@@ -846,7 +846,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
-    let (mut socket, _) = timeout(
+    let (mut socket, handshake) = timeout(
         connect_timeout,
         crate::transport::relay_socket_connect::connect(&relay_url),
     )
@@ -870,8 +870,10 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         crate::session::unix_epoch_ms(),
         TEMPORARY_PEER_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let register = RelayEnvelope::DaemonRegister {
-        registration: chariox_relay::protocol::DaemonRegistration {
+    let register = crate::transport::relay_socket_connect::daemon_register(
+        &relay_url,
+        &handshake,
+        chariox_relay::protocol::DaemonRegistration {
             auth_token: relay_token,
             daemon_id: format!("{}:peer-tmp:{}", config.daemon_id, request_id),
             machine_id: config.host_machine_id.clone(),
@@ -888,7 +890,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             leased_agent_count: 0,
             local_session_count: 0,
         },
-    };
+        &config.relay_private_key,
+    )?;
     socket
         .send(Message::Text(
             serde_json::to_string(&register)
@@ -1169,7 +1172,6 @@ mod identity_tests;
 mod relay_rtt_tests {
     use super::*;
     use tokio::net::TcpListener;
-    use tokio_tungstenite::accept_async;
 
     // MP-08/MP-11 (r36b): a managed slice worker's runtime token is not admitted
     // for relay metadata; its provisioner-bound HOME key must be used instead.
@@ -1361,7 +1363,7 @@ mod relay_rtt_tests {
                 .accept()
                 .await
                 .expect("metadata client should connect");
-            let mut socket = accept_async(stream)
+            let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
                 .await
                 .expect("metadata websocket should accept");
             let request = match socket.next().await {

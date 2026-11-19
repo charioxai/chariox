@@ -444,9 +444,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
             })?;
-        let (remote_prompt, required_skills) = self
-            .prepare_remote_prompt_skill_context(&agent, prompt.prompt())
-            .await?;
+        let remote_prompt = prompt.prompt().to_string();
         let prompt_attachments = prompt.attachments().to_vec();
         let attachments = tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&prompt_attachments)
@@ -462,7 +460,6 @@ impl KernelRuntimeState {
             prompt: remote_prompt,
             hidden_system_context: prompt.hidden_system_context().to_string(),
             attachments,
-            required_skills,
         };
         let (mut remote_execution, mut relay_config) = self
             .with_app_side_effect(|app| {
@@ -1192,9 +1189,7 @@ impl KernelRuntimeState {
                 operation: "steer remote queued prompt",
                 message: format!("agent `{target_agent_id}` is no longer remote"),
             })?;
-        let (remote_prompt, required_skills) = self
-            .prepare_remote_prompt_skill_context(&prepared.agent, prepared.prompt.prompt())
-            .await?;
+        let remote_prompt = prepared.prompt.prompt().to_string();
         let prompt_attachments = prepared.prompt.attachments().to_vec();
         let attachments = tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&prompt_attachments)
@@ -1210,7 +1205,6 @@ impl KernelRuntimeState {
             prompt: remote_prompt,
             hidden_system_context: prepared.prompt.hidden_system_context().to_string(),
             attachments,
-            required_skills,
         };
         let session_id = session_id.to_string();
         let target_agent_id = target_agent_id.to_string();
@@ -1708,10 +1702,16 @@ impl KernelRuntimeState {
                         owned.workflow_mark_prompt_started(session_id, started_next)?;
                     }
                 }
-                if let Some(dispatch) = completion.dispatch {
-                    if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                        let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                match completion.dispatch {
+                    Some(super::owned::NextPromptDispatch::Submit(dispatch)) => {
+                        if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                            let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                        }
                     }
+                    Some(super::owned::NextPromptDispatch::Failed(dispatch, error)) => {
+                        let _ = self.fail_unprepared_prompt(dispatch, error).await;
+                    }
+                    None => {}
                 }
                 self.inject_orphaned_metaagent_task_event_after_turn(
                     session_id,
@@ -1978,7 +1978,6 @@ struct RemoteQueuedPromptSteerPayload {
     prompt: String,
     hidden_system_context: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
 }
 
 fn remote_queued_steer_failure_is_definitely_unaccepted(error: &DaemonError) -> bool {
@@ -2042,7 +2041,6 @@ async fn send_remote_queued_prompt_steer(
             prompt: payload.prompt.clone(),
             hidden_system_context: payload.hidden_system_context.clone(),
             attachments: payload.attachments.clone(),
-            required_skills: payload.required_skills.clone(),
         },
         crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
         || state.authorize_prompt_command(authority),

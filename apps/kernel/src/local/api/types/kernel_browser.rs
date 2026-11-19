@@ -34,6 +34,9 @@ pub enum KernelBrowserCommand {
         #[serde(default)]
         after: String,
         wait_ms: u32,
+        /// Protocol 1012: the `favicon_hash` values whose PNG the viewer holds (<= 128); such an icon is named, not sent.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_favicons: Vec<String>,
     },
     SubscribeGrants {
         after: u64,

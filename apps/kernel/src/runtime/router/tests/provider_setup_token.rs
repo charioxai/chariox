@@ -60,7 +60,7 @@ async fn setup_token_fake_cli_fixture(vault: bool) {
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
-    let vault_path = root.join("vault.enc");
+    let vault_path = root.join("vault").join("vault.enc");
     if vault {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -876,7 +876,7 @@ exit 1
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
-    let vault_path = root.join("vault.enc");
+    let vault_path = root.join("vault").join("vault.enc");
     if mode.ends_with("-locked") || mode.ends_with("-relocked") {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;

@@ -12,17 +12,19 @@ use crate::transport::relay_client::RelayClientState;
 async fn projected_relay_status_response(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    capabilities: Vec<String>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::RelayStatus {
-        status: projected_relay_status_view(relay_state, config_projection).await,
+        status: projected_relay_status_view(relay_state, config_projection, capabilities).await,
     })
 }
 
 pub(crate) async fn projected_relay_status_view(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    capabilities: Vec<String>,
 ) -> RelayStatus {
-    projected_relay_status(relay_state, config_projection).await
+    projected_relay_status(relay_state, config_projection, capabilities).await
 }
 
 pub(crate) async fn execute_configure_relay_request(
@@ -37,7 +39,12 @@ pub(crate) async fn execute_configure_relay_request(
         .await?;
     provider_catalog_projection.invalidate();
     Ok(LocalDaemonResponse::RelayConfigured {
-        status: projected_relay_status_view(relay_state, config_projection.clone()).await,
+        status: projected_relay_status_view(
+            relay_state,
+            config_projection.clone(),
+            runtime_state.control_capabilities(),
+        )
+        .await,
     })
 }
 
@@ -50,7 +57,12 @@ pub(crate) async fn execute_relay_config_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::RelayStatus(_) => {
-            projected_relay_status_response(relay_state, config_projection.clone()).await
+            projected_relay_status_response(
+                relay_state,
+                config_projection.clone(),
+                runtime_state.control_capabilities(),
+            )
+            .await
         }
         LocalDaemonRequest::ConfigureRelay(request) => {
             execute_configure_relay_request(

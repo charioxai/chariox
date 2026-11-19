@@ -321,6 +321,38 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     Some(code.split(':').next().unwrap_or(code))
 }
 
+/// The reason Cloud gave with its code, as `cloud_status_error` keeps it for a client error.
+pub(crate) fn cloud_error_reason(error: &DaemonError) -> Option<&str> {
+    let message = match error {
+        DaemonError::LocalTransport { message, .. } => message,
+        _ => return None,
+    };
+    let (_, reason) = message.split_once("cloud_api_code=")?.1.split_once(": ")?;
+    Some(reason)
+}
+
+/// What a failed acquire says about the allocation under its request id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcquireFailure {
+    /// Cloud judged this try before it held anything under the id: it replays an accepted request
+    /// before any check that sends these codes. Another try of the id may still be in flight and
+    /// commit afterwards, so a refusal says nothing about the request.
+    Refused { out_of_stock: bool },
+    /// The allocation may exist: the response was lost or timed out, Cloud failed after it may
+    /// have committed, or the error does not say that nothing is held under the id.
+    Ambiguous,
+}
+
+pub(crate) fn acquire_failure(error: &DaemonError) -> AcquireFailure {
+    match cloud_error_code(error) {
+        Some("capacity_exceeded") => AcquireFailure::Refused { out_of_stock: true },
+        Some("budget_exceeded" | "invalid_request") => AcquireFailure::Refused {
+            out_of_stock: false,
+        },
+        _ => AcquireFailure::Ambiguous,
+    }
+}
+
 pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
     if let Some(code) = cloud_error_code(error) {
         match code {
@@ -329,6 +361,7 @@ pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
             }
             "account_deleted"
             | "authorization_denied"
+            | "budget_exceeded"
             | "identity_conflict"
             | "identity_revoked"
             | "invalid_request"
@@ -474,12 +507,67 @@ mod tests {
                 .to_string(),
         };
         assert_eq!(cloud_error_code(&error), Some("identity_conflict"));
+        assert_eq!(cloud_error_reason(&error), Some("body"));
         assert_eq!(
             cloud_error_code(&DaemonError::LocalTransport {
                 operation: "cloud relay request",
                 message: "network timeout".to_string(),
             }),
             None
+        );
+    }
+
+    #[test]
+    fn only_a_refusal_before_commit_is_a_refused_acquire() {
+        let failure = |message: &str| {
+            acquire_failure(&DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                message: message.to_string(),
+            })
+        };
+        let coded = |status: u16, code: &str| {
+            failure(&format!(
+                "cloud relay request failed with {status}: cloud_api_code={code}: body"
+            ))
+        };
+        assert_eq!(
+            coded(429, "capacity_exceeded"),
+            AcquireFailure::Refused { out_of_stock: true }
+        );
+        for (status, code) in [(429, "budget_exceeded"), (400, "invalid_request")] {
+            assert_eq!(
+                coded(status, code),
+                AcquireFailure::Refused {
+                    out_of_stock: false
+                },
+                "{code}"
+            );
+        }
+        for (status, code) in [
+            (500, "internal_error"),
+            (503, "dependency_unavailable"),
+            (429, "rate_limited"),
+            (503, "admission_denied"),
+            (403, "authorization_denied"),
+            (409, "identity_conflict"),
+            (402, "subscription_required"),
+        ] {
+            assert_eq!(coded(status, code), AcquireFailure::Ambiguous, "{code}");
+        }
+        for message in [
+            "cloud relay request failed with 502",
+            "cloud relay request failed with 400",
+            "operation timed out",
+            "connection closed before message completed",
+        ] {
+            assert_eq!(failure(message), AcquireFailure::Ambiguous, "{message}");
+        }
+        assert_eq!(
+            acquire_failure(&DaemonError::MachineRequest {
+                code: "invalid_request".into(),
+                message: "local".into(),
+            }),
+            AcquireFailure::Ambiguous
         );
     }
 

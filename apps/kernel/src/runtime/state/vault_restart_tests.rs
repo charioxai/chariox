@@ -11,7 +11,7 @@ fn fixture(
 ) {
     let workspace = crate::test_support::TestWorktree::new("vault-restart-workspace");
     let private = crate::test_support::TestWorktree::new("vault-restart-state");
-    let vault = private.path().join("vault.json");
+    let vault = private.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, "restart passphrase").unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
@@ -287,7 +287,7 @@ fn locked_vault_with_a_run() -> (
     let workspace = crate::test_support::TestWorktree::new("vault-refusal-workspace");
     let private = crate::test_support::TestWorktree::new("vault-refusal-state");
     std::env::set_var("CHARIOX_HOME", private.path().join("home"));
-    let vault = private.path().join("vault.json");
+    let vault = private.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, "refusal passphrase").unwrap();
     crate::credential::CharioxCredentialRegistry::user()
         .unwrap()

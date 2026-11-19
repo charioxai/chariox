@@ -4,8 +4,18 @@ use super::*;
 
 /// The agent that answered, with the relationship used for the audit record.
 pub(super) enum AgentDecisionAnswer<'a> {
-    Parent { holder: &'a str, child: &'a str },
-    RoomAgent { agent: &'a str, room: &'a str },
+    Parent {
+        holder: &'a str,
+        child: &'a str,
+    },
+    RoomAgent {
+        agent: &'a str,
+        room: &'a str,
+    },
+    /// An external agent answering for the person, by name.
+    ForPerson {
+        agent: &'a str,
+    },
 }
 
 impl KernelRuntimeState {
@@ -348,8 +358,14 @@ impl KernelRuntimeState {
         passkey_remember_minutes: Option<u32>,
         connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> Result<(), DaemonError> {
-        if connection_class
-            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+        let agent = self.answering_agent();
+        let card = agent
+            .as_ref()
+            .map(|_| self.delegated_card(caller_user_id, interaction_id))
+            .transpose()?;
+        if agent.is_none()
+            && connection_class
+                .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && (interaction_id.starts_with("capability-request-")
                 || interaction_id.starts_with("machine-acquisition-"))
             && self
@@ -377,8 +393,9 @@ impl KernelRuntimeState {
                 message: "Only a Chariox terminal can answer a credential prompt".into(),
             });
         }
-        if connection_class
-            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+        if agent.is_none()
+            && connection_class
+                .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && self
                 .owned
                 .pending_interactions
@@ -441,8 +458,14 @@ impl KernelRuntimeState {
             interaction_id,
             choice_id,
             connection_class,
-            None,
+            agent
+                .as_deref()
+                .map(|agent| AgentDecisionAnswer::ForPerson { agent }),
         );
+        // A card outside any Room has no Room to tell; its record names the agent.
+        if let (Some(agent), Some(card), false) = (&agent, &card, session_id.is_empty()) {
+            self.record_delegated_answer(session_id, agent, card, choice_id);
+        }
         self.schedule_question_answer_delivery(interaction_id)
     }
 
@@ -471,6 +494,9 @@ impl KernelRuntimeState {
             Some(AgentDecisionAnswer::RoomAgent { agent, room }) => {
                 payload["answered_by_agent"] = agent.into();
                 payload["answering_room_id"] = room.into();
+            }
+            Some(AgentDecisionAnswer::ForPerson { agent }) => {
+                payload["answered_for_owner_by"] = agent.into();
             }
             None => {}
         }

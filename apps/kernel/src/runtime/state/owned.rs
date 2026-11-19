@@ -47,7 +47,16 @@ pub(in crate::runtime::state) struct OwnedRemoteAgentProfileUpdate {
 pub(in crate::runtime::state) struct OwnedPromptCompletion {
     pub(in crate::runtime::state) completion: crate::session::PromptCompletion,
     pub(in crate::runtime::state) released_claim: bool,
-    pub(in crate::runtime::state) dispatch: Option<crate::app::KernelPromptDispatch>,
+    pub(in crate::runtime::state) dispatch: Option<NextPromptDispatch>,
+}
+
+/// What the runtime still does for the queued prompt a completion started.
+pub(in crate::runtime::state) enum NextPromptDispatch {
+    /// The dispatcher submits it to its provider run.
+    Submit(crate::app::KernelPromptDispatch),
+    /// Starting it on the run already failed (for example a selected skill was turned
+    /// off after it was queued); it settles failed with this error as its reason.
+    Failed(crate::app::KernelPromptDispatch, crate::error::DaemonError),
 }
 
 pub(in crate::runtime::state) struct OwnedPromptCancellation {

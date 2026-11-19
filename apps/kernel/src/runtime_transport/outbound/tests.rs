@@ -1,6 +1,7 @@
 //! MP-11: adversarial serialized payloads generated from EVERY response/event declaration.
 use super::*;
-const CANARY: &str = "MP-11-outbound-test-only-secret";
+// Shaped like a vendor key, so the redactor cuts it out of any message it rides on.
+const CANARY: &str = "sk-ant-api03-outbound-test-only-secret";
 
 #[test]
 fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
@@ -24,20 +25,42 @@ fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
         ("agent_not_in_session", "ListAgents"),
         ("attachment_not_found", "AttachToSession"),
     ] {
+        let said = crate::error::external_request_failure_message(code);
         let error =
-            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+            project_error(&serde_json::json!({"code":code,"message":said,"retryable":false}));
         assert_eq!(error.code, code);
         assert!(!error.retryable);
+        assert_eq!(error.message, said);
         assert!(error.message.contains(action), "{}", error.message);
-        assert!(!error.message.contains(CANARY));
     }
+}
+
+// The grant holder reads the kernel's own words; only secret-shaped text is cut out.
+#[test]
+fn a_refusal_keeps_its_words_and_loses_only_secret_shaped_text() {
+    let error = project_error(&serde_json::json!({
+        "code": "local_transport_error",
+        "message": format!("default project `p1` is archived; restore it ({CANARY})"),
+        "retryable": true,
+    }));
+    assert_eq!(error.code, "local_transport_error");
+    assert!(error.retryable);
+    assert!(
+        error
+            .message
+            .starts_with("default project `p1` is archived; restore it ("),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains(CANARY), "{}", error.message);
 }
 
 // A late or losing answer to a decision tells the holder that it closed, not "withheld".
 #[test]
 fn a_closed_decision_keeps_its_public_code() {
+    let said = crate::error::external_request_failure_message("interaction_closed");
     let error = project_error(
-        &serde_json::json!({"code":"interaction_closed","message":CANARY,"retryable":false}),
+        &serde_json::json!({"code":"interaction_closed","message":said,"retryable":false}),
     );
     assert_eq!(error.code, "interaction_closed");
     assert!(
@@ -45,7 +68,6 @@ fn a_closed_decision_keeps_its_public_code() {
         "{}",
         error.message
     );
-    assert!(!error.message.contains(CANARY));
 }
 
 fn enum_names(source: &str, declaration: &str) -> Vec<String> {
@@ -140,7 +162,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
     }
     assert_eq!(
         delivered.len(),
-        26,
+        27,
         "MP-11 current public events remain deliverable"
     );
     assert!(
@@ -321,7 +343,7 @@ fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_e
     }
 }
 
-// A duplicate session alias names the session that holds it; other text on those codes stays private.
+// A duplicate session alias names the session that holds it; secret-shaped text is cut out.
 #[test]
 fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
     let error = crate::error::DaemonError::SessionAliasConflict {
@@ -345,7 +367,7 @@ fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
     assert!(!hidden.to_string().contains(CANARY));
 }
 
-// A grant holder learns the id of a steer that was delivered without its event; other text on that code stays private.
+// A grant holder learns the id of a steer that was delivered without its event; secret-shaped text is cut out.
 #[test]
 fn outbound_lets_a_grant_holder_read_which_steer_was_delivered_unrecorded() {
     let error = crate::error::DaemonError::SteerDeliveredEventUnrecorded {
@@ -375,7 +397,7 @@ fn outbound_lets_a_grant_holder_read_which_steer_was_delivered_unrecorded() {
 #[test]
 fn mp11_missing_session_socket_reason_is_public_without_private_details() {
     let projected = project_error(&serde_json::json!({
-        "code": "session_not_found", "message": CANARY, "retryable": false,
+        "code": "session_not_found", "message": format!("session not found {CANARY}"), "retryable": false,
     }));
     assert_eq!(projected.code, "session_not_found");
     assert!(
@@ -402,7 +424,7 @@ fn a_forwarded_stream_offers_the_writer_only_events_an_external_peer_may_see() {
 }
 
 #[test]
-fn account_copy_refusals_are_constant_at_public_error_boundary() {
+fn account_copy_refusals_keep_their_words_at_public_error_boundary() {
     for code in [
         "provider_account_copy_unauthorized",
         "provider_account_copy_profile",
@@ -415,22 +437,20 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
         "provider_account_copy_verification_failed",
         "provider_account_copy_install_failed",
     ] {
+        let said = crate::provider_account_copy::failure_message(code);
         let error =
-            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":true}));
+            project_error(&serde_json::json!({"code":code,"message":said,"retryable":true}));
         assert_eq!(error.code, code);
-        assert_eq!(
-            error.message,
-            crate::provider_account_copy::failure_message(code)
-        );
+        assert_eq!(error.message, said);
         assert!(error.retryable);
-        assert!(!error.message.contains(CANARY));
     }
 }
 
 #[test]
-fn a_locked_receiving_vault_refusal_is_constant_at_public_error_boundary() {
+fn a_locked_receiving_vault_refusal_keeps_its_words_at_public_error_boundary() {
+    let said = crate::error::external_request_failure_message("target_vault_locked");
     let error = project_error(
-        &serde_json::json!({"code":"target_vault_locked","message":CANARY,"retryable":true}),
+        &serde_json::json!({"code":"target_vault_locked","message":said,"retryable":true}),
     );
     assert_eq!(error.code, "target_vault_locked");
     assert!(error.retryable);
@@ -439,25 +459,21 @@ fn a_locked_receiving_vault_refusal_is_constant_at_public_error_boundary() {
         "{}",
         error.message
     );
-    assert!(!error.message.contains(CANARY));
 }
 
 #[test]
-fn control_plane_refusals_keep_their_codes_without_service_diagnostics() {
+fn control_plane_refusals_keep_their_codes_and_words() {
     for code in [
         "control_plane_grant_required",
         "control_plane_unavailable",
         "control_plane_authorization_denied",
         "control_plane_binding_invalid",
     ] {
+        let said = crate::error::actionable_refusal_message(code).unwrap();
         let error =
-            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+            project_error(&serde_json::json!({"code":code,"message":said,"retryable":false}));
         assert_eq!(error.code, code);
-        assert_eq!(
-            error.message,
-            crate::error::actionable_refusal_message(code).unwrap()
-        );
-        assert!(!error.message.contains(CANARY));
+        assert_eq!(error.message, said);
         assert!(!error.retryable);
     }
 }

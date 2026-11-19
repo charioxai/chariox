@@ -55,13 +55,11 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
         idle_since_ms: Some(2),
         idle_timeout_seconds: 1800,
         expiry_rule: "active turn or pending wake; then idle window".into(),
-        prompt_id: Some("p".into()),
         delegated_by_agent_id: None,
         expires_at_ms: Some(28_800_001),
     };
     let delegated = UserDomainGrant {
         agent_id: "child".into(),
-        prompt_id: None,
         delegated_by_agent_id: Some("a".into()),
         resources: vec![UserDomainResource::BrowserTab { tab_id: "t".into() }],
         ..grant.clone()
@@ -93,7 +91,7 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "ed257e14562fd553bf4f6387367098d4d30f356258156225ce56a01a17c7a2c5"
+        "98fdf1b5376c3bfded18392728a232f6a012d4abd44d514cd0982a1b30f523ca"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})
@@ -133,6 +131,6 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "44c161b67eb749cac1a2206a874c6690cdb85ce320997061c01a10a52c938468"
+        "6f38ce750fbf36988b6dfd8d366845d6d511a5c3b9791a65afeb0859b82c71df"
     );
 }

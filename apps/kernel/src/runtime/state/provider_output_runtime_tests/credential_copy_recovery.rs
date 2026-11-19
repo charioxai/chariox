@@ -130,6 +130,7 @@ async fn run_case(recovery: RecoveryCase) {
     }
     let fixture = config
         .private_runtime_state_root()
+        .with_file_name("fixtures")
         .join("codex-auth-fixture.py");
     std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
     std::fs::write(

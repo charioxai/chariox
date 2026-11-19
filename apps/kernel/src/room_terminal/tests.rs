@@ -1902,6 +1902,33 @@ fn the_shell_keeps_the_users_ssh_agent_but_not_kernel_tokens() {
     std::env::remove_var("CHARIOX_RELAY_TOKEN");
 }
 
+// A Room terminal is the person's own shell: a kernel that crashes must not end what runs in
+// it, so it never carries the pid a restarted kernel uses to find a dead kernel's provider tools.
+#[test]
+fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = TempDir::new();
+            let service = service(root.path());
+            let id = open(&service, root.path()).terminal_id;
+            type_as(
+                &service,
+                &id,
+                &TerminalActor::User,
+                "echo OWNER=${CHARIOX_PROVIDER_OWNER_PID:-none}\r",
+            )
+            .await;
+            until("the environment", || async {
+                screen_has(&service, &id, "OWNER=none").await
+            })
+            .await;
+            service.end_session("room-1");
+        });
+}
+
 /// Types `line` and waits for the shell to report it finished, without any
 /// sleep in the command: the finish must not depend on sampling.
 async fn finish_of(
@@ -3120,4 +3147,37 @@ async fn a_burst_shares_one_reply_for_up_to_four_frames() {
         (6..20).contains(&parts),
         "a burst that keeps writing is one reply for about four frames, not one frame or until it ends ({parts} parts)"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_terminal_an_agent_opens_cannot_read_the_kernels_secrets() {
+    let kernel = crate::provider::state_confinement::tests::DummyKernelHome::new();
+    let root = TempDir::new();
+    let service = service(root.path());
+    let summary = service
+        .open(OpenRoomTerminal {
+            project_environment: kernel.agent_environment(),
+            session_id: "room-1".to_string(),
+            working_directory: kernel.workspace.clone(),
+            cols: 200,
+            rows: 60,
+            title: None,
+            opened_by: agent("agent-1"),
+            command: Some(vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                format!("{}echo probe-done", kernel.probe_script()),
+            ]),
+        })
+        .expect("an agent's terminal opens");
+    until("the probe finishes", || {
+        screen_has(&service, &summary.terminal_id, "probe-done")
+    })
+    .await;
+    let snapshot = service.snapshot("room-1", &summary.terminal_id).unwrap();
+    kernel.assert_confined(&format!(
+        "{}{}",
+        snapshot.scrollback_text, snapshot.screen_text
+    ));
 }

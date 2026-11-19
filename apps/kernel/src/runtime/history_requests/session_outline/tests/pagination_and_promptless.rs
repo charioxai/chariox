@@ -265,7 +265,7 @@ fn agent_outline_rehydrates_file_image_attachment_previews() {
     }];
     let event = HistoryEvent::transcript(10, &entry, context);
 
-    let page_entry = page_entry_from_event(event).expect("page entry should project");
+    let page_entry = page_entry_from_event(&event).expect("page entry should project");
 
     assert_eq!(
         page_entry
@@ -837,14 +837,14 @@ fn amfix_r19_internal_dispatch_history_diagnostics_are_not_agent_output() {
         ..Default::default()
     };
     let event = HistoryEvent::transcript(1, &error, context.clone());
-    assert!(page_entry_from_event(event.clone()).is_none());
+    assert!(page_entry_from_event(&event).is_none());
     let mut notice = event.clone();
     notice.kind = HistoryEventKind::Notice;
-    assert!(page_entry_from_event(notice).is_none());
+    assert!(page_entry_from_event(&notice).is_none());
     let mut agent = event.clone();
     agent.kind = HistoryEventKind::ProviderOutput;
     assert!(
-        page_entry_from_event(agent).is_some(),
+        page_entry_from_event(&agent).is_some(),
         "actual agent text remains visible"
     );
     let user = HistoryEvent::transcript(
@@ -853,7 +853,7 @@ fn amfix_r19_internal_dispatch_history_diagnostics_are_not_agent_output() {
         context,
     );
     assert!(
-        page_entry_from_event(user).is_some(),
+        page_entry_from_event(&user).is_some(),
         "quoting a diagnostic does not hide a user prompt"
     );
 }

@@ -1,4 +1,4 @@
-import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { Mirror2FontCache } from './browser-mirror2-font-cache.js'
 import { Mirror2Retention } from './browser-mirror2-retention.js'
@@ -9,6 +9,7 @@ import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-sel
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import { Mirror2Navigation } from './browser-mirror2-navigation.js'
+import { isTileInk, paddingOrigin, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -82,7 +83,7 @@ export class BrowserMirror2Renderer {
   private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
   private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
-  private empty: string
+  private placeholders = new Map<string, string>() // per document, an empty Blob URL for each resource whose bytes have not arrived
   private absentFont: string
   sequence = 0
   documentId = ''
@@ -117,7 +118,6 @@ export class BrowserMirror2Renderer {
   onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void, private retention?: Mirror2Retention) {
     this.sheetCache = retention?.sheets ?? new Mirror2SheetCache(); this.fontCache = retention?.fonts ?? new Mirror2FontCache()
-    this.empty = URL.createObjectURL(new Blob([]))
     this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
@@ -407,12 +407,16 @@ export class BrowserMirror2Renderer {
     })
   }
   // ---- resources
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string, offset: number) => {
-    const resource = this.resources.get(key)
-    if (resource) return `url("${resource}")${suffix ?? ''}`
-    const pending = mirror2PendingFontSource(raw, offset, this.empty)
-    return pending ?? `url("${this.empty}")${suffix ?? ''}`
-  }) }
+  // A face whose bytes have not arrived points at an empty Blob: Chromium fetches a face only for text in its unicode-range,
+  // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
+  // Each resource has its own Blob: Chromium shares a font fetch by URL, so one failed face would fail every face naming the same URL.
+  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
+  private placeholder(key: string): string {
+    let url = this.placeholders.get(key)
+    if (!url) { url = URL.createObjectURL(new Blob([])); this.placeholders.set(key, url) }
+    return url
+  }
+  private clearPlaceholders(): void { for (const url of this.placeholders.values()) URL.revokeObjectURL(url); this.placeholders.clear() }
   private keysOf(raw: string): string[] { return [...raw.matchAll(resourcePattern)].map(m => m[1]!) }
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
@@ -735,7 +739,7 @@ export class BrowserMirror2Renderer {
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = element.ownerDocument.defaultView?.getComputedStyle(element)
       if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
-      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
+      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>[...value.matchAll(/blob:[^")\s]+/g)].some(url=>[...this.placeholders.values()].includes(url[0])))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
     if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
     await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
@@ -761,7 +765,7 @@ export class BrowserMirror2Renderer {
     this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
-    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
+    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear(); this.clearPlaceholders() }
     if (packet.reset && this.documentId && packet.document_id !== this.documentId) {
       this.wheel.cancel(); this.scrollTargets.clear()
       if (this.scrollFrame) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = 0 }
@@ -924,7 +928,7 @@ export class BrowserMirror2Renderer {
         }
         const keep = new Set(desired)
         // Forgotten before removal: a detached iframe no longer exposes its document.
-        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
+        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && !isTileInk(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
@@ -972,9 +976,12 @@ export class BrowserMirror2Renderer {
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
-    const style = element.style
+    const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
+    paintTileInk(element, tile, outside ? url : null); if (outside) return
+    const style = element.style, [left, top] = paddingOrigin(element)
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
-    style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
+    style.setProperty('background-origin', 'padding-box', 'important'); style.setProperty('background-clip', 'border-box', 'important')
+    style.setProperty('background-position', `${tile.x - left}px ${tile.y - top}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; if (!this.retention) { this.sheetCache.clear(); this.fontCache.clear() } this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
@@ -986,7 +993,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.absentFont); URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); this.clearPlaceholders(); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 

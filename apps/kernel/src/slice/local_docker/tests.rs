@@ -552,6 +552,75 @@ exit 0
 
 #[cfg(unix)]
 #[test]
+fn failed_backup_capture_leaves_no_empty_backup_directory_and_says_why() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = test_root("failed-backup-capture");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+case "$*" in
+  "ps --format {{.Names}}") printf 'chariox-slice-dev\n' ;;
+  "inspect --format {{.State.Running}} {{.State.Status}} chariox-slice-dev") printf 'true paused\n' ;;
+  "info --format {{.DockerRootDir}}") printf '/tmp\n' ;;
+  "inspect --size --format {{.SizeRw}} chariox-slice-dev") printf '1048576\n' ;;
+  *" du -sb /home-src") printf '1048576 /home-src\n' ;;
+  *" find /home-src -printf . | wc -c") printf '1\n' ;;
+  *" df -B1 --output=avail /tmp") printf '107374182400\n' ;;
+  "commit "*) printf 'Error response from daemon: no space left on device\n' >&2; exit 125 ;;
+esac
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("fake Docker PATH should join"),
+    );
+
+    let mut options = test_options();
+    options.root = root.clone();
+    let mut record = test_record();
+    record.display_mode = SliceDisplayMode::Headless;
+    let error = capture_preflight::with_test_verified_layout(|| {
+        state::create_local_docker_slice_backup_live(&record, &options, Some("restore-rollback-1"))
+    })
+    .expect_err("a failing docker commit must fail the backup");
+
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+    assert!(
+        error
+            .to_string()
+            .contains("Error response from daemon: no space left on device"),
+        "{error}"
+    );
+    let leftovers = std::fs::read_dir(root.join("backups"))
+        .expect("the backups directory should exist")
+        .count();
+    assert_eq!(
+        leftovers, 0,
+        "a failed capture must not leave a backup directory"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
 fn public_headless_slice_save_gracefully_quiesces_before_capture_and_fails_closed() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;

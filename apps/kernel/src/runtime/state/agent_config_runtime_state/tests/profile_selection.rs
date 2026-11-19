@@ -2,7 +2,7 @@
 use super::*;
 
 #[path = "model_resolution.rs"]
-mod model_resolution;
+pub(crate) mod model_resolution;
 
 #[tokio::test]
 async fn provider_family_switch_stores_the_target_default_model_and_variant() {
@@ -19,6 +19,14 @@ async fn provider_family_switch_stores_the_target_default_model_and_variant() {
             registry
                 .set_default(owner, target, &target_profile.profile_id)
                 .unwrap();
+            model_resolution::seed_account_models(
+                &app,
+                owner,
+                source,
+                &source_profile.profile_id,
+                &["source-model"],
+            )
+            .await;
             runtime
                 .update_agent_profile(
                     &session,
@@ -63,6 +71,8 @@ async fn same_family_switch_keeps_pinned_account_model_and_effort() {
     let registry = app.lock().await.provider_account_profile_registry();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let pinned = registry.create_managed(owner, "claude", "Pinned").unwrap();
+    model_resolution::seed_account_models(&app, owner, "claude-p", &pinned.profile_id, &["sonnet"])
+        .await;
     runtime
         .update_agent_profile(
             &session,
@@ -105,6 +115,7 @@ async fn provider_switch_validates_explicit_account_and_preserves_explicit_selec
     let target = registry
         .create_managed(owner, "opencode", "Target")
         .unwrap();
+    model_resolution::seed_account_catalog(&app, owner, "codex", &source.profile_id).await;
     runtime
         .update_agent_profile(
             &session,
@@ -132,6 +143,14 @@ async fn provider_switch_validates_explicit_account_and_preserves_explicit_selec
     let unchanged = runtime.owned.agent_store.get_agent(&agent).unwrap();
     assert_eq!(unchanged.provider(), "codex");
     assert_eq!(unchanged.provider_account_profile(), source.profile_id);
+    model_resolution::seed_account_models(
+        &app,
+        owner,
+        "opencode",
+        &target.profile_id,
+        &["openai/gpt-6.1-sol"],
+    )
+    .await;
     let switched = runtime
         .update_agent_profile(
             &session,

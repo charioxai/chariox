@@ -40,7 +40,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<Option<crate::session::RuntimeProject>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let project_id = session.project_id();
-        if project_id.is_empty()
+        if session.project().is_hidden_scope()
             || self
                 .session_store
                 .sessions_in_project(project_id)?
@@ -454,7 +454,11 @@ impl KernelRuntimeOwnedState {
             })?;
         self.cancel_owned_agent_wakes(session_id, None);
         for agent in self.agent_store.get_session_agents(session_id) {
-            self.announce_agent_gone(session_id, agent.id());
+            self.announce_agent_gone(
+                session_id,
+                agent.id(),
+                super::agent_gone_announcement::AgentGone::RoomEnded,
+            );
         }
         self.withdraw_agent_interactions(session_id, None)?;
 

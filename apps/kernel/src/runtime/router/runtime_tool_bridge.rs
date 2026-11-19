@@ -204,6 +204,19 @@ impl CommandRouter {
                     .dispatch_meta_run_command(auth_token, arguments)
                     .await;
             }
+            if crate::transport::runtime_tools::canonical_agent_run_tool_name(tool_name).is_some() {
+                // A leased agent's delegation belongs to its home room.
+                if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                    if let Some(result) = self
+                        .runtime_state
+                        .try_forward_leased_agents_run(&run, arguments.clone())
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
+                return self.dispatch_agents_run(auth_token, arguments).await;
+            }
             self.runtime_state
                 .with_job_router(self.clone())
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
@@ -371,7 +384,6 @@ impl CommandRouter {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
@@ -410,6 +422,9 @@ impl CommandRouter {
             return router
                 .dispatch_forwarded_meta_run_command(context, arguments)
                 .await;
+        }
+        if crate::transport::runtime_tools::canonical_agent_run_tool_name(&tool_name).is_some() {
+            return self.dispatch_forwarded_agents_run(context, arguments).await;
         }
         self.runtime_state
             .dispatch_forwarded_meta_runtime_tool_call(context, tool_name, arguments)
@@ -481,6 +496,16 @@ impl CommandRouter {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.runtime_state
             .dispatch_forwarded_home_credential_tool_call(context, tool_name, arguments)
+            .await
+    }
+
+    pub(crate) async fn handle_forwarded_home_vault_capture(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        capture: crate::transport::relay_peer::HomeVaultCapture,
+    ) -> Result<crate::runtime::state::HomeVaultCaptureAnswer, DaemonError> {
+        self.runtime_state
+            .handle_forwarded_home_vault_capture(context, capture)
             .await
     }
 

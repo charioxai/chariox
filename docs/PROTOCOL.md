@@ -16,6 +16,29 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Relay registration proof (relay peer 449)
+
+A relay token and a kernel's public key do not make a kernel. The relay answers
+every WebSocket upgrade with a fresh 32-byte challenge in the
+`x-chariox-registration-challenge` response header. `daemon_register` carries
+`proof`: the kernel identity key's P-256 ECDSA signature (SHA-256, 64-byte
+`r‖s`, base64) over the JSON array `["chariox-relay-registration-v1", <relay
+address>, <kernel id>, <hex SHA-256 of the relay token>, <challenge>]`. The relay
+address is the upgrade's `Host` header, lowercased: the kernel takes it from the
+relay URL it dials and the relay reads it from the same request, so a proof made
+for one relay is refused by another.
+
+The relay verifies the proof against the registration's `public_key` after the
+token check and before it binds a realm, admits the kernel or displaces the live
+connection of the same kernel. A refused proof closes only the refused socket,
+with the reason, and logs `relay_registration_proof_refused`. One challenge
+admits one registration: a second `daemon_register` on the same socket is closed
+with `relay connection already registered; reconnect to register again`. A
+heartbeat renews the token but cannot change the proven key; a heartbeat
+registration with another `public_key` closes the socket with `daemon identity
+key changed; reconnect to register it`. A kernel refuses a relay that offers no
+challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -615,21 +638,36 @@ Remote native TUI composition:
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
 - relay peer protocol 383 (local 934) acknowledges pulled projections; both kernels must speak 383. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
 - relay peer protocol 384 (local 935) binds `complete_leased_prompt` to the exact prompt it completes: the request carries `home_prompt_id` and `worker_provider_run_id`, like `cancel_leased_prompt`. The worker completes the leased agent's prompt only when it is still that home prompt on that worker run; a completion of an earlier or already finished prompt is refused with `leased_prompt_not_current` and changes nothing, so the current turn keeps running. A home treats that refusal as the prompt having settled on the worker. When the home prompt is still the one running but on another provider run (a relaunch the home has not followed yet), the worker refuses with the distinct code `leased_prompt_run_changed`; that prompt has not settled, so the home keeps its turn active and retries the completion once it follows the successor run. Both kernels must speak 217.
-- relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
+- MP-08 / MP-10 / MP-11: Skills v2 (local 533 / peer 141) replaces the v8 skill-grant requirement contract. Home-selected instruction packages and scope/state/revision follow every leased execution placement through `EnsureRemoteSkillPackages`. Both request and receipt require the current `execution_lease_id`; each materialization binds its stable `skill_id` and complete digest. Received packages must not synthesize agent grants or become a worker catalog. The older standard-worker no-copy exception does not apply to skills. MCP requirements and placement are unchanged.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Chariox TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
+MP-08 / MP-10 / MP-11, Skills v2 local 533 / peer 141: `native_details`
+accepts the focused agent and a provider/account/execution/inventory-bound native
+selection, never a client-chosen native root. Its read-only projection carries
+source provenance, the file manifest and declared version; unavailable bodies
+remain explicitly unavailable. Catalog `preview` returns a home review receipt
+binding the mutation hash, resolved source revisions and complete-content digests.
+`mutate` requires that receipt ID. Home must verify its owner, scope, revision,
+expiry and reviewed staged bytes; approval must not fetch newer source content.
+
+MP-08 / MP-10 / MP-11: Project-scoped skills bind the Project ID, independent
+of Workspace membership. Local 533 adds `CreateProject { name }` /
+`ProjectCreated { project }` through the ordinary Project service/actor. A named
+Project can have `workspace_ids: []`; its legacy `workspace_id` shadow is empty,
+never an executable cwd. A session chooses a valid execution cwd separately; choosing it does not add a Project folder.
+
 Native TUI MCP and skill placement:
 
-- local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
+- MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants
 - standard home-worker native TUI may expose home-authorized remote extension manifests to the worker. Home-owned active extensions remain grant/revoke authoritative on the home kernel and execute on home through relay peer calls; the worker only advertises the manifest and forwards calls. Each forwarded call carries `invocation_id`, optional `provider_tool_call_id`, `attempt`, and optional `idempotency_key`; home reconstructs the current tool definition before execution and rejects stale or forged worker metadata, including calls from a worker provider run that is not the current remote binding.
 - when an extension is explicitly worker-local, the home kernel may still compute grant-derived remote MCP requirements and pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
-- slice-backed native TUI may synchronize Chariox skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- MP-08 / MP-10 / MP-11: every execution placement, including standard leased/native workers and slices, receives the effective home-selected Auto/Manual Skills v2 packages through `EnsureRemoteSkillPackages`; Off is not newly transferred. Verified revision/digest receipts bind to the current home/session/agent/lease/Project before dispatch. Received packages remain lease-private materializations, never a shadow worker catalog
 - slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Chariox vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
-- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
+- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted MCPs. Provider-native skills remain independent, read-only `From <Provider>` entries; complete-content dedupe and conflict projection follow the home Skills v2 resolver, without modifying native sources
 
 Native TUI permissions:
 
@@ -652,12 +690,13 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 
 Native TUI hidden context:
 
-- granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- MP-08 / MP-10 / MP-11: state-selected Skills v2 instruction context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
 - Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- MP-08 / MP-10 / MP-11: ordinary prompt text containing an unresolved `$word` is not evidence of a skill selection or missing skill context. Only a kernel-resolved selection failure may produce the explicit hidden selection-error response and refuse that turn; stale source-bound selections remain actionable errors.
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
 
 Provider-specific transport:
@@ -735,7 +774,9 @@ permission level or mode. Only the user changes the edge, with
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
 set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. A message that is not urgent waits in its receiver's queue and never starts or steers a turn: a session lists it in
-`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `prompt`), and the person cancels it or sends it now with
+`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `preview`: the first 200 characters, secrets redacted,
+`truncated`: the message is longer; at most the next ten per agent, so a Room's state stays small; the recipient reads the whole
+text from its inbox), and the person cancels it or sends it now with
 `CancelQueuedPrompt` / `SteerQueuedPrompt` on that id; its sender promotes it with `agent promote <message-id>`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
@@ -1115,9 +1156,15 @@ then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Timer acknowledgements and repeated continuations do not limit
 automatic wakes. Fifteen minutes waiting without progress
-produces a notice. Unconfirmed provider delivery blocks within two minutes and
-requires reconciliation of the original receipt; uncertainty never permits
-blind replay. Damaged ledger/source rows are retained and quarantined.
+produces a notice. A delivery a kernel restart or a lost turn interrupted is settled
+by the kernel before each sweep, never by a person: when the receiving turn took the
+event (a queued or running prompt, or a task of its own) it is accepted; otherwise the
+same event and sequence return to pending with a fresh refusal budget (receipt state
+`recovered`) and the normal inbox path delivers it to a later turn at most once. A
+steer is always put back. Damaged ledger/source rows are retained and quarantined; a
+damaged interrupted row is skipped and logged without stopping the pass. A task whose
+only open work is finished sources with an unacknowledged outcome ends done after the
+one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
 window. Repeated refusals while idle have a separate bounded escalation clock;
 an active recipient turn clears that clock. Unsupported or refused steering
@@ -1126,7 +1173,10 @@ Steer rejections do not start the idle-refusal clock; idle refusals start it at
 receipt time. A damaged refusal clock is retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
-`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+`chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
+with the message id (`status` `queued`, or `steering` for an urgent one); delivery runs
+on the kernel's own account afterwards, so a busy receiver or a change to the sender
+never fails or duplicates it. Nonurgent
 messages wait behind active work; idle/yielded receivers wake. Urgent messages
 use the existing exact-turn steer path, with rejected/unsupported steering
 retained for a later wake and uncertainty pinned. Explicitly stopped receivers
@@ -3378,6 +3428,8 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- relay peer 449: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
+- relay peer 449: `ResolveHomeCredentialSecret.injection` accepts `{kind: "workspace", target}` (a Vault use target) so an agent that runs on a slice fills `chariox.vault.use_env` and `chariox.vault.write_file` from the home Vault; the local protocol is unchanged.
 - protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
   {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
   expected_revision}` give the owner a pause that outlives a deployment handover
@@ -3395,6 +3447,14 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+  and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
+  changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
+  kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
+  credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
+- protocol 1012 / relay peer 449: `AppConfirmationFrame.input`, the exact input
+  the kernel runs when the person confirms (sorted pretty JSON, cut with a "N more bytes" note
+  past 4096 bytes), written by the kernel and required in every `app_confirmation`.
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
@@ -3404,6 +3464,16 @@ Workflow trigger and deployment direction:
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
+- protocol 1012: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+  answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
+  (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
+  types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
+  status never carry the value, and the login record masks it if the provider echoes it. The entry must be a
+  secret bound to the provider's own site (`provider_enrollment_vault_origin`, today `https://opencode.ai`), allowed
+  for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
+  refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
+  client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
+  Person and owner-agent callers only. Web requires 1012 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -4096,6 +4166,26 @@ Workflow trigger and deployment direction:
   id and the process. A grant that lasts until its holder exits keeps its covered
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
+
+  Protocol 1012: a grant holder answers the person's cards for them. `RespondToInteraction`
+  from a local grant holder, from the same agent forwarded through the person's gateway, or
+  from an agent driving a Room through reach settles any open card of the person, in any of
+  their Rooms and from any agent depth, except the cards the person keeps for every choice:
+  secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
+  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
+  Those are refused with
+  `kernel_access_human_only` and stay open; outside events carry them as pointers and every
+  other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
+  answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
+  `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
+  answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
+  CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
+  (both take `--kernel NAME`).
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
@@ -5333,6 +5423,13 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
+Local 1012: every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
+`known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
+is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
+of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
+12.5 KB on every read. `browser-favicon-cache-1012.json` pins the shape (`mp08_mp10_browser_favicon_cache_1012_shape_and_hash`).
+
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
 is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
@@ -5524,7 +5621,7 @@ authority for its own sessions, agents, terminals and files.
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
-  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
   another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
@@ -5752,8 +5849,7 @@ the official one-operation response before registering another interaction.
 They do not authorize responding to arbitrary RuntimeInteractions. Leased
 watched commands revalidate the current home window through the existing
 leased kernel-request path, including before execution. Startup workspace trust
-may reuse an approved exact-workspace launch without making a queued sudo task
-live for tools. Scope expansion, missing authentication values, identity choices,
+is never answered by a sudo window. Scope expansion, missing authentication values, identity choices,
 revocation, sandboxing, tenant/owner checks and once-only effects keep their
 normal fences. This is kernel policy on existing shapes; no protocol shape or
 version changes.
@@ -6929,7 +7025,11 @@ a member's agent with this room's sources only. `AppInstallationSummary.events` 
 release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
-now optional on the request, a notification trigger refuses a value, and the trigger summary is
+now optional on the request (local 1012: a notification trigger takes `queue`, the default, or `steer` on create
+and update, and `NotificationSubscriptionRow.mode`, `NotificationSubscriptionChange::Mode` and
+`ReplacedListener.busy_policy` carry it; the prompt of an agent notification carries only a one-line notice
+with the title, the source and the inbox position, and the agent's inbox, kind `notification`, holds the
+occurrence payload, for every source), and the trigger summary is
 `{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
@@ -7438,6 +7538,22 @@ Following it uses the same outside grant, subscription, receipt and acknowledgem
 kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
 
+### A watcher as a notification source — local 1012
+
+NC-14 / NC-15 / NC-21: `NotificationSourceKind` gains `watcher`. A watcher is a script this kernel runs
+for the owner; it has one source (`source_id` `watcher_<id>`, `workflow_id` the watcher id,
+`exit_node_id` `event`, `name` / `display_name` the watcher's name, `session_id` the Room it was made in),
+enabled while the watcher exists. `Watcher(WatcherRequest)` with `create {session_id, manifest, script}`,
+`update {watcher_id, manifest, script}` (back to draft), `dry_run`, `activate`, `pause {paused}`,
+`check_now`, `rename {watcher_id, name}` (keeps its dry run), `remove {watcher_id}` and `list {}` answers `Watcher {watcher}`, `WatcherDryRun {result}`,
+`WatcherRemoved {watcher_id}` or `Watchers {watchers, followers}`. `followers` are the owner's
+subscriptions to these watchers that this kernel holds, on any kernel and in any Room. A summary's `dry_run` is the last dry run of the
+current revision (null after a change); activation requires it. A run's events, cursor, reading and health commit in one write; occurrence ids are
+`<run>.<commit>:<n>`. Health is `ok | failing | gap | noisy` (30 events in 10 minutes, then one a minute);
+entering a non-ok state wakes the creating agent once with a `watcher_health` inbox event. Agent tools:
+`chariox.watcher.create|dry_run|activate|status|remove`. Focused check:
+`cargo test -p chariox-kernel --lib watcher`.
+
 ### A tool call's picture count in the outline preview — local 1000
 
 MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`
@@ -7577,15 +7693,18 @@ A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` 
 the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
 `choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
 
-- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
-  written by the kernel from the verified release (all six present, none other). A client frames the
-  preview with these words and never with text the App supplied.
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name, input}`,
+  written by the kernel from the verified release and the call (all seven present, none other). A client
+  frames the preview with the six words and never with text the App supplied. `input` is the exact input the
+  kernel runs on Confirm, formatted once by the kernel: sorted-key pretty JSON, secret-shaped values and
+  secret-named fields masked as `[redacted:<kind>]`, and cut at 4096 bytes with a final `… N more bytes` line.
+  A client shows it beside the App's preview and never rebuilds it.
 - `app_confirmation.preview`: for an App whose backend serves its view and so has no Tab, the rows its
   backend answered (`[{label, value}]`, at most 12, plain text); the card then carries no `view`, and a client
   that shows the rows offers Confirm.
 - `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
   App's Tab, shown through the existing protected card region. A client that cannot show it offers no
-  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+  Confirm; the card's `message` repeats `input` for clients that read text.
 
 Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
 in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
@@ -7889,6 +8008,179 @@ numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the sh
 The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
 
 For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.
+### Skills v2 wire contract — MP-08 / MP-10 / MP-11
+
+Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
+catalog contract; local **571** / peer **179** add the leased-worker native
+inventory request below (no client-visible shape changed; the client minimum
+stays 533/141). Local **581** / peer **189** add the `resolve_repository_update`
+request and its `repository_update` result; local **586** / peer **192** add
+`compaction_ids` to the leased-worker native inventory response (the IDs of native
+compactions the worker's harness observed, which the home records once to reload
+skills). A peer below 192 cannot report them, so the home refuses to dispatch to
+that binding until it is rebound, instead of assuming its loads were retained; a kernel that supports them also
+advertises the `skills_repository_update_v581` capability next to
+`skills_v2_runtime`, and clients send the request only when both are present
+(an older kernel gets the message "update the kernel", never a decode error).
+`SkillsV2` wraps a tagged `action` request and a tagged `kind` result. The
+canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+bindings mirror them. Skills are instructions, never Extension grants.
+
+`catalog`, `get`, `native_inventory` and `loads` supply management projections.
+`preview` and `mutate` take the same reviewed action batch, typed scope
+(`chariox` or a kernel Project ID) and expected home-wide revision. A batch
+publishes one revision or no change. A null state removes the override.
+`list` and `load` are the model discovery/load surface; the kernel, rather than
+caller-supplied flags, records explicit Manual selections. `submit` carries
+source-bound selections alongside the ordinary prompt/attachment identities.
+A native selection includes kernel entry ID, provider, account, execution place
+and inventory revision; no client skill path or body is accepted.
+
+`resolve_repository` (home owner only, never an agent tool) fetches a public git
+repository with the machine's `git` and answers its current commit and every
+SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
+`skipped`). Nothing is installed. The owner then reviews a batch of `install`
+actions with `source.kind = "repository"` (`url`, full commit `revision`, member
+`path`) plus one `create_package`. Each install is fetched at exactly that
+commit, and the kernel itself records the commit as `source_revision` on every
+member and on the package, with `upstream_members` mapping path to skill ID. A
+revision is never accepted from a client label: a repository package refuses
+members from another commit and cannot join a custom package. Credentials in
+the URL, private or auth-required repositories and agent-initiated repository
+sources are refused.
+
+MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
+`resolve_repository_update { package_id }` for the home owner. Its
+`repository_update` response contains the old and resolved commits, changed,
+added, removed, unchanged and skipped members, plus one revision-bound mutation.
+The owner reviews and confirms that mutation through the usual path; confirmation
+uses staged bytes and never fetches again. Remaining source-package members must
+advance together to one attested commit. Member IDs, state overrides and original
+install times remain stable; members moved to custom packages and directories
+left unselected at install are skipped. Invalid current members refuse the whole
+update. Empty repositories and updates removing every remaining member require
+explicit removal or ungrouping instead. The normal 512-action limit applies.
+The TUI exposes `/skills repo-update <package>`; the Web update entry point is
+not implemented by this addition.
+
+`SkillProjection.delivery` distinguishes Chariox delivery, verified native
+provision, content conflict and unverified native exposure. Equal complete
+content and compatible exposure produce one Chariox picker row with
+`also_in_provider`; clients omit that native row. Conflicting content retains
+the Chariox revision for Chariox selection. Native availability is not a load
+receipt. `skills_changed` is session-scoped and carries catalog revision
+invalidation or acknowledged load records. Every dispatch must still compare
+the durable catalog revision after a missed event.
+
+`EnsureRemoteSkillPackages` requires a revision/Project/state/digest manifest.
+Its receipt echoes the authenticated home/session/agent/lease context and exact
+manifest. The sender must reject mismatched receipts. Payload files include
+executable bits in their complete content identity. Old peers cannot omit the
+manifest: they require an upgrade before a v2 transfer or skill-using turn.
+For a leased worker the home builds the delivery at submit time from its own
+catalog revision, awaits the verified receipt, and prepends hidden context that
+names the worker's verified roots (Auto skills point to their SKILL.md there;
+selected bodies are inline). The worker holds no catalog and never resolves
+skills itself; Chariox list/load_skill/manage_skills and load receipts are
+forwarded to and recorded on the home (see peer 179 below); a failed transfer
+refuses the turn.
+Peer 179 adds `ReadLeasedSkillNativeInventory` (home to its leased worker; the
+authenticated lease home only) answered by `LeasedSkillNativeInventory`, which
+carries the worker harness's native entries (and, on request, one entry's
+Details). The home uses it for the Skills screen, the `$` picker, dispatch-time
+dedupe and `list_skills`/`load_skill` of a leased agent; `inventory: null`
+means the provider has not started on the worker. Its optional
+`provider_run_id` names the worker run the lease has when the home reads it
+before a turn; a run other than the one holding earlier loads (or none) makes
+the home attach those loads again on that turn. Chariox `list_skills`,
+`load_skill` and `manage_skills` of a leased agent are the existing
+`ForwardCapabilityRuntimeTool` forwarding: the home keeps a per-turn authority
+keyed by the lease (`leased:<leased_agent_id>`), `load_skill` names the root
+the worker verified for that skill. Admission and returning a tool body never
+record Loaded. After the official harness acknowledges prompt delivery or a
+completed `load_skill` result, the worker forwards the internal
+`_chariox_skill_delivery_ack` through the same authenticated
+`ForwardCapabilityRuntimeTool` path. It is absent from the model/client tool
+catalog. The home checks the current peer/session/agent/lease/provider-run and
+exact home prompt binding, then commits only its pinned prompt-body records or
+the acknowledged tool skill ID and full digest. A cancelled/held turn or lost
+tool response cannot create load history. Provider completion settlement retains
+failed acknowledgement work for retry; replay is idempotent. A skill the
+worker's harness already exposes is neither listed twice nor transferred.
+`SubmitLeasedPrompt.native_skill_selections` (peer 179, omitted when empty)
+carries the source-bound `From <Provider>` selections the home validated against
+that inventory, with the `catalog_revision` that inventory was read at (a
+selection's identity includes the inventory binding). The worker applies its own harness invocation to them (Claude
+`/name task`, a Codex skill input item with the worker-verified path, the
+OpenCode skill tool instruction) when that prompt reaches the provider; a
+selection that no longer matches the worker inventory refuses the turn, and no
+native package is ever copied. The selections and their catalog revision live
+in the worker prompt's private durable state from admission through queueing,
+capacity holds and restart; public prompt JSON cannot supply them.
+`EnsureRemoteSkillPackages.skill_names` (peer 179, omitted when no transferred
+skill can be typed) is the home's name view for a `$name` typed in Claude's own
+composer on that lease's worker: `{ catalog_revision, skills: [{ skill_id, name,
+digest }] }`, one entry per effective Auto or Manual Chariox skill (Off and
+harness-provided rows are absent; the first row of a name wins, as at home).
+Auto and Manual packages are both transferred, and the view must name only
+skills of the same manifest and revision, or the request is refused. Turn hidden
+context still advertises Auto skills only. The worker keeps the newest view on
+its leased agent (it is no catalog and grants nothing). The home sends it with
+every leased turn and when a leased native provider launches, so a native
+composer works before any dispatched turn.
+
+MP-08 / MP-10 / MP-11: every typed Claude composer turn asks the owning home for
+its current context through the private `_chariox_prepare_native_skill_turn`
+operation on `ForwardCapabilityRuntimeTool`. It uses the authenticated lease and
+live native run, without claiming an unrelated dispatched home prompt. The
+request carries the prompt, execution-bound native inventory, verified cached
+digests and whether the worker still holds its pre-compaction context. The home
+uses its normal resolver, active-load history, metadata budget and native dedupe
+rules; an ordinary `continue` therefore restores an updated active Manual body
+and receives Auto discovery metadata. The reply carries only required package
+bytes, the current name view and pinned body identities. The worker verifies and
+materializes them in this lease's cache, reads the body there, and renders
+metadata with worker paths. It never opens a worker catalog or calls back to the
+worker while handling this preparation request.
+
+Confirmed worker-native selections, including folded equal-content Chariox
+rows, use the existing `/name task` adapter and its original turn identity. The
+retry retains its delivery receipts until the real native invocation's hook
+confirms consumption. After that acknowledgement the worker sends
+`_chariox_skill_delivery_ack`: `typed` carries the prompt, Chariox ID, full digest
+and load reason; `typed_native` carries the prompt and the confirmed native
+entry. The home rechecks lease/run admission and current Chariox state/digest,
+or the native entry's provider, execution and complete digest, before recording
+Loaded. Native entries carry no execution-local paths or credential settings.
+Unknown dollar prose remains ordinary text; a resolved delivery failure blocks
+the hook visibly. The private preparation and receipt operations do not grant
+ordinary forwarded-tool authority, which still needs the exact running home
+turn. These unreleased operations use the reserved local 571 / peer 179 pair;
+public client request/response shapes are unchanged by them.
+Environment snapshots carry Project records, package membership, overrides and
+only their required Chariox dependencies separately from Extension grants.
+
+MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
+`skills_v2_runtime` capability in kernel status/relay discovery before routing
+Skills actions to V2. The unreleased 533/141 foundation does not advertise that
+capability: wire decoding alone is not a working list/load/dispatch runtime.
+
+MP-08 / MP-10 / MP-11: owning kernel startup completes the durable reset,
+exact product-owned legacy-copy cleanup and owned workflow artifact regeneration
+before admitting runtime work. The home journal ownership pin also serializes
+global cleanup with catalog publication. Other named kernel journals retire
+their own replayable state after the home owner completes; they cannot rewrite
+newly authored home artifacts. The overall checkpoint precedes the writer epoch
+fence, so an interrupted startup resumes before launches and an old writer
+connection cannot restore retired authority. Repo/native sources, other grants,
+credentials, Vaults and keys are outside this cleanup. Immutable old publications
+and archives needing legacy decoding require recreate/republish/re-export.
+
+The wire foundation alone is not an implemented catalog, destructive reset,
+provider delivery path or acceptance claim. Runtime rollout removes the old
+skill-grant contracts without a compatibility decoder. Skills v2 clients gate
+these operations at 533/141; unrelated clients need no minimum bump solely for
+this feature.
 
 ### What a waiting agent waits on, and questions to the owner — local 1011
 
@@ -7963,3 +8255,62 @@ agent's kernel reads or changes a workflow of a Room on another kernel) and
 `ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
 workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
 subscribes through the existing notification path).
+
+### Every agent has the kernel browser — local 1012 / relay peer 449
+
+The kernel browser, the Computer and the owner's trusted Apps need no card: an
+agent's `chariox.load_kernel_browser` grants and loads at once, in any turn and
+at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
+`allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
+`UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
+`user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
+
+### The person's Inbox and subscriptions — local 1012 / relay peer 449
+
+`GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
+`{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
+interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
+`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
+run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
+delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,
+snoozes and wakes cards, and `SetInboxMute{origin:{session_id, agent_id}, muted}` mutes one agent's notices; needs-you cards cannot be muted.
+
+`ListNotificationSubscriptions` answers `NotificationSubscriptions{subscriptions, responsibilities}`: one row per
+subscription whose subscriber lives on this kernel (`subscription`, `source` or null when it is gone,
+`subscriber_name`, `prompt`, `options`, `once`, `paused`, `fired`, `last_fired_at_ms`, `loop_stopped_at_ms`,
+`responsible_for`, `health`), and one row per workflow whose runs that need the person come to the Inbox.
+`health` is `ok`, `paused`, `loop_stopped`, `options_changed`, `subscriber_gone` or `source_gone`.
+`UpdateNotificationSubscription{subscription_id, change}` pauses (`paused{paused}`) or moves the subscription to
+another agent of the same Room (`subscriber{agent_id}`), and `RemoveNotificationSubscription{subscription_id}`
+removes it; both answer the new list. `TestNotificationSubscription{subscription_id}` is a dry run of the
+source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
+sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
+`NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
+
+A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
+a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those
+values wake the subscriber. A pick the source does not declare is refused when subscribing; when the source later
+drops a picked option the subscription holds delivery with `options_changed`. `once` ends the subscription after
+its first delivery. On one kernel a subscription to the subscriber's own source, or one that closes a cycle, is
+refused; across kernels a delivery caused by the subscription itself is answered `LoopDropped` and flagged.
+Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
+`person-inbox-1012.json` and its SHA-256 test pin the shape.
+
+### Model names — local 1012
+
+A model of a provider catalog (`GetProviderCatalog`, the `provider_catalog_changed` event) may list
+`aliases`: the other names the provider's own tool accepts for it, as its catalog gives them (the Claude
+picker's `sonnet`, a Codex picker id). The field is absent when a model has none. An agent spawn (single
+or batch), a model change and a new Room's defaults take any of: the catalog id, the id behind a provider
+qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headless/…`, `codex/…`), an alias, or
+an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
+resolves to none is refused with the models to use. `provider-catalog-aliases-1012.json` and its SHA-256
+test pin the shape.

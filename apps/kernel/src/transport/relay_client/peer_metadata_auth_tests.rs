@@ -60,7 +60,9 @@ async fn metadata_authority(connected: bool) {
     let relay_url = format!("ws://{}", relay.local_addr().unwrap());
     let relay_task = tokio::spawn(async move {
         let (stream, _) = relay.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+            .await
+            .unwrap();
         let Some(Ok(Message::Text(text))) = socket.next().await else {
             panic!("metadata request missing");
         };

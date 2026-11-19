@@ -57,8 +57,10 @@ impl KernelRuntimeState {
                 Some(project.id().to_string()),
                 serde_json::json!({"project":project}),
             )?;
+            let execution_project = crate::session::ProjectId::new(&receipt.target_project_id)
+                .map_err(|source| move_error(source.to_string()))?;
             self.owned.session_store.write().restore_ephemeral_session(
-                bound.for_execution_project(&receipt.target_project_id, &primary, &primary),
+                bound.for_execution_project(execution_project, &primary, &primary),
             )?;
         }
         if !leased {

@@ -133,7 +133,7 @@ while IFS= read -r request; do
   *'"method":"host.computer.retire"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.browser.retire_input"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state_signal"'*) after=${request#*'"after":'}; after=${after%%,*}; ms=${request#*'"wait_ms":'}; ms=${ms%%[!0-9]*}; ( n=0; while test "$(cat "$1/signal" 2>/dev/null || echo 0)" = "$after" && test "$n" -lt $((ms / 10)); do sleep 0.01; n=$((n+1)); done; printf '{"id":%s,"ok":true,"result":{"signal":%s}}\n' "$id" "$(cat "$1/signal" 2>/dev/null || echo 0)" ) & ;;
-  *'"state_wait":true'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
+  *'"state_wait":true'*) while test -e "$1/hold"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
   *'"op":"start"'*) printf 'start\n' >> "$1/starts"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;

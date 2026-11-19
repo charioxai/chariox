@@ -56,11 +56,51 @@ pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;
 #[cfg(test)]
 pub(crate) use waits::push_for_tests as push_wait_event;
-pub(crate) use waits::{take_wait_events, WaitChange, WaitEvent};
+pub(crate) use waits::size;
+pub(crate) use waits::{take_scope_kills, take_wait_events, ScopeKill, WaitChange, WaitEvent};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
 mod cgroup;
+/// Processes of one domain the memory controller killed, and the limit that
+/// bound it: the smallest `memory.max` from the domain up, else its peak use
+/// (0 when the host reports neither).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OomKill {
+    pub kills: u64,
+    pub bytes: u64,
+}
+
+impl OomKill {
+    /// What the owner tells its reader, in one plain line.
+    pub(crate) fn notice(&self) -> String {
+        let at = match self.bytes {
+            0 => String::new(),
+            bytes => format!(" at {:.1} GiB", bytes as f64 / (1u64 << 30) as f64),
+        };
+        format!(
+            "killed: out of memory ({} process(es) killed by the memory controller{at})",
+            self.kills
+        )
+    }
+}
+
+/// Tells a reader a process ended by a signal, not by its own exit.
+pub(crate) fn signal_notice(signal: i32) -> String {
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGTERM => "SIGTERM",
+        _ => return format!("killed by signal {signal}"),
+    };
+    format!("killed by signal {signal} ({name})")
+}
+
 #[cfg(test)]
 mod pressure_tests;
 #[cfg(test)]
@@ -329,8 +369,12 @@ impl PreparedDomain {
         let in_cgroup = false;
         #[cfg(target_os = "linux")]
         let cgroup = self.cgroup.as_ref().map(|group| group.path().to_path_buf());
+        #[cfg(target_os = "linux")]
+        let oom_baseline = cgroup.as_deref().map_or(0, cgroup::oom_kills);
         #[cfg(not(target_os = "linux"))]
         let cgroup = None;
+        #[cfg(not(target_os = "linux"))]
+        let oom_baseline = 0;
         let handed_over = listing.is_some();
         // Preserve the inherited listing before admitting the first client;
         // the asynchronous worker may not have reached its first tick yet.
@@ -354,6 +398,7 @@ impl PreparedDomain {
             cap: self.cap,
             in_cgroup,
             cgroup,
+            oom_baseline,
             listed: listing,
             released: handed_over,
             root,
@@ -365,6 +410,9 @@ impl PreparedDomain {
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
         let mut released = handed_over;
+        // OOM kills of the owner's unit already told, so each is told once.
+        #[cfg(target_os = "linux")]
+        let mut oom_seen = oom_baseline;
         // When the monitor last said it is waiting for the kernel's resources.
         let mut short_logged: Option<std::time::Instant> = None;
         // Per command: process-table time, resident and written bytes, and
@@ -395,6 +443,14 @@ impl PreparedDomain {
                 let ended = released && samples.is_empty() && tree.left_nothing_running();
                 #[cfg(not(unix))]
                 let ended = released && samples.is_empty();
+                #[cfg(target_os = "linux")]
+                if let Some(kill) = oom_kills_since(&watched, &mut oom_seen) {
+                    waits::push_kill(waits::ScopeKill {
+                        keys: keys_of(&watched),
+                        reason: kill.0.notice(),
+                        total: kill.1,
+                    });
+                }
                 // Rates use the process table's own time: watches share a
                 // cached table, so a tick can see the same table again.
                 let sampled_at = samples.iter().map(|p| p.sampled_at_ms).max().unwrap_or(0);
@@ -535,10 +591,16 @@ impl PreparedDomain {
                         }
                         false
                     }
+                    // The sampler has just resumed: the tree says nothing, so
+                    // read again next tick.
+                    Err(sampling::SamplingError::Pending) => false,
                     // A signal ended `ps` (a hot reload ends the children the
-                    // kernel leaves behind while a sample runs): the tree
-                    // says nothing, so read again next tick.
+                    // kernel leaves behind while a sample runs): the same.
+                    #[cfg(not(target_os = "linux"))]
                     Err(sampling::SamplingError::Ended) => false,
+                    // A busy host answers late; the tree is as it was.
+                    #[cfg(not(target_os = "linux"))]
+                    Err(sampling::SamplingError::TimedOut) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(
                             "process_resources.monitor",
@@ -780,6 +842,19 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
     }
 }
 
+/// The unit's OOM kills since `seen` (and its total), or none; `seen` moves up.
+#[cfg(target_os = "linux")]
+fn oom_kills_since(watched: &Arc<Mutex<Observation>>, seen: &mut u64) -> Option<(OomKill, u64)> {
+    let (path, baseline) = {
+        let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        (observation.cgroup.clone()?, *seen)
+    };
+    let total = cgroup::oom_kills(&path);
+    let kill = cgroup::oom_kill(&path, baseline)?;
+    *seen = total;
+    Some((kill, total))
+}
+
 /// The room hears that the pool ended the command at `pid`, and why.
 fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
     let (process_id, state) = {
@@ -879,6 +954,9 @@ struct Observation {
     in_cgroup: bool,
     /// The memory domain directory, which a hot reload hands to the next program.
     cgroup: Option<std::path::PathBuf>,
+    /// OOM kills the owner's unit had counted when this workload began, so
+    /// only kills since then are told as its own.
+    oom_baseline: u64,
     /// The workload's own process.
     root: u32,
     /// Whether each command may wait for room follows who submitted the line
@@ -966,6 +1044,17 @@ impl ProcessDomain {
     pub(crate) fn memory_stop_notice(&self) -> Option<String> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.memory_stop.as_ref().map(|stop| stop.notice.clone())
+    }
+    /// What the memory controller killed in this command's domain, whichever
+    /// limit above it fired. A real OOM kill looks like `kill -9` otherwise.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn oom_kill(&self) -> Option<OomKill> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        cgroup::oom_kill(state.cgroup.as_ref()?, state.oom_baseline)
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn oom_kill(&self) -> Option<OomKill> {
+        None
     }
     /// Lists the processes in Health under `owner` (a process the agent
     /// started through a runtime tool rather than its provider run).

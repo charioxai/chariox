@@ -379,3 +379,81 @@ async fn owned_runtime_state(
         workspace_coordinator,
     )
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_list_slices_share_one_provider_auth_inspection() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment_lock = SLICE_DOCKER_ENV_LOCK.lock().await;
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "chariox-list-slices-flood-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    )));
+    std::fs::create_dir(&scratch.0).expect("private test root should be created");
+    let action_log = scratch.0.join("docker-actions.log");
+    let docker = scratch.0.join("docker");
+    // Each docker call takes long enough for every request below to arrive while one inspection runs.
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nsleep 0.5\nexit 1\n",
+            action_log.display()
+        ),
+    )
+    .expect("fake docker should be written");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake docker should be executable");
+    struct PathGuard(Option<OsString>);
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+    let _path = PathGuard(std::env::var_os("PATH"));
+    let mut paths = vec![scratch.0.clone()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("PATH should join"),
+    );
+
+    let (app, runtime, _slice, ..) = busy_slice_runtime().await;
+    let config_projection = app.lock().await.config_projection_store();
+    let caller = crate::runtime::command::KernelCaller::default();
+    let requests = (0..64).map(|_| {
+        execute_slice_request(
+            &runtime,
+            &config_projection,
+            None,
+            &caller,
+            None,
+            crate::local::LocalDaemonRequest::ListSlices(crate::local::ListSlicesRequest),
+        )
+    });
+    for result in futures_util::future::join_all(requests).await {
+        result.expect("every ListSlices request should be answered");
+    }
+
+    let docker_calls = std::fs::read_to_string(&action_log)
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert!(
+        docker_calls <= 8,
+        "64 overlapping ListSlices ran {docker_calls} docker calls; they must share one inspection"
+    );
+}

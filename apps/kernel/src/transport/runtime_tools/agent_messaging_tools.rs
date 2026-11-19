@@ -62,7 +62,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. A message waits in the receiver's queue and is delivered in its next turn, whatever starts that turn, unless you set urgent to true, which steers the running turn or starts one if the receiver is idle. A queued message can be promoted to urgent with chariox.promote_agent_message, or by sending it again with the same idempotency_key and urgent true. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. Without urgent, it is delivered in the receiver's next turn, whatever starts that turn. A queued message can be promoted to urgent with chariox.promote_agent_message, or by sending it again with the same idempotency_key and urgent true. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message", "origin_prompt_id"],
@@ -114,7 +114,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     },
-                    "urgent": { "type": "boolean", "default": false, "description": "Steer the receiver's running turn, or start a turn if it is idle. When false, the message is queued for the receiver's next turn and never starts or steers one." },
+                    "urgent": { "type": "boolean", "default": false, "description": "Steer the receiver's running turn, or start one if it is idle. When false, the message queues for the next turn and never starts or steers one." },
                     "reply_requested": { "type": "boolean", "default": false, "description": "Request one correlated reply. Default messages require no courtesy response." },
                     "idempotency_key": {
                         "type": "string",

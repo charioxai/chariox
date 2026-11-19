@@ -6,9 +6,7 @@ import type {
   CharioxEnvironmentConfig,
   CharioxMcpServerConfig,
   CharioxScriptMetadata,
-  CharioxSkillMetadata,
   McpImportOutcome,
-  SkillImportOutcome,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
@@ -18,20 +16,16 @@ import {
   getCredentialRequest,
   getEnvironmentRequest,
   getScriptRequest,
-  getSkillRequest,
   grantAgentExtensionRequest,
   importMcpServersRequest,
-  importSkillsRequest,
   installMcpServerRequest,
   listHomeExtensionAuditRequest,
-  installSkillRequest,
   listEnvironmentsRequest,
   listConnectorsRequest,
   listConnectorAdaptersRequest,
   listCredentialsRequest,
   listMcpServersRequest,
   listScriptsRequest,
-  listSkillsRequest,
   registerEnvironmentRequest,
   registerConnectorRequest,
   registerConnectorAdapterRequest,
@@ -46,9 +40,7 @@ import {
   syncRemoteExtensionManifestRequest,
   testConnectorRequest,
   uninstallMcpServerRequest,
-  uninstallSkillRequest,
   updateMcpServerRequest,
-  updateSkillRequest,
   validateScriptRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -129,81 +121,6 @@ export async function revokeAgentMcp(
   name: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "mcp", name))
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
-}
-
-export async function listSkills(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-): Promise<CharioxSkillMetadata[]> {
-  const response = await client.send<Record<string, unknown>>(listSkillsRequest(workspaceTarget))
-  return expectVariant<{ skills: CharioxSkillMetadata[] }>(response, "SkillsListed").skills
-}
-
-export async function installSkill(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  sourcePath: string,
-): Promise<CharioxSkillMetadata> {
-  const response = await client.send<Record<string, unknown>>(installSkillRequest(workspaceTarget, sourcePath))
-  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillInstalled").skill
-}
-
-export async function updateSkill(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  sourcePath: string,
-): Promise<CharioxSkillMetadata> {
-  const response = await client.send<Record<string, unknown>>(updateSkillRequest(workspaceTarget, sourcePath))
-  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUpdated").skill
-}
-
-export async function uninstallSkill(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  name: string,
-): Promise<CharioxSkillMetadata> {
-  const response = await client.send<Record<string, unknown>>(uninstallSkillRequest(workspaceTarget, name))
-  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUninstalled").skill
-}
-
-export async function importSkills(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  provider: string,
-  name?: string | null,
-): Promise<SkillImportOutcome> {
-  const response = await client.send<Record<string, unknown>>(importSkillsRequest(workspaceTarget, provider, name))
-  return expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
-}
-
-export async function getSkill(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  name: string,
-): Promise<CharioxSkillMetadata> {
-  const response = await client.send<Record<string, unknown>>(getSkillRequest(workspaceTarget, name))
-  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "Skill").skill
-}
-
-export async function grantAgentSkill(
-  client: LocalIpcClient,
-  workspaceTarget: string,
-  agentRef: string,
-  name: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    grantAgentExtensionRequest(workspaceTarget, agentRef, "skill", name),
-  )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
-}
-
-export async function revokeAgentSkill(
-  client: LocalIpcClient,
-  agentRef: string,
-  name: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "skill", name))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 

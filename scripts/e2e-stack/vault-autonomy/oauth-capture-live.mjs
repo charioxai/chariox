@@ -207,15 +207,11 @@ try {
  check('owner stored the service password in the Vault for the one site',Boolean(passwordId))
  await navigate(gitea.origin+'/user/login')
  const ready=marker+'_READY',failed=marker+'_SETUP_FAILED'
- await page.locator('[data-prompt-input]').fill(`MP-08 / MP-09 / MP-10 / MP-11 setup: I want you to use my displayed kernel browser. Call chariox.load_kernel_browser once using necessary tool discovery wrappers, then get its state. I will approve ordinary browser access. Do not use sudo or Vault. If load_kernel_browser requests a provider reload, follow that instruction and continue after the automatic refresh; that is normal setup, not a failure. Finish exactly ${ready} only after a successful browser state call; use ${failed} only for an actual tool error after the tools have loaded.`)
+ await page.locator('[data-prompt-input]').fill(`MP-08 / MP-09 / MP-10 / MP-11 setup: I want you to use my displayed kernel browser. Call chariox.load_kernel_browser once using necessary tool discovery wrappers, then get its state. Do not use sudo or Vault. If load_kernel_browser requests a provider reload, follow that instruction and continue after the automatic refresh; that is normal setup, not a failure. Finish exactly ${ready} only after a successful browser state call; use ${failed} only for an actual tool error after the tools have loaded.`)
  await page.locator('[data-prompt-input]').press('Enter')
  await waitFor(async()=>{
-  const cards=page.locator('section[data-kernel-interaction-id]')
-  for(let index=0;index<await cards.count();index++) {
-   const card=cards.nth(index),text=(await card.getAttribute('aria-label') ?? '')+' '+await card.innerText()
-   check('setup approves only browser resource access',/Chariox resource access/i.test(text)&&/browser/i.test(text)&&!/(sudo|payment card)/i.test(text))
-   await card.locator('button[data-kernel-interaction-choice=allow]').click()
-  }
+  // Every agent has the kernel browser: loading it raises no card.
+  assert.equal(await page.locator('section[data-kernel-interaction-id]').count(),0,'browser setup raised a card')
   const replies=await page.locator('.pane-transcript-reply').allInnerTexts();assert.ok(!replies.some(text=>text.includes(failed)))
   return replies.some(text=>text.includes(ready))
  },'real Codex browser admission',300000)

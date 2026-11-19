@@ -1,5 +1,17 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
+/// Whether the only work left on `task` is finished sources whose outcome nobody acknowledged.
+fn only_unacknowledged_outcomes(task: &AgentTaskExecution) -> bool {
+    task.goal.is_none()
+        && task.wait.is_none()
+        && task.obligations.iter().any(|o| o.status == "settling")
+        && task
+            .obligations
+            .iter()
+            .filter(|o| o.requires_resolution() && !o.outlives_turn())
+            .all(|o| o.status == "settling")
+}
+
 /// Why a task is Blocked when its turn ended twice without finishing its obligations or yielding on them.
 pub(super) const INVALID_TURN_END_REASON: &str =
     "Repeated invalid turn end; owner must resume or cancel";
@@ -49,7 +61,6 @@ fn end_registration(
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
-    let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
     let question = matches!(&op, Operation::BlockForQuestion { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
@@ -309,7 +320,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
             }
-            migration::audit(
+            audit::audit(
                 tx,
                 "room.obligation.registered",
                 &id,
@@ -341,7 +352,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     {
                         return Ok(Outcome::Task(task));
                     }
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "room.obligation.dispatch_receipt",
                         &id,
@@ -494,14 +505,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let deadline = deadline.unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS));
-            if ids.is_empty()
-                || deadline <= now
-                || deadline > i64::MAX as u64
-                || reason.trim().is_empty()
-            {
-                return Err(error(
-                    "yield requires named live sources and, when given, a future deadline",
-                ));
+            if ids.is_empty() {
+                return Err(error("registration_ids is empty: name the registrations to wait on; chariox.events.subscriptions lists the registrations of this task"));
+            }
+            if deadline <= now || deadline > i64::MAX as u64 {
+                return Err(error(format!("deadline_ms {deadline} is not a future Unix time in milliseconds; now_ms is {now}")));
+            }
+            if reason.trim().is_empty() {
+                return Err(error("reason required: say in a few words what this wait is for; it is shown with the waiting task"));
             }
             let regs = registrations(tx, &task)?;
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
@@ -542,11 +553,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             prompt,
             reason,
         }
-        | Operation::BlockForBrowserAccess {
-            task,
-            prompt,
-            reason,
-        }
         | Operation::BlockForQuestion {
             task,
             prompt,
@@ -565,9 +571,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            let owner_action = if browser_access {
-                Some(TaskOwnerAction::BrowserAccess)
-            } else if question {
+            let owner_action = if question {
                 Some(TaskOwnerAction::Question)
             } else if t.state == ExecutionState::Blocked {
                 t.owner_action.clone()
@@ -590,7 +594,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
-                migration::audit(
+                audit::audit(
                     tx,
                     "goal.blocked",
                     &t.task_id,
@@ -739,6 +743,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         t.task_id
                     ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
+                } else if only_unacknowledged_outcomes(&t) {
+                    // Every source finished and its outcome was shown to two turns. Nothing is
+                    // left that a person could decide: the outcomes stay in the inbox.
+                    for o in &mut t.obligations {
+                        if o.status == "settling" {
+                            o.status = "satisfied".into();
+                        }
+                    }
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
                 } else {
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
@@ -749,6 +763,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.provider_run_id = Some(run);
             t.revision += 1;
             save(tx, &t)?;
+            super::settled_waits::finish_agent_waits(tx, &t.room_id, &t.agent_id)?;
             Ok(Outcome::Settled {
                 task: t,
                 correction,

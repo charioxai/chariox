@@ -470,7 +470,7 @@ configure_chromium_browser_policy() {
     for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
       mkdir -p \"\$dir\"
       cat > \"\$dir/chariox-slice.json\" <<'JSON'
-{\"BrowserSignin\":0}
+{\"BrowserSignin\":0,\"PasswordManagerEnabled\":false,\"AutofillAddressEnabled\":false,\"AutofillCreditCardEnabled\":false}
 JSON
       chmod 0644 \"\$dir/chariox-slice.json\"
     done
@@ -1529,40 +1529,6 @@ copy_provider_auth_file() {
   run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
     bash -lc "node -e $auth_program_q import $target_q"
   log "imported $label auth into $target_path"
-}
-
-trust_claude_slice_workspace() {
-  if ! run_with_timeout 30 docker exec -e "CHARIOX_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
-const fs = require('fs')
-const file = '/home/slice/.claude.json'
-let data = {}
-try {
-  data = JSON.parse(fs.readFileSync(file, 'utf8'))
-} catch {
-  data = {}
-}
-const projects = data.projects && typeof data.projects === 'object' ? data.projects : {}
-const template = Object.values(projects).find((value) =>
-  value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
-) || {}
-for (const workspace of new Set(['/workspace', process.env.CHARIOX_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
-  projects[workspace] = {
-    ...template,
-    allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
-    hasTrustDialogAccepted: true,
-    projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
-  }
-}
-data.projects = projects
-data.hasCompletedOnboarding = true
-fs.writeFileSync(file, JSON.stringify(data, null, 2))
-fs.chmodSync(file, 0o600)
-NODE"
-  then
-    log "Claude workspace trust update unavailable; continuing"
-    return 0
-  fi
-  log "marked /workspace and $SLICE_WORKSPACE as trusted for Claude Code"
 }
 
 import_provider_auth() {

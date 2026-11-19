@@ -167,6 +167,11 @@ impl LaunchAdmission {
         )))
     }
 
+    /// The most memory this machine can ever give commands, with nothing else running.
+    pub(crate) fn capacity(&self) -> u64 {
+        self.0.capacity()
+    }
+
     pub(crate) fn expected_memory(&self, argv: &[String], cwd: &Path) -> Option<u64> {
         let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
         self.0

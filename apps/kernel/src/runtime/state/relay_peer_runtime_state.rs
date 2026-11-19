@@ -218,6 +218,24 @@ impl KernelRuntimeState {
         let lease_id = lease_id.to_string();
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
+        // The worker runs the agent, so the model is chosen from the worker's own catalog: home's
+        // catalog can lack the provider or list other models.
+        let lease_owner = self
+            .with_app_side_effect({
+                let lease_id = lease_id.clone();
+                move |app| RemoteLeaseRuntime::new(app).execution_lease_owner(&lease_id)
+            })
+            .await?;
+        let (model, effort) = self
+            .resolve_new_agent_selection(
+                &lease_owner,
+                &provider,
+                Some(&account_profile),
+                model,
+                super::ModelSource::Named,
+                effort,
+            )
+            .await?;
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             // Resolve the folder first: a worker with nowhere to put it refuses before the
@@ -494,7 +512,6 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -520,7 +537,6 @@ impl KernelRuntimeState {
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                 )
             })
@@ -669,11 +685,11 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
         >,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
         let leased_agent_id = leased_agent_id.to_string();
@@ -829,8 +845,8 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
+                    native_skill_selections,
                 )
             })
             .await
@@ -1040,7 +1056,6 @@ impl KernelRuntimeState {
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     ) -> Result<(String, bool), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let steer_id = steer_id.to_string();
@@ -1070,7 +1085,6 @@ impl KernelRuntimeState {
                         &prompt,
                         &hidden_system_context,
                         attachments.clone(),
-                        required_skills.clone(),
                     )
                 })
                 .await;
@@ -1189,13 +1203,22 @@ impl KernelRuntimeState {
     pub(crate) async fn ensure_relay_remote_skill_packages(
         &self,
         context: RemoteSkillSyncContext,
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<CharioxSkillPackage>,
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.ensure_remote_skill_packages(context, packages)
+            runtime.ensure_remote_skill_packages(
+                context,
+                execution_lease_id,
+                manifest,
+                packages,
+                skill_names,
+            )
         })
         .await
     }
@@ -1236,7 +1259,7 @@ impl KernelRuntimeState {
         // The account is worker-owned; never acknowledge it for a stale lease.
         self.with_app_side_effect(|app| {
             RemoteLeaseRuntime::new(app)
-                .validate_remote_provider_account_context(&context, &profile.owner_user_id)
+                .validate_remote_provider_account_result(&context, &profile.owner_user_id)
         })
         .await?;
         Ok(profile)

@@ -12,14 +12,6 @@ pub(super) fn resolve_registration_path(
     }
 }
 
-pub(super) fn global_skill_registry() -> Result<crate::skill::CharioxSkillRegistry, DaemonError> {
-    Ok(crate::skill::CharioxSkillRegistry::new(user_only_root(
-        crate::skill::CharioxSkillRegistry::user_root(),
-        "skill registry root",
-        "HOME must be set to resolve ~/.chariox/skills",
-    )?))
-}
-
 pub(super) fn global_mcp_registry() -> Result<crate::mcp::CharioxMcpRegistry, DaemonError> {
     Ok(crate::mcp::CharioxMcpRegistry::new(user_only_root(
         crate::mcp::CharioxMcpRegistry::user_root(),
@@ -55,20 +47,6 @@ fn user_only_root(
 ) -> Result<Vec<PathBuf>, DaemonError> {
     root.map(|root| vec![root])
         .ok_or(DaemonError::InvalidConfig { field, message })
-}
-
-pub(super) fn skill_registry_for_workspace(workspace: &str) -> crate::skill::CharioxSkillRegistry {
-    let mut roots = Vec::new();
-    #[cfg(not(test))]
-    let _ = workspace;
-    #[cfg(test)]
-    if !workspace.trim().is_empty() {
-        roots.push(crate::skill::CharioxSkillRegistry::project_root(workspace));
-    }
-    if let Some(root) = crate::skill::CharioxSkillRegistry::user_root() {
-        roots.push(root);
-    }
-    crate::skill::CharioxSkillRegistry::new(roots)
 }
 
 pub(super) fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::CharioxMcpRegistry {
@@ -190,23 +168,6 @@ pub(super) fn format_remote_mcp_unavailable(
     format!(
         "remote MCP unavailable on worker. Install the matching MCP definition in the worker global registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{details}"
     )
-}
-
-pub(super) fn package_granted_skills(
-    registry: &crate::skill::CharioxSkillRegistry,
-    grants: &[String],
-) -> Result<Vec<crate::skill::CharioxSkillPackage>, DaemonError> {
-    grants
-        .iter()
-        .map(|grant| {
-            registry
-                .package(grant)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "package granted skill",
-                    message: format!("skill `{grant}` is granted but is not installed"),
-                })
-        })
-        .collect()
 }
 
 #[cfg(test)]

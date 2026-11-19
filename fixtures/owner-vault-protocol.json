@@ -1,6 +1,6 @@
 {
-  "local": 1011,
-  "peer": 448,
+  "local": 1060,
+  "peer": 498,
   "requests": [
     {
       "OwnerVault": {
@@ -54,6 +54,20 @@
       "OwnerVault": {
         "action": "delete",
         "id": "entry"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "update",
+        "id": "credential-1",
+        "kind": "API key",
+        "use_binding": {
+          "target": {
+            "kind": "site",
+            "origin": "https://api.resend.com"
+          },
+          "value_kind": "secret"
+        }
       }
     }
   ],

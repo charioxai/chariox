@@ -1,6 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 #[cfg(test)]
+mod batch_task_tests;
+#[cfg(test)]
 mod batch_tests;
 #[cfg(test)]
 mod catalog_continuation_tests;
@@ -26,12 +28,12 @@ mod unread_steers;
 mod worker_stops;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
+mod audit;
 #[cfg(test)]
 mod blocked_intent_tests;
 #[cfg(test)]
 mod child_end_receipt_tests;
 pub(crate) mod created_peers;
-mod delivery_waits;
 #[cfg(test)]
 mod done_parent_binding_tests;
 #[cfg(test)]
@@ -43,7 +45,6 @@ mod goal_tests;
 pub(crate) mod goals;
 #[cfg(test)]
 mod message_reply_tests;
-mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
 mod outside_tests;
@@ -61,6 +62,8 @@ mod replies;
 #[cfg(test)]
 mod reply_terminal_tests;
 mod settled_waits;
+#[cfg(test)]
+mod steered_turn_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
@@ -156,8 +159,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     worker_stops::initialize(db)?;
-    workflow_tasks::initialize(db)?;
-    migration::migrate(db)
+    workflow_tasks::initialize(db)
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
@@ -349,32 +351,6 @@ impl DurableKernelStateStore {
         TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
         tasks
     }
-    /// The agents of `room` that still hold lifecycle work: a task that is working, waiting or
-    /// blocked, or a wake that can still fire. An agent that yielded on a wake, or whose turn
-    /// ended under a background hold, is idle in the roster but is not finished.
-    pub(crate) fn agents_with_unfinished_work(
-        &self,
-        room: &str,
-    ) -> Result<std::collections::HashSet<String>, DaemonError> {
-        let armed = wakes::ARMED
-            .iter()
-            .map(|state| format!("'{state}'"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let db = self.lock_connection("agent.lifecycle.unfinished_agents")?;
-        let mut q = db
-            .prepare(&format!(
-                "SELECT agent_id FROM agent_tasks WHERE room_id=?1 AND state IN ('working','waiting','blocked') \
-                 UNION SELECT agent_id FROM agent_wakes WHERE room_id=?1 AND json_extract(payload,'$.state') IN ({armed})"
-            ))
-            .map_err(sql)?;
-        let agents = q
-            .query_map([room], |row| row.get::<_, String>(0))
-            .map_err(sql)?
-            .collect::<Result<_, _>>()
-            .map_err(sql)?;
-        Ok(agents)
-    }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
     pub(crate) fn visible_agent_tasks(
@@ -461,14 +437,22 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
     }
-    /// The live follows of peers an agent made in any of its tasks.
-    pub(crate) fn agent_peer_follows(
+    /// The live registrations an agent holds in its tasks other than `task`: a follow or a
+    /// delegate's completion outlives the turn that made it.
+    pub(crate) fn agent_registrations_of_other_tasks(
         &self,
         room: &str,
         agent: &str,
+        task: &str,
     ) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
-        peer_follows::held_by(&db, room, agent)
+        let mut q = db
+            .prepare("SELECT r.payload FROM agent_registrations r JOIN agent_tasks t ON t.task_id=r.task_id WHERE t.room_id=?1 AND t.agent_id=?2 AND t.task_id<>?3 AND json_valid(r.payload) AND COALESCE(json_extract(r.payload,'$.live'),0)=1 ORDER BY r.rowid")
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, task], |r| r.get::<_, String>(0))
+            .map_err(sql)?;
+        rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
     pub(crate) fn agent_delivery_front(
         &self,
@@ -551,6 +535,53 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// Deliveries whose provider receipt never came and whose attempt began before
+    /// `before_ms`: the kernel settles each itself. A leased worker settles its own
+    /// (`leased:` runs), and a quarantined receipt carries no prompt.
+    pub(crate) fn agent_interrupted_deliveries(
+        &self,
+        before_ms: u64,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.interrupted_deliveries")?;
+        let mut q = db.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') AND json_extract(payload,'$.prompt_id') IS NOT NULL AND COALESCE(json_extract(payload,'$.provider_run_id'),'') NOT LIKE 'leased:%' AND COALESCE(json_extract(payload,'$.attempted_at_ms'),0) < ?1 ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map([sql_integer(before_ms)?], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(sql)?;
+        let mut events = vec![];
+        for row in rows {
+            // One damaged row never stops the lifecycle pass: it stays as it is, where the
+            // sweep's quarantine of corrupt deliveries reports it with its reason.
+            let decoded =
+                row.map_err(sql)
+                    .and_then(|(sequence, room, agent, source, id, payload)| {
+                        decode_inbox(sequence, &room, &agent, &source, &id, &payload)
+                    });
+            match decoded {
+                Ok(event) => events.push(event),
+                Err(error) => crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "interrupted delivery row is damaged; left for quarantine",
+                    serde_json::json!({"error": error.to_string()}),
+                ),
+            }
+        }
+        Ok(events)
+    }
+    /// Runs raw SQL against the ledger: tests damage and age rows the way a crash does.
+    #[cfg(test)]
+    pub(crate) fn agent_ledger_sql_for_test(&self, sql_text: &str) {
+        let db = Connection::open(&self.path).unwrap();
+        db.execute_batch(sql_text).unwrap();
+    }
     /// Steers into a leased turn whose outcome is still unconfirmed, as
     /// `(room, agent, steer id)`: a restart must ask their workers again.
     pub(crate) fn agent_unconfirmed_leased_steers(
@@ -626,7 +657,8 @@ impl DurableKernelStateStore {
         .collect()
     }
     /// Pending rows after `lead` that one wake may carry with it, in order,
-    /// up to the first reply request (answered by a turn of its own).
+    /// up to the first reply request (answered by a turn of its own) or the
+    /// first row that wakes a second task (a prompt resumes one task).
     pub(crate) fn agent_delivery_batch(
         &self,
         lead: &InboxEvent,
@@ -636,14 +668,21 @@ impl DurableKernelStateStore {
         if lead.reply_requested {
             return Ok(Vec::new());
         }
+        let mut slot =
+            delivery::WakeSlot::new(self.agent_tasks(Some(&lead.room_id), Some(&lead.agent_id))?);
+        slot.take(lead);
         let mut batch = Vec::new();
         for event in self.agent_work_inbox(&lead.room_id, &lead.agent_id, lead.sequence, None)? {
             if event.reply_requested {
                 break;
             }
-            if delivery::batch_member(&event, steer, work) {
-                batch.push(event);
+            if !delivery::batch_member(&event, steer, work) {
+                continue;
             }
+            if !slot.take(&event) {
+                break;
+            }
+            batch.push(event);
         }
         Ok(batch)
     }
@@ -893,6 +932,10 @@ pub(super) fn execute(
                     .map(|kind| (kind, request.operation.clone()))
             })
             .flatten();
+        let dropped_ack = faults
+            .wants_ack_dropped(&request.operation)
+            .then(|| faults::delivery_kind(&request.operation))
+            .flatten();
         let value = apply(&tx, request.operation)?;
         let applied = std::time::Instant::now();
         if faults.writer_fails() {
@@ -922,6 +965,10 @@ pub(super) fn execute(
         let delivered = !matches!(&value, Outcome::Wakes(fired) if fired.is_empty());
         if let Some((kind, operation)) = duplicate.filter(|_| delivered) {
             redeliver(db, faults, kind, operation);
+        }
+        if let Some(kind) = dropped_ack {
+            faults.ack_dropped(kind);
+            return Err(error("agent lifecycle acknowledgement dropped (CHARIOX_AGENT_FAULT_DIR/drop-ack); the write committed"));
         }
         Ok(value)
     })();
@@ -1408,7 +1455,13 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
         return Ok(p);
     }
     let job: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND room_id=?2 AND json_extract(payload,'$.kind')='job')", params![e.source_id, e.room_id], |row| row.get(0)).map_err(sql)?;
-    if encode(&e.payload)?.len() > if job { 256 * 1024 } else { 32_768 } {
+    if encode(&e.payload)?.len()
+        > if job || e.kind == "notification" {
+            256 * 1024
+        } else {
+            32_768
+        }
+    {
         return Err(error("event payload limit"));
     }
     age_delivered_events(tx, &e.room_id, &e.agent_id)?;

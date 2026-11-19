@@ -519,11 +519,7 @@ impl KernelRuntimeState {
         };
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
-        let provider_prompt = owned.apply_granted_skill_summary(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_hidden_context,
-        )?;
+        let provider_prompt = prompt_with_hidden_context;
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         if !internal_recovery {
@@ -821,6 +817,31 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        self.fail_prompt_dispatch_with(dispatch, error, None).await
+    }
+
+    /// A queued turn that could not be prepared when it started (its selected skill was
+    /// turned off, removed or changed after it was queued) fails with that reason.
+    pub(super) async fn fail_unprepared_prompt(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        let unprepared = crate::provider::TurnOutcome::new(
+            crate::provider::TurnOutcomeKind::Other,
+            true,
+            &crate::terminal::user_facing_dispatch_failure(&error),
+        );
+        self.fail_prompt_dispatch_with(dispatch, error, Some(unprepared))
+            .await
+    }
+
+    async fn fail_prompt_dispatch_with(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+        unprepared: Option<crate::provider::TurnOutcome>,
+    ) -> Result<(), DaemonError> {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
@@ -998,14 +1019,19 @@ impl KernelRuntimeState {
                 .get_run(&dispatch.provider_run_id)
                 .map(|run| run.adapter_key().to_string())
                 .unwrap_or_default();
+            // A kernel-side error has no provider outcome and stays an internal
+            // diagnostic, except a turn that could not be prepared: its reason is
+            // written for the person, so the turn fails with it.
             let failure = if failed_prompt_matches {
-                owned.record_dispatch_failure_output(
-                    &dispatch.session_id,
-                    &dispatch.provider_run_id,
-                    &dispatch.agent_id,
-                    &adapter_key,
-                    &error,
-                )
+                owned
+                    .record_dispatch_failure_output(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        &dispatch.agent_id,
+                        &adapter_key,
+                        &error,
+                    )
+                    .or(unprepared)
             } else {
                 None
             };
@@ -1183,6 +1209,12 @@ impl KernelRuntimeState {
         }
         for dispatch in dispatches.local {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        for (dispatch, error) in dispatches.failed_local {
+            let state = self.clone();
+            tokio::spawn(async move {
+                let _ = state.fail_unprepared_prompt(dispatch, error).await;
+            });
         }
         for dispatch in dispatches.remote {
             self.spawn_remote_prompt_dispatch(dispatch);
@@ -2270,15 +2302,15 @@ pub(in crate::runtime::state) mod tests {
         std::env::set_var("CHARIOX_HOME", &root);
         // This credential-delivery regression uses the mocked PTY spawn path.
         std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config =
             DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -2443,15 +2475,15 @@ pub(in crate::runtime::state) mod tests {
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
         std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config =
             DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

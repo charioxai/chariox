@@ -42,12 +42,14 @@ async fn a_control_request_is_answered_while_a_bulk_answer_drains_slowly() {
             .unwrap()
     });
     let url = format!("ws://{addr}");
-    let (mut daemon, _) = connect_async(url.as_str()).await.unwrap();
+    let (mut daemon, daemon_handshake) = connect_async(url.as_str()).await.unwrap();
     send(
         &mut daemon,
-        RelayEnvelope::DaemonRegister {
-            registration: test_registration("kernel", "machine", "Linux", 10),
-        },
+        signed_register(
+            &url,
+            &daemon_handshake,
+            test_registration("kernel", "machine", "Linux", 10),
+        ),
     )
     .await;
     timeout(Duration::from_secs(3), async {

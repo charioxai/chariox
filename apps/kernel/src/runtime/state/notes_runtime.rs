@@ -161,6 +161,7 @@ mod owner_alias_tests {
             let app = crate::app::DaemonApp::bootstrap(config).unwrap();
             let mut room = RuntimeSession::new(
                 format!("notes-alias-{:016x}", rand::random::<u64>()),
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
