@@ -3431,6 +3431,9 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1067 (provisional): an agent's `active_turn.phase` is `thinking` while the model reasons and streams nothing a
+  person can read (Claude reports only a thinking-token count then); `awaiting_first_output` is the provider still
+  reading the context. Clients show "Thinking" or "Reading context" with the time since `started_at_ms`, not a bare spinner.
 - protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the

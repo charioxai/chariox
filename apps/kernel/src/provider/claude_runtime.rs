@@ -1841,6 +1841,42 @@ done
         assert_eq!(second_completed.chunks[0].bytes, b" message");
     }
 
+    #[test]
+    fn claude_thinking_without_text_reports_its_token_count() {
+        let (mut state, mut batch) = parser_state();
+        for event in [
+            json!({ "type": "message_start", "message": { "id": "msg-1" } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "" } }),
+        ] {
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({ "type": "stream_event", "event": event }),
+                &mut batch,
+            );
+        }
+        assert_eq!(batch.thinking_tokens, Some(0));
+        assert!(batch.chunks.is_empty(), "{:?}", batch.chunks);
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 6450, "estimated_tokens_delta": 150}),
+            &mut batch,
+        );
+        assert_eq!(batch.thinking_tokens, Some(6450));
+
+        let mut text_only = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({ "type": "stream_event", "event": { "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } } }),
+            &mut text_only,
+        );
+        assert_eq!(text_only.thinking_tokens, None);
+    }
+
     fn thinking_then_text_stream(
         state: &mut ClaudeRuntimeState,
         deltas: &[&str],

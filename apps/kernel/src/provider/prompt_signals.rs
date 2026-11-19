@@ -47,6 +47,8 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_usage: Option<ProviderRunTokenUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
+    /// The model reasons without visible output; the provider's token estimate so far.
+    pub thinking_tokens: Option<u64>,
 }
 
 impl ProviderPromptSignalBatch {
@@ -56,6 +58,10 @@ impl ProviderPromptSignalBatch {
             || !self.completions.is_empty()
             || !self.notices.is_empty()
             || self.prompt_completed
+    }
+
+    pub(crate) fn note_thinking(&mut self, tokens: u64) {
+        self.thinking_tokens = Some(self.thinking_tokens.unwrap_or(0).max(tokens));
     }
 }
 

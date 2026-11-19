@@ -1049,10 +1049,19 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
         started_at_ms: Some(1234),
     };
 
-    let snapshot = serde_json::to_value(active_turn).expect("active turn should serialize");
+    let snapshot = serde_json::to_value(&active_turn).expect("active turn should serialize");
     assert_eq!(
         snapshot.pointer("/phase"),
         Some(&serde_json::json!("awaiting_first_output"))
+    );
+    // Local 1067: a model that reasons without visible output is `thinking`.
+    let thinking = crate::runtime::projection::AgentActiveTurnProjection {
+        phase: crate::runtime::projection::AgentTurnRuntimePhase::Thinking,
+        ..active_turn.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(thinking).unwrap().pointer("/phase"),
+        Some(&serde_json::json!("thinking"))
     );
     assert_eq!(
         snapshot.pointer("/started_at_ms"),
