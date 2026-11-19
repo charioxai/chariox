@@ -343,9 +343,10 @@ impl KernelRuntimeState {
                 }
                 serde_json::json!({"blocked":true})
             }
-            "chariox.jobs.run" | "chariox.jobs.status" | "chariox.jobs.cancel" => {
-                self.dispatch_job_tool(run, name, &args, task).await?
-            }
+            "chariox.jobs.run"
+            | "chariox.jobs.status"
+            | "chariox.jobs.cancel"
+            | "chariox.jobs.list" => self.dispatch_job_tool(run, name, &args, task).await?,
             "chariox.events.timer"
             | "chariox.events.process"
             | "chariox.events.terminal"

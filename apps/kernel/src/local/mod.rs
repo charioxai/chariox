@@ -24,7 +24,7 @@ pub use api::{
 };
 pub use api::{
     GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,
-    JobPlacement, JobRanOn, JobResult, JobView, OffloadPolicy, RemoteJobEstimate,
+    JobPlacement, JobRanOn, JobResult, JobResultSummary, JobView, OffloadPolicy, RemoteJobEstimate,
     RemoteJobPlacement, RemoteJobPolicy, RunJobRequest, RunSessionProcessRemotelyRequest,
     SetRemoteJobPolicyRequest,
 };

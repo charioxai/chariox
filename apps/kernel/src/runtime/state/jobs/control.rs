@@ -17,7 +17,7 @@ impl KernelRuntimeState {
             .job_wake_driver
             .as_ref()
             .ok_or_else(|| ledger::error("Job service unavailable"))?;
-        let record = self.session_jobs(session_id).into_iter().filter_map(|view| driver.read(&view.job_id).ok()).find(|record| record.job_id == process_id || record.exec_id.as_deref() == Some(process_id)).ok_or_else(|| ledger::error("Only a queued command started with chariox.jobs.run can move to a remote machine"))?;
+        let record = self.session_jobs(session_id).into_iter().filter(|view| view.result.is_none() && view.state != "finished" && view.read_error.is_none()).filter_map(|view| driver.read(&view.job_id).ok()).find(|record| record.job_id == process_id || record.exec_id.as_deref() == Some(process_id)).ok_or_else(|| ledger::error("Only a queued command started with chariox.jobs.run can move to a remote machine"))?;
         let request = crate::local::RoomTerminalRequest {
             session_id: session_id.into(),
             acting_agent: None,

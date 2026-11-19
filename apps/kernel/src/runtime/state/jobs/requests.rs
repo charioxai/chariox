@@ -12,6 +12,9 @@ impl KernelRuntimeState {
             .job_wake_driver
             .as_ref()
             .ok_or_else(|| ledger::error("job service unavailable"))?;
+        if name == "chariox.jobs.list" {
+            return Ok(self.own_job_list(task));
+        }
         if name != "chariox.jobs.run" {
             let id = args["job_id"]
                 .as_str()
@@ -76,7 +79,7 @@ impl KernelRuntimeState {
                 self.cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
                     .await?;
             }
-            let mut value = public_record(driver.read(id)?)?;
+            let mut value = self.job_response(driver.read(id)?)?;
             if let Some(error) = collection_error {
                 value["return_error"] = error.into();
             }
@@ -206,7 +209,7 @@ impl KernelRuntimeState {
         loop {
             let record = driver.read(&id)?;
             if record.state == "finished" || tokio::time::Instant::now() >= deadline {
-                return public_record(record);
+                return self.job_response(record);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

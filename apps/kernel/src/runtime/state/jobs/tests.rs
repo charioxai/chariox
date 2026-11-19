@@ -412,15 +412,7 @@ async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_bu
 
 #[tokio::test]
 async fn offload_job_runtime_budget_starts_after_queue_admission() {
-    let (state, run, task, worktree) = remote_fixture().await;
-    state
-        .set_remote_job_policy(
-            &task.room_id,
-            Some(&task.agent_id),
-            &task.owner_user_id,
-            Some(crate::local::OffloadPolicy::WhenBusy),
-        )
-        .unwrap();
+    let (state, run, task, worktree) = fixture().await;
     // The job fits the machine and must wait: another command holds all of its memory.
     let admission = crate::runtime::process_resources::LaunchAdmission::default();
     let _busy = admission
@@ -570,19 +562,22 @@ fn offload_job_command_that_ended_without_a_status_says_why() {
 }
 
 #[tokio::test]
-async fn offload_job_refused_at_the_kernels_command_limit_names_the_tool_that_frees_them() {
+async fn job_admission_ignores_running_ordinary_pipes() {
     // Live ordinary commands fill the limit here; finished ones are the next test.
     let (state, run, task, worktree) = fixture().await;
     let execs = &state.owned.room_execs;
     let mut held = Vec::new();
-    while let Ok(id) = execs.open_as(
-        &task.room_id,
-        &task.owner_user_id,
-        worktree.path(),
-        &["/bin/sleep".to_string(), "60".to_string()],
-        None,
-        Some("another-agent".into()),
-    ) {
+    for _ in 0..64 {
+        let id = execs
+            .open_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/sleep".to_string(), "60".to_string()],
+                None,
+                Some("another-agent".into()),
+            )
+            .unwrap();
         held.push(id);
     }
     let result = state
@@ -597,10 +592,8 @@ async fn offload_job_refused_at_the_kernels_command_limit_names_the_tool_that_fr
     for id in &held {
         execs.close(&task.room_id, id).unwrap();
     }
-    assert_eq!(result["result"]["outcome"], "outside_end", "{result}");
-    let reason = result["result"]["output_tail"].as_str().unwrap();
-    assert!(reason.contains("RoomTerminal exec_list"), "{reason}");
-    assert!(!reason.contains("chariox.jobs.cancel"), "{reason}");
+    assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
+    assert!(result["job_id"].as_str().is_some(), "{result}");
 }
 
 #[tokio::test]
@@ -647,18 +640,21 @@ async fn offload_job_failure_notice_is_kept_after_a_line_over_one_mib_without_a_
 }
 
 #[tokio::test]
-async fn offload_job_refused_by_finished_ordinary_commands_points_to_exec_close() {
+async fn job_admission_ignores_retained_ordinary_pipes() {
     let (state, run, task, worktree) = fixture().await;
     let execs = &state.owned.room_execs;
     let mut held = Vec::new();
-    while let Ok(id) = execs.open_as(
-        &task.room_id,
-        &task.owner_user_id,
-        worktree.path(),
-        &["/bin/true".to_string()],
-        None,
-        Some("another-agent".into()),
-    ) {
+    for _ in 0..64 {
+        let id = execs
+            .open_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/true".to_string()],
+                None,
+                Some("another-agent".into()),
+            )
+            .unwrap();
         held.push(id);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -683,11 +679,8 @@ async fn offload_job_refused_by_finished_ordinary_commands_points_to_exec_close(
     for id in &held {
         execs.close(&task.room_id, id).unwrap();
     }
-    assert_eq!(result["result"]["outcome"], "outside_end", "{result}");
-    let reason = result["result"]["output_tail"].as_str().unwrap();
-    assert!(reason.contains("exec_close"), "{reason}");
-    assert!(reason.contains("0 jobs"), "{reason}");
-    assert!(!reason.contains("chariox.jobs.cancel"), "{reason}");
+    assert_eq!(result["result"]["outcome"], "completed", "{result}");
+    assert_eq!(result["result"]["exit_code"], 0, "{result}");
     let rerun = state
         .dispatch_job_tool(
             Some(&run),
@@ -701,19 +694,22 @@ async fn offload_job_refused_by_finished_ordinary_commands_points_to_exec_close(
 }
 
 #[tokio::test]
-async fn offload_job_refused_by_other_jobs_points_to_jobs_cancel() {
+async fn job_admission_ignores_active_jobs_pipe_count() {
     let (state, run, task, worktree) = fixture().await;
     let execs = &state.owned.room_execs;
     let mut held = Vec::new();
-    while let Ok(id) = execs.open_job_as(
-        &task.room_id,
-        &task.owner_user_id,
-        worktree.path(),
-        &["/bin/sleep".to_string(), "60".to_string()],
-        &crate::local::JobNeeds::default(),
-        None,
-        Some("another-agent".into()),
-    ) {
+    for _ in 0..64 {
+        let id = execs
+            .open_job_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/sleep".to_string(), "60".to_string()],
+                &crate::local::JobNeeds::default(),
+                None,
+                Some(task.agent_id.clone()),
+            )
+            .unwrap();
         held.push(id);
     }
     let result = state
@@ -728,9 +724,6 @@ async fn offload_job_refused_by_other_jobs_points_to_jobs_cancel() {
     for id in &held {
         execs.close(&task.room_id, id).unwrap();
     }
-    assert_eq!(result["result"]["outcome"], "outside_end", "{result}");
-    let reason = result["result"]["output_tail"].as_str().unwrap();
-    assert!(reason.contains("chariox.jobs.cancel"), "{reason}");
-    assert!(!reason.contains("RoomTerminal"), "{reason}");
-    assert!(reason.contains("64 jobs"), "{reason}");
+    assert!(result["job_id"].as_str().is_some(), "{result}");
+    assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
 }

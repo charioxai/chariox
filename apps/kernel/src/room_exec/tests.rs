@@ -132,14 +132,13 @@ async fn exec_early_output_and_interactive_input_are_not_staged() {
 }
 
 #[tokio::test]
-async fn exec_slow_reader_backpressures_without_dropping_bytes() {
+async fn exec_slow_reader_keeps_output_below_the_shared_byte_ceiling() {
     let service = RoomExecService::default();
     let id = open(&service, "head -c 4194304 /dev/zero");
     tokio::time::sleep(Duration::from_millis(200)).await;
     let record = service.record("room", &id).unwrap();
     let retained = record.output.lock().unwrap().retained_bytes();
     assert!(retained > 0 && retained <= buffer::OUTPUT_BYTES);
-    assert!(service.has_running_work());
     let (stdout, stderr, outcome) =
         tokio::time::timeout(Duration::from_secs(10), collect(&service, &id))
             .await
@@ -336,41 +335,29 @@ async fn ends_with_its_command(script: &str) {
 }
 
 #[tokio::test]
-async fn exec_cancel_never_reports_truncated_output_as_success() {
+async fn job_admission_output_pressure_finishes_with_an_explicit_loss_marker() {
     let service = RoomExecService::default();
-    // The extra pipe read fits in the OS pipe after the bounded buffer fills,
-    // allowing a successful process exit while its output task stays parked.
-    let directory = crate::test_support::TestWorktree::new("exec-cancel-exited-output");
+    let directory = crate::test_support::TestWorktree::new("exec-output-pressure");
     let marker = directory.path().join("exited");
     let id = open(
         &service,
-        &format!("head -c 1081344 /dev/zero; : > '{}'", marker.display()),
+        &format!("head -c 17825792 /dev/zero; : > '{}'", marker.display()),
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !marker.exists() {
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while !marker.exists() || service.has_running_work() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    service.cancel("room", &id).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while service.has_running_work() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let (stdout, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
-        .await
-        .unwrap();
-    assert!(stdout.len() < 1081344);
-    assert!(
-        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
-        "{outcome:?}"
-    );
+    .await;
+    if ended.is_err() {
+        service.close("room", &id).unwrap();
+        panic!("unread output must not park a completed command");
+    }
+    let (stdout, stderr, outcome) = collect(&service, &id).await;
     service.close("room", &id).unwrap();
+    assert!(stdout.len() <= 16 * 1024 * 1024);
+    assert!(String::from_utf8_lossy(&stderr).contains("Older unread command output was dropped"));
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
 }
 
 async fn abandoned_reader_expires(script: &str) -> ExecOutcome {
@@ -411,7 +398,8 @@ async fn exec_abandoned_stdin_reader_expires_and_releases_managed_work() {
 
 #[tokio::test]
 async fn exec_abandoned_output_reader_expires_and_releases_managed_work() {
-    let outcome = abandoned_reader_expires("head -c 8388608 /dev/zero").await;
+    // Keep the producer alive explicitly: unread output no longer backpressures a finished command.
+    let outcome = abandoned_reader_expires("head -c 8388608 /dev/zero; sleep 3600").await;
     assert_eq!(
         outcome,
         ExecOutcome::Failed {
@@ -734,4 +722,85 @@ async fn offload_exec_close_stdin_after_fast_exit_still_drains_outcome() {
     assert!(stderr.is_empty());
     assert_eq!(outcome, ExecOutcome::Exited { code: 7 });
     service.close("room", &id).unwrap();
+}
+
+#[tokio::test]
+async fn job_admission_many_finished_unread_commands_share_one_output_byte_bound() {
+    let service = RoomExecService::default();
+    let ids: Vec<_> = (0..40)
+        .map(|_| open(&service, "head -c 524288 /dev/zero"))
+        .collect();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while service
+            .list("room")
+            .iter()
+            .any(|exec| exec.state != ExecState::Finished)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let retained: usize = service
+        .list("room")
+        .iter()
+        .map(|exec| exec.buffered_bytes)
+        .sum();
+    let next = service.open_as(
+        "room",
+        "owner",
+        Path::new("/"),
+        &["/bin/true".into()],
+        None,
+        None,
+    );
+    let mut marked = false;
+    for id in &ids {
+        let (_, stderr, outcome) = collect(&service, id).await;
+        marked |=
+            String::from_utf8_lossy(&stderr).contains("Older unread command output was dropped");
+        assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+        service.close("room", id).unwrap();
+    }
+    if let Ok(id) = &next {
+        service.close("room", id).unwrap();
+    }
+    assert!(next.is_ok(), "retained output must not refuse a launch");
+    assert!(
+        retained <= 16 * 1024 * 1024,
+        "shared retained output was {retained} bytes"
+    );
+    assert!(marked, "dropped unread output must be explicit");
+}
+
+#[tokio::test]
+async fn job_admission_ordinary_commands_have_no_count_limit() {
+    let service = RoomExecService::default();
+    let mut ids = Vec::new();
+    let mut refusal = None;
+    for _ in 0..80 {
+        match service.open_as(
+            "room",
+            "owner",
+            Path::new("/"),
+            &["/bin/true".into()],
+            None,
+            None,
+        ) {
+            Ok(id) => ids.push(id),
+            Err(error) => {
+                refusal = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    for id in &ids {
+        service.close("room", id).unwrap();
+    }
+    assert!(
+        refusal.is_none(),
+        "launch refused at {}: {refusal:?}",
+        ids.len()
+    );
+    assert_eq!(ids.len(), 80);
 }

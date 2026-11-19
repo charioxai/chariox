@@ -193,24 +193,12 @@ async fn output(
         if length == 0 {
             return Ok(OutputEnd::Eof);
         }
-        loop {
-            let space = record.space.notified();
-            tokio::pin!(space);
-            space.as_mut().enable();
-            if record
-                .output
-                .lock()
-                .expect("exec output poisoned")
-                .push(stream, &bytes[..length])
-            {
-                record.changed.notify_waiters();
-                break;
-            }
-            tokio::select! {
-                reason = cancelled(&mut cancel) => return Ok(OutputEnd::Canceled(reason)),
-                _ = space => {},
-            }
-        }
+        record
+            .output
+            .lock()
+            .expect("exec output poisoned")
+            .push(stream, &bytes[..length]);
+        record.changed.notify_waiters();
     }
 }
 

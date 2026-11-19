@@ -8,6 +8,8 @@ use crate::local::{JobOutcome, JobPlacement, JobRanOn, JobResult, RunJobRequest}
 use tokio::sync::watch;
 
 #[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
 mod approval_tests;
 #[cfg(test)]
 mod cleanup_tests;
@@ -21,6 +23,7 @@ mod never_fit_tests;
 mod off_tests;
 mod pending_return;
 mod projection;
+mod query;
 mod record;
 mod remote;
 mod requests;
@@ -29,6 +32,9 @@ mod return_tests;
 mod stage;
 #[cfg(test)]
 mod stage_tests;
+mod summary;
+#[cfg(test)]
+mod summary_tests;
 #[cfg(test)]
 mod tests;
 

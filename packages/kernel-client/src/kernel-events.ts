@@ -260,10 +260,16 @@ export type JobView = {
   job_id: string; agent_id: string; command: string; state: "starting" | "queued" | "allocating" | "uploading" | "running" | "reconnecting" | "returning" | "deleting" | "finished";
   placement: "local" | "remote"; started_at_ms: number; machine_label?: string | null; address?: string | null;
   class_id?: string | null; rate_per_minute?: { amount_micros: number; currency: string } | null;
-  estimate_micros?: number | null; deleted: boolean; result?: JobResult | null;
+  estimate_micros?: number | null; deleted: boolean; result?: JobResultSummary | null; read_error?: string | null;
 }
 export type JobResult = {
   exit_code: number | null; output_tail: string; log: string; files_back: string[]; conflicts: string[];
   ran_on: { machine: string; ip: string | null }; duration_ms: number;
   outcome: "completed" | "time_limit" | "memory_limit" | "outside_end" | "machine_lost" | "capacity_unavailable" | "cancelled";
+}
+
+/** Bounded jobs-list metadata. Open a job with jobs.status for output and artifact paths. */
+export type JobResultSummary = {
+  exit_code: number | null; reason: string | null; files_back_count: number; conflicts_count: number;
+  ran_on: JobResult["ran_on"]; duration_ms: number; outcome: JobResult["outcome"];
 }
