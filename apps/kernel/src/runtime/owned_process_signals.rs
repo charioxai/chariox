@@ -24,6 +24,32 @@ pub(crate) struct OwnedProcessSignals {
     claim: Claim,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ProcessWitness {
+    root: u32,
+    exclusive_session: Option<u32>,
+    owned: BTreeMap<u32, String>,
+    marker: Option<Vec<u8>>,
+}
+
+impl ProcessWitness {
+    pub(crate) fn pid(&self) -> u32 {
+        self.root
+    }
+
+    pub(crate) fn into_signals(self) -> OwnedProcessSignals {
+        OwnedProcessSignals {
+            root: self.root,
+            exclusive_session: self.exclusive_session,
+            owned: self.owned,
+            claim: Claim {
+                marker: self.marker,
+                unmarked: Default::default(),
+            },
+        }
+    }
+}
+
 /// The launch claim the spawner put in the root's environment (`CLAIM_VARIABLE`). Every
 /// descendant inherits it, so a job that left the tree (its own session, its parent gone)
 /// before anything looked at the tree is still found and ended. The spawner passes it in:
@@ -36,6 +62,15 @@ struct Claim {
 }
 
 impl OwnedProcessSignals {
+    pub(crate) fn witness(&self) -> ProcessWitness {
+        ProcessWitness {
+            root: self.root,
+            exclusive_session: self.exclusive_session,
+            owned: self.owned.clone(),
+            marker: self.claim.marker.clone(),
+        }
+    }
+
     pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
         Self::capture(child, false, None)
     }

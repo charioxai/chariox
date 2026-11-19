@@ -19,6 +19,7 @@ mod execute;
 mod held;
 #[cfg(test)]
 mod held_tests;
+mod local;
 #[cfg(test)]
 mod marker_tests;
 mod never_fit;
@@ -53,6 +54,8 @@ use stage::{RemoteStage, StageEvent};
 pub(super) const KIND: &str = "job";
 const TAIL_BYTES: usize = 64 * 1024;
 
+pub(crate) use local::LocalJobHandover;
+
 struct Pending {
     state: KernelRuntimeState,
     record: Record,
@@ -67,6 +70,7 @@ pub(super) struct JobDriver {
     router: std::sync::OnceLock<std::sync::Weak<crate::runtime::router::CommandRouter>>,
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
+    local: local::LocalJobs,
     remote_requested: std::sync::Mutex<BTreeSet<String>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
     remote_samples:

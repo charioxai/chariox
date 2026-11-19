@@ -18,9 +18,9 @@ use crate::runtime::owned_process_signals::OwnedProcessSignals;
 mod tests;
 
 pub(super) struct Process {
-    child: Child,
-    signals: OwnedProcessSignals,
-    _domain: crate::runtime::process_resources::ProcessDomain,
+    pub(super) child: Child,
+    pub(super) signals: OwnedProcessSignals,
+    pub(super) domain: crate::runtime::process_resources::ProcessDomain,
 }
 
 impl Drop for Process {
@@ -153,7 +153,7 @@ fn spawn_with_environment(
     Ok(Process {
         child,
         signals,
-        _domain: domain,
+        domain,
     })
 }
 
@@ -207,7 +207,7 @@ async fn output(
 /// outcome otherwise sees only an exit code. An OOM kill is the typed
 /// memory-limit outcome, since the exit code of a tool that lost a child says
 /// nothing of why.
-fn name_the_kill(
+pub(super) fn name_the_kill(
     record: &Record,
     outcome: ExecOutcome,
     oom: Option<crate::runtime::process_resources::OomKill>,
@@ -241,13 +241,13 @@ fn name_the_kill(
 pub(super) fn run(
     mut process: Process,
     record: Arc<Record>,
-    mut input: mpsc::Receiver<Option<Vec<u8>>>,
+    input: mpsc::Receiver<Option<Vec<u8>>>,
     mut cancel: watch::Receiver<Option<CancelReason>>,
     service: RoomExecService,
     permit: crate::runtime::process_resources::LaunchPermit,
 ) {
     let mut permit = Some(permit);
-    let mut stdin = process.child.stdin.take().expect("piped stdin");
+    let stdin = process.child.stdin.take().expect("piped stdin");
     let stdout = process.child.stdout.take().expect("piped stdout");
     let stderr = process.child.stderr.take().expect("piped stderr");
     let out = tokio::spawn(output(
@@ -262,17 +262,7 @@ pub(super) fn run(
         ExecStream::Stderr,
         cancel.clone(),
     ));
-    let mut input_cancel = cancel.clone();
-    let writer = tokio::spawn(async move {
-        tokio::select! {
-            _ = cancelled(&mut input_cancel) => {},
-            _ = async {
-                while let Some(Some(bytes)) = input.recv().await {
-                    if stdin.write_all(&bytes).await.is_err() { break; }
-                }
-            } => {},
-        }
-    });
+    let writer = start_input(stdin, input, cancel.clone());
     tokio::spawn(async move {
         let outcome = supervise(&mut process, &mut cancel, &mut permit).await;
         writer.abort();
@@ -298,9 +288,9 @@ pub(super) fn run(
                 }
             }
         };
-        let outcome = match process._domain.memory_limit_bytes() {
+        let outcome = match process.domain.memory_limit_bytes() {
             Some(limit_bytes) => ExecOutcome::MemoryLimit { limit_bytes },
-            None => name_the_kill(&record, outcome, process._domain.oom_kill()),
+            None => name_the_kill(&record, outcome, process.domain.oom_kill()),
         };
         // Only the reaped process and settled pipes publish the final outcome.
         // Stop the resource watch outside the async executor: its Drop joins a thread.
@@ -311,6 +301,23 @@ pub(super) fn run(
         .await;
         service.finish(&record, outcome);
     });
+}
+
+pub(super) fn start_input(
+    mut stdin: tokio::process::ChildStdin,
+    mut input: mpsc::Receiver<Option<Vec<u8>>>,
+    mut cancel: watch::Receiver<Option<CancelReason>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = cancelled(&mut cancel) => {},
+            _ = async {
+                while let Some(Some(bytes)) = input.recv().await {
+                    if stdin.write_all(&bytes).await.is_err() { break; }
+                }
+            } => {},
+        }
+    })
 }
 
 async fn supervise(
@@ -364,6 +371,10 @@ async fn supervise(
             message: format!("command cleanup failed: {message}"),
         };
     }
+    exit_outcome(status)
+}
+
+pub(super) fn exit_outcome(status: io::Result<std::process::ExitStatus>) -> ExecOutcome {
     match status {
         Ok(status) => {
             #[cfg(unix)]
@@ -390,8 +401,15 @@ async fn supervise(
 fn exited(child: &Child) -> io::Result<bool> {
     let pid = child
         .id()
-        .filter(|pid| *pid > 1 && *pid <= i32::MAX as u32)
         .ok_or_else(|| io::Error::other("invalid owned child PID"))?;
+    exited_pid(pid)
+}
+
+#[cfg(unix)]
+pub(super) fn exited_pid(pid: u32) -> io::Result<bool> {
+    if pid <= 1 || pid > i32::MAX as u32 {
+        return Err(io::Error::other("invalid owned child PID"));
+    }
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     if unsafe {
         libc::waitid(

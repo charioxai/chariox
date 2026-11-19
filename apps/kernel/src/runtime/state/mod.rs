@@ -149,6 +149,7 @@ pub(crate) use agent_process_watch::{WatchedHandover, WatchedProcessTransfer};
 pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+pub(crate) use jobs::LocalJobHandover;
 #[cfg(test)]
 pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;

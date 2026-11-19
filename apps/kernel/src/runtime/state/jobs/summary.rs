@@ -60,9 +60,11 @@ impl Summary {
                     .as_ref()
                     .map(|result| crate::local::JobResultSummary {
                         exit_code: result.exit_code,
-                        reason: (record.placement == JobPlacement::Remote
+                        reason: ((record.placement == JobPlacement::Remote
                             && record.machine_label.is_none())
-                        .then(|| result.output_tail.chars().take(512).collect()),
+                            || (record.placement == JobPlacement::Local
+                                && result.outcome == crate::local::JobOutcome::MachineLost))
+                            .then(|| result.output_tail.chars().take(512).collect()),
                         files_back_count: result.files_back.len() as u64,
                         conflicts_count: result.conflicts.len() as u64,
                         ran_on: result.ran_on.clone(),

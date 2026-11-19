@@ -1,6 +1,10 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
 pub(crate) mod gateway_placement;
+#[cfg(unix)]
+mod job_handover;
+#[cfg(unix)]
+mod job_process;
 mod launch;
 mod lease;
 mod place_command;
@@ -29,7 +33,11 @@ use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
+#[cfg(unix)]
+pub(crate) use buffer::JobExecBuffer;
 pub(crate) use buffer::OUTPUT_LOSS_NOTICE;
+#[cfg(unix)]
+pub(crate) use job_handover::{JobExecGuard, JobExecHandover};
 pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
@@ -111,7 +119,7 @@ pub struct ExecOutput {
     pub outcome: Option<ExecOutcome>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum CancelReason {
     Canceled,
     Expired,
@@ -132,6 +140,8 @@ pub(super) struct Record {
     output: Mutex<buffer::Output>,
     changed: Notify,
     cancel: watch::Sender<Option<CancelReason>>,
+    #[cfg(unix)]
+    transfer: Option<mpsc::Sender<job_process::TransferRequest>>,
 }
 
 impl Record {
@@ -291,6 +301,13 @@ impl RoomExecService {
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         let (force, forced) = watch::channel(false);
         let (place, placed) = watch::channel(None);
+        #[cfg(unix)]
+        let (transfer, requests) = if job {
+            let (tx, rx) = mpsc::channel(1);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let record = Arc::new(Record {
             job,
             minimum_memory,
@@ -325,6 +342,8 @@ impl RoomExecService {
             output: Mutex::new(buffer::Output::new(self.inner.output_pool.clone())),
             changed: Notify::new(),
             cancel,
+            #[cfg(unix)]
+            transfer,
         });
         records.insert(exec_id.clone(), record.clone());
         self.inner.running.fetch_add(1, Ordering::AcqRel);
@@ -336,6 +355,8 @@ impl RoomExecService {
                 cancel: cancelled,
                 forced,
                 placed,
+                #[cfg(unix)]
+                transfers: requests,
             },
             self.clone(),
             authority,

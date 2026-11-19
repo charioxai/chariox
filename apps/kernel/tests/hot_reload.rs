@@ -3,6 +3,9 @@
 //! running agent turn continues in the same provider process.
 #![cfg(unix)]
 
+#[path = "hot_reload/local_jobs.rs"]
+mod local_jobs;
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

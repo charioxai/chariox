@@ -22,7 +22,7 @@ impl WakeDriver for JobDriver {
         tokio::spawn(async move {
             pending
                 .state
-                .execute_job(wake.clone(), pending.record, cancelled)
+                .execute_job(wake.clone(), pending.record, cancelled, None)
                 .await;
             live.lock().expect("job live").remove(&wake.id);
         });
@@ -47,13 +47,36 @@ impl WakeDriver for JobDriver {
             return Recovery::Lost("job service unavailable".into());
         };
         let wake = wake.clone();
-        let (cancel, cancelled) = watch::channel(false);
-        self.live
-            .lock()
-            .expect("job live")
-            .insert(wake.id.clone(), cancel);
+        let (cancel, cancelled) =
+            watch::channel(record.placement == JobPlacement::Local && wake.state == "cancelling");
+        {
+            let mut live = self.live.lock().expect("job live");
+            if live.contains_key(&wake.id) {
+                return Recovery::Reattached;
+            }
+            live.insert(wake.id.clone(), cancel);
+        }
+        let local = crate::hot_reload::take_local_job(&record.job_id);
         let live = self.live.clone();
         tokio::spawn(async move {
+            if let Some(local) = local {
+                if record.placement == JobPlacement::Local && record.result.is_none() {
+                    match local.restore(&state, &record) {
+                        Ok(local) => {
+                            state
+                                .execute_job(wake.clone(), record, cancelled, Some(local))
+                                .await;
+                            live.lock().expect("job live").remove(&wake.id);
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "local job could not resume across the kernel reload")
+                        }
+                    }
+                } else {
+                    local.discard();
+                }
+            }
             // Left by an earlier run with remote jobs on: end the job with its reason and leave
             // its worker, files and allocation exactly as saved.
             // A job on a held machine never depended on the switch: the agent named a machine it holds.
@@ -68,7 +91,9 @@ impl WakeDriver for JobDriver {
             }
             // The command still runs on its worker: follow it to its end before anything else.
             if matches!(record.remote, RemoteStage::Running { .. }) {
-                state.execute_job(wake.clone(), record, cancelled).await;
+                state
+                    .execute_job(wake.clone(), record, cancelled, None)
+                    .await;
                 live.lock().expect("job live").remove(&wake.id);
                 return;
             }
@@ -122,10 +147,16 @@ impl WakeDriver for JobDriver {
                 exit_code: None,
                 output_tail: if record.remote.holds_worker() {
                     "The kernel restarted after this job's command ended on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
+                } else if record.placement == JobPlacement::Local {
+                    "This local job was ended by the kernel restart. No command exit status is available. Run it again with chariox.jobs.run if you still need the result.".into()
                 } else {
                     "The kernel restarted; this job was not relaunched.".into()
                 },
-                log: String::new(),
+                log: if record.placement == JobPlacement::Local {
+                    super::execute::Output::existing_log(&state, &record).unwrap_or_default()
+                } else {
+                    String::new()
+                },
                 files_back: vec![],
                 conflicts: vec![],
                 ran_on: JobRanOn {
@@ -148,6 +179,7 @@ impl WakeDriver for JobDriver {
         Recovery::Reattached
     }
     fn reconcile_ended(&self) {
+        crate::hot_reload::discard_unclaimed_local_jobs();
         let Some(state) = self.recovery_state() else {
             return;
         };
@@ -231,6 +263,7 @@ impl KernelRuntimeState {
             router: Default::default(),
             pending: Default::default(),
             live: Default::default(),
+            local: Default::default(),
             remote_requested: Default::default(),
             owner_stops: Default::default(),
             remote_samples: Default::default(),

@@ -54,6 +54,16 @@ pub(super) struct Output {
     pub(super) outcome: Option<ExecOutcome>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct JobExecBuffer {
+    chunks: Vec<(u64, ExecStream, Vec<u8>)>,
+    cursor: u64,
+    acknowledged: u64,
+    issued: u64,
+    dropped_through: u64,
+    outcome: Option<ExecOutcome>,
+}
+
 impl Default for Output {
     fn default() -> Self {
         Self::new(Arc::default())
@@ -70,6 +80,49 @@ impl Drop for Output {
 }
 
 impl Output {
+    pub(super) fn checkpoint(&mut self) -> JobExecBuffer {
+        let shared = self.pool.clone();
+        let pool = shared.lock().expect("shared exec output poisoned");
+        self.discard_evicted(&pool);
+        let chunks = self
+            .chunks
+            .iter()
+            .map(|chunk| (chunk.cursor, chunk.stream, pool.chunks[&chunk.id].clone()))
+            .collect();
+        JobExecBuffer {
+            chunks,
+            cursor: self.cursor,
+            acknowledged: self.acknowledged,
+            issued: self.issued,
+            dropped_through: self.dropped_through,
+            outcome: self.outcome.clone(),
+        }
+    }
+
+    pub(super) fn from_checkpoint(checkpoint: JobExecBuffer, pool: Arc<Mutex<Pool>>) -> Self {
+        let chunks = {
+            let mut pool = pool.lock().expect("shared exec output poisoned");
+            checkpoint
+                .chunks
+                .into_iter()
+                .map(|(cursor, stream, bytes)| Chunk {
+                    cursor,
+                    stream,
+                    id: pool.insert(&bytes),
+                })
+                .collect()
+        };
+        Self {
+            pool,
+            chunks,
+            cursor: checkpoint.cursor,
+            acknowledged: checkpoint.acknowledged,
+            issued: checkpoint.issued,
+            dropped_through: checkpoint.dropped_through,
+            outcome: checkpoint.outcome,
+        }
+    }
+
     pub(super) fn new(pool: Arc<Mutex<Pool>>) -> Self {
         Self {
             pool,
