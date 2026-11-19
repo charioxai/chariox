@@ -224,8 +224,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // sanitizer's rewrite shows that, once per sheet it cleans. The links sent before then re-mark as href changes
     // at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
     let hrefValues = false, hrefStale = [];
-    const sheetCss = (text, base) => {
-      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource));
+    const sheetCss = (text, base, doc) => {
+      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
       if (!hrefValues && /\[\s*chariox-href\s*[~|^$*]?=/i.test(out)) {
         hrefValues = true;
         for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute('href')) hrefStale.push(node);
@@ -323,7 +323,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
       // root's :host rules cannot be checked by a query.
       if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(text)) return text;
-      const used = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at), usedBy(root));
+      const used = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at, node.ownerDocument), usedBy(root));
       return used.length < text.length ? used : text;
     };
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
@@ -335,15 +335,17 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let own = 0; for (const rule of sheet.cssRules) if (rule.type !== 3 && rule.type !== 10) own++;
       const copy = new CSSStyleSheet(); copy.replaceSync(text); return copy.cssRules.length >= own;
     };
+    // The document a sheet belongs to: an imported sheet's is its importer's.
+    const sheetDocument = sheet => { while (sheet.parentStyleSheet) sheet = sheet.parentStyleSheet; return sheet.ownerNode?.ownerDocument ?? document; };
     const css = (sheet, base) => {
-      const text = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at), null, Boolean(sheet.href));
+      const doc = sheetDocument(sheet), text = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at, doc), null, Boolean(sheet.href));
       if (!LOSSY.test(text) && wholeCopy(sheet, text)) return text;
       if (sheet.href) throw new Error('incomplete CSSOM serialization');
       // An inline <style>: its own source text is not lossy.
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
-      return source ? sheetCss(source, base) : text;
+      return source ? sheetCss(source, base, doc) : text;
     };
-    const inlineStyle = (element, base) => { const live = element.style.cssText; return loadViewerOptions(sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource)); };
+    const inlineStyle = (element, base) => { const live = element.style.cssText; return loadViewerOptions(sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource), element.ownerDocument); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // A fixed closed host with no box of its own (Vimeo's consent manager) sits where the document ends, and the viewer's
     // document ends elsewhere. Its content is fixed too, so its region is anchored at the viewport origin on both sides.
@@ -509,10 +511,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // The viewer's engine draws an image-set() from the option its own density picks (Blink: the lowest resolution at
     // or above it, else the highest), which the page at its density never fetched. That option loads here, as the page
-    // loads its CSS images (its cookies), so the page's loaded resources admit its bytes.
+    // loads its CSS images: in the document that owns the CSS (its cookies, Referer and referrer policy; a same-origin
+    // frame's sheets are serialized here too), so the page's loaded resources admit its bytes.
     const RESOLUTION = { x: 1, dppx: 1, dpi: 1 / 96, dpcm: 2.54 / 96 };
-    const viewerOptions = new Map();
-    const loadViewerOptions = css => {
+    const viewerOptions = new WeakMap();
+    const loadViewerOptions = (css, doc) => {
       if (!viewerDensity || viewerDensity === window.devicePixelRatio || !/image-set\(/i.test(css)) return css;
       for (const [, body] of css.matchAll(/image-set\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi)) {
         const options = topLevel(body).flatMap(option => {
@@ -522,8 +525,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         }).sort((a, b) => a.scale - b.scale);
         const pick = options.find(option => option.scale >= viewerDensity) ?? options.at(-1);
         const url = pick && [...urlKeys.values()].find(entry => entry.key === pick.key)?.url;
-        if (!url || url.startsWith('data:') || viewerOptions.has(url)) continue;
-        const image = document.createElement('img'); image.src = url; viewerOptions.set(url, image);
+        if (!viewerOptions.has(doc)) viewerOptions.set(doc, new Map());
+        const loads = viewerOptions.get(doc);
+        if (!url || url.startsWith('data:') || loads.has(url)) continue;
+        const image = doc.createElement('img'); image.src = url; loads.set(url, image);
       }
       return css;
     };
@@ -642,7 +647,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base)); } catch { sheets.push(''); } } return sheets; };
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base, root.ownerDocument ?? root)); } catch { sheets.push(''); } } return sheets; };
     const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
@@ -1580,7 +1585,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (changed()) return finish();
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
-    const sanitize = (text, base) => sheetCss(String(text), String(base));
+    // A sheet the kernel read is shared by URL across this world's documents: its viewer options load in this world's document.
+    const sanitize = (text, base) => sheetCss(String(text), String(base), document);
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();

@@ -30,8 +30,10 @@ async function mirrored(html, run, routes = {}, initialOptions = {}, environment
   const server = createServer((request, response) => {
     requested.push(request.url);
     const port = String(server.address().port), own = routes[request.url];
-    // A route with `cookie` answers `denied` to a request without that cookie (an image behind the page's sign-in).
-    const route = own?.cookie && !(request.headers.cookie ?? "").split(/;\s*/).includes(own.cookie) ? own.denied : own;
+    // A route with `cookie` answers `denied` to a request without that cookie (an image behind the page's sign-in);
+    // one with `referer` answers `denied` to a request whose Referer is not that path (an image only its own page may load).
+    const refused = own?.cookie && !(request.headers.cookie ?? "").split(/;\s*/).includes(own.cookie) || own?.referer && new URL(request.headers.referer ?? "http://none/").pathname !== own.referer;
+    const route = refused ? own.denied : own;
     if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.binary ?? route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
@@ -1231,6 +1233,18 @@ test("MP-10: a viewer candidate that fails to load (not an image) leaves the ima
     for (let i = 0; i < 6; i++) view.add(await next(400));
     assert.deepEqual(view.now(), [['x', 'ff0000', null]]);
   }, { ...DENSITY_ROUTES, '/two.svg': { type: 'text/html', body: '<p>sign in</p>' } }, { device_scale_factor: 2 }));
+
+// A same-origin frame's image-set() option at the viewer's density loads as that frame loads its CSS images: with the
+// frame's own Referer and referrer policy, not the top document's (here no-referrer), so a Referer-gated host answers it.
+test("MP-10: a same-origin frame's image-set() option at viewer density 2 loads with the frame's referrer", () => mirrored(
+  '<meta name="referrer" content="no-referrer"><iframe id="f" src="/child" width="300" height="200" style="border:0"></iframe>', async ({ next }) => {
+    const delivered = [], fills = () => delivered.map(resource => /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]).filter(Boolean);
+    for (let i = 0; i < 24 && !fills().includes('0000ff'); i++) delivered.push(...(await next(500)).resources);
+    assert(fills().includes('0000ff'), `MP-10: the frame's 2x option arrives as the frame loads it (fills ${fills()})`);
+    assert(!fills().includes('00ff00'), 'MP-10: no load of the 2x option without the frame\'s Referer');
+  }, { ...DENSITY_ROUTES,
+    '/child': { type: 'text/html', body: '<!doctype html><div style="width:30px;height:40px;background-image:image-set(url(/one.svg) 1x, url(/set-two.svg) 2x)"></div>' },
+    '/set-two.svg': { ...SVG('0000ff'), referer: '/child', denied: SVG('00ff00') } }, { device_scale_factor: 2 }));
 
 // A same-origin frame's images resolve viewport units, sizes and picture media in the frame (300 px wide), not the page.
 const FRAME_IMAGES = '<img id="w" srcset="/one.svg 300w, /two.svg 600w, /four.svg 1200w" sizes="100vw" width="30" height="40"><picture><source media="(max-width: 400px)" srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>';
