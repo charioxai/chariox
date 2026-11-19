@@ -427,10 +427,15 @@ macOS a Seatbelt profile denies them. Files the kernel hands an agent to read, s
 a workflow node's instruction file, live outside the secrets. What the launch names as the agent's
 own stays reachable: its working folder, its provider profile, its scratch
 folder and program, and, read-only, the kernel registry and local sign-in
-token the chariox CLI uses. A kernel that cannot confine (no `bwrap`, or user
-namespaces denied to it) refuses to start the process with a message that
-says how to fix it; nothing runs unconfined. A person's own terminal is not
-confined.
+token the chariox CLI uses. Bubblewrap stays the process the kernel holds,
+and `setpriv` (util-linux) ties the program's life to it, so stopping the
+sandbox stops the program. Bubblewrap ignores the signals that ask a
+program to stop (Ctrl-C, Ctrl-\, hang-up, SIGTERM), which `env` (coreutils
+8.31 or later) gives back to the program, so a Stop or a stop request reaches
+the program, not its sandbox; SIGKILL ends both. A kernel that cannot confine
+(no `bwrap`, `setpriv` or `env`, or user namespaces denied to them) refuses
+to start the process with a message that says how to fix it; nothing runs
+unconfined. A person's own terminal is not confined.
 
 ### 3.7 Workspace Coordination
 

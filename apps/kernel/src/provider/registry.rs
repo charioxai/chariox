@@ -626,15 +626,15 @@ mod tests {
         for provider in ["codex", "claude"] {
             write_fake_adapter_executable(&bin.join(provider));
         }
-        // The launch confines the provider with the machine's Bubblewrap.
+        // The launch confines the provider with the machine's Bubblewrap, setpriv and env.
         #[cfg(target_os = "linux")]
-        {
-            let bubblewrap = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                .map(|directory| directory.join("bwrap"))
+        for tool in ["bwrap", "setpriv", "env"] {
+            let installed = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join(tool))
                 .find(|candidate| candidate.is_file())
-                .expect("this test needs bubblewrap installed");
-            std::os::unix::fs::symlink(bubblewrap, path.join("bwrap"))
-                .expect("fixture PATH should reach bubblewrap");
+                .unwrap_or_else(|| panic!("this test needs {tool} installed"));
+            std::os::unix::fs::symlink(installed, path.join(tool))
+                .unwrap_or_else(|error| panic!("fixture PATH should reach {tool}: {error}"));
         }
 
         let test_binary = std::env::current_exe().expect("test binary path should resolve");

@@ -574,3 +574,54 @@ fn a_provider_run_writes_its_scratch_when_the_kernel_home_holds_the_state() {
         "the provider's scratch write is on disk:\n{output}"
     );
 }
+
+/// Whether `pid` still runs: a zombie waiting for its reaper has ended.
+fn running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+    })
+}
+
+#[test]
+fn killing_the_sandbox_ends_the_program_it_confines() {
+    use std::io::BufRead as _;
+    let kernel = DummyKernelHome::new();
+    let launch = crate::provider::managed_isolated_utility_launch(
+        "/bin/sh",
+        vec!["-c".to_string(), "echo $$; exec sleep 300".to_string()],
+        kernel.agent_environment(),
+        Some(kernel.workspace.clone()),
+        "agent-watched-process",
+    )
+    .expect("an agent command launch is planned");
+    let mut leader = crate::provider::command_from_provider_launch(launch)
+        .expect("an agent command is built")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("an agent command runs");
+    let mut line = String::new();
+    std::io::BufReader::new(leader.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let program: u32 = line.trim().parse().expect("the program reports its PID");
+    assert_ne!(
+        program,
+        leader.id(),
+        "the sandbox leads the confined program"
+    );
+    assert!(running(program));
+
+    leader.kill().unwrap();
+    leader.wait().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while running(program) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let survived = running(program);
+    if survived {
+        // SAFETY: the PID is the confined program this test started.
+        unsafe { libc::kill(program as i32, libc::SIGKILL) };
+    }
+    assert!(!survived, "the confined program outlived its sandbox");
+}

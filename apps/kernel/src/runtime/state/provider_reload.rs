@@ -582,6 +582,16 @@ mod tests {
             }
             std::env::remove_var(override_env);
         }
+        // Launches run inside the kernel's sandbox, whose tools it finds on PATH.
+        #[cfg(target_os = "linux")]
+        for tool in ["bwrap", "setpriv", "env"] {
+            let installed = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join(tool))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| panic!("this test needs {tool} installed"));
+            std::os::unix::fs::symlink(installed, bin.path().join(tool))
+                .unwrap_or_else(|error| panic!("the test PATH should reach {tool}: {error}"));
+        }
         std::env::set_var("PATH", bin.path());
         let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
         let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
@@ -630,8 +640,12 @@ mod tests {
         }
         for (request, launch) in launches {
             let launch = launch.expect("official adapter launch plan should resolve");
+            // The provider program runs inside the kernel state confinement.
+            let program =
+                crate::provider::state_confinement::confinement_prefix_len(&launch.pty_args)
+                    .map(|end| launch.pty_args[end - 1].as_str());
             assert_eq!(
-                launch.pty_program.as_deref(),
+                program,
                 bin.path().join(&request.adapter_key).to_str(),
                 "launch should use the test-scoped provider executable"
             );
