@@ -429,38 +429,49 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return out;
     };
-    // A sizes length: a plain length or a calc() of lengths and numbers (em is the initial 16px, as in sizes).
+    // A sizes length as the image's own document resolves it: Blink's CSS parser reads the length (calc(), min(), max(),
+    // clamp()), viewport units are that document's viewport (a frame's, not the top page's), and em/rem the initial 16px.
     const lengthPx = (text, node) => {
       if (text === 'auto') return node.getBoundingClientRect().width || null;
-      if (text === '0') return 0;
-      const unit = { px: 1, vw: innerWidth / 100, vh: innerHeight / 100, vmin: Math.min(innerWidth, innerHeight) / 100, vmax: Math.max(innerWidth, innerHeight) / 100, em: 16, rem: 16 };
-      const amount = (token, bare) => { const match = /^(\d*\.?\d+)([a-z]*)$/i.exec(token ?? ''); return !match ? NaN : match[2] ? match[1] * (unit[match[2].toLowerCase()] ?? NaN) : bare ? Number(match[1]) : NaN; };
-      if (!/^calc\(.*\)$/i.test(text)) { const value = amount(text, false); return Number.isFinite(value) ? value : null; }
-      const tokens = text.slice(4).match(/\d*\.?\d+[a-z]*|\S/gi) ?? []; let at = 0;
-      const factor = () => { const token = tokens[at++]; if (token !== '(') return amount(token, true); const value = sum(); return tokens[at++] === ')' ? value : NaN; };
-      const product = () => { let value = factor(); while (tokens[at] === '*' || tokens[at] === '/') value = tokens[at++] === '*' ? value * factor() : value / factor(); return value; };
-      const sum = () => { let value = product(); while (tokens[at] === '+' || tokens[at] === '-') value = tokens[at++] === '+' ? value + product() : value - product(); return value; };
-      const value = sum(); return at === tokens.length && Number.isFinite(value) ? value : null;
+      const view = node.ownerDocument.defaultView;
+      let length; try { length = CSSNumericValue.parse(text); } catch { return null; }
+      const type = length.type();
+      if (length instanceof CSSUnitValue && length.unit === 'number' ? length.value !== 0 : Object.keys(type).join() !== 'length' || type.length !== 1) return null;
+      const vw = view.innerWidth / 100, vh = view.innerHeight / 100;
+      const UNITS = { number: 1, em: 16, rem: 16, vw, svw: vw, lvw: vw, dvw: vw, vh, svh: vh, lvh: vh, dvh: vh, vi: vw, vb: vh, vmin: Math.min(vw, vh), vmax: Math.max(vw, vh) };
+      const px = value => {
+        if (value instanceof CSSUnitValue) { if (value.unit in UNITS) return value.value * UNITS[value.unit]; try { return value.to('px').value; } catch { return NaN; } }
+        if (value instanceof CSSMathSum) return [...value.values].reduce((sum, part) => sum + px(part), 0);
+        if (value instanceof CSSMathProduct) return [...value.values].reduce((product, part) => product * px(part), 1);
+        if (value instanceof CSSMathNegate) return -px(value.value);
+        if (value instanceof CSSMathInvert) return 1 / px(value.value);
+        if (value instanceof CSSMathMin) return Math.min(...[...value.values].map(px));
+        if (value instanceof CSSMathMax) return Math.max(...[...value.values].map(px));
+        if (typeof CSSMathClamp === 'function' && value instanceof CSSMathClamp) return Math.max(px(value.lower), Math.min(px(value.value), px(value.upper)));
+        return NaN;
+      };
+      const value = px(length); return Number.isFinite(value) ? value : null;
     };
-    // The source size: the first sizes entry whose media matches and whose length parses; else 100vw.
+    // The source size: the first sizes entry whose media matches and whose length parses; else 100vw (all in the image's document).
     const sourceSize = (sizes, node) => {
+      const view = node.ownerDocument.defaultView;
       for (const entry of topLevel(sizes ?? '')) {
         const text = entry.trim(); if (!text) continue;
         let at = text.length;
         if (text.endsWith(')')) { let depth = 0; do { at--; if (text[at] === ')') depth++; else if (text[at] === '(') depth--; } while (at > 0 && depth); while (at > 0 && /[\w-]/.test(text[at - 1])) at--; }
         else at = text.search(/\S+$/);
         const media = text.slice(0, at).trim(), size = lengthPx(text.slice(at), node);
-        if (size !== null && size >= 0 && (!media || matchMedia(media).matches)) return size;
+        if (size !== null && size >= 0 && (!media || view.matchMedia(media).matches)) return size;
       }
-      return innerWidth;
+      return view.innerWidth;
     };
     // An image's candidates with their densities: its picture's first matching source, else its own srcset (with src as 1x).
     const imageCandidates = node => {
-      let set = null;
+      let set = null; const view = node.ownerDocument.defaultView;
       for (const source of node.parentElement?.localName === 'picture' ? node.parentElement.children : []) {
         if (source === node) break;
         const media = source.getAttribute('media'), type = source.getAttribute('type');
-        if (source.localName !== 'source' || !source.getAttribute('srcset') || media && !matchMedia(media).matches || type && !IMAGE_TYPES.test(type.trim())) continue;
+        if (source.localName !== 'source' || !source.getAttribute('srcset') || media && !view.matchMedia(media).matches || type && !IMAGE_TYPES.test(type.trim())) continue;
         set = { srcset: source.getAttribute('srcset'), sizes: source.getAttribute('sizes'), src: null }; break;
       }
       set ??= node.getAttribute('srcset') ? { srcset: node.getAttribute('srcset'), sizes: node.getAttribute('sizes'), src: node.getAttribute('src') } : null;
@@ -470,19 +481,35 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (set.src && !widths && !out.some(entry => entry.density === 1)) out.push({ url: set.src, density: 1 });
       return out.length ? out : null;
     };
+    // The candidate at the viewer's density, loaded as the image's own document loads images (its cookies, referrer
+    // policy and CORS mode), once the page's own candidate is drawn. Its bytes count only once that load drew it; a
+    // failed load (an auth page, an error) leaves the image on the page's candidate.
+    const viewerLoads = new WeakMap();
+    const viewerLoaded = (node, url) => {
+      let load = viewerLoads.get(node);
+      if (load?.url !== url) {
+        const image = node.ownerDocument.createElement('img');
+        image.addEventListener('load', () => { if (viewerLoads.get(node)?.image === image && mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add('src'); wake(); } });
+        image.referrerPolicy = node.referrerPolicy; if (node.crossOrigin !== null) image.crossOrigin = node.crossOrigin;
+        image.src = url; load = { url, image }; viewerLoads.set(node, load);
+      }
+      return load.image.complete && load.image.naturalWidth > 0;
+    };
     // Blink's pick: the lowest density at or above the screen's, or the one below when their geometric mean exceeds it.
+    // The page's own candidate (and its density) travels until the viewer's has loaded.
     const imageChoice = node => {
       const candidates = imageCandidates(node), own = node.currentSrc || node.src;
       if (!candidates) return { url: own, density: 1 };
-      const target = viewerDensity || devicePixelRatio;
-      if (target === devicePixelRatio) {
-        const used = own && candidates.find(entry => { try { return new URL(entry.url, node.baseURI).href === own; } catch { return false; } });
-        return { url: own, density: used?.density ?? 1 };
-      }
+      const resolve = entry => { try { return new URL(entry.url, node.baseURI).href; } catch { return null; } };
+      const used = own && candidates.find(entry => resolve(entry) === own), current = { url: own, density: used?.density ?? 1 };
+      const target = viewerDensity || node.ownerDocument.defaultView.devicePixelRatio;
+      if (target === node.ownerDocument.defaultView.devicePixelRatio) return current;
       const sorted = candidates.sort((a, b) => a.density - b.density);
       let at = sorted.findIndex(entry => entry.density >= target); if (at < 0) at = sorted.length - 1;
       if (at > 0 && Math.sqrt(sorted[at - 1].density * sorted[at].density) > target) at--;
-      return sorted[at];
+      const pick = sorted[at], url = resolve(pick);
+      if (!url || url === own) return url ? { url: own, density: pick.density } : current;
+      return node.complete && node.naturalWidth > 0 && viewerLoaded(node, url) ? pick : current;
     };
     // The `chariox-density` value each image record last sent.
     const densityOf = new Map();

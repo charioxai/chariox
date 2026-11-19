@@ -26,9 +26,12 @@ const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
 async function mirrored(html, run, routes = {}, initialOptions = {}, environment = process.env) {
-  const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
+  const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-")), requested = [];
   const server = createServer((request, response) => {
-    const port = String(server.address().port), route = routes[request.url];
+    requested.push(request.url);
+    const port = String(server.address().port), own = routes[request.url];
+    // A route with `cookie` answers `denied` to a request without that cookie (an image behind the page's sign-in).
+    const route = own?.cookie && !(request.headers.cookie ?? "").split(/;\s*/).includes(own.cookie) ? own.denied : own;
     if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.binary ?? route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
@@ -60,7 +63,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}, environment
       return { next, input, subscription_id, generation: opened.generation };
     };
     const { next, input, subscription_id, generation } = await subscribe(initialOptions);
-    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id, requested });
   } finally {
     await host.stop();
     if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
@@ -1157,25 +1160,78 @@ for (const picture of [false, true]) test(`MP-10: a lazy ${picture ? 'picture' :
 
 // The kernel's page draws at density 1 (the owned desktop); a viewer at density 2 draws each image from the candidate
 // the page would pick at 2, with that density (its intrinsic size), as a page on a density-2 screen.
+const SVG = fill => ({ type: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#${fill}" d="M0 0h30v40H0z"/></svg>` });
+const DENSITY_ROUTES = { '/one.svg': SVG('ff0000'), '/two.svg': SVG('0000ff'), '/fallback.svg': SVG('00ff00'), '/four.svg': SVG('000000') };
+// The viewer's images as packets leave them: each image's id, the fill of its key's bytes (once sent) and its `chariox-density`.
+const imageViews = (snapshot, ids) => {
+  const images = rows(snapshot.nodes).filter(row => row.tag === 'img' && ids.includes(row.attrs.id)), delivered = [...snapshot.resources];
+  const keys = new Map(images.map(row => [row.id, row.res])), densities = new Map(images.map(row => [row.id, row.attrs['chariox-density'] ?? null]));
+  const color = key => { const resource = delivered.findLast(resource => resource.key === key); return resource && /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]; };
+  assert.equal(images.length, ids.length, 'MP-10: every fixture image is mirrored');
+  return {
+    add(packet) { for (const op of packet.ops) { if (op.op === 'res') keys.set(op.id, op.res); if (op.op === 'attr' && op.name === 'chariox-density') densities.set(op.id, op.value); } delivered.push(...packet.resources); },
+    now: () => images.map(row => [row.attrs.id, color(keys.get(row.id)), densities.get(row.id)]),
+  };
+};
+// Packets until the images look as expected (or 10 s), then the images as they are.
+const settleImages = async (next, view, expected) => { for (let i = 0; i < 20 && JSON.stringify(view.now()) !== JSON.stringify(expected); i++) view.add(await next(500)); return view.now(); };
 const DENSITY_IMAGES = `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40"><img id="w" srcset="/one.svg 30w, /two.svg 60w" sizes="(max-width: 10px) 5px, calc(2 * 10px + .625em)"><picture><source srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>`;
 for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer gets each srcset image's density-${scale} candidate and its density`, () => mirrored(DENSITY_IMAGES, async ({ next }) => {
-    const snapshot = await next(), images = rows(snapshot.nodes).filter(row => row.tag === 'img'), delivered = [...snapshot.resources], keys = new Map(images.map(row => [row.id, row.res]));
-    const color = key => { const resource = delivered.find(resource => resource.key === key); return resource && /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]; };
-    for (let i = 0; i < 20 && images.some(row => !color(keys.get(row.id))); i++) { const packet = await next(500); for (const op of packet.ops) if (op.op === 'res') keys.set(op.id, op.res); delivered.push(...packet.resources); }
-    assert.deepEqual(images.map(row => [row.attrs.id, color(keys.get(row.id)), row.attrs['chariox-density'] ?? null]), ['x', 'w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]));
-  }, { '/one.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#ff0000" d="M0 0h30v40H0z"/></svg>' }, '/two.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#0000ff" d="M0 0h30v40H0z"/></svg>' }, '/fallback.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#00ff00" d="M0 0h30v40H0z"/></svg>' } }, { device_scale_factor: scale }));
+    const expected = ['x', 'w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]);
+    assert.deepEqual(await settleImages(next, imageViews(await next(), ['x', 'w', 'p']), expected), expected);
+  }, DENSITY_ROUTES, { device_scale_factor: scale }));
 
 // A srcset change re-picks at the viewer's density: the new candidate's key travels with its density.
 test("MP-10: a srcset change at viewer density 2 sends the new density-2 candidate and its density", () => mirrored(
   `<img id="x" src="/one.svg" width="30" height="40">`, async ({ next, evaluate }) => {
-    const image = rows((await next()).nodes).find(row => row.attrs.id === 'x');
-    assert.equal(image.attrs['chariox-density'] ?? null, null);
+    const view = imageViews(await next(), ['x']);
+    assert.deepEqual(await settleImages(next, view, [['x', 'ff0000', null]]), [['x', 'ff0000', null]]);
     await evaluate("document.getElementById('x').srcset = '/one.svg 1x, /two.svg 2x'; true");
-    const ops = []; for (let i = 0; i < 20 && !ops.some(op => op.op === 'res' && op.id === image.id); i++) ops.push(...(await next(500)).ops);
-    const res = ops.findLast(op => op.op === 'res' && op.id === image.id), density = ops.findLast(op => op.op === 'attr' && op.id === image.id && op.name === 'chariox-density');
-    assert.notEqual(res?.res, image.res, 'MP-10: the image takes a new key');
-    assert.equal(density?.value, '2');
-  }, { '/one.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#ff0000" d="M0 0h30v40H0z"/></svg>' }, '/two.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#0000ff" d="M0 0h30v40H0z"/></svg>' } }, { device_scale_factor: 2 }));
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+
+// Image candidate states at a viewer density the page does not draw at (the PR's table; one test per row):
+// the page's candidate not drawn yet -> it travels, nothing else loads; drawn, the viewer's loading -> the page's
+// travels; the viewer's loaded (with the page's cookies) -> it travels with its density; the viewer's failed -> the page's stays.
+test("MP-10: an image the page has not drawn yet (lazy, below the view) keeps its own candidate and loads no other", () => mirrored(
+  `<div style="height:6000px"></div><img id="x" loading="lazy" src="/one.svg" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next, evaluate, requested }) => {
+    const view = imageViews(await next(), ['x']);
+    for (let i = 0; i < 3; i++) view.add(await next(300));
+    assert.equal(view.now()[0][2], null, 'MP-10: no density-2 candidate travels before the page draws the image');
+    assert(!requested.includes('/two.svg'), 'MP-10: the viewer candidate does not load ahead of the page');
+    await evaluate("document.getElementById('x').scrollIntoView(); true");
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+test("MP-10: while the viewer's candidate loads the image keeps the page's drawn candidate", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next }) => {
+    const view = imageViews(await next(), ['x']);
+    assert.deepEqual(await settleImages(next, view, [['x', 'ff0000', null]]), [['x', 'ff0000', null]], 'MP-10: the drawn 1x travels while the 2x loads');
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']], 'MP-10: then the 2x once it has loaded');
+  }, { ...DENSITY_ROUTES, '/two.svg': { ...SVG('0000ff'), delay_ms: 4000 } }, { device_scale_factor: 2 }));
+// The viewer's candidate on another origin (an image host) behind a cookie of that host: the page's load carries it,
+// a credential-less read of the URL gets the host's sign-in answer instead.
+test("MP-10: a viewer candidate behind its host's cookie loads with that cookie, never as the cookie-less answer", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, http://localhost:PORT/two.svg 2x" width="30" height="40">`, async ({ host, tab_id, subscribe }) => {
+    const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id), port = new URL((await connection.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, sessionId)).result.value).port;
+    assert((await connection.send('Network.setCookie', { name: 'signed', value: '1', url: `http://localhost:${port}/`, sameSite: 'None', secure: true }, sessionId)).success);
+    const viewer = await subscribe({ device_scale_factor: 2 });
+    assert.deepEqual(await settleImages(viewer.next, imageViews(await viewer.next(), ['x']), [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, { ...DENSITY_ROUTES, '/two.svg': { ...SVG('0000ff'), cookie: 'signed=1', denied: SVG('00ff00') } }));
+test("MP-10: a viewer candidate that fails to load (not an image) leaves the image on the page's drawn candidate", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next }) => {
+    const view = imageViews(await next(), ['x']);
+    for (let i = 0; i < 6; i++) view.add(await next(400));
+    assert.deepEqual(view.now(), [['x', 'ff0000', null]]);
+  }, { ...DENSITY_ROUTES, '/two.svg': { type: 'text/html', body: '<p>sign in</p>' } }, { device_scale_factor: 2 }));
+
+// A same-origin frame's images resolve viewport units, sizes and picture media in the frame (300 px wide), not the page.
+const FRAME_IMAGES = '<img id="w" srcset="/one.svg 300w, /two.svg 600w, /four.svg 1200w" sizes="100vw" width="30" height="40"><picture><source media="(max-width: 400px)" srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>';
+for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer picks a same-origin frame's candidates by the frame's viewport`, () => mirrored(
+  '<iframe id="f" src="/frame" width="300" height="200" style="border:0"></iframe>', async ({ evaluate, subscribe }) => {
+    for (let i = 0; i < 80 && !await evaluate("[...document.getElementById('f').contentDocument?.images ?? []].every(image => image.complete) && document.getElementById('f').contentDocument?.images.length === 2"); i++) await new Promise(resolve => setTimeout(resolve, 25));
+    const viewer = await subscribe({ device_scale_factor: scale }), expected = ['w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]);
+    assert.deepEqual(await settleImages(viewer.next, imageViews(await viewer.next(), ['w', 'p']), expected), expected);
+  }, { ...DENSITY_ROUTES, '/frame': { type: 'text/html', body: `<!doctype html><body style="margin:0">${FRAME_IMAGES}` } }));
 
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {

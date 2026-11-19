@@ -196,9 +196,22 @@ test('MP-10 M2: the renderer paints the prefix and retains it while ordinary chi
 test('MP-10: a density-2 viewer draws the 2x srcset candidate at its density-2 size',()=>roundtrip(
   '<!doctype html><img id="x" srcset="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMCIgaGVpZ2h0PSI0MCI+PHBhdGggZmlsbD0iI2ZmMDAwMCIgZD0iTTAgMGgzMHY0MEgweiIvPjwvc3ZnPg== 1x, data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MCIgaGVpZ2h0PSI4MCI+PHBhdGggZmlsbD0iIzAwMDBmZiIgZD0iTTAgMGg2MHY4MEgweiIvPjwvc3ZnPg== 2x">','',async({page,next,apply})=>{
     const drawn=()=>page.evaluate(()=>{const image=window.r.frame.contentDocument.getElementById('x');const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;});
-    for(let n=0;n<20&&!(await drawn());n++)await apply(await next());
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify([30,'0000ff']);n++)await apply(await next());
     assert.deepEqual(await drawn(),[30,'0000ff']);
   },{dpr:2}));
+
+// A source size is read as the page's browser reads it: a math function (min()) sizes a w-descriptor image as on the page.
+const wideSvg=(width,fill)=>`data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="10"><path fill="#${fill}" d="M0 0h${width}v10H0z"/></svg>`).toString('base64')}`;
+for(const dpr of [1,2])test(`MP-10: a density-${dpr} viewer draws a min() source-size image at the page's size`,()=>roundtrip(
+  `<!doctype html><img id="x" srcset="${wideSvg(600,'ff0000')} 600w, ${wideSvg(1200,'0000ff')} 1200w" sizes="min(100vw, 600px)">`,'',async({page,next,apply,evaluate})=>{
+    const look=`(image=>{const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;})`;
+    const drawn=()=>page.evaluate(`${look}(window.r.frame.contentDocument.getElementById('x'))`);
+    // The page's own drawing (its candidate at its density); a density-2 viewer draws the 2x candidate at the page's size.
+    const [width,color]=await evaluate(`${look}(document.getElementById('x'))`),expected=[width,dpr===2?'0000ff':color];
+    assert.equal(width,600,"the page sizes the image by its min() source size");
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
 
 // MP-08/MP-10/MP-11 M2: WHATWG's explanatory title attributes contain a
 // javascript: literal away from the start; the strict client rejects them.
