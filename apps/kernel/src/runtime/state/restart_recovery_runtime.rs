@@ -3521,11 +3521,13 @@ mod tests {
                 })
                 .unwrap();
             let crate::durable_state::agent_lifecycle::Outcome::Task(blocked) = store
-                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Block {
-                    task: task.clone(),
-                    prompt: task,
-                    reason: "Interrupted before it finished.".into(),
-                })
+                .agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::BlockInterrupted {
+                        task: task.clone(),
+                        prompt: task,
+                        reason: "Interrupted before it finished.".into(),
+                    },
+                )
                 .unwrap()
             else {
                 panic!()

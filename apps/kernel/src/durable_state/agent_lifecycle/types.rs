@@ -439,6 +439,14 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
+    /// The kernel blocks a task whose attempt was interrupted (a refused or failed
+    /// dispatch, a lost run): a later turn of the agent may supersede it. An owner block
+    /// (`Block`) is never superseded.
+    BlockInterrupted {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
     /// A provider turn failed or vanished: a plain task is cancelled, a task with
     /// ledger work is blocked for the owner.
     EndFailedTurn {
