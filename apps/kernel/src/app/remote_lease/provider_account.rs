@@ -504,7 +504,8 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        // The kernel's state folder is private to agents, so the test's opencode lives beside it.
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
             user_id: "cloud-owner".into(),
             ..Default::default()
