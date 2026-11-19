@@ -948,6 +948,52 @@ impl KernelRuntimeState {
             .await
     }
     /// `failure` is why the turn behind a task that ends cancelled failed.
+    /// A prompt steered into a running turn has no turn of its own: its task settles with the
+    /// task of the turn it was steered into, and its answer is that turn's reply after the steer.
+    /// Left Working, the sweep would find it without an executor and block it as interrupted.
+    async fn settle_prompts_steered_into(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = task.provider_run_id.as_deref() else {
+            return Ok(());
+        };
+        let store = &self.owned.durable_state_store;
+        for prompt in store.prompts_steered_into(&task.room_id, &task.task_id)? {
+            let Some(steered) = store.agent_turn_task(&task.room_id, &task.agent_id, &prompt)?
+            else {
+                continue;
+            };
+            if steered.task_id == task.task_id || steered.state != ExecutionState::Working {
+                continue;
+            }
+            let source = crate::session::PromptQueueItem::new(
+                prompt,
+                "kernel-supervisor",
+                &task.agent_id,
+                "",
+                crate::session::PromptStatus::Completed,
+            );
+            let settlement = self.owned.settle_agent_task(
+                &task.room_id,
+                &task.agent_id,
+                &source,
+                run,
+                task.state == ExecutionState::Cancelled,
+            )?;
+            crate::logging::info_with_fields(
+                "runtime.agent_lifecycle",
+                "a prompt steered into a turn settled with that turn",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id,
+                    "task_id": steered.task_id, "steered_into_task_id": task.task_id,
+                    "state": settlement.as_ref().map(|(settled, _)| &settled.state),
+                }),
+            );
+            Box::pin(self.finish_agent_task_settlement(settlement, &source)).await?;
+        }
+        Ok(())
+    }
     pub(super) async fn finish_failed_agent_task_settlement(
         &self,
         settlement: Option<(AgentTaskExecution, bool)>,
@@ -957,6 +1003,9 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        if task.state != ExecutionState::Working {
+            Box::pin(self.settle_prompts_steered_into(&task)).await?;
+        }
         match task.state {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
@@ -974,6 +1023,20 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
+        if changed && task.state == ExecutionState::Blocked {
+            // Every card a task raises says, in the log, which task and why.
+            crate::logging::warn_with_fields(
+                "runtime.agent_lifecycle",
+                "a task is blocked for its owner",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                    "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id,
+                    "blocked_revision": task.blocked_revision,
+                    "cause": crate::secret_redaction::redact_secrets(&task.reason),
+                    "turn_failure": failure.map(crate::provider::TurnOutcome::notice),
+                }),
+            );
+        }
         if changed {
             let name = self.agent_notice_name(&task.agent_id);
             let message = super::agent_task_projection::task_status_notice(&task, &name);

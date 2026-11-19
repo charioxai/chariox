@@ -189,6 +189,7 @@ mod provider_turn_adoption;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
+mod steered_prompt;
 mod structured_exit_diagnostic;
 mod structured_output;
 mod subtree_cascade;

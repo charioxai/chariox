@@ -270,15 +270,17 @@ pub(super) fn task_public_outputs<'a>(
         .collect()
 }
 
-/// The history of `prompt`'s turns, boundaries excluded: from its own boundary, and from each
-/// boundary where a provider's own turn resumed it, up to the next prompt's boundary. Steering
-/// stays inside the turn it steered. Empty when the prompt has no boundary.
+/// The history of `prompt`'s turns, boundaries excluded: from its own boundary (or, for a prompt
+/// steered into another turn, from where it was steered in), and from each boundary where a
+/// provider's own turn resumed it, up to the next prompt's boundary. Steering stays inside the
+/// turn it steered. Empty when the prompt has no boundary.
 pub(super) fn prompt_turn_entries<'a>(
     entries: &'a [crate::history::SessionHistoryEntry],
     prompt: &str,
 ) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
     let own = format!("prompt:{prompt}");
+    let steered = crate::history::steering_prompt_merge_key(prompt);
     let resumed = crate::history::resumed_prompt_merge_key(prompt);
     let mut started = false;
     let mut inside = false;
@@ -286,7 +288,10 @@ pub(super) fn prompt_turn_entries<'a>(
     for entry in entries {
         if entry.kind == Kind::UserPrompt {
             let key = entry.merge_key.as_deref();
-            if key == Some(own.as_str()) || (started && key == Some(resumed.as_str())) {
+            if key == Some(own.as_str())
+                || key == Some(steered.as_str())
+                || (started && key == Some(resumed.as_str()))
+            {
                 started = true;
                 inside = true;
                 continue;
