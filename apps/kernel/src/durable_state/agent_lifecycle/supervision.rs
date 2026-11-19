@@ -348,6 +348,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         None
                     };
                     let settled = super::settled_waits::is_settled(tx, &t)?;
+                    let unread = match t.wait.as_ref() {
+                        Some(w) => super::settled_waits::unread_outcome(tx, &t, w)?,
+                        None => false,
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         let clock_rollback = now < w.last_checked_at_ms;
                         w.last_checked_at_ms = w.last_checked_at_ms.max(now);
@@ -355,7 +359,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .registration_ids
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
-                        let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                         let check_in = next_check_in.filter(|due| {
                             *due <= now
                                 && source_deadline.is_none_or(|deadline| deadline > now)
@@ -363,14 +366,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && now >= w.started_at_ms
                                 && !clock_rollback
                         });
-                        // A settled wait held back by the agent's other work has nothing to re-check.
-                        if !settled
-                            && ((dead && unread == 0)
-                                || w.deadline_ms.is_some_and(|deadline| deadline <= now)
+                        // An unread outcome is the wake when its source already ended.
+                        let needs_wake = if dead {
+                            !unread
+                        } else {
+                            w.deadline_ms.is_some_and(|deadline| deadline <= now)
                                 || now < w.started_at_ms
                                 || clock_rollback
-                                || check_in.is_some())
-                        {
+                                || check_in.is_some()
+                        };
+                        // A settled wait held back by the agent's other work has nothing to re-check.
+                        if !settled && needs_wake {
                             let kind = if dead {
                                 "wait_recheck"
                             } else {
@@ -527,9 +533,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // left refused before any provider I/O: nothing is unconfirmed, so it
                     // ends as failed and cannot fence the recipient's later wakes.
                     let reason = if clock_quarantined {
-                        format!("Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel", e.sequence)
+                        format!(
+                            "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
+                            e.sequence
+                        )
                     } else {
-                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
+                        format!(
+                            "Delivery {} failed: the agent did not start. Resume sends it again, or Cancel",
+                            e.sequence
+                        )
                     };
                     if !clock_quarantined {
                         super::delivery_failure::fail_undelivered(
@@ -656,7 +668,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             let quarantined:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_lifecycle_quarantine WHERE kind='task' AND id=?1)",[&task],|r|r.get(0)).map_err(sql)?;
             if resume && quarantined {
-                return Err(error("quarantined obligation coverage must be restored before resume; explicit cancellation remains available"));
+                return Err(error(
+                    "quarantined obligation coverage must be restored before resume; explicit cancellation remains available",
+                ));
             }
             if resume {
                 registrations(tx, &t.task_id)?;

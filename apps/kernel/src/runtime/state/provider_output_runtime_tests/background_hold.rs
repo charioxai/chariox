@@ -1465,3 +1465,80 @@ async fn a_pending_held_turn_is_released_when_the_provider_ends_without_its_own_
     );
     assert_eq!(finishes_of_task(&team).len(), 1);
 }
+
+#[tokio::test]
+async fn restart_interrupts_a_provider_started_held_notification_and_tells_its_parent() {
+    let mut team = child_with_a_call_running("background-hold-restart-notification").await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the notification started"),
+        ],
+    )
+    .await;
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let active = team
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .unwrap();
+    assert_eq!(active.id(), team.child_prompt.id());
+    assert!(
+        active.durable_delivery_phase().is_none(),
+        "the provider started this turn without a kernel dispatch"
+    );
+
+    // A cold restart keeps the prompt and task, but neither the process nor the in-memory hold.
+    let ended = team
+        .runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&team.room, &team.child_run)
+        .unwrap()
+        .into_run();
+    team.runtime.owned.provider_run_projection.update(ended);
+    team.runtime.owned.background_holds = Default::default();
+    team.runtime.recover_durable_runtime_after_restart().await;
+
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    assert!(
+        team.runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &team.child)
+            .is_none(),
+        "a provider-started notification cannot remain active after its provider was lost"
+    );
+    assert!(!working(&team));
+    let events = child_finished(&team);
+    assert_eq!(
+        events.len(),
+        1,
+        "the parent must receive one terminal result: {events:?}"
+    );
+    assert_eq!(
+        events[0].payload["outcome"]["kind"],
+        "interrupted_by_restart"
+    );
+    assert_eq!(events[0].payload["outcome"]["retryable"], true);
+    assert!(!events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    sweep(&team).await;
+    assert_eq!(child_finished(&team).len(), 1);
+}
