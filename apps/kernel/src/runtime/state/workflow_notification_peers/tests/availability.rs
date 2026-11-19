@@ -263,7 +263,7 @@ impl Drill {
 #[test]
 fn an_outside_grant_lists_and_follows_a_source_on_its_owners_other_kernel() {
     on_a_big_stack(async {
-        let drill = Drill::connect().await;
+        let mut drill = Drill::connect().await;
         let source = drill.source.source(&drill.workflow);
         let grant = drill
             .target_runtime
@@ -290,6 +290,35 @@ fn an_outside_grant_lists_and_follows_a_source_on_its_owners_other_kernel() {
             .unwrap(),
         )
         .await;
+        let occurrence = "outside-peer-run";
+        drill.source.complete(
+            &drill.workflow,
+            occurrence,
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "review from the source kernel",
+        );
+        drill
+            .source_runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(
+                drill
+                    .source
+                    .sessions
+                    .get_session(&drill.source.session)
+                    .unwrap(),
+            );
+        drill
+            .source_runtime
+            .route_remote_workflow_notifications()
+            .await;
+        let received = dispatch(
+            "outside-read-peer-occurrence",
+            serde_json::from_value(serde_json::json!({"ListEvents":{"since":0}})).unwrap(),
+        )
+        .await;
         drill.finish().await;
 
         let LocalDaemonResponse::NotificationSources { sources } = listed.unwrap() else {
@@ -308,6 +337,25 @@ fn an_outside_grant_lists_and_follows_a_source_on_its_owners_other_kernel() {
             .sources
             .iter()
             .any(|item| item.source_id == source.source_id && item.available));
+        let LocalDaemonResponse::EventsListed { events, .. } = received.unwrap() else {
+            panic!("expected an outside event batch");
+        };
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.kernel, source.kernel_id);
+        assert_eq!(event.session_id, source.session_id);
+        let crate::local::OutsideEventValue::Notification {
+            source_id,
+            occurrence_id,
+            output,
+            ..
+        } = &event.value
+        else {
+            panic!("expected a notification occurrence: {event:?}");
+        };
+        assert_eq!(source_id, &source.source_id);
+        assert_eq!(occurrence_id, occurrence);
+        assert_eq!(output.message(), "review from the source kernel");
     });
 }
 

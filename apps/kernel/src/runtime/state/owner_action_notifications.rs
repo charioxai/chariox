@@ -154,7 +154,8 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         interaction: &crate::session::RuntimeInteraction,
     ) -> Result<(), DaemonError> {
-        let (Some(agent_id), Some(task_id)) = (interaction.agent_id(), interaction.asking_task_id())
+        let (Some(agent_id), Some(task_id)) =
+            (interaction.agent_id(), interaction.asking_task_id())
         else {
             return Ok(());
         };

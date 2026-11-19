@@ -62,6 +62,16 @@ test("sources lists what this kernel lets the grant follow", async () => {
   assert.deepEqual(sent, [{ ListNotificationSources: {} }])
   assert.deepEqual(output, [{ sources: SOURCES }])
 })
+test("sources --kernel selects one kernel's offers", async () => {
+  const remote = { ...SOURCES[0], source_id: "wf_source_remote", kernel_id: "peer" }
+  const { flags } = parseArguments("events sources", ["--kernel", "peer"])
+  const output: unknown[] = []
+  await runEventsVerb("sources", flags, [], async request => {
+    assert.deepEqual(request, { ListNotificationSources: {} })
+    return { NotificationSources: { sources: [...SOURCES, remote] } }
+  }, value => output.push(value))
+  assert.deepEqual(output, [{ sources: [remote] }])
+})
 test("subscribe --source follows one source by id with no targets, and by display name after one listing", async () => {
   const sent: unknown[] = []
   const send = async (request: unknown) => { sent.push(request); return "ListNotificationSources" in (request as object) ? { NotificationSources: { sources: SOURCES } } : SUBSCRIPTION }

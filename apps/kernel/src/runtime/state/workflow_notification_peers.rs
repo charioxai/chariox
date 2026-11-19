@@ -511,6 +511,28 @@ impl KernelRuntimeState {
                             })
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
+                        if sub.target_kind == WorkflowNotificationTargetKind::OutsideAgent {
+                            let (_, kernels) =
+                                self.owned.notification_inventory_projection.snapshot();
+                            let machine = kernels
+                                .iter()
+                                .find(|peer| peer.kernel_id == kernel)
+                                .map_or_else(|| kernel.to_owned(), |peer| peer.machine_id.clone());
+                            return self.owned.with_live_notification_grant(&sub, |_| {
+                                match self.owned.notify_traced(
+                                    NotificationOperation::DeliverPeerToGrantInbox {
+                                        subscription: sub.clone(),
+                                        envelope,
+                                        machine,
+                                    },
+                                )? {
+                                    NotificationOutcome::Ack(ack) => {
+                                        Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
+                                    }
+                                    _ => Err(store::error("notification admission failed")),
+                                }
+                            });
+                        }
                         if sub.target_kind == WorkflowNotificationTargetKind::Agent {
                             if !sessions.get_session(&sub.session_id).is_ok_and(|session| {
                                 self.owned.agent_notification_target_live(&session, &sub)

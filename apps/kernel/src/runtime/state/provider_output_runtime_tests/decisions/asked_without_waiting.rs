@@ -139,11 +139,19 @@ impl Tree {
         self.runtime
             .subscribe_outside_part(&grant, true, vec![target])
             .unwrap();
-        let session = self.runtime.owned.session_store.get_session(&self.room).unwrap();
+        let session = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.room)
+            .unwrap();
         let owner = session.owner_user_id().to_owned();
-        let source = crate::runtime::state::owner_action_notifications::owner_action_source(&session)
-            .source_id;
-        self.runtime.followable_notification_sources(&owner).unwrap();
+        let source =
+            crate::runtime::state::owner_action_notifications::owner_action_source(&session)
+                .source_id;
+        self.runtime
+            .followable_notification_sources(&owner)
+            .unwrap();
         self.runtime
             .follow_notification_sources(&grant, &owner, &[source])
             .unwrap();

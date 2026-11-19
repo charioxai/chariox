@@ -953,6 +953,8 @@ fn popup_tool_tells_agents_a_reply_line_wakes_nobody() {
         .into_iter()
         .find(|spec| spec.name == REQUEST_POPUP_TOOL)
         .expect("popup tool is advertised");
-    assert!(spec.description.contains("`FOR <name>:` in your reply wakes nobody"));
+    assert!(spec
+        .description
+        .contains("`FOR <name>:` in your reply wakes nobody"));
     assert!(spec.input_schema["properties"]["idempotency_key"].is_object());
 }

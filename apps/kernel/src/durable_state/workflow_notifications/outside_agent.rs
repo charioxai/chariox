@@ -31,6 +31,7 @@ pub(super) fn append_in(
     tx: &Transaction<'_>,
     sub: &WorkflowNotificationSubscription,
     env: &WorkflowNotificationEnvelope,
+    peer_machine: Option<String>,
 ) -> Result<NotificationOutcome, DaemonError> {
     if sub.target_kind != OutsideAgent {
         return Err(error("not an outside agent subscription"));
@@ -41,8 +42,22 @@ pub(super) fn append_in(
     if settled == 0 {
         return Ok(NotificationOutcome::Queued);
     }
-    let source = load_source(tx, &sub.source_id)?;
-    let (agent_id, refs, summary) = match source.kind {
+    let (kernel, machine, session_id, kind) = match peer_machine {
+        Some(machine) => {
+            let source = cached_peer_sources(tx, &sub.owner_user_id, &sub.source_kernel_id)?
+                .into_iter()
+                .find(|source| {
+                    source.source_id == sub.source_id && source.session_id == sub.session_id
+                })
+                .ok_or_else(|| error("peer notification source not available"))?;
+            (source.kernel_id, machine, source.session_id, source.kind)
+        }
+        None => {
+            let source = load_source(tx, &sub.source_id)?;
+            (String::new(), String::new(), source.session_id, source.kind)
+        }
+    };
+    let (agent_id, refs, summary) = match kind {
         NotificationSourceKind::WorkflowExit => (
             None,
             EventRefs::default(),
@@ -58,13 +73,13 @@ pub(super) fn append_in(
     };
     let event = OutsideEvent {
         cursor: 0,
-        kernel: String::new(),
-        machine: String::new(),
-        session_id: source.session_id,
+        kernel,
+        machine,
+        session_id,
         agent_id,
         value: OutsideEventValue::Notification {
             source_id: env.source_id.clone(),
-            source_kind: source.kind,
+            source_kind: kind,
             display_name: env.display_name.clone(),
             occurrence_id: env.occurrence_id.clone(),
             output: env.output.clone(),
@@ -83,6 +98,19 @@ pub(super) fn append_in(
         event,
     )?;
     Ok(NotificationOutcome::Queued)
+}
+
+pub(super) fn has_peer_follow(
+    tx: &Transaction<'_>,
+    owner: &str,
+    source: &str,
+) -> Result<bool, DaemonError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_automations a JOIN workflow_notification_grants g ON g.owner_id=a.owner_id AND g.subscription_id=a.automation_id WHERE a.owner_id=?1 AND a.installation_id=?2 AND a.source_kind='workflow_completion' AND a.status='active' AND json_extract(a.notification_json,'$.target_kind')='outside_agent')",
+        params![owner, source],
+        |row| row.get(0),
+    )
+    .map_err(sql)
 }
 
 /// The blocked task and decision an owner-action alert locates, so the holder can answer the

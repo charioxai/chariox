@@ -74,6 +74,25 @@ impl KernelGateway {
         let store = self.runtime_state.outside_store();
         let owner = self.runtime_state.event_source_owner(id);
         let response = match request {
+            LocalDaemonRequest::ListNotificationSources(_)
+                if self.runtime_state.access_grant_summary(id).is_some() =>
+            {
+                let owner = owner.as_deref().ok_or_else(|| {
+                    crate::durable_state::agent_lifecycle::outside::refused(
+                        "grant revoked or expired",
+                    )
+                })?;
+                let sources = self
+                    .runtime_state
+                    .list_outside_notification_sources(owner)
+                    .await?;
+                if self.runtime_state.access_grant_summary(id).is_none() {
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
+                        "grant revoked or expired",
+                    ));
+                }
+                LocalDaemonResponse::NotificationSources { sources }
+            }
             LocalDaemonRequest::SubscribeEvents(request) => {
                 let taken_over;
                 let requested = match &request.like {
@@ -127,9 +146,10 @@ impl KernelGateway {
                 self.runtime_state
                     .subscribe_outside_part(id, true, targets.clone())?;
                 if let Some(owner) = owner.as_deref().filter(|_| !request.sources.is_empty()) {
-                    if let Err(error) =
-                        self.runtime_state
-                            .follow_notification_sources(id, owner, &request.sources)
+                    if let Err(error) = self
+                        .runtime_state
+                        .install_outside_notification_follows(id, owner, &added.sources)
+                        .await
                     {
                         self.withdraw(origin, &added)?;
                         return Err(error);
