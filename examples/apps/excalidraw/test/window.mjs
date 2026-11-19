@@ -47,7 +47,6 @@ export async function closeEnvironment() {
 }
 
 const MAX_CALL_BYTES = 512 * 1024;
-const MAX_DRAFTS = 4;
 const withinBudget = (name, value) => {
   const bytes = Buffer.byteLength(JSON.stringify(value ?? null));
   if (bytes > MAX_CALL_BYTES) throw Error(`${name}: ${bytes} bytes exceed the catalog's ${MAX_CALL_BYTES} byte call limit`);
@@ -104,9 +103,12 @@ export function fakeBackend() {
     afterReadDraft: null,
     /**
      * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
-     * never answers: the two ways an App update can end a save the window is waiting for.
+     * never answers: the two ways an App update can end a save the window is waiting for. A save
+     * keeps the mode that was set when it arrived.
      */
     holdSaves: null,
+    /** A promise every save_scene that arrives while it is set waits for before it is decided. */
+    gate: null,
     /** Run once at the start of the next save_scene; the save is then refused when the version moved. */
     interleave: null,
     count: name => backend.calls.filter(call => call === name).length,
@@ -163,27 +165,29 @@ export function fakeBackend() {
       if (name === 'view_changes') return { latest: backend.feed, dropped: false, changes: [] };
       if (name === 'save_scene') {
         backend.saves.push(clone(input));
+        const hold = backend.holdSaves;
         const interleave = backend.interleave;
         backend.interleave = null;
         interleave?.();
+        if (backend.gate) await backend.gate;
         if (backend.failSaves) throw Error(backend.failSaves);
-        if (backend.holdSaves === 'lose') await new Promise(() => {});
+        if (hold === 'lose') await new Promise(() => {});
         if (input.version !== backend.version) throw Error('the diagram was changed by another window or an agent; load it again and retry');
         backend.write(input.scene);
-        if (backend.holdSaves === 'commit') await new Promise(() => {});
+        if (hold === 'commit') await new Promise(() => {});
         return { version: backend.version };
       }
       if (name === 'save_draft') {
         if (backend.failDraftSaves) throw Error(backend.failDraftSaves);
-        // The App keeps at most MAX_DRAFTS drafts of other windows and never removes one to make room.
-        if (!backend.drafts.has(input.id) && backend.drafts.size >= MAX_DRAFTS) {
-          throw Error(`${MAX_DRAFTS} other windows already keep an unsaved diagram; save or close one, or wait until it is an hour old`);
-        }
         backend.drafts.set(input.id, clone(input.scene));
         backend.revisions.set(input.id, ++backend.draftWrites);
         return {};
       }
-      if (name === 'list_drafts') return { drafts: [...backend.drafts.keys()].map(id => ({ id, revision: backend.revisions.get(id) })) };
+      if (name === 'list_drafts') {
+        // Oldest first, as the App lists them.
+        const listed = [...backend.drafts.keys()].map(id => ({ id, revision: backend.revisions.get(id) }));
+        return { drafts: listed.sort((a, b) => a.revision - b.revision) };
+      }
       if (name === 'read_draft') {
         const scene = backend.drafts.get(input.id);
         const reply = scene ? { id: input.id, revision: backend.revisions.get(input.id), scene: clone(scene) } : { id: input.id, revision: null, scene: null };

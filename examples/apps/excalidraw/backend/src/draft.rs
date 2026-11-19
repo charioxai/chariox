@@ -1,19 +1,18 @@
 //! The unsaved scene of each open window. The window's page keeps nothing across a replacement (an
-//! App update, a reconnect, a reload), so it hands the scene it is about to save to the App and asks
-//! for the kept ones when it starts. A window has no identity that outlives its replacement, so each
-//! window keeps its drafts under an id of its own choosing, and only that window removes its draft
-//! (`discard_draft`): one window saving never drops what another window has not saved. A recovering
-//! window lists the drafts and reads them one at a time, so no reply nears the catalog's call limit,
-//! and merges them into its canvas. It leaves them where they are until its own draft or the saved
-//! scene holds what it merged; then it retires exactly the revision it read (`retire_draft`), so a
-//! window that is still open and has written since keeps its newer draft, and replacements never pile
-//! drafts up against the cap. The other removal that is not the window's own is age: a draft that
-//! cannot be read, or that is older than the hour a deletion is kept, is dropped when the folder is next
-//! read or written. At the cap a new window's draft is refused, never made room for by removing another.
+//! App update, a reconnect, a reload), so it hands its scene to the App and asks for the kept ones when
+//! it starts. The App holds one document, so a draft is keyed by its window alone: a window has no
+//! identity that outlives its replacement, so it chooses an id of its own, and it keeps one draft under
+//! it, its whole scene (every element and every document setting), replaced atomically on each write.
+//! Only that window discards its draft (`discard_draft`): one window saving never drops what another
+//! has not saved. A recovering window lists the drafts and reads them one at a time, so no reply nears
+//! the catalog's call limit, merges them into its canvas and saves; once the saved scene holds them it
+//! retires exactly the revision it read (`retire_draft`), so a window that is still open and has written
+//! since keeps its newer draft. The other removal is age: a draft that cannot be read, or that is older
+//! than the hour a deletion is kept, is dropped when the folder is next read or written.
 //!
 //! A recovered draft is merged into the saved scene by element version, as any other saved scene
-//! is, so it needs no base version and never overwrites what was saved meanwhile. Merging the same draft
-//! again changes nothing.
+//! is, so it needs no base version and never overwrites an element saved meanwhile. Merging the same
+//! draft again changes nothing.
 
 use crate::{actions, file_io, scene};
 use chariox_app_sdk::{app_types::AppError, error};
@@ -22,9 +21,6 @@ use std::{fs, io::ErrorKind};
 
 const FOLDER: &str = "drafts";
 const MAX_ID: usize = 64;
-/// The most drafts kept at once, so a reply with all of them stays small. A window with a new id is
-/// refused while this many are kept; they age out within the hour.
-const MAX_DRAFTS: usize = 4;
 
 /// Where the draft of a window is kept. The id names a file, so it must look like one id.
 fn path_of(id: &str) -> Result<String, AppError> {
@@ -120,15 +116,7 @@ fn remove(id: &str) -> Result<(), AppError> {
     }
 }
 
-/// What a save finds in the folder: the files to drop for their age, and whether the window's id fits.
-/// An id that is kept already always fits, since the save replaces its file.
-fn admit(files: Vec<(String, String)>, id: &str, now_ms: u64) -> (Vec<String>, bool) {
-    let (kept, useless) = select(files, now_ms);
-    let others = kept.iter().filter(|draft| draft.id != id).count();
-    (useless, others < MAX_DRAFTS)
-}
-
-/// `save_draft`: keep the scene this window is about to save, under its own id.
+/// `save_draft`: keep this window's whole scene under its own id, replacing its previous draft.
 pub async fn save(input: &Value) -> Result<Value, AppError> {
     let id = input["id"]
         .as_str()
@@ -143,15 +131,8 @@ pub async fn save(input: &Value) -> Result<Value, AppError> {
         .find(|(other, _)| other == id)
         .and_then(|(_, text)| decode(text))
         .map_or(now, |(previous, _)| now.max(previous + 1));
-    let (useless, fits) = admit(files, id, now);
-    for id in useless {
+    for id in select(files, now).1 {
         remove(&id)?;
-    }
-    if !fits {
-        return Err(error(
-            "INVALID_STATE",
-            format!("{MAX_DRAFTS} other windows already keep an unsaved diagram; save or close one, or wait until it is an hour old"),
-        ));
     }
     // The broker's atomic replace does not create parents.
     fs::create_dir_all(format!("data/{FOLDER}")).map_err(|_| {
@@ -263,27 +244,6 @@ mod tests {
         assert_eq!(useless, ["expired", "torn", "not-a-scene"]);
     }
 
-    #[test]
-    fn a_new_window_is_refused_at_the_cap_and_a_kept_one_is_not_and_nothing_is_dropped_to_make_room(
-    ) {
-        let now = actions::TOMBSTONE_MS * 10;
-        let files: Vec<(String, String)> = (0..MAX_DRAFTS)
-            .map(|n| (format!("w{n}"), encode(&scene_of(&["x"]), now - n as u64)))
-            .collect();
-        let (useless, fits) = admit(files.clone(), "new", now);
-        assert!(!fits && useless.is_empty());
-        let (useless, fits) = admit(files.clone(), "w0", now);
-        assert!(
-            fits && useless.is_empty(),
-            "a window that keeps a draft rewrites its own"
-        );
-        // Room opens only when a draft ages out, and that one is the only file dropped.
-        let later = now + actions::TOMBSTONE_MS - (MAX_DRAFTS as u64 - 1);
-        let (useless, fits) = admit(files, "new", later);
-        assert_eq!(useless, ["w3"]);
-        assert!(fits);
-    }
-
     /// Windows `a`, `b` and `c` keep, read and discard drafts, and an hour passes between any two
     /// steps. Every order of up to `DEPTH` steps writes or removes only the file of the window that
     /// sent the step, except that an hour-old or unreadable file is swept by whatever reads or writes
@@ -329,17 +289,14 @@ mod tests {
                     }
                     Step::Save(window) => {
                         let files = next.files.iter().map(|(i, t)| (i.clone(), t.clone()));
-                        let (useless, fits) = admit(files.collect(), window, next.now);
-                        for id in useless {
+                        for id in select(files.collect(), next.now).1 {
                             next.files.remove(&id);
                         }
-                        if fits {
-                            next.writes += 1;
-                            let scene = scene_of(&[&format!("e{}", next.writes)]);
-                            next.files
-                                .insert(window.to_owned(), encode(&scene, next.now));
-                            next.kept.insert(window, (next.writes, next.now));
-                        }
+                        next.writes += 1;
+                        let scene = scene_of(&[&format!("e{}", next.writes)]);
+                        next.files
+                            .insert(window.to_owned(), encode(&scene, next.now));
+                        next.kept.insert(window, (next.writes, next.now));
                     }
                     Step::Discard(window) => {
                         next.files.remove(window);

@@ -61,7 +61,7 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id, at most four at once (a new id is refused until one is discarded or an hour old).",
+      "description": "Keep a window's whole unsaved scene (elements and document settings) under that window's id, replacing its previous draft, so a window that replaces it can recover it. Used by the window; one draft per id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -135,7 +135,7 @@
     },
     {
       "name": "retire_draft",
-      "description": "Forget the draft of this id when it is still at this revision, because the caller recovered it and now holds its content. A draft its window wrote since stays. Returns {retired}.",
+      "description": "Forget the draft of this id when it is still at this revision, because the caller recovered it and its saved scene now holds that content. A draft its window wrote since stays. Returns {retired}.",
       "inputSchema": {
         "type": "object",
         "properties": {

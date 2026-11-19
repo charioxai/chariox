@@ -396,6 +396,13 @@ test('an agent selection that the owner cleared is not applied again by a later 
 
 // An App update (or a reconnect) replaces the window; its page keeps nothing, so what the person
 // drew and has not saved yet must wait in the App and come back with the new window.
+// What a window sends while its save never lands: the canvas cannot be read through Export then,
+// which waits for the save, so the scene the window tried to save stands for it.
+const triedToSave = async (backend, since, what) => {
+  await waitUntil(() => backend.saves.length > since, { what });
+  return backend.saves.at(-1).scene.elements.filter(element => !element.isDeleted);
+};
+
 const replaced = async (old, backend) => {
   await old.close();
   const next = await openApp({ backend });
@@ -474,8 +481,9 @@ test('a refused write of the recovering window\'s draft leaves the replaced wind
     // The App refuses the replacement draft, accepts the discard, and the scene save never commits.
     backend.failDraftSaves = 'the draft store is unavailable';
     const writes = backend.count('save_draft');
+    const saves = backend.saves.length;
     second = await replaced(first, backend);
-    assert.equal((await second.elements()).length, 1, 'the recovered rectangle is on the canvas');
+    assert.equal((await triedToSave(backend, saves, 'the recovering window\'s save')).length, 1, 'the recovered rectangle is on the canvas');
     await waitUntil(() => backend.count('save_draft') > writes, { what: 'the replacement draft to be refused' });
     await new Promise(resolve => setTimeout(resolve, 500));
     assert(backend.drafts.has(replacedId), 'the replaced window\'s draft is still kept');
@@ -508,9 +516,10 @@ test('a draft that advances after a recovering window read it is never removed b
       await open.draw(700, 500);
       await waitUntil(() => backend.drafts.get(openId).elements.length === 2, { what: 'the open window\'s second rectangle to be kept' });
     };
+    const saves = backend.saves.length;
     recovering = await openApp({ backend });
     await recovering.load();
-    await recovering.until(elements => elements.length === 1, { what: 'the recovering window to show what the draft held when it read it' });
+    assert.equal((await triedToSave(backend, saves, 'the recovering window\'s save')).length, 1, 'the recovering window shows what the draft held when it read it');
     // The recovering window's own writes finish; its scene save never commits (holdSaves).
     await idle(1500);
     assert.equal(backend.drafts.get(openId)?.elements.length, 2, 'the open window\'s newer draft is still kept');

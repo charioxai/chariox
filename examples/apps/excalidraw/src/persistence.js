@@ -9,12 +9,6 @@ const sceneKey = scene => JSON.stringify(scene, (_, value) =>
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
 
 const POLL_MS = 1000;
-// What a draft keeps of the document settings: only the ones the window changed since the scene it last
-// saved or loaded. A recovering window applies exactly those keys over the saved settings, so an agent's
-// change to another setting stays and the person's unsaved change to the same one wins, as it does when
-// the window saves.
-const changedSettings = (settings, base) =>
-  Object.fromEntries(Object.entries(settings).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(base[key])));
 const SAVE_ATTEMPTS = 4;
 
 // An agent edits the saved scene through the App's backend while this window is open. The window
@@ -30,16 +24,17 @@ export function persistence(chariox, api, loaded, feedHead) {
     return { restored, key: sceneKey(exported), settings: exported.appState };
   };
   let lastSaved = loaded.scene ? normalized(loaded.scene).key : null;
-  // The document settings of the saved scene this window last saved, loaded or merged.
-  let savedSettings = JSON.parse(sceneJSON(api)).appState;
+  // While a save is in flight the saved scene may become the one it sends, so a canvas equal to the
+  // scene last saved is unsaved too: a person who reverts during the save must get the revert back.
+  let saving = false;
   let queue = Promise.resolve();
   let failure = null;
   let shownSelection = '';
-  // The window's unsaved scene, as the save would send it, waits in the App until it is saved.
+  // The window's draft is its whole scene, as the save would send it: every element and every
+  // document setting. Nothing is unsaved once a save or a merge leaves the canvas equal to the saved scene.
   const unsaved = () => {
-    if (sceneKey(JSON.parse(sceneJSON(api))) === lastSaved) return null;
-    const scene = JSON.parse(syncedSceneJSON(api));
-    return { ...scene, appState: changedSettings(scene.appState, savedSettings) };
+    if (!saving && sceneKey(JSON.parse(sceneJSON(api))) === lastSaved) return null;
+    return JSON.parse(syncedSceneJSON(api));
   };
   const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved, {
     failed: message => draftNotice.show(message),
@@ -61,7 +56,7 @@ export function persistence(chariox, api, loaded, feedHead) {
   }
 
   function merge(remote) {
-    const { merged, key, settings } = blend(remote.scene);
+    const { merged, key } = blend(remote.scene);
     const selected = remote.scene.appState?.selectedElementIds;
     api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
     // An agent's selection stays in the saved scene until the window saves; show each one once.
@@ -73,7 +68,6 @@ export function persistence(chariox, api, loaded, feedHead) {
     }
     version = remote.version;
     lastSaved = key;
-    savedSettings = settings;
     settleDraft();
   }
 
@@ -85,12 +79,14 @@ export function persistence(chariox, api, loaded, feedHead) {
       if (failure) throw failure;
       // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(syncedSceneJSON(api));
+      saving = true;
       try {
         version = (await chariox.call('save_scene', { scene, version })).version;
         lastSaved = key;
-        savedSettings = scene.appState;
+        saving = false;
         return settleDraft();
       } catch (error) {
+        saving = false;
         // A save is refused when the backend moved on: merge what it saved, then save what is left.
         const remote = await chariox.call('load_scene', {}).catch(() => null);
         if (remote && remote.version !== version && attempt < SAVE_ATTEMPTS) { merge(remote); continue; }
@@ -150,24 +146,26 @@ export function persistence(chariox, api, loaded, feedHead) {
     // The window's edit changed: keep it in the App until it is saved.
     keepDraft: draft.keep,
     flushDraft: draft.flush,
-    // A replaced window's kept edits join this one's canvas and are saved with it. Their drafts stay
-    // until this window's own draft, or the saved scene, holds what it merged; then exactly the
-    // revisions it read are retired, so a window that is still open and has written since never loses
-    // its edit to this one, and the drafts of earlier windows never pile up against the cap. Merging
-    // twice is harmless, since the newer version of each element wins.
+    // The drafts the App keeps for this document join this window's canvas, by this policy:
+    // - elements: the newer version of each element wins (Excalidraw's reconciliation), and a deletion
+    //   travels as a deleted element, so a draft never brings back what was deleted after it;
+    // - document settings carry no versions: a draft's settings replace the shown ones, as that window's
+    //   own save would have replaced the saved ones. Drafts come oldest first, so the newest one's win.
+    // The merged scene is then saved, and only once the saved scene holds it is each draft retired, at
+    // the revision that was read: a draft its window rewrote since stays. Retiring waits for nothing
+    // else, so a refused write of this window's own draft never keeps a recovered one. Merging a draft
+    // twice is harmless.
     async recover() {
       const kept = await draft.recall();
       if (!kept.length) return;
       await enqueue(async () => {
         for (const { scene } of kept) {
-          const { merged } = blend(scene);
-          // Oldest first, so the newest draft's setting wins over an older one's.
-          const appState = Object.fromEntries(Object.entries(scene.appState ?? {}).filter(([key]) => key in savedSettings));
-          api.updateScene({ elements: merged, appState, captureUpdate: 'NEVER' });
+          const { merged, settings } = blend(scene);
+          api.updateScene({ elements: merged, appState: settings, captureUpdate: 'NEVER' });
         }
       });
-      draft.keep();
-      if (await draft.flush()) await draft.retire(kept);
+      await save();
+      await draft.retire(kept);
     },
     stop: () => { stopped = true; },
     status: () => ({ saved: !failure, error: failure?.message ?? null }),

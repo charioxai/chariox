@@ -809,61 +809,33 @@ async fn a_window_recovering_drafts_cannot_remove_the_newer_draft_of_another_win
     Ok(())
 }
 
-/// At the cap a window with a new id is refused and no other window's draft is removed to make room.
+/// Review P2: there is no shared cap. However many other windows keep a draft, a window's write is
+/// kept, replaces only its own file, and no other window's draft is removed to make room.
 #[tokio::test(flavor = "current_thread")]
-async fn at_the_cap_a_new_window_is_refused_and_no_draft_is_removed_to_make_room(
+async fn any_number_of_windows_keep_a_draft_and_none_is_removed_to_make_room(
 ) -> wasmtime::Result<()> {
-    let root = scratch("drafts-cap")?;
+    let root = scratch("drafts-many")?;
     let (mut store, app) = runtime(&root.0).await?;
-    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{},"files":{}});
-    for n in 0..4 {
-        invoke(
-            &mut store,
-            &app,
-            "save_draft",
-            serde_json::json!({"id": format!("window-{n}"), "scene": scene("kept")}),
-        )
-        .await?;
+    let mut catalog = catalog_path::Catalog::new(include_bytes!("../schemas/tools.json"));
+    let scene = |id: &str| serde_json::json!({"type":"excalidraw","version":2,"elements":[{"id": id}],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}});
+    for n in 0..9 {
+        let input =
+            serde_json::json!({"id": format!("window-{n}"), "scene": scene(&format!("e{n}"))});
+        let result = invoke(&mut store, &app, "save_draft", input.clone()).await?;
+        catalog.call("save_draft", &input, &result).unwrap();
     }
-    let refused = try_invoke(
-        &mut store,
-        &app,
-        "save_draft",
-        serde_json::json!({"id": "window-new", "scene": scene("new")}),
-    )
-    .await?;
-    assert_eq!(refused.unwrap_err().code, "INVALID_STATE");
-    // A window that keeps a draft already can still rewrite it.
-    invoke(
-        &mut store,
-        &app,
-        "save_draft",
-        serde_json::json!({"id": "window-0", "scene": scene("again")}),
-    )
-    .await?;
     let read = kept_drafts(&mut store, &app).await?;
-    let mut ids: Vec<&str> = read
+    let ids: std::collections::BTreeSet<&str> = read
         .iter()
         .map(|draft| draft["id"].as_str().unwrap())
         .collect();
-    ids.sort();
-    assert_eq!(ids, ["window-0", "window-1", "window-2", "window-3"]);
-    // One window gives its draft up, and the new window fits.
-    invoke(
-        &mut store,
-        &app,
-        "discard_draft",
-        serde_json::json!({"id": "window-3"}),
-    )
-    .await?;
-    invoke(
-        &mut store,
-        &app,
-        "save_draft",
-        serde_json::json!({"id": "window-new", "scene": scene("new")}),
-    )
-    .await?;
-    assert_eq!(fs::read_dir(root.0.join("drafts"))?.count(), 4);
+    let windows: Vec<String> = (0..9).map(|n| format!("window-{n}")).collect();
+    assert_eq!(
+        ids,
+        windows.iter().map(String::as_str).collect(),
+        "every window's draft is kept"
+    );
+    assert_eq!(fs::read_dir(root.0.join("drafts"))?.count(), 9);
     Ok(())
 }
 
@@ -1008,11 +980,11 @@ async fn a_retirement_removes_only_the_revision_that_was_read() -> wasmtime::Res
     Ok(())
 }
 
-/// The review's cap finding at the App: windows that each recover the one before and retire it never
-/// hold more than two drafts, so every replacement can write its own however many there are.
+/// Windows that each recover the one before and retire it after saving leave at most the newest
+/// window's draft behind, however many replacements there are.
 #[tokio::test(flavor = "current_thread")]
-async fn replacements_that_retire_what_they_recovered_never_reach_the_cap() -> wasmtime::Result<()>
-{
+async fn replacements_that_retire_what_they_recovered_leave_only_the_newest_draft(
+) -> wasmtime::Result<()> {
     let root = scratch("drafts-chain")?;
     let (mut store, app) = runtime(&root.0).await?;
     for window in 0..12 {
