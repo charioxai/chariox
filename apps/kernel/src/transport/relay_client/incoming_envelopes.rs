@@ -109,10 +109,38 @@ impl RelayReconnectGate {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn handle_incoming_envelope(
     context: IncomingEnvelopeContext<'_>,
     active_dynamic_relay: Option<(&str, &str)>,
     payload: &str,
+) -> Result<(), DaemonError> {
+    handle_parsed_incoming_envelope(context, active_dynamic_relay, parse_relay_payload(payload)?)
+        .await
+}
+
+pub(super) fn parse_relay_payload(payload: &str) -> Result<RelayEnvelope, DaemonError> {
+    let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "parse relay envelope",
+            message: error.to_string(),
+        }
+    })?;
+    // A token refusal can be followed immediately by socket EOF. Consume the
+    // relay's control frame in socket order before dispatching application work.
+    if let RelayEnvelope::Close { reason, .. } = envelope {
+        return Err(DaemonError::LocalTransport {
+            operation: "relay closed connection",
+            message: reason,
+        });
+    }
+    Ok(envelope)
+}
+
+pub(super) async fn handle_parsed_incoming_envelope(
+    context: IncomingEnvelopeContext<'_>,
+    active_dynamic_relay: Option<(&str, &str)>,
+    envelope: RelayEnvelope,
 ) -> Result<(), DaemonError> {
     let IncomingEnvelopeContext {
         router,
@@ -125,12 +153,6 @@ pub(super) async fn handle_incoming_envelope(
         reconnect_gate,
         local_browser,
     } = context;
-    let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "parse relay envelope",
-            message: error.to_string(),
-        }
-    })?;
     let timing_packet = chariox_relay::transport_timing::envelope_signature(&envelope);
     chariox_relay::transport_timing::record("kernel_receive", timing_packet);
     match envelope {
@@ -569,12 +591,6 @@ pub(super) async fn handle_incoming_envelope(
         }
         response @ RelayEnvelope::ClientMetadataResponse { .. } => {
             super::metadata_client::resolve_pending_metadata_response(state, response).await;
-        }
-        RelayEnvelope::Close { reason, .. } => {
-            return Err(DaemonError::LocalTransport {
-                operation: "relay closed connection",
-                message: reason,
-            });
         }
         _ => {}
     }

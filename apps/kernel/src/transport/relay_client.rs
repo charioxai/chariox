@@ -52,6 +52,7 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod incoming_tasks;
 mod kernel_resources;
 mod local_browser;
 mod metadata_client;
@@ -82,7 +83,8 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, HeartbeatLane, RelayEventRuntime};
-use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
+use incoming_envelopes::{IncomingEnvelopeContext, RelayReconnectGate};
+use incoming_tasks::IncomingEnvelopeTasks;
 use local_browser::LocalBrowserDirect;
 pub(crate) use metadata_client::MainConnection;
 #[cfg(test)]

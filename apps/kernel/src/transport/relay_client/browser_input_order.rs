@@ -27,8 +27,18 @@ pub(super) struct Turn {
 }
 impl BrowserInputOrder {
     pub(super) fn reserve(&self, key: String) -> Option<Turn> {
+        self.reserve_with_limit(key, LIMIT)
+    }
+
+    // Payload dispatch has no input admission limit: its handler performs that admission.
+    pub(super) fn reserve_payload(&self, key: String) -> Turn {
+        self.reserve_with_limit(key, usize::MAX)
+            .expect("payload dispatch has no input limit")
+    }
+
+    fn reserve_with_limit(&self, key: String, limit: usize) -> Option<Turn> {
         let mut state = self.0.lock().expect("browser input order poisoned");
-        if state.pending >= LIMIT {
+        if state.pending >= limit {
             return None;
         }
         state.next = state.next.wrapping_add(1);
