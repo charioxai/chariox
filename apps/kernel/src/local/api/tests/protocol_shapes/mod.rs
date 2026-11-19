@@ -42,6 +42,7 @@ mod extension_apps;
 mod files_watch;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
+mod job_held_machine;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;

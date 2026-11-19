@@ -7,7 +7,7 @@ fn agent_max_context_1009_snapshot_and_hash() {
     let bytes = include_bytes!("agent-max-context-1009.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "83a32187895a19ec86960bf7982e91cd0218dd79643f313945bda49513f2f723"
+        "95b76c06e9db520495f79df69a4588be6c00ee7ca52e5d229ef2088e2cd190a8"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
