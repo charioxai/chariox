@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { LocalIpcClient } from "./ipc.js"
-import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import { getKernelInventory } from "./kernel-inventory-api.js"
 
 test("same-kernel login links are offered while relay is disconnected", async () => {
   let discoveries = 0
@@ -16,7 +16,7 @@ test("same-kernel login links are offered while relay is disconnected", async ()
     if ("ListProviderAccountCopyOffers" in request) { discoveries++; return { ProviderAccountCopyOffers: { offers: [offer] } } }
     throw new Error(`Unexpected request: ${Object.keys(request).join(",")}`)
   } } as unknown as LocalIpcClient
-  const inventory = await getWaitingRoomInventory(client)
+  const inventory = await getKernelInventory(client)
   assert.equal(discoveries, 1)
   assert.deepEqual(inventory.providerAccountCopyOffers, [offer])
   assert.equal(inventory.providerAccountCopyUnavailable, false)
@@ -38,7 +38,7 @@ for (const reason of ["Cloud enrollment is required", "Cloud peer directory is u
       if ("ListProviderAccountCopyOffers" in request) { discoveries++; throw new Error(reason) }
       throw new Error(`Unexpected request: ${Object.keys(request).join(",")}`)
     } } as unknown as LocalIpcClient
-    const inventory = await getWaitingRoomInventory(client)
+    const inventory = await getKernelInventory(client)
     assert.equal(discoveries, 1)
     assert.deepEqual(inventory.providerAccounts, accounts)
     assert.equal(inventory.sessions[0]?.id, "session")
