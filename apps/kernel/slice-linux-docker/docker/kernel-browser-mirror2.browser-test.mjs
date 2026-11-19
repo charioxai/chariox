@@ -93,8 +93,10 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   const linkId = first.ops.find(op => op.op === "children").children[0];
   await evaluate("render(['Ada Lovelace','Adam Smith'])");
   const second = await next(600);
-  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["text"], JSON.stringify(second.ops));
-  assert.deepEqual(second.ops.map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["attr", "text"], JSON.stringify(second.ops));
+  assert.deepEqual(second.ops.filter(op => op.op === "text").map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  // The links' new href values (what an href selector reads), never their URLs as an href.
+  assert.deepEqual(second.ops.filter(op => op.op === "attr").map(op => [op.name, op.value]).sort(), [["chariox-href", "/wiki/Ada Lovelace"], ["chariox-href", "/wiki/Adam Smith"]]);
   assert(JSON.stringify(second).length < 1500, "MP-10: one keystroke-sized delta");
   // One more item: only that item's records travel.
   await evaluate("render(['Ada','Adams','Adobe'])");
@@ -1029,6 +1031,30 @@ test("MP-10: protocol 492 popover/modal/indeterminate/definition state and the f
   assert.deepEqual(Object.fromEntries(closed), { [of(r => r.attrs.id === "p")]: { popover_open: false }, [of(r => r.attrs.id === "d")]: { modal: false } });
 }));
 
+// news-arstechnica (browserfidelity r8): a link travels with href "#", so a selector on the href's value (the consent banner's
+// `a[href*="cookie" i]`, MDN's `:not([href^="#"])`) matched no link or every link in the viewer, and the banner's Cookie
+// Policy link left its place. The page's href value travels inert and those selectors read it.
+const hrefValues = '<style>a{color:rgb(0, 0, 0)} a[href*="cookie" i]{color:rgb(1, 2, 3)} a:not([href^="#"]) b{color:rgb(4, 5, 6)} a[href^="#"] b{color:rgb(7, 8, 9)} a[href$=".pdf"]{color:rgb(10, 11, 12)} a[href]:not([href=""]) i{color:rgb(13, 14, 15)}</style><a id="c" href="/Cookie-Policy">c</a><a id="t" href="#top"><b id="tb">t</b></a><a id="p" href="/a.pdf"><b id="pb">p</b></a><a id="n" href="/plain"><i id="ni">n</i></a><p id="x" chariox-href="/cookie">x</p>';
+// The viewer's document rebuilt from a snapshot's records (elements, text, style sheets), read by element id.
+const rebuiltColors = (evaluate, nodes, ids) => evaluate(`new Promise(resolve=>{const rows=${JSON.stringify(nodes)},f=document.createElement("iframe");f.srcdoc="<!doctype html>";f.onload=()=>{const d=f.contentDocument,made=new Map(),ids=[];let id=0;
+  rows.forEach((row,i)=>{id+=row[0];const key="n"+id;ids.push(key);const parent=row[1]?made.get(ids[i-row[1]]):null,into=parent??d.body;
+   if(row[2]===0){into.append(row[3]);return}if(typeof row[2]!=="string")return;
+   const e=row[2]==="html"?d.documentElement:row[2]==="head"?d.head:row[2]==="body"?d.body:d.createElement(row[2]);
+   for(const [name,value] of Object.entries(row[3]||{}))e.setAttribute(name,value);if(row[2]==="style")e.textContent=row[4]?.css??"";if(!e.isConnected)into.append(e);made.set(key,e)});
+  resolve(${JSON.stringify(ids)}.map(id=>getComputedStyle(d.getElementById(id)).color));f.remove()};document.body.append(f)})`);
+test("MP-10: a selector on a link's href value matches in the viewer as on the page (the href travels inert)", () => mirrored(hrefValues, async ({ next, evaluate }) => {
+  const ids = ["c", "t", "tb", "p", "pb", "n", "ni", "x"], snapshot = await next();
+  const source = await evaluate(`${JSON.stringify(ids)}.map(id=>getComputedStyle(document.getElementById(id)).color)`);
+  assert.deepEqual(await rebuiltColors(evaluate, snapshot.nodes, ids), source, "MP-10: every href value selector matches the same links");
+  const links = rows(snapshot.nodes).filter(row => row.tag === "a");
+  assert(links.every(row => row.attrs.href === "#"), "MP-10: a link still never navigates");
+  assert.equal(rows(snapshot.nodes).find(row => row.attrs.id === "x").attrs["chariox-href"], undefined, "MP-10: a page's own chariox-href never travels");
+  await evaluate("document.getElementById('n').setAttribute('href','/cookies');true");
+  const id = links.find(row => row.attrs.id === "n").id;
+  let op; for (let i = 0; i < 4 && !op; i++) op = (await next(2000)).ops.find(op => op.op === "attr" && op.id === id && op.name === "chariox-href");
+  assert.equal(op?.value, "/cookies", "MP-10: a changed href value reaches the viewer");
+}));
+
 // Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
 const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
 test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
@@ -1214,8 +1240,10 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     // To a fragment, then removed: the key goes, the fragment travels as an attribute.
     await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
     const later = (await next(1000)).ops;
-    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]]);
-    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", null]]);
+    // An attribute op by its name: the href, then the value an href selector reads (see sanitizeMirrorCss).
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null], ["chariox-href", null]]);
   }, {
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
@@ -1689,10 +1717,11 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     for (const banned of ["script", "onclick", "evil.test", "<image", "<a ", "javascript", "foreignObject", "animate", "<p>"]) assert(!text.includes(banned), `MP-10: ${banned} never travels`);
     await evaluate("u.setAttribute('href','/sprite.svg#other');true");
     let ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["attr", "#other"]], "MP-10: the same file, another symbol");
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(ops.map(named), [["href", "#other"], ["chariox-href", "/sprite.svg#other"]], "MP-10: the same file, another symbol");
     await evaluate("u.setAttribute('href','#sym');true");
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
+    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region
