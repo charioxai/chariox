@@ -248,6 +248,11 @@ impl SkillCatalogService {
             .join(&record.id)
             .join(&record.digest)
     }
+    /// The store every `load_skill` root lies under. A confined local provider
+    /// gets it read-only, so it must exist before the first install.
+    pub(crate) fn local_package_store(home: &Path) -> Result<PathBuf, DaemonError> {
+        super::paths::owned_directory(home, Path::new("skills/packages"))
+    }
     /// Reads never reserve an immutable digest directory. A missing/corrupt
     /// package can be repaired through the normal reviewed update path.
     pub(crate) fn verified_package_root(

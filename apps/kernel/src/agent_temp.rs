@@ -3,7 +3,7 @@
 //! TEMP of everything the kernel starts for the agent. The folder is cleared by
 //! inactivity, item by item, and never while a process has the item open or
 //! works inside it. The kernel only deletes here, never in a workspace.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -59,6 +59,25 @@ fn dir_in(root: &Path, session_id: &str, agent_id: &str) -> PathBuf {
 /// Without a home to put it in, the agent keeps the system temp folder.
 pub(crate) fn environment(session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
     root().map_or_else(Vec::new, |root| environment_in(&root, session_id, agent_id))
+}
+
+pub(crate) fn attach_environment(
+    session_id: &str,
+    agent_id: Option<&str>,
+    environment: &mut BTreeMap<String, String>,
+) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    if ["TMPDIR", "TMP", "TEMP"]
+        .iter()
+        .all(|name| environment.contains_key(*name))
+    {
+        return;
+    }
+    for (name, value) in self::environment(session_id, agent_id) {
+        environment.entry(name.to_string()).or_insert(value);
+    }
 }
 
 fn environment_in(root: &Path, session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {

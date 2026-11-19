@@ -215,19 +215,55 @@ fn private_folder(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
+/// This store is mounted back even when its parent is private. Private state
+/// must never be configured inside the mount.
+pub(crate) fn validate_skill_package_store(
+    config: &crate::config::DaemonConfig,
+    store: &Path,
+) -> Result<(), DaemonError> {
+    let vault = crate::secret::normalize_vault_path(PathBuf::from(
+        &config.user_config.credential_vault.path,
+    ));
+    for path in [
+        Some(config.private_runtime_state_root()),
+        Some(config.session_history_root()),
+        config.publication_control_state_root.clone(),
+        Some(config.operational_history_path()),
+        Some(vault),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if path.ancestors().any(|ancestor| {
+            ancestor
+                .canonicalize()
+                .is_ok_and(|ancestor| ancestor == store)
+        }) {
+            return Err(confinement_error(format!(
+                "{} is inside the skill package store; move the kernel's private state outside {}",
+                path.display(),
+                store.display(),
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The launch, run so that it and everything it starts cannot read the kernel's
 /// secrets. An endpoint the kernel does not start runs no process here.
 pub(crate) fn confine_launch(
     mut launch: ProviderLaunchResult,
+    read_only: &[PathBuf],
 ) -> Result<ProviderLaunchResult, DaemonError> {
     let Some(program) = launch.pty_program.take() else {
         return Ok(launch);
     };
-    let (program, args) = confine_command(
+    let (program, args) = confine_command_with_read_only(
         program,
         std::mem::take(&mut launch.pty_args),
         &launch.pty_env,
         launch.working_directory.iter().cloned().collect(),
+        read_only,
     )?;
     launch.pty_program = Some(program);
     launch.pty_args = args;
@@ -242,6 +278,16 @@ pub(crate) fn confine_command(
     args: Vec<String>,
     environment: &BTreeMap<String, String>,
     own: Vec<PathBuf>,
+) -> Result<(String, Vec<String>), DaemonError> {
+    confine_command_with_read_only(program, args, environment, own, &[])
+}
+
+fn confine_command_with_read_only(
+    program: String,
+    args: Vec<String>,
+    environment: &BTreeMap<String, String>,
+    own: Vec<PathBuf>,
+    read_only: &[PathBuf],
 ) -> Result<(String, Vec<String>), DaemonError> {
     let secrets = secrets();
     let named = own
@@ -273,7 +319,16 @@ pub(crate) fn confine_command(
         )));
     }
     let own = existing_canonical(named.into_iter().map(|(_, path)| path).collect());
-    let shared = existing_canonical(cli_paths());
+    let mut shared = existing_canonical(cli_paths());
+    shared.retain(|path| secrets.cover(path));
+    for path in read_only {
+        shared.push(path.canonicalize().map_err(|error| {
+            confinement_error(format!(
+                "could not make {} readable: {error}",
+                path.display()
+            ))
+        })?);
+    }
     platform::wrap(program, args, &secrets, &own, &shared)
 }
 
@@ -393,10 +448,11 @@ mod platform {
         for folder in &secrets.folders {
             wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
         }
-        for (paths, bind) in [(shared, "--ro-bind"), (own, "--bind")] {
-            for path in paths.iter().filter(|path| secrets.cover(path)) {
-                wrapped.extend([bind.to_string(), path_arg(path), path_arg(path)]);
-            }
+        for path in own.iter().filter(|path| secrets.cover(path)) {
+            wrapped.extend(["--bind".to_string(), path_arg(path), path_arg(path)]);
+        }
+        for path in shared {
+            wrapped.extend(["--ro-bind".to_string(), path_arg(path), path_arg(path)]);
         }
         // A write into a covered folder fails instead of vanishing with the
         // process; the paths mounted back keep their own mode.
@@ -552,13 +608,17 @@ mod platform {
                 escaped(folder)
             ));
         }
-        for (paths, operations) in [(own, "file-read* file-write*"), (shared, "file-read*")] {
-            for path in paths.iter().filter(|path| secrets.cover(path)) {
-                profile.push_str(&format!(
-                    "(allow {operations} (regex #\"^{}(/|$)\"))\n",
-                    escaped(path)
-                ));
-            }
+        for path in own.iter().filter(|path| secrets.cover(path)) {
+            profile.push_str(&format!(
+                "(allow file-read* file-write* (regex #\"^{}(/|$)\"))\n",
+                escaped(path)
+            ));
+        }
+        for path in shared {
+            let path = escaped(path);
+            profile.push_str(&format!(
+                "(allow file-read* (regex #\"^{path}(/|$)\"))\n(deny file-write* (regex #\"^{path}(/|$)\"))\n",
+            ));
         }
         let mut wrapped = vec!["-p".to_string(), profile, program];
         wrapped.extend(args);
