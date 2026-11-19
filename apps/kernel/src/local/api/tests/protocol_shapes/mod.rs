@@ -49,6 +49,7 @@ mod kernel_gateway;
 mod kernel_operation_interactions;
 mod kernel_resources;
 mod landing8;
+mod machines_without_asking;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;

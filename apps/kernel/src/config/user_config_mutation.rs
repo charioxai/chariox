@@ -125,6 +125,24 @@ impl CharioxUserConfig {
                 self.agents.offload_without_asking =
                     Some(parse_config_bool("agents.offload_without_asking", &value)?)
             }
+            "agents.offload_classes" => {
+                self.agents.offload_classes =
+                    Some(parse_config_class_list("agents.offload_classes", &value)?)
+            }
+            "agents.offload_max_machines" => {
+                self.agents.offload_max_machines = Some(parse_config_u32(
+                    "agents.offload_max_machines",
+                    value.trim(),
+                    true,
+                )?)
+            }
+            "agents.offload_daily_cap_micros" => {
+                self.agents.offload_daily_cap_micros = Some(parse_config_u64(
+                    "agents.offload_daily_cap_micros",
+                    value.trim(),
+                    false,
+                )?)
+            }
             "agents.usage_limit_resume" => {
                 self.agents.usage_limit_resume = Some(super::UsageLimitResume::parse(
                     "agents.usage_limit_resume",
@@ -571,6 +589,9 @@ impl CharioxUserConfig {
             "secret_link.page_url" => self.secret_link.page_url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
             "agents.offload_without_asking" => self.agents.offload_without_asking = None,
+            "agents.offload_classes" => self.agents.offload_classes = None,
+            "agents.offload_max_machines" => self.agents.offload_max_machines = None,
+            "agents.offload_daily_cap_micros" => self.agents.offload_daily_cap_micros = None,
             "agents.usage_limit_resume" => self.agents.usage_limit_resume = None,
             "history.operational.backend" => {
                 return Err(DaemonError::InvalidConfig {
@@ -734,6 +755,23 @@ fn parse_config_bool(field: &'static str, value: &str) -> Result<bool, DaemonErr
             message: "value must be a boolean",
         }),
     }
+}
+
+/// Comma-separated class ids, each listed once, at least one.
+fn parse_config_class_list(field: &'static str, value: &str) -> Result<Vec<String>, DaemonError> {
+    let mut classes = Vec::new();
+    for class in value.split(',').map(str::trim) {
+        if class.is_empty() || class.len() > 128 || class.chars().any(char::is_control) {
+            return Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be class ids separated by commas, from the machine options",
+            });
+        }
+        if !classes.iter().any(|known| known == class) {
+            classes.push(class.to_owned());
+        }
+    }
+    Ok(classes)
 }
 
 fn parse_config_port(field: &'static str, value: &str) -> Result<u16, DaemonError> {

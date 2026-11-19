@@ -157,11 +157,19 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
     let mut config = state.owned.config_projection.snapshot();
     config.user_config.agents.offload_without_asking = Some(false);
     state.owned.config_projection.update(config);
+    // A retry of the request admitted while the setting was on continues it; Off applies from the next request.
+    let next = ControlPlaneRequest::AcquireJob {
+        capability_revision: "v1".into(),
+        request_id: "next-request".into(),
+        job_ref: "next-job".into(),
+        needs: JobNeeds::default(),
+        timeout_s: 60,
+    };
     let gate_state = state.clone();
     let room = room.to_owned();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &next, Some(&caps))
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {

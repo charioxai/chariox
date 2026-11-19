@@ -1,0 +1,19 @@
+{
+  "local": 1063,
+  "relayPeer": 448,
+  "requests": [
+    { "SetUserConfigValue": { "path": "agents.offload_classes", "value": "small,medium" } },
+    { "SetUserConfigValue": { "path": "agents.offload_max_machines", "value": "2" } },
+    { "SetUserConfigValue": { "path": "agents.offload_daily_cap_micros", "value": "5000000" } },
+    { "UnsetUserConfigValue": { "path": "agents.offload_classes" } }
+  ],
+  "agents_configs": [
+    {
+      "offload_without_asking": true,
+      "offload_classes": ["small", "medium"],
+      "offload_max_machines": 2,
+      "offload_daily_cap_micros": 5000000
+    },
+    { "offload_without_asking": true }
+  ]
+}

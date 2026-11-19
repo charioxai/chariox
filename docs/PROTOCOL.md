@@ -6709,7 +6709,7 @@ web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 
 ### OSS boundary: retired Cloud controls removed — local 967 / relay peer 416
 
-The 25 local requests that only forwarded to the connected service's account or rental API are gone, with
+The 25 local requests that only forwarded to the connected service's account or machine API are gone, with
 their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSessionInvite`,
 `ShowCloudSessionInvite`, `AcceptCloudSessionInvite`, `RevokeCloudSessionInvite`,
 `ListCloudSessionMembers`, `ListCloudCollaborators`, `ListManagedEnvironmentCatalog`,
@@ -6719,7 +6719,7 @@ their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSe
 `PrepareManagedEnvironmentContextTransfer`, `PrepareManagedEnvironmentGitCredentialEnrollment`,
 `KeepManagedEnvironmentRunning` and the five `*DisposableWorker*` requests. Since protocol 491 the kernel
 refused them with `client_cloud_authority_required`; it now answers an unknown variant like any other. Cloud
-account and rental actions belong to the connected service's own client API, and machine acquisition goes
+account and machine actions belong to the connected service's own client API, and machine acquisition goes
 through the generic `ControlPlane` request. Relay peer 416 pairs the embedded local union with local 967.
 Clients carry no minimum: a kernel older than 967 still knows the names and refuses them. The
 managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
@@ -7344,6 +7344,57 @@ not available right now) and nothing is acquired in its place. The capability re
 list, so a change of stock or rate needs a fresh decision. Agents use the same list through
 `chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
 card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
+
+### Machines without asking — local 1063
+
+One owner setting decides whether an agent's machine acquisition (`chariox.machines.acquire`, and the
+machine `chariox.jobs.run` offloads to) waits for the owner's card: `agents.offload_without_asking`, with
+its limits in the same user config:
+
+| key | value | unset |
+|---|---|---|
+| `agents.offload_without_asking` | `true` / `false` | off: every acquisition asks the owner |
+| `agents.offload_classes` | class ids from the machine options, comma-separated | only the smallest class offered |
+| `agents.offload_max_machines` | positive integer | 4 |
+| `agents.offload_daily_cap_micros` | millionths of the account's currency per UTC day | no cap |
+
+Settings (web) shows them as rows under the "without asking" switch of Machines & kernels; the CLI uses
+`config agents-offload [on|off | classes <class,...>|smallest | max <n>|default | cap <amount>|none]`.
+Only the owner changes them: every `agents.*` key is human-only for Room agents, access grants and
+`/sudo`.
+
+The kernel decides in one place (`machine_acquisition/without_asking.rs`). With the setting on, a request
+for an allowed class, while fewer than the maximum machines acquired without asking are running and
+today's cost of those machines is below the cap, goes ahead with no card. Each one is recorded in the
+kernel's ledger (class, rate per minute, start, end) and the agent's Room gets a notice when it starts
+(class, rate, how many run, today's cost) and when it ends (minutes and cost, by started minute at the
+service's rate). Each record moves along one state table, every step a compare-and-set:
+
+| state | holds a place and costs | next |
+|---|---|---|
+| pending | yes, from the send | running when the service accepts an attempt. It counts the attempts still waiting for an answer: a retry sent adds one; an attempt refused, or never sent because the kernel no longer allows it, removes one, and the record is removed when that was the last. Uncertain when an attempt's answer is lost, or the kernel restarts while attempts wait. Removed when a job's cleanup confirms no machine exists. |
+| uncertain | yes | running when a retry is accepted; removed only when a job's cleanup confirms no machine exists. Retries are counted as from pending, but a refused one never removes it. Every lost answer names the request_id, given or generated, to retry with. |
+| running | yes | deleting when the service says so; ended when deletion is confirmed |
+| deleting | yes | ended when the service confirms deletion, or a list sent while it was running no longer has it |
+| ended | no | — |
+
+Each attempt registers in one step, in the same transaction as the check it depends on: it is counted
+in its request's pending or uncertain record, replays a settled one, or, when the request has no
+record, creates it pending while fewer than the maximum are live and today's cost is below the cap. So a
+refusal frees the place only when no attempt at the request is still in flight, and concurrent first
+attempts never pass the maximum or the cap together.
+
+The place is taken before the request reaches the service, so concurrent requests never exceed the
+maximum. The request runs to the service's answer even when the agent's call is cancelled. A retry of a
+request already recorded (same agent and request_id) takes no new place and raises no card: the
+service replays its answer, which settles the same record. Only a settled outcome removes an uncertain
+record, because a refusal or failure of one attempt says nothing about a machine an earlier attempt may
+have created. Outside the limits, or with no class named,
+the owner's ordinary card is raised and says why ("Asked because …").
+
+A card that closes without the owner's answer (nobody answered within its deadline, or the kernel
+withdrew it) refuses with `acquisition_unanswered`, names what closed it and says nothing was allocated
+or charged; only the owner's Deny refuses with `acquisition_denied`.
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 

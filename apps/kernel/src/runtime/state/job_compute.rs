@@ -175,16 +175,24 @@ impl KernelRuntimeState {
                 if crate::runtime::cloud_api_client::cloud_error_code(&error)
                     == Some("not_found") =>
             {
-                return Ok(())
+                // Fenced first, so no machine can appear for this job any more.
+                self.settle_job_acquisition(job_id, None);
+                return Ok(());
             }
             response => response?,
         };
-        let ControlPlaneResponse::Machine { allocation_ref, .. } = current else {
+        let ControlPlaneResponse::Machine {
+            allocation_ref,
+            state,
+            ..
+        } = current
+        else {
             return Err(acquisition_error(
                 "control_plane_binding_invalid",
                 "Job cleanup returned another response",
             ));
         };
+        self.settle_job_acquisition(job_id, Some((&allocation_ref, &state)));
         let caps = self
             .job_compute_cleanup_request(&ControlPlaneRequest::Capabilities {})
             .await?;
@@ -240,7 +248,7 @@ impl KernelRuntimeState {
             .await
         {
             Ok(first) => first,
-            Err(error) if matches!(&error, DaemonError::MachineRequest { code, .. } if matches!(code.as_str(), "acquisition_denied" | "approval_required" | "control_plane_unavailable")) => {
+            Err(error) if matches!(&error, DaemonError::MachineRequest { code, .. } if matches!(code.as_str(), "acquisition_denied" | "acquisition_unanswered" | "approval_required" | "control_plane_unavailable")) => {
                 return Err(error)
             }
             Err(error) => return Err(self.reconcile_failed_job_acquisition(job_id, error).await),
@@ -572,6 +580,15 @@ impl KernelRuntimeState {
                     "The machine service enrollment is unavailable",
                 )
             })?;
-        crate::runtime::cloud_api_client::post_cloud_json(profile.api_url.clone(), "/control-plane", serde_json::json!({"accountId":profile.account_id,"kernelCredential":credential,"request":request})).await
+        let response = crate::runtime::cloud_api_client::post_cloud_json(profile.api_url.clone(), "/control-plane", serde_json::json!({"accountId":profile.account_id,"kernelCredential":credential,"request":request})).await;
+        if let Ok(ControlPlaneResponse::Machine {
+            allocation_ref,
+            state,
+            ..
+        }) = &response
+        {
+            self.observe_acquired_machine(allocation_ref, state, crate::session::unix_epoch_ms());
+        }
+        response
     }
 }

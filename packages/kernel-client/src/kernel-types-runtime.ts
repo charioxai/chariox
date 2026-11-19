@@ -409,7 +409,7 @@ export type SessionConfigState = {
 
 export type CharioxUserConfig = {
   version: number
-  agents?: { offload_without_asking?: boolean }
+  agents?: { offload_without_asking?: boolean; offload_classes?: string[]; offload_max_machines?: number; offload_daily_cap_micros?: number }
   slices?: {
     linux?: {
       disk_layer_mb?: number

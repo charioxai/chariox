@@ -45,14 +45,15 @@ export async function executeConfigCommand(
 ): Promise<ShellCommandResult> {
   const [action, keyPath, ...rest] = parsed.args
   if (action === "agents-offload") {
-    if (rest.length || (keyPath && keyPath !== "on" && keyPath !== "off")) return { ok: false, message: "usage: config agents-offload [on|off]" }
-    if (keyPath) {
-      const changed = await deps.client.send(setUserConfigValueRequest("agents.offload_without_asking", keyPath === "on" ? "true" : "false"))
+    const change = offloadChange(keyPath, rest)
+    if (change === "usage") return { ok: false, message: offloadUsage }
+    if (change) {
+      const changed = await deps.client.send(change.value === null ? unsetUserConfigValueRequest(change.path) : setUserConfigValueRequest(change.path, change.value))
       expectVariant<CharioxUserConfigPayload>(changed, "UserConfigUpdated")
     }
     const response = await deps.client.send(getUserConfigRequest())
     const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
-    return { ok: true, message: `Agents may offload and acquire machines without asking: ${payload.config.agents?.offload_without_asking === true ? "On" : "Off"}`, data: payload }
+    return { ok: true, message: offloadSummary(payload.config.agents), data: payload }
   }
   if (!action || action === "show") {
     const response = await deps.client.send(getUserConfigRequest())
@@ -296,4 +297,36 @@ export async function readNewVaultPassphrase(readSecret?: (prompt: string) => Pr
   if (!passphrase) return { ok: false, message: "the Vault passphrase must not be empty" }
   if (passphrase !== await readSecret("Confirm Vault passphrase: ")) return { ok: false, message: "the Vault passphrases do not match; try again" }
   return { ok: true, passphrase }
+}
+
+const offloadUsage = "usage: config agents-offload [on|off | classes <class,...>|smallest | max <n>|default | cap <amount>|none]"
+
+/** One change to the owner's offload setting, or none to read it. The kernel validates the value. */
+function offloadChange(keyPath: string | undefined, rest: readonly string[]): { path: string; value: string | null } | null | "usage" {
+  if (!keyPath) return null
+  if ((keyPath === "on" || keyPath === "off") && !rest.length) return { path: "agents.offload_without_asking", value: keyPath === "on" ? "true" : "false" }
+  const [value, ...extra] = rest
+  if (!value || extra.length) return "usage"
+  if (keyPath === "classes") return { path: "agents.offload_classes", value: value === "smallest" ? null : value }
+  if (keyPath === "max") return { path: "agents.offload_max_machines", value: value === "default" ? null : value }
+  if (keyPath === "cap") {
+    if (value === "none") return { path: "agents.offload_daily_cap_micros", value: null }
+    const micros = amountMicros(value)
+    return micros === null ? "usage" : { path: "agents.offload_daily_cap_micros", value: micros }
+  }
+  return "usage"
+}
+
+/** A non-negative amount with up to six decimals, as millionths. */
+function amountMicros(value: string): string | null {
+  const match = /^(\d{1,12})(?:\.(\d{1,6}))?$/.exec(value)
+  if (!match) return null
+  return (BigInt(match[1]!) * 1_000_000n + BigInt((match[2] ?? "").padEnd(6, "0"))).toString()
+}
+
+function offloadSummary(agents: { offload_without_asking?: boolean; offload_classes?: string[]; offload_max_machines?: number; offload_daily_cap_micros?: number } | undefined): string {
+  const on = agents?.offload_without_asking === true
+  const classes = agents?.offload_classes?.length ? agents.offload_classes.join(", ") : "the smallest offered"
+  const cap = agents?.offload_daily_cap_micros === undefined ? "no daily cap" : `at most ${agents.offload_daily_cap_micros / 1_000_000} per day in the account's currency`
+  return `Agents may offload and acquire machines without asking: ${on ? "On" : "Off"} (classes: ${classes}; at most ${agents?.offload_max_machines ?? 4} at the same time; ${cap})`
 }
