@@ -52,6 +52,10 @@ fn account_endpoint_child() {
                     continue;
                 };
                 let result = match request["method"].as_str() {
+                    Some("model/list") => serde_json::json!({"data":[{
+                        "id":"gpt-5.6", "model":"gpt-5.6", "isDefault":true,
+                        "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
+                    }]}),
                     Some("account/read") => {
                         if authenticated {
                             serde_json::json!({"account":{"email":"accepted@example.invalid"},"requiresOpenaiAuth":true})
