@@ -138,8 +138,8 @@ impl TerminalStore {
         let mut destination = directory.join(name);
         if destination.symlink_metadata().is_ok() {
             destination = directory.join(format!(
-                "{}-{}",
-                uuid::Uuid::new_v4(),
+                "{:032x}-{}",
+                rand::random::<u128>(),
                 name.to_string_lossy()
             ));
         }
@@ -265,10 +265,24 @@ mod tests {
         let store = TerminalStore::new(root.path().to_path_buf()).unwrap();
         assert!(store.recover(&Default::default()).unwrap().is_empty());
         assert!(!path.exists());
+        let quarantine = root.path().join("unreadable");
+        let first = quarantine.join("term-bad.json");
+        assert_eq!(fs::read(&first).unwrap(), body);
+
+        let another_body = b"another unreadable record with the same name";
+        fs::write(&path, another_body).unwrap();
+        assert!(store.recover(&Default::default()).unwrap().is_empty());
+        assert!(!path.exists());
+        assert_eq!(fs::read(&first).unwrap(), body);
+        let mut other_entries = fs::read_dir(quarantine)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|entry| entry != &first);
         assert_eq!(
-            fs::read(root.path().join("unreadable/term-bad.json")).unwrap(),
-            body
+            fs::read(other_entries.next().unwrap()).unwrap(),
+            another_body
         );
+        assert!(other_entries.next().is_none());
         assert!(store.recover(&Default::default()).unwrap().is_empty());
     }
 }
