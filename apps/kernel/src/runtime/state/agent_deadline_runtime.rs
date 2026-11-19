@@ -38,6 +38,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
         // A reached deadline ends the agent's work, so only who acts for its owner arms one.
@@ -142,7 +143,7 @@ impl KernelRuntimeState {
 
     /// Asks the worker that runs a leased agent to arm the deadline on its backing agent. An
     /// agent that runs on this kernel needs nothing here.
-    async fn arm_leased_agent_deadline(
+    pub(super) async fn arm_leased_agent_deadline(
         &self,
         agent: &crate::agent::AgentInstance,
         deadline_ms: Option<u64>,
@@ -225,7 +226,16 @@ impl KernelRuntimeState {
     pub(super) async fn tick_agent_deadlines(&self, now: u64) -> Result<(), DaemonError> {
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         let mut due = Vec::new();
-        for deadline in self.owned.durable_state_store.agent_deadlines()? {
+        let deadlines = self.owned.durable_state_store.agent_deadlines()?;
+        if deadlines
+            .iter()
+            .any(|deadline| deadline.state == AgentDeadlineState::Armed)
+        {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::BeatDeadlineClock { now })?;
+        }
+        for deadline in deadlines {
             if deadline.deadline_ms > now {
                 continue;
             }

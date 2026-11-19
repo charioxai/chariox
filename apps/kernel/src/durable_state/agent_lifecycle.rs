@@ -6,6 +6,7 @@ mod batch_tests;
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
+mod deadline_clock;
 #[cfg(test)]
 mod deadline_tests;
 mod deadlines;
@@ -17,6 +18,7 @@ mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
+pub(crate) use deadline_clock::WorkerHeldDeadline;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
 mod inbox_lookup_tests;

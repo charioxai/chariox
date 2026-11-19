@@ -761,6 +761,13 @@ deadline on the backing agent of the leased agent, so its own scheduler stops th
 the home offline. The deadline-edit protocol makes `deadline_ms` required and nullable on both
 local and peer requests: a time extends or shortens, and null clears. The worker
 confirms the edit before the home commits it. Reached deadlines cannot be reset.
+A deadline counts kernel uptime. The deadline tick leaves a heartbeat while a deadline is armed;
+a starting kernel moves every armed deadline later by the time since that heartbeat, so `agent
+deadline get` shows the remaining time continuing where it stopped, and the home sends each
+leased agent's worker the shifted `SetLeasedAgentDeadline`, to every worker at once, until the
+worker confirms. The worker kept counting while the home was stopped and enforces the value it
+holds: a worker that refuses for good (a non-retryable answer, such as a deadline it already
+reached) keeps it, so the home goes back to that deadline and says why in the room.
 
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the

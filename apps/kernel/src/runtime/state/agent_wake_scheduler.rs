@@ -91,7 +91,7 @@ pub(super) fn visible_wakes(wakes: Vec<AgentWake>, now: u64) -> Vec<AgentWake> {
     visible
 }
 
-fn iso(ms: u64) -> String {
+pub(super) fn iso(ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64)
         .map(|t| t.format("%H:%M:%SZ").to_string())
         .unwrap_or_else(|| ms.to_string())
@@ -272,6 +272,13 @@ impl KernelRuntimeState {
         // must not hold back supervision of every other wake.
         if let Err(error) = self.tick_agent_deadlines(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
+        }
+        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
+        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
+        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
+            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
         }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
