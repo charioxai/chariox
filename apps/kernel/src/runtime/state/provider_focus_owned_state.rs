@@ -313,6 +313,25 @@ impl KernelRuntimeOwnedState {
         }) || (is_current_run && !queued_prompts.is_empty()))
     }
 
+    /// Whether the agent's active prompt was dispatched to this run.
+    pub(super) fn provider_run_has_bound_prompt(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.session_store.get_session(session_id)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id)
+            .is_some_and(|prompt| {
+                prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
+            }))
+    }
+
     pub(super) fn provider_run_has_active_prompt(
         &self,
         session_id: &str,

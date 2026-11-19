@@ -857,6 +857,15 @@ impl KernelRuntimeState {
             }
         }
         if let Some(message) = terminal_failure {
+            if !prompt_completed
+                && !owned.provider_run_has_bound_prompt(session_id, provider_run_id)?
+            {
+                // The provider ended between turns: no prompt reached it, so its end
+                // retires the run and the next prompt starts on a fresh one.
+                self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                    .await;
+                return Ok(records);
+            }
             self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,
