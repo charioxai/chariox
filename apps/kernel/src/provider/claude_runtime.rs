@@ -13,7 +13,8 @@ use crate::terminal::TerminalOutputKind;
 use super::claude::{claude_args_with_execution_config, materialize_runtime_claude_mcp_config};
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
-    AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
+    AgentExecutionMode, AgentPermissionLevel, ProviderOwnTurnSignal, ProviderPromptSignalBatch,
+    RuntimeProviderRun,
 };
 
 const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
@@ -395,7 +396,12 @@ pub(crate) fn drain_claude_events(
     } else {
         apply_claude_turn_stall_policy(run, state, &mut batch)?;
     }
-    batch.provider_own_turn_running = state.own_turn && state.active_turn_id.is_some();
+    if state.own_turn && state.active_turn_id.is_some() {
+        batch.provider_own_turn = ProviderOwnTurnSignal::Running;
+    } else if batch.provider_own_turn == ProviderOwnTurnSignal::Running {
+        // The turn that began in this batch was cut off (process exit, cancel) before its result.
+        batch.provider_own_turn = ProviderOwnTurnSignal::StartedAndEnded;
+    }
 
     Ok(batch)
 }

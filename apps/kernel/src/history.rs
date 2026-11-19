@@ -45,6 +45,9 @@ pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
 pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
+/// Where a provider's own turn resumes a prompt held for its background calls: the prompt's
+/// answer reads this segment as well as the one after its own boundary.
+pub const RESUMED_PROMPT_MERGE_KEY_PREFIX: &str = "resumed-prompt:";
 pub(crate) const PROMPT_SETTLED_AT_MS_METADATA_KEY: &str = "prompt_settled_at_ms";
 pub(crate) const PROMPT_SETTLEMENT_STATUS_METADATA_KEY: &str = "prompt_settlement_status";
 pub(crate) const TURN_OUTCOME_METADATA_KEY: &str = "turn_outcome";
@@ -57,6 +60,10 @@ const OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT: usize = 256;
 
 pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
     format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
+}
+
+pub fn resumed_prompt_merge_key(prompt_id: &str) -> String {
+    format!("{RESUMED_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

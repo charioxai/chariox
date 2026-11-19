@@ -47,9 +47,24 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_usage: Option<ProviderRunTokenUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
-    /// At the end of this batch the provider runs a turn no prompt asked for, such as Claude
-    /// reporting a finished background command.
-    pub provider_own_turn_running: bool,
+    /// What this batch reports of a turn the provider runs with no prompt asking for it, such as
+    /// Claude reporting a finished background command.
+    pub provider_own_turn: ProviderOwnTurnSignal,
+}
+
+/// A batch's report of the provider's own turn: its start edge as well as its level, so a turn
+/// that starts and ends within one batch is still seen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProviderOwnTurnSignal {
+    /// No own turn ran during the batch.
+    #[default]
+    None,
+    /// An own turn runs at the end of the batch; it began in this batch or earlier.
+    Running,
+    /// An own turn began and ended within the batch.
+    StartedAndEnded,
+    /// The own turn that ran when the batch began ended in it.
+    Ended,
 }
 
 impl ProviderPromptSignalBatch {

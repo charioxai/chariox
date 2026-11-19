@@ -1233,9 +1233,49 @@ impl KernelRuntimeOwnedState {
         if let Some(timestamp_ms) = timestamp_ms {
             entry.timestamp_ms = timestamp_ms;
         }
-        if let Some(prompt_id) = prompt_id {
-            entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
-        }
+        entry.merge_key = prompt_id.map(user_prompt_history_merge_key);
+        self.append_prompt_boundary_history(
+            entry,
+            prompt_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        Ok(())
+    }
+
+    /// A provider's own turn resumes `prompt_id`, a prompt held for its background calls: its
+    /// boundary marks where the prompt's answer continues.
+    pub(super) fn append_resumed_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        prompt_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let _ = self.session_snapshot_without_projection_update(session_id)?;
+        let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            prompt.to_string(),
+            &[],
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::Notification);
+        entry.timestamp_ms = timestamp_ms;
+        entry.merge_key = Some(crate::history::resumed_prompt_merge_key(prompt_id));
+        self.append_prompt_boundary_history(entry, Some(prompt_id), None, None);
+        Ok(())
+    }
+
+    fn append_prompt_boundary_history(
+        &self,
+        entry: crate::history::SessionHistoryEntry,
+        prompt_id: Option<&str>,
+        workflow_run_id: Option<&str>,
+        workflow_node_run_id: Option<&str>,
+    ) {
         let context = self.operational_history_context(
             &entry,
             prompt_id,
@@ -1244,7 +1284,6 @@ impl KernelRuntimeOwnedState {
         );
         let _append_guard = self.transcript_history_append_guard();
         let _ = self.append_operational_history_entry_unlocked(&entry, context);
-        Ok(())
     }
 
     pub(super) fn record_started_user_prompt(
