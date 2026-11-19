@@ -86,11 +86,11 @@ async fn get_session_state_projection_tracks_prompt_completion_without_app_lock(
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "completed prompt state should be served from projection without app lock access"
-    );
+    assert_finishes_without_app_lock(
+        &state_task,
+        "completed prompt state should be served from projection without app lock access",
+    )
+    .await;
     drop(app_guard);
 
     let state_response = state_task
@@ -390,11 +390,11 @@ async fn get_session_state_projection_tracks_prompt_cancellation_without_app_loc
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "cancelled prompt state should be served from projection without app lock access"
-    );
+    assert_finishes_without_app_lock(
+        &state_task,
+        "cancelled prompt state should be served from projection without app lock access",
+    )
+    .await;
     drop(app_guard);
 
     let state_response = state_task
