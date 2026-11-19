@@ -39,6 +39,8 @@ impl KernelRuntimeOwnedState {
         if notifications.is_empty() {
             return Ok(());
         }
+        self.durable_state_store
+            .record_provider_background_notifications(run, prompt.id(), notifications)?;
         let Some(answer_task) =
             self.durable_state_store
                 .agent_turn_task(room, agent, prompt.id())?

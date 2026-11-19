@@ -67,7 +67,7 @@ pub struct ProviderPromptSignalBatch {
     pub provider_own_turn: ProviderOwnTurnSignal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderBackgroundNotification {
     pub tool_use_id: Option<String>,
     pub task_id: Option<String>,

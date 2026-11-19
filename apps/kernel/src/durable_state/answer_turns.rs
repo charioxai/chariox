@@ -14,6 +14,53 @@ pub(crate) struct AnswerTurnRecord {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn record_provider_background_notifications(
+        &self,
+        run: &str,
+        prompt: &str,
+        notifications: &[crate::provider::ProviderBackgroundNotification],
+    ) -> Result<(), DaemonError> {
+        if notifications.is_empty() {
+            return Ok(());
+        }
+        let mut recorded = self.provider_background_notifications(run, prompt)?;
+        let previous_len = recorded.len();
+        for notification in notifications {
+            if !recorded.contains(notification) {
+                recorded.push(notification.clone());
+            }
+        }
+        if recorded.len() != previous_len {
+            self.append_event(
+                "provider.prompt.background_notifications",
+                Some(format!("{run}/{prompt}")),
+                serde_json::json!(recorded),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn provider_background_notifications(
+        &self,
+        run: &str,
+        prompt: &str,
+    ) -> Result<Vec<crate::provider::ProviderBackgroundNotification>, DaemonError> {
+        self.load_subject_events_by_kind(
+            &format!("{run}/{prompt}"),
+            "provider.prompt.background_notifications",
+            1,
+        )?
+        .pop()
+        .map(|event| {
+            serde_json::from_value(event.payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.background_notifications",
+                message: format!("The consumed background notifications are invalid: {error}"),
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+    }
+
     pub(crate) fn record_answer_turn(
         &self,
         task_id: &str,
@@ -59,6 +106,55 @@ impl DurableKernelStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_background_notifications_survive_reopen_and_repeated_delivery() {
+        let directory = crate::test_support::TestTempDir::new("provider-background-notifications");
+        let path = directory.join("state.db");
+        let notification = crate::provider::ProviderBackgroundNotification {
+            tool_use_id: Some("background-call".into()),
+            task_id: Some("native-task".into()),
+        };
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            store
+                .record_provider_background_notifications(
+                    "worker-run",
+                    "worker-q",
+                    std::slice::from_ref(&notification),
+                )
+                .unwrap();
+            store
+                .record_provider_background_notifications(
+                    "worker-run",
+                    "worker-q",
+                    std::slice::from_ref(&notification),
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .load_subject_events_by_kind(
+                        "worker-run/worker-q",
+                        "provider.prompt.background_notifications",
+                        10
+                    )
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let store = DurableKernelStateStore::open(path).unwrap();
+        assert_eq!(
+            store
+                .provider_background_notifications("worker-run", "worker-q")
+                .unwrap(),
+            vec![notification]
+        );
+        assert!(store
+            .provider_background_notifications("worker-run", "different-q")
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn answer_turn_receipt_survives_reopen_and_repeated_delivery() {

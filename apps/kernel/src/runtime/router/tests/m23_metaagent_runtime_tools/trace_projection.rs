@@ -487,6 +487,7 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
                 }],
                 notices: Vec::new(),
                 completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    background_notifications: Vec::new(),
                     failure: None,
                     message_id: "assistant-msg-1".to_string(),
                     completed_at_ms: 1234,

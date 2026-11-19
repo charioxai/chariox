@@ -393,6 +393,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_none_or(|started_at_ms| record.completed_at_ms >= started_at_ms)
             })
             .map(|record| RelayProjectedCompletion {
+                background_notifications: Vec::new(),
                 failure: failure.clone(),
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
@@ -686,6 +687,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     // The cached message identity can predate a failed native turn.
                     // Keep the current scoped termination when replaying its completion.
                     completions.push(RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: failure.clone().or_else(|| replay.failure.clone()),
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
@@ -737,6 +739,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .any(|key| key == &completion_key)
             {
                 completions.push(RelayProjectedCompletion {
+                    background_notifications: Vec::new(),
                     failure: failure.clone(),
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
@@ -815,6 +818,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 })
             {
                 completions.push(RelayProjectedCompletion {
+                    background_notifications: Vec::new(),
                     failure: failure.clone().or_else(|| replay.failure.clone()),
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
@@ -867,6 +871,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             for completion in &mut completions {
                 if Some(completion.message_id.as_str()) == worker_key.as_deref() {
                     completion.message_id.clone_from(&home_key);
+                }
+            }
+        }
+        if let Some(backing_prompt) = termination_prompt_id {
+            let notifications = self
+                .app
+                .durable_state_store()
+                .provider_background_notifications(provider_run_id, backing_prompt)?;
+            for completion in &mut completions {
+                if !completion.is_notification_end() && completion.home_prompt_id == home_prompt_id
+                {
+                    completion
+                        .background_notifications
+                        .clone_from(&notifications);
                 }
             }
         }
@@ -2743,6 +2761,35 @@ mod explicit_completion_tests {
     #[test]
     fn mp08_mp10_reused_run_projects_cancelled_prompt_without_provider_output() {
         let (mut app, leased_agent, provider_run_id) = reused_explicit_completion_run();
+        let backing = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(backing.id(), "home-prompt-b");
+        let consumed = crate::provider::ProviderBackgroundNotification {
+            tool_use_id: Some("consumed-background-call".into()),
+            task_id: Some("native-background-task".into()),
+        };
+        app.durable_state_store()
+            .record_provider_background_notifications(
+                &provider_run_id,
+                backing.id(),
+                std::slice::from_ref(&consumed),
+            )
+            .unwrap();
+        app.durable_state_store()
+            .record_provider_background_notifications(
+                &provider_run_id,
+                "home-prompt-b",
+                &[crate::provider::ProviderBackgroundNotification {
+                    tool_use_id: Some("wrong-home-key".into()),
+                    task_id: None,
+                }],
+            )
+            .unwrap();
         let before_second_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("second completion-only projection should succeed");
@@ -2782,6 +2829,7 @@ mod explicit_completion_tests {
             .expect("cancelled prompt should release a completion without provider output");
         let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projected.1;
         assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].background_notifications, vec![consumed]);
         assert_eq!(
             completions[0].message_id,
             format!("prompt-complete:{}", cancelled.prompt.id())
@@ -3507,6 +3555,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "active-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
@@ -3578,6 +3627,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "ordinary-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
@@ -3716,6 +3766,7 @@ mod mp11_projection_admission_tests {
                     output_chunks: vec![],
                     notices: vec![],
                     completions: vec![RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "prompt-complete:worker-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),

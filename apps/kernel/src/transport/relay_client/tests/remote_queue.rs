@@ -316,6 +316,7 @@ fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![RelayProjectedCompletion {
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "first-remote-turn-completed".to_string(),
                 completed_at_ms: crate::session::unix_epoch_ms(),

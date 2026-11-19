@@ -1726,6 +1726,7 @@ mod tests {
                     }],
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "partial-answer".into(),
                         completed_at_ms: now,
@@ -1873,6 +1874,7 @@ mod tests {
                     output_chunks: chunks,
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "check-completed".into(),
                         completed_at_ms: now,
@@ -2912,6 +2914,7 @@ mod tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        background_notifications: Vec::new(),
                         message_id: "failed-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(prompt.id().into()),

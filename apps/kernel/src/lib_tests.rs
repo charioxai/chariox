@@ -325,6 +325,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         ],
         notices: Vec::new(),
         completions: vec![RelayProjectedCompletion {
+            background_notifications: Vec::new(),
             failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
