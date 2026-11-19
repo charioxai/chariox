@@ -157,10 +157,20 @@ pub fn list() -> Result<Value, AppError> {
         .collect::<Vec<_>>()}))
 }
 
-/// The kept draft of `id`, when it is still kept and readable.
+/// The kept draft of `id`, while it is readable and younger than the deletion records.
 fn kept_of(id: &str) -> Result<Option<(u64, Value)>, AppError> {
     match fs::read_to_string(format!("data/{}", path_of(id)?)) {
-        Ok(text) => Ok(decode(&text)),
+        Ok(text) => match decode(&text) {
+            Some((revision, scene))
+                if now_ms().saturating_sub(revision) < actions::TOMBSTONE_MS =>
+            {
+                Ok(Some((revision, scene)))
+            }
+            _ => {
+                remove(id)?;
+                Ok(None)
+            }
+        },
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(_) => Err(error("DRAFT_FAILED", "cannot read the kept draft")),
     }

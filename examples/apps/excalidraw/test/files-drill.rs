@@ -922,6 +922,41 @@ async fn a_draft_discarded_after_the_list_reads_as_no_scene() -> wasmtime::Resul
     Ok(())
 }
 
+/// Listing does not lease a draft: its age must still be checked by the individual read.
+#[tokio::test(flavor = "current_thread")]
+async fn a_draft_expired_after_listing_has_no_scene_and_is_removed() -> wasmtime::Result<()> {
+    let root = scratch("drafts-expired")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let mut catalog = catalog_path::Catalog::new(include_bytes!("../schemas/tools.json"));
+    let input = serde_json::json!({"id": "window-1", "scene": big_scene("e", 1)});
+    let saved = invoke(&mut store, &app, "save_draft", input.clone()).await?;
+    catalog.call("save_draft", &input, &saved).unwrap();
+    let listed = invoke(&mut store, &app, "list_drafts", serde_json::json!({})).await?;
+    catalog
+        .call("list_drafts", &serde_json::json!({}), &listed)
+        .unwrap();
+    assert_eq!(listed["drafts"][0]["id"], "window-1");
+
+    // Advance the retained file's age instead of waiting an hour. No intervening list or save sweeps it.
+    let path = root.0.join("drafts/window-1.json");
+    let mut draft: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let revision = draft["saved_at_ms"].as_u64().unwrap();
+    draft["saved_at_ms"] = serde_json::json!(revision - 60 * 60 * 1000);
+    fs::write(&path, draft.to_string())?;
+    let input = serde_json::json!({"id": "window-1"});
+    let read = invoke(&mut store, &app, "read_draft", input.clone()).await?;
+    catalog.call("read_draft", &input, &read).unwrap();
+    assert_eq!(
+        read,
+        serde_json::json!({"id": "window-1", "revision": null, "scene": null})
+    );
+    assert!(!path.exists(), "individual reads sweep expired drafts");
+    let again = invoke(&mut store, &app, "read_draft", input.clone()).await?;
+    catalog.call("read_draft", &input, &again).unwrap();
+    assert_eq!(again, read);
+    Ok(())
+}
+
 /// Retiring names the revision the caller read: a window that wrote since keeps its newer draft, and
 /// the revisions of one window rise with every write.
 #[tokio::test(flavor = "current_thread")]
