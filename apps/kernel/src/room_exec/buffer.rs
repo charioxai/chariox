@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 /// One ceiling for unread output from every Room, including commands whose readers left.
 pub(super) const OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const PIPE_READ_BYTES: usize = 32 * 1024;
-const DROPPED: &[u8] = b"[Older unread command output was dropped because the kernel's shared output buffer filled. Read output promptly and acknowledge consumed cursors; unread records free themselves after their reader lease expires (300 seconds for commands, 600 for jobs).]\n";
+pub(crate) const OUTPUT_LOSS_NOTICE: &str = "[Older unread command output was dropped because the kernel's shared output buffer filled. Read output promptly and acknowledge consumed cursors; unread records free themselves after their reader lease expires (300 seconds for commands, 600 for jobs).]\n";
 
 #[derive(Default)]
 pub(super) struct Pool {
@@ -134,9 +134,9 @@ impl Output {
             chunks.push(ExecChunk {
                 cursor: self.dropped_through,
                 stream: ExecStream::Stderr,
-                data_base64: base64::engine::general_purpose::STANDARD.encode(DROPPED),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(OUTPUT_LOSS_NOTICE),
             });
-            bytes += DROPPED.len();
+            bytes += OUTPUT_LOSS_NOTICE.len();
         }
         for chunk in &self.chunks {
             let data = pool.chunks.get(&chunk.id).expect("retained chunk");

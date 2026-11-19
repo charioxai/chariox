@@ -3,7 +3,7 @@ use super::pending_return::PendingReturn;
 use super::remote::Remote;
 use super::*;
 use crate::local::OffloadPolicy;
-use crate::room_exec::{ExecOutcome, ExecOutput};
+use crate::room_exec::{ExecOutcome, ExecOutput, ExecStream, OUTPUT_LOSS_NOTICE};
 use std::io::Write;
 use zeroize::Zeroizing;
 
@@ -121,7 +121,14 @@ impl Output {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&chunk.data_base64)
                 .map_err(|_| ledger::error("Job output is not valid base64"))?;
-            self.push(state, room, &bytes, false)?;
+            // Eviction interrupts producer line framing, including an overlong line being discarded.
+            if chunk.stream == ExecStream::Stderr
+                && bytes.as_slice() == OUTPUT_LOSS_NOTICE.as_bytes()
+            {
+                self.notice(state, room, OUTPUT_LOSS_NOTICE)?;
+            } else {
+                self.push(state, room, &bytes, false)?;
+            }
         }
         if page.outcome.is_some() {
             self.push(state, room, &[], true)?;
