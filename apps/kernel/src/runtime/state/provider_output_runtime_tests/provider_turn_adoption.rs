@@ -4,8 +4,10 @@ use super::background_tool_settlement::{lifecycle, tool_chunk};
 use super::child_finished::{child_finished, team_with, Team};
 use crate::durable_state::agent_lifecycle::ExecutionState;
 use crate::provider::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch,
 };
+use crate::runtime::prompt_state::{OwnTurnBinding, ProviderTurnAdoption};
 use crate::terminal::TerminalOutputKind;
 
 async fn apply(team: &Team, batch: ProviderPromptSignalBatch) {
@@ -17,7 +19,7 @@ async fn apply(team: &Team, batch: ProviderPromptSignalBatch) {
 
 fn own_turn_start() -> ProviderPromptSignalBatch {
     ProviderPromptSignalBatch {
-        provider_own_turn_running: true,
+        provider_own_turn: ProviderOwnTurnSignal::Running,
         chunks: vec![ProviderPromptChunk {
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: None,
@@ -34,7 +36,17 @@ fn own_turn_end() -> ProviderPromptSignalBatch {
             completed_at_ms: crate::session::unix_epoch_ms(),
         }],
         prompt_completed: true,
+        provider_own_turn: ProviderOwnTurnSignal::Ended,
         ..Default::default()
+    }
+}
+
+/// Claude's own turn starts and ends before the kernel drains again.
+fn own_turn_within_one_batch() -> ProviderPromptSignalBatch {
+    ProviderPromptSignalBatch {
+        provider_own_turn: ProviderOwnTurnSignal::StartedAndEnded,
+        chunks: own_turn_start().chunks,
+        ..own_turn_end()
     }
 }
 
@@ -316,4 +328,142 @@ async fn an_own_turn_right_after_a_prompt_leaves_no_turn_behind() {
         tasks.iter().all(|task| task.state == ExecutionState::Done),
         "{tasks:?}"
     );
+}
+
+fn tasks(team: &Team) -> Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution> {
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&team.room), Some(&team.child))
+        .unwrap()
+}
+
+// Transition T9: the own turn starts and ends within one batch. It is adopted and completed by
+// that batch: its task finishes with the turn's answer and no turn is left running.
+#[tokio::test]
+async fn an_own_turn_that_starts_and_ends_in_one_batch_is_adopted_and_completed() {
+    let team = idle_child("own-turn-one-batch", false).await;
+    apply(&team, own_turn_within_one_batch()).await;
+    settle_after_quiet(&team).await;
+    assert!(active_prompt(&team).is_none(), "{:?}", active_prompt(&team));
+    let own = tasks(&team)
+        .into_iter()
+        .find(|task| task.prompt_id != team.child_prompt.id())
+        .expect("the own turn ran as a kernel turn with a task");
+    assert_eq!(own.state, ExecutionState::Done);
+    let finished = child_finished(&team);
+    let excerpt = finished
+        .iter()
+        .find(|event| event.payload["child_task_id"] == own.task_id)
+        .and_then(|event| event.payload["public_answer"]["excerpt"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        excerpt.contains("the background command finished"),
+        "{excerpt:?} in {finished:?}"
+    );
+}
+
+// Transitions T2 + T9: the prompt before has ended but not settled, and the own turn starts and
+// ends in the next batch: that prompt settles, the own turn is adopted and completed.
+#[tokio::test]
+async fn an_own_turn_in_one_batch_after_a_settling_prompt_is_its_own_finished_turn() {
+    let team = child_with_a_settling_prompt("own-turn-one-batch-while-settling").await;
+    apply(&team, own_turn_within_one_batch()).await;
+    settle_after_quiet(&team).await;
+    assert!(active_prompt(&team).is_none(), "{:?}", active_prompt(&team));
+    let all = tasks(&team);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert!(
+        all.iter().all(|task| task.state == ExecutionState::Done),
+        "{all:?}"
+    );
+}
+
+// Transitions T3 + T4: a turn reported while a prompt runs waits with the binding of its first
+// report; a later attempt keeps that binding (no recompute) and adopts under it once the agent
+// has no prompt.
+#[tokio::test]
+async fn a_pending_own_turn_is_adopted_under_the_binding_of_its_first_report() {
+    let team = team_with("own-turn-binding-kept", None, false).await;
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let owner = &team.runtime.owned.prompt_state_owner;
+    let fresh = |id: &str| {
+        crate::session::PromptQueueItem::new(
+            id,
+            "attachment",
+            &team.child,
+            "",
+            crate::session::PromptStatus::Running,
+        )
+    };
+    let held = OwnTurnBinding::Held {
+        prompt_id: "held-prompt".into(),
+    };
+    assert_eq!(
+        owner.adopt_provider_turn(&session, fresh("own-1"), &team.child_run, held.clone()),
+        ProviderTurnAdoption::Pending { newly: true }
+    );
+    assert_eq!(
+        owner.adopt_provider_turn(
+            &session,
+            fresh("own-2"),
+            &team.child_run,
+            OwnTurnBinding::Fresh
+        ),
+        ProviderTurnAdoption::Pending { newly: false }
+    );
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    match owner.adopt_provider_turn(
+        &session,
+        fresh("own-3"),
+        &team.child_run,
+        OwnTurnBinding::Fresh,
+    ) {
+        ProviderTurnAdoption::Adopted { prompt, binding } => {
+            assert_eq!(binding, held);
+            assert_eq!(prompt.id(), "held-prompt");
+        }
+        other => panic!("not adopted: {other:?}"),
+    }
+}
+
+// Transition T8: the adopted own turn's process exits. The ordinary failure path ends the turn and
+// the record lets it go: nothing stays running as the provider's own turn.
+#[tokio::test]
+async fn an_adopted_own_turn_whose_process_exits_leaves_no_turn_behind() {
+    let team = idle_child("own-turn-exits", false).await;
+    apply(&team, own_turn_start()).await;
+    let adopted = active_prompt(&team).expect("adopted");
+    apply(
+        &team,
+        ProviderPromptSignalBatch {
+            terminal_failure: Some("Claude Code exited before completing the active turn".into()),
+            prompt_completed: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    settle_after_quiet(&team).await;
+    assert!(active_prompt(&team).is_none(), "{:?}", active_prompt(&team));
+    assert_ne!(task_of(&team, adopted.id()), Some(ExecutionState::Working));
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    assert!(!team
+        .runtime
+        .owned
+        .prompt_state_owner
+        .provider_turn_running(&session, &team.child));
 }

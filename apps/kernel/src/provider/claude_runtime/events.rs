@@ -4,8 +4,8 @@ use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::super::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderRunTokenUsage,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunTokenUsage,
 };
 use super::usage::merge_claude_account_usage;
 use super::ClaudeRuntimeState;
@@ -45,6 +45,7 @@ fn apply_system_message(
         state.turn_watchdog.begin(std::time::Instant::now());
         state.tool_transcript.clear();
         state.own_turn = true;
+        batch.provider_own_turn = ProviderOwnTurnSignal::Running;
     }
     if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
         // The summary replaces the history that held the run base.
@@ -516,6 +517,12 @@ pub(super) fn complete_claude_turn(
         completed_at_ms: unix_epoch_ms(),
     });
     batch.prompt_completed = true;
+    if state.own_turn {
+        batch.provider_own_turn = match batch.provider_own_turn {
+            ProviderOwnTurnSignal::Running => ProviderOwnTurnSignal::StartedAndEnded,
+            _ => ProviderOwnTurnSignal::Ended,
+        };
+    }
     state.active_turn_id = None;
     state.own_turn = false;
     state.tool_transcript.clear();

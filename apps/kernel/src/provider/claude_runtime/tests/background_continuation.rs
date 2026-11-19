@@ -1,7 +1,9 @@
 //! A turn Claude runs on its own, such as the report of a finished background
 //! task, must not complete the prompt written behind it.
 use super::*;
-use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+use crate::provider::{
+    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderOwnTurnSignal,
+};
 
 // The order Claude Code 2.1.296 printed when a prompt was written while the
 // notification turn of a finished background task was still running: the
@@ -107,10 +109,10 @@ fn a_notification_turn_result_does_not_complete_the_prompt_written_behind_it() {
         .any(|batch| prints(batch, "answer to the prompt")));
     assert!(binding.state.active_turn_id.is_none());
     assert!(
-        !notification_turn
+        notification_turn
             .iter()
             .chain(&prompt_turn)
-            .any(|batch| batch.provider_own_turn_running),
+            .all(|batch| batch.provider_own_turn == ProviderOwnTurnSignal::None),
         "a turn that carries a written prompt is not Claude's own"
     );
 }
@@ -165,17 +167,18 @@ fn claudes_own_turn_after_an_idle_prompt_turn_is_reported_from_start_to_end() {
     let prompt_turn = drain_until(&run, &mut binding.state, "the prompt's result", |batch| {
         batch.prompt_completed
     });
-    assert!(!prompt_turn
+    assert!(prompt_turn
         .iter()
-        .any(|batch| batch.provider_own_turn_running));
+        .all(|batch| batch.provider_own_turn == ProviderOwnTurnSignal::None));
     assert!(binding.state.active_turn_id.is_none());
 
     write_json_line(&mut binding.state.stdin, &json!({"release": true})).unwrap();
     let own_turn = drain_until(&run, &mut binding.state, "the own turn's output", |batch| {
         prints(batch, "NOTIFIED")
     });
-    assert!(
-        own_turn.last().unwrap().provider_own_turn_running,
+    assert_eq!(
+        own_turn.last().unwrap().provider_own_turn,
+        ProviderOwnTurnSignal::Running,
         "Claude's own turn was not reported as running"
     );
     assert!(!own_turn.iter().any(|batch| batch.prompt_completed));
@@ -184,9 +187,10 @@ fn claudes_own_turn_after_an_idle_prompt_turn_is_reported_from_start_to_end() {
     let own_turn_end = drain_until(&run, &mut binding.state, "the own turn's result", |batch| {
         batch.prompt_completed
     });
-    assert!(
-        !own_turn_end.last().unwrap().provider_own_turn_running,
-        "Claude's own turn is reported as running after its result"
+    assert_eq!(
+        own_turn_end.last().unwrap().provider_own_turn,
+        ProviderOwnTurnSignal::Ended,
+        "Claude's own turn is not reported as ended by its result"
     );
     assert!(binding.state.active_turn_id.is_none());
 }
@@ -239,13 +243,75 @@ fn a_prompts_end_and_claudes_own_turn_start_never_share_a_batch() {
     let prompt_end = drain_claude_events(&run, &mut binding.state).unwrap();
     assert!(prompt_end.prompt_completed);
     assert!(
-        !prompt_end.provider_own_turn_running && !prints(&prompt_end, "NOTIFIED"),
+        prompt_end.provider_own_turn == ProviderOwnTurnSignal::None
+            && !prints(&prompt_end, "NOTIFIED"),
         "the prompt's batch carries Claude's own turn"
     );
     let own_turn = drain_until(&run, &mut binding.state, "the own turn", |batch| {
         prints(batch, "PRINTED")
     });
-    assert!(own_turn.last().unwrap().provider_own_turn_running);
+    assert_eq!(
+        own_turn.last().unwrap().provider_own_turn,
+        ProviderOwnTurnSignal::Running
+    );
     assert!(!own_turn.iter().any(|batch| batch.prompt_completed));
+    write_json_line(&mut binding.state.stdin, &json!({"finish": true})).unwrap();
+}
+
+// T9: Claude's own turn can start and end before the kernel drains again; the batch still reports
+// it, so the kernel adopts and completes it instead of leaving its output to no turn.
+const CLAUDE_OWN_TURN_WITHIN_ONE_DRAIN: &str = r#"IFS= read -r prompt
+uuid=$(printf '%s' "$prompt" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+printf '{"type":"system","subtype":"init","session_id":"s1","user_message_uuids":["%s"]}\n' "$uuid"
+printf '{"type":"result","subtype":"success","session_id":"s1","user_message_uuids":["%s"]}\n' "$uuid"
+IFS= read -r release
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_own","content":[{"type":"text","text":"NOTIFIED"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","session_id":"s1"}'
+IFS= read -r finish
+"#;
+
+#[test]
+fn an_own_turn_that_starts_and_ends_within_one_drain_is_reported() {
+    let worktree = crate::test_support::TestWorktree::new("claude-own-turn-one-drain");
+    let run = RuntimeProviderRun::new(
+        "own-turn-one-drain-run",
+        &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "claude-own-turn-one-drain".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec![
+                "-c".into(),
+                CLAUDE_OWN_TURN_WITHIN_ONE_DRAIN.into(),
+                "fixture".into(),
+            ],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(worktree.path().to_path_buf()),
+            structured_endpoint: None,
+        },
+    );
+    let mut binding = initialize_claude_runtime(&run).unwrap();
+    let envelope = crate::prompt_assembly::PromptEnvelope::new(
+        "start the background command",
+        "",
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::current(),
+    );
+    submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+    drain_until(&run, &mut binding.state, "the prompt's result", |batch| {
+        batch.prompt_completed
+    });
+    write_json_line(&mut binding.state.stdin, &json!({"release": true})).unwrap();
+    // The whole own turn is printed before the next drain.
+    std::thread::sleep(Duration::from_millis(300));
+    let own_turn = drain_claude_events(&run, &mut binding.state).unwrap();
+    assert!(prints(&own_turn, "NOTIFIED") && own_turn.prompt_completed);
+    assert_eq!(
+        own_turn.provider_own_turn,
+        ProviderOwnTurnSignal::StartedAndEnded
+    );
     write_json_line(&mut binding.state.stdin, &json!({"finish": true})).unwrap();
 }
