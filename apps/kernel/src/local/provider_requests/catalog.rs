@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use super::super::api::{
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, LocalDaemonResponse,
-    LogoutProviderRequest, StartProviderLoginRequest,
+    LogoutProviderRequest,
 };
 use super::blocking::block_on_relay_query;
 
@@ -1264,36 +1264,6 @@ fn claude_auth_status_from_value(
             "Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
         ),
         detected_version,
-    }
-}
-
-pub(crate) fn start_provider_login_response(
-    registry: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    request: StartProviderLoginRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let profile = registry.get(owner_user_id, &request.provider, &request.account_profile)?;
-    let environment =
-        registry.resolve_environment(owner_user_id, &request.provider, &profile.profile_id)?;
-    match crate::provider::canonical_provider_family(&request.provider) {
-        Some("codex") => {
-            let endpoint = crate::provider::ensure_codex_account_endpoint(
-                owner_user_id,
-                &profile.profile_id,
-                environment,
-            )?;
-            let client = CodexClient::new("provider-login", endpoint)?;
-            Ok(LocalDaemonResponse::ProviderLoginStarted {
-                login: client.start_login(&profile.profile_id)?,
-            })
-        }
-        _ => Err(DaemonError::LocalTransport {
-            operation: "start_provider_login",
-            message: format!(
-                "provider `{}` does not expose a structured login API",
-                request.provider
-            ),
-        }),
     }
 }
 

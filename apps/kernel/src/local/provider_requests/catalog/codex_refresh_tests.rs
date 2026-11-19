@@ -148,20 +148,18 @@ fn automatic_refresh_keeps_pending_login_server() {
     )).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::env::set_var("CHARIOX_CODEX_BIN", executable);
-    let login = start_provider_login_response(
-        &registry,
-        "local",
-        StartProviderLoginRequest {
-            provider: "codex".into(),
-            account_profile: profile.profile_id.clone(),
-            method: Some("device_code".into()),
-        },
-    )
-    .unwrap();
-    assert!(matches!(
-        login,
-        LocalDaemonResponse::ProviderLoginStarted { .. }
-    ));
+    let environment = registry
+        .resolve_environment("local", "codex", &profile.profile_id)
+        .unwrap();
+    let endpoint =
+        crate::provider::ensure_codex_account_endpoint("local", &profile.profile_id, environment)
+            .unwrap();
+    let helper = crate::provider::retain_codex_account_login("local", &profile.profile_id).unwrap();
+    let login = CodexClient::new("provider-login-fixture", endpoint)
+        .unwrap()
+        .start_device_login(&profile.profile_id, helper)
+        .unwrap();
+    assert_eq!(login.start.login_kind, "chatgptDeviceCode");
     let original = std::fs::read_to_string(&log).unwrap();
     let config = DaemonConfig::for_tests();
     for _ in 0..2 {

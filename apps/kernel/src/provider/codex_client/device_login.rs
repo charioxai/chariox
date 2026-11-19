@@ -30,11 +30,6 @@ fn failed() -> DaemonError {
 }
 
 impl CodexClient {
-    pub fn start_login(&self, account_profile: &str) -> Result<ProviderLoginStart, DaemonError> {
-        self.start_device_login(account_profile, Arc::new(()))
-            .map(|session| session.start)
-    }
-
     pub(crate) fn start_device_login(
         &self,
         account_profile: &str,

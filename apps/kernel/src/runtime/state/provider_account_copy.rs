@@ -279,11 +279,10 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| failure("provider_account_copy_install_failed"))?;
-        if result.is_ok() {
+        if let Ok(receipt) = &result {
             self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
             self.record_room_list_change();
-            let receipt = result.as_ref().expect("successful account copy");
             let owner = self
                 .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
             let profile = self.provider_account_profile_registry().get(
