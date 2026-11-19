@@ -1786,3 +1786,173 @@ fn skills_v2_project_revocation_does_not_revoke_another_project_load() {
     assert_eq!(other[0].context_generation, "project-b");
     assert_eq!(f.storage.loads("s").unwrap().len(), 2);
 }
+// G-CELLS Q2: a queued `$review` chip picked at revision 1 starts its turn on a later
+// catalog. Each change after queueing ends the turn with what changed and what to do next.
+const QUEUED_REVIEW: &str =
+    "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nBODY\n";
+fn queued_review_turn(
+    service: &super::service::SkillCatalogService,
+    record: &SkillRecord,
+) -> Result<SkillTurnContext, crate::error::DaemonError> {
+    service.pinned_turn(
+        None,
+        "agent1",
+        "session1",
+        "continue",
+        &[SkillSelection::Chariox {
+            skill_id: record.id.clone(),
+            name: record.name.clone(),
+            catalog_revision: 1,
+        }],
+        &[],
+        Some(128_000),
+        1.0,
+        8192,
+        "g1",
+    )
+}
+fn publish(
+    service: &super::service::SkillCatalogService,
+    revision: u64,
+    actions: Vec<SkillCatalogAction>,
+) {
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: revision,
+        actions,
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    service.publish_authorized(&mutation, &prepared).unwrap();
+}
+fn content_install(skill_md: &str) -> SkillCatalogAction {
+    SkillCatalogAction::Install {
+        source: SkillInstallSource::Content {
+            skill_md: skill_md.into(),
+        },
+        collision: SkillCollisionAction::Reject,
+        package_id: None,
+    }
+}
+#[test]
+fn skills_v2_queued_chip_turned_off_after_queueing_names_the_change() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    publish(
+        &service,
+        1,
+        vec![SkillCatalogAction::SetState {
+            skill_id: record.id.clone(),
+            state: Some(SkillState::Off),
+        }],
+    );
+    let error = queued_review_turn(&service, &record)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("skill `review` was turned off after this prompt was queued; turn it back on in Skills or resend without it"),
+        "{error}"
+    );
+}
+#[test]
+fn skills_v2_queued_chip_removed_after_queueing_names_the_change() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    publish(
+        &service,
+        1,
+        vec![SkillCatalogAction::Remove {
+            skill_id: record.id.clone(),
+        }],
+    );
+    let error = queued_review_turn(&service, &record)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("skill `review` was removed after this prompt was queued; reinstall it or resend without it"),
+        "{error}"
+    );
+}
+#[test]
+fn skills_v2_queued_chip_replaced_after_queueing_names_the_change() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    publish(
+        &service,
+        1,
+        vec![SkillCatalogAction::Remove {
+            skill_id: record.id.clone(),
+        }],
+    );
+    publish(
+        &service,
+        2,
+        vec![content_install(
+            "---\nname: review\ndescription: another review\n---\nOTHER BODY\n",
+        )],
+    );
+    let error = queued_review_turn(&service, &record)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("skill `review` was replaced after this prompt was queued; resend the prompt to use the new one"),
+        "{error}"
+    );
+}
+#[test]
+fn skills_v2_queued_chip_with_a_stale_digest_names_the_change() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    publish(
+        &service,
+        1,
+        vec![SkillCatalogAction::Update {
+            skill_id: record.id.clone(),
+            expected_digest: record.digest.clone(),
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nSECOND BODY\n".into(),
+            },
+        }],
+    );
+    let error = queued_review_turn(&service, &record)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("skill `review` changed after this prompt was queued; resend the prompt to use the current version"),
+        "{error}"
+    );
+}
+#[test]
+fn skills_v2_queued_chip_whose_package_is_missing_at_turn_start_names_it() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    std::fs::remove_dir_all(service.package_root(&record)).unwrap();
+    let error = queued_review_turn(&service, &record)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("skill `review` package is missing or damaged on this machine; reinstall it in Skills, then resend the prompt"),
+        "{error}"
+    );
+}
+#[test]
+fn skills_v2_queued_chip_survives_an_unrelated_catalog_change() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, QUEUED_REVIEW);
+    let record = set.catalogs[0].skills[0].clone();
+    publish(
+        &service,
+        1,
+        vec![content_install(
+            "---\nname: lint\ndescription: lint code\n---\nLINT\n",
+        )],
+    );
+    let turn = queued_review_turn(&service, &record).unwrap();
+    assert_eq!(turn.catalog_revision, 2);
+    assert_eq!(turn.loaded.len(), 1);
+    assert!(turn.loaded[0].body.contains("BODY"));
+}

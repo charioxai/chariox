@@ -817,6 +817,31 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        self.fail_prompt_dispatch_with(dispatch, error, None).await
+    }
+
+    /// A queued turn that could not be prepared when it started (its selected skill was
+    /// turned off, removed or changed after it was queued) fails with that reason.
+    pub(super) async fn fail_unprepared_prompt(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        let unprepared = crate::provider::TurnOutcome::new(
+            crate::provider::TurnOutcomeKind::Other,
+            true,
+            &crate::terminal::user_facing_dispatch_failure(&error),
+        );
+        self.fail_prompt_dispatch_with(dispatch, error, Some(unprepared))
+            .await
+    }
+
+    async fn fail_prompt_dispatch_with(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+        unprepared: Option<crate::provider::TurnOutcome>,
+    ) -> Result<(), DaemonError> {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
@@ -994,14 +1019,19 @@ impl KernelRuntimeState {
                 .get_run(&dispatch.provider_run_id)
                 .map(|run| run.adapter_key().to_string())
                 .unwrap_or_default();
+            // A kernel-side error has no provider outcome and stays an internal
+            // diagnostic, except a turn that could not be prepared: its reason is
+            // written for the person, so the turn fails with it.
             let failure = if failed_prompt_matches {
-                owned.record_dispatch_failure_output(
-                    &dispatch.session_id,
-                    &dispatch.provider_run_id,
-                    &dispatch.agent_id,
-                    &adapter_key,
-                    &error,
-                )
+                owned
+                    .record_dispatch_failure_output(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        &dispatch.agent_id,
+                        &adapter_key,
+                        &error,
+                    )
+                    .or(unprepared)
             } else {
                 None
             };
@@ -1179,6 +1209,12 @@ impl KernelRuntimeState {
         }
         for dispatch in dispatches.local {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        for (dispatch, error) in dispatches.failed_local {
+            let state = self.clone();
+            tokio::spawn(async move {
+                let _ = state.fail_unprepared_prompt(dispatch, error).await;
+            });
         }
         for dispatch in dispatches.remote {
             self.spawn_remote_prompt_dispatch(dispatch);
