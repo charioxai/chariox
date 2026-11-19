@@ -811,6 +811,11 @@ impl KernelRuntimeOwnedState {
         };
         let started_next =
             self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
+        let waiting = if started_next.inbox_wakes().is_empty() {
+            Vec::new()
+        } else {
+            self.waiting_tasks(session_id, agent_id)
+        };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -820,6 +825,15 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        if !waiting.is_empty() {
+            if let Some(lead) = self.durable_state_store.agent_event_for_prompt(
+                session_id,
+                agent_id,
+                started_next.id(),
+            )? {
+                self.record_woken_waits(&waiting, &lead);
+            }
+        }
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),

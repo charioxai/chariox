@@ -497,7 +497,10 @@ fn completion_started_next_is_compatible(
 ) -> bool {
     match (next_queued_prompt, completion.started_next.as_ref()) {
         (Some(expected), Some(started)) => {
-            expected.prompt() == started.prompt()
+            // A notification can acquire inbox lines at promotion, after the queue preview.
+            let same_input = expected.prompt() == started.prompt()
+                || (expected.id() == started.id() && !started.inbox_wakes().is_empty());
+            same_input
                 && expected.source_attachment_id() == started.source_attachment_id()
                 && expected.target_agent_id() == started.target_agent_id()
                 && expected.attachments() == started.attachments()
