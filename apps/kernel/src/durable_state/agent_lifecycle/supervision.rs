@@ -502,6 +502,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             };
                             t.revision += 1;
                             save(tx, &t)?;
+                            record_block_cause(tx, &t, true)?;
                             changed.push(t);
                         }
                     }
@@ -512,6 +513,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         task.blocked_revision = task.revision;
                         task.reason = reason;
                         save(tx, &task)?;
+                        record_block_cause(tx, &task, true)?;
                         changed.push(task);
                     }
                 }
@@ -561,8 +563,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             ).map_err(sql)?;
             // A Blocked task is not waiting: its pending prompt and wait are what its ended
             // attempt left behind, and a wait on a live source shows as a live registration.
+            // Only an interrupted attempt is superseded: a block the agent raised for its owner
+            // (a question, a decision) stays until the owner answers it.
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
+                || !is_interrupted_block(tx, &t)?
                 || t.goal.is_some()
                 || t.obligations
                     .iter()
@@ -867,4 +872,39 @@ fn pending_refused_wake(
         }
     }
     Ok(false)
+}
+
+/// Records why `t` is Blocked at its current `blocked_revision`: an interrupted attempt the kernel
+/// blocked (a later turn may supersede it), or a block for the owner (never superseded).
+pub(super) fn record_block_cause(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+    interrupted: bool,
+) -> Result<(), DaemonError> {
+    if interrupted && t.state == ExecutionState::Blocked {
+        tx.execute(
+            "INSERT INTO agent_interrupted_blocks(task_id,blocked_revision) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET blocked_revision=excluded.blocked_revision",
+            params![t.task_id, sql_integer(t.blocked_revision)?],
+        )
+    } else {
+        tx.execute(
+            "DELETE FROM agent_interrupted_blocks WHERE task_id=?1",
+            params![t.task_id],
+        )
+    }
+    .map_err(sql)?;
+    Ok(())
+}
+
+/// Whether `t`'s current block is an interrupted attempt the kernel recorded.
+pub(super) fn is_interrupted_block(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_interrupted_blocks WHERE task_id=?1 AND blocked_revision=?2)",
+        params![t.task_id, sql_integer(t.blocked_revision)?],
+        |r| r.get(0),
+    )
+    .map_err(sql)
 }

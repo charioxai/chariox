@@ -48,11 +48,12 @@ impl KernelRuntimeOwnedState {
                             .any(|id| id.as_str() == Some(task.task_id.as_str()))
                     }))
             {
-                self.durable_state_store.agent_lifecycle(Operation::Block {
-                    task: task.task_id,
-                    prompt: task.prompt_id,
-                    reason: format!("{cause}; unlock the Vault and Resume, or Cancel"),
-                })?;
+                self.durable_state_store
+                    .agent_lifecycle(Operation::BlockInterrupted {
+                        task: task.task_id,
+                        prompt: task.prompt_id,
+                        reason: format!("{cause}; unlock the Vault and Resume, or Cancel"),
+                    })?;
             }
         }
         Ok(())
@@ -120,14 +121,15 @@ impl KernelRuntimeOwnedState {
                 }
             }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
-            self.durable_state_store.agent_lifecycle(Operation::Block {
-                task: task.task_id,
-                prompt: task.prompt_id,
-                reason: format!(
-                    "{}. Check the result before using Resume to retry, or Cancel.",
-                    diagnostic.trim_end_matches('.')
-                ),
-            })?;
+            self.durable_state_store
+                .agent_lifecycle(Operation::BlockInterrupted {
+                    task: task.task_id,
+                    prompt: task.prompt_id,
+                    reason: format!(
+                        "{}. Check the result before using Resume to retry, or Cancel.",
+                        diagnostic.trim_end_matches('.')
+                    ),
+                })?;
         }
         Ok(())
     }
