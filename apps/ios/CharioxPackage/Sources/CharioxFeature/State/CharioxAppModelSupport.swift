@@ -215,7 +215,8 @@ extension CharioxAppModel {
         appendTranscript(
           kind: TranscriptEntry.Kind(historyKind: entry.entry.kind),
           agentID: entry.entry.agentID,
-          text: entry.entry.text
+          text: entry.entry.text,
+          mergeKey: entry.entry.mergeKey
         )
       }
     } catch {
