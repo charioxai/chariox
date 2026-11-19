@@ -50,22 +50,33 @@ pub(super) fn materialize_claude_usage_capture(
 }
 
 const CLAUDE_USAGE_HANDLER: &str = r#"#!/usr/bin/env node
-import { renameSync, writeFileSync } from "node:fs"
+import { readFileSync, renameSync, writeFileSync } from "node:fs"
+
+function publish(target, contents) {
+  const temporary = `${target}.${process.pid}.tmp`
+  writeFileSync(temporary, contents)
+  renameSync(temporary, target)
+}
 
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
 const raw = Buffer.concat(chunks).toString("utf8").trim()
-if (!raw) process.exit(0)
 
 try {
-  const input = JSON.parse(raw)
-  if (!input.rate_limits && !input.context_window) process.exit(0)
-  const target = process.env.CHARIOX_CLAUDE_USAGE_FILE
-  if (!target) process.exit(0)
-  const temporary = `${target}.${process.pid}.tmp`
-  writeFileSync(temporary, JSON.stringify(input))
-  renameSync(temporary, target)
+  const input = raw ? JSON.parse(raw) : {}
+  const usageFile = process.env.CHARIOX_CLAUDE_USAGE_FILE
+  if (usageFile && (input.rate_limits || input.context_window)) publish(usageFile, JSON.stringify(input))
+  // A provider terminal (docs/PROTOCOL.md section 3.3.2.1): report the model and effort
+  // Claude runs with, and show the agent pane's status lines the kernel wrote.
+  const modelFile = process.env.CHARIOX_CLAUDE_TERMINAL_MODEL_FILE
+  if (modelFile && typeof input.model?.id === "string") {
+    publish(modelFile, JSON.stringify({ model: input.model.id, effort: input.effort?.level ?? null }))
+  }
 } catch {}
+const statusFile = process.env.CHARIOX_CLAUDE_PANE_STATUS_FILE
+if (statusFile) {
+  try { process.stdout.write(readFileSync(statusFile, "utf8")) } catch {}
+}
 "#;
 
 #[cfg(test)]

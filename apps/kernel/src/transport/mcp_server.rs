@@ -27,6 +27,7 @@ mod catalog;
 mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
+mod terminal_pane;
 mod tool_content;
 mod tool_loading;
 
@@ -206,10 +207,12 @@ fn catalog_notification_stream(
 ) -> Response<HttpBody> {
     use futures_util::{stream, StreamExt};
 
+    let pane_shutdown = shutdown.clone();
     let scoped = catalog_stream::open(Arc::clone(&router), headers, shutdown);
     if scoped.status() != StatusCode::OK {
         return scoped;
     }
+    let pane = terminal_pane::stream(Arc::clone(&router), headers, pane_shutdown);
     let registry = catalog::stream_response(router, headers);
     if registry.status() != StatusCode::OK {
         return scoped;
@@ -232,6 +235,11 @@ fn catalog_notification_stream(
         )
         .take_while(|frame| std::future::ready(frame.is_some()))
         .filter_map(std::future::ready);
+        // A provider terminal's pane rides the same stream; it ends with the run's binding.
+        let rest = match pane {
+            Some(pane) => stream::select(rest, pane).boxed(),
+            None => rest.boxed(),
+        };
         stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest)
     })
     .flatten();
@@ -348,6 +356,10 @@ async fn handle_json_rpc_value(
     auth_token: &str,
     payload: Value,
 ) -> Result<Response<HttpBody>, DaemonError> {
+    if terminal_pane::is_dialog_answer(&payload) {
+        terminal_pane::answer(router, auth_token, &payload).await;
+        return Ok(empty_response(StatusCode::ACCEPTED));
+    }
     let Some(method) = payload.get("method").and_then(Value::as_str) else {
         return Ok(json_rpc_error_response(
             payload.get("id").cloned(),

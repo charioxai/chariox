@@ -726,6 +726,30 @@ While a provider's own terminal runs the pane's agent, a provider permission car
 deadline: the person sits at that terminal. Its timeout applies again within 5 s of the
 terminal's run ending. Peers are unchanged: the feed is read on the home kernel.
 
+### Claude Code's terminal
+
+The kernel is Claude Code's adapter; nothing runs in the launcher. A `chariox claude` run (never
+a Chariox-run `claude-headless` one) reads its own pane feed on the run's MCP notification
+stream (the authenticated `GET /mcp` Claude Code keeps open) as the run's owner:
+
+- Status line: the kernel writes at most three lines that the settings' `statusLine` command
+  prints, refreshed every 2 s: Room, agent path, account, model, effort, mode and
+  permissions (`Ask first` or `Full access`); the state and `N cards waiting` with the first
+  card's `open_elsewhere`; stripes and notices. Claude hides it while a dialog is open.
+- Cards, oldest first and one at a time, as Claude's own `elicitation/create` dialog: a
+  `text_terminal` card is a form (one choice from a titled enum, a text field for the reply);
+  any other is URL mode with `link`, or the status line only when there is no link. Accept
+  sends the usual `RespondToInteraction`. Decline or Esc means "not now": the card stays open
+  for every client, and this terminal does not open it again. A card settled elsewhere closes
+  the dialog with `notifications/cancelled`. Claude's own permission prompt is its own dialog
+  (the card's native origin is this run) and gets no second one.
+- Settings: the status line command writes the model and effort Claude runs with, every hook
+  the permission mode; the kernel reads them every second and sends `ReportPaneSettings` for a
+  change. Claude's first model reading is the launch choice under its full name. A mode switch
+  shows on the next hook (Claude runs none for Shift+Tab alone); `plan` is mode `plan`,
+  `default` is `build` with `required`, `bypassPermissions` is `build` with `yolo`, and Claude's
+  finer modes (`acceptEdits`, `auto`) keep the recorded permissions.
+
 ## 3.3.3 Metaagent Event Prompts
 
 Metaagent event notifications are Chariox runtime-origin prompts. They are not
