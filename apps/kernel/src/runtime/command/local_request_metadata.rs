@@ -154,6 +154,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::RoomTerminal(request) => {
             LocalRequestMetadata::new("terminal.room", Normal).session(&request.session_id)
         }
+        LocalDaemonRequest::KernelTerminal(_) => {
+            LocalRequestMetadata::new("terminal.kernel", Normal)
+        }
         LocalDaemonRequest::RoomBrowserArtifact(request) => {
             LocalRequestMetadata::new("environment.browser.artifact", Normal)
                 .session(&request.session_id)
@@ -689,6 +692,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListKernelDirectory(_) => "machine_file.list",
         LocalDaemonRequest::ReadKernelFile(_) => "machine_file.read",
         LocalDaemonRequest::WriteKernelFile(_) => "machine_file.write",
+        LocalDaemonRequest::TrashKernelFiles(_) => "machine_file.trash",
+        LocalDaemonRequest::RestoreKernelTrash(_) => "machine_file.trash_restore",
         LocalDaemonRequest::StartFileTransfer(_) => "machine_file.transfer_start",
         LocalDaemonRequest::GetFileTransfer(_) => "machine_file.transfer_get",
         LocalDaemonRequest::ListFileTransfers => "machine_file.transfer_list",
@@ -809,6 +814,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
+        LocalDaemonRequest::KernelTerminal(_) => "terminal.kernel",
         LocalDaemonRequest::RoomBrowserArtifact(_) => "environment.browser.artifact",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
         LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",

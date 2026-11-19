@@ -17,7 +17,7 @@ use crate::local::{
 use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::room_list_activity::{
-    room_list_agent_activity_summary, room_list_session_activity_summary,
+    counted_in_room, room_list_agent_activity_summary, room_list_session_activity_summary,
     room_list_workflow_activity_summary,
 };
 use crate::runtime::room_list_launch_directory::{
@@ -982,7 +982,7 @@ fn room_list_agent_summaries(
     let mut agents = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .map(|agent| {
             let effective_config = crate::session::effective_agent_execution_config_in_tree(
                 session,
@@ -1832,6 +1832,49 @@ mod tests {
         );
         assert_eq!(rows[0].activity.agent_count, 1);
         assert_eq!(rows[0].activity.error_agent_count, 0);
+    }
+
+    #[test]
+    fn sub_agents_are_not_room_list_agents() {
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        let make = |id| {
+            crate::agent::AgentInstance::new(
+                id,
+                id,
+                "room",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        let mut lane = make("lane");
+        lane.set_parent_agent(Some(crate::agent::AgentRef::local("orch")));
+        session.set_agents(vec![make("orch"), lane, make("idle")]);
+        let rows = room_list_session_summaries(
+            vec![session],
+            &MetaagentEventStore::default(),
+            &local_caller(),
+        );
+        assert_eq!(
+            rows[0]
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["idle", "orch"]
+        );
+        assert_eq!(rows[0].activity.agent_count, 2);
     }
 
     #[test]

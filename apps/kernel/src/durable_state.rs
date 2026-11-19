@@ -396,6 +396,8 @@ impl DurableKernelStateStore {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
         store._owner = Some(Arc::new(owner));
+        // A deadline counts uptime: the time this kernel was stopped is given back before anything reads it.
+        store.resume_agent_deadlines_after_kernel_start()?;
         // Only this store's owning kernel may settle its own crashed workers.
         store
             .reset_app_workers_after_kernel_start()

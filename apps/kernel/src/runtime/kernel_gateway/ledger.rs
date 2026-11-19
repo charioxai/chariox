@@ -201,16 +201,28 @@ pub(crate) fn variant_name(request: &crate::local::LocalDaemonRequest) -> String
     }
 }
 
+/// The terminal operation a request carries, in a Room or on the kernel itself.
+fn terminal_operation(
+    request: &crate::local::LocalDaemonRequest,
+) -> Option<&crate::local::RoomTerminalOperation> {
+    use crate::local::LocalDaemonRequest;
+    match request {
+        LocalDaemonRequest::RoomTerminal(terminal) => Some(&terminal.operation),
+        LocalDaemonRequest::KernelTerminal(terminal) => Some(&terminal.operation),
+        _ => None,
+    }
+}
+
 /// Reads, the attachment heartbeat and a file chunk (which names its own offset)
 /// may simply run again on a retry. Everything else is state-changing and goes
 /// through the ledger.
 pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
-    use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
+    use crate::local::RoomTerminalOperation;
     // A terminal is read by listing, a snapshot, an offset or a wait; typing, opening,
     // resizing and closing change it, so a retried `input` never types twice.
-    if let LocalDaemonRequest::RoomTerminal(terminal) = request {
+    if let Some(operation) = terminal_operation(request) {
         return matches!(
-            terminal.operation,
+            operation,
             RoomTerminalOperation::List
                 | RoomTerminalOperation::Snapshot { .. }
                 | RoomTerminalOperation::ReadOutput { .. }
@@ -259,13 +271,12 @@ const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 
 /// is answered when it ends, so its own wait comes first.
 pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::time::Duration {
     use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
-    let wait_ms = match request {
-        LocalDaemonRequest::RoomTerminal(terminal) => match terminal.operation {
-            RoomTerminalOperation::Wait { timeout_ms, .. } => timeout_ms,
+    let wait_ms = match terminal_operation(request) {
+        Some(RoomTerminalOperation::Wait { timeout_ms, .. }) => *timeout_ms,
+        Some(
             RoomTerminalOperation::ReadOutput { wait_ms, .. }
-            | RoomTerminalOperation::ExecRead { wait_ms, .. } => wait_ms,
-            _ => 0,
-        },
+            | RoomTerminalOperation::ExecRead { wait_ms, .. },
+        ) => *wait_ms,
         _ => 0,
     };
     // The terminal service caps a wait at four minutes.

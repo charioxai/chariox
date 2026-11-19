@@ -55,7 +55,7 @@ impl KernelRuntimeState {
             } else {
                 self.owned
                     .provider_store
-                    .get_run_for_agent(agent.session_id(), agent.id())
+                    .get_tool_run_for_agent(agent.session_id(), agent.id())
                     .is_some_and(|current| {
                         current.id() == run && current.owner_user_id() == agent.owner_user_id()
                     })

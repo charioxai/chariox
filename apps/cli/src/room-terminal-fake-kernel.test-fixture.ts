@@ -25,7 +25,7 @@ export class FakeTerminalKernel {
 
   summary(): RoomTerminalSummary {
     return {
-      terminal_id: "term-1", session_id: "room", title: "shell", program: "/bin/bash", working_directory: "/w",
+      terminal_id: "term-1", scope: "room", session_id: "room", title: "shell", program: "/bin/bash", working_directory: "/w",
       cols: this.size.cols, rows: this.size.rows,
       status: this.ended
         ? { state: "ended", outcome: { reason: "program_exited", exit_code: 0, signal: null }, description: this.ended }

@@ -44,7 +44,7 @@
   },
   "peer_set_request": {
     "kind": "set_workflow_responsible",
-    "protocol_version": 448,
+    "protocol_version": 496,
     "sender": {
       "kernel_id": "kernel-b",
       "room_id": "room-b",
@@ -58,7 +58,7 @@
   },
   "peer_apply_request": {
     "kind": "apply_workflow_responsible",
-    "protocol_version": 448,
+    "protocol_version": 496,
     "action": "attach",
     "workflow": {
       "kernel_id": "kernel-a",

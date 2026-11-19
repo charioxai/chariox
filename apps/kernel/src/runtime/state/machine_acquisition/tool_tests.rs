@@ -11,7 +11,7 @@ enum Answer {
     FailAfterCommit(&'static str, Option<&'static str>),
     /// Commits the allocation, then closes the connection: the response is lost.
     LoseResponse,
-    /// Refuses with this status and code and commits nothing.
+    /// Refuses with this status and code, commits nothing and leaves the request open.
     Refuse(&'static str, &'static str),
     /// Refuses like `Refuse` at once, but delivers the refusal only when `gate` is notified.
     RefuseLater(&'static str, &'static str, Arc<tokio::sync::Notify>),
@@ -43,7 +43,7 @@ type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
 
 /// A connected service that lists `offers` and, like Cloud, binds each accepted request id to its
 /// class and region and replays it, whatever the stock says now. A new request for a class named
-/// in `sold_out` is refused.
+/// in `sold_out` is refused and, like Cloud, closed: every later try of it is refused as closed.
 async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) -> Service {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
@@ -56,6 +56,7 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
     let capability_failures = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
     let next_capability_failure = capability_failures.clone();
     let mut accepted = BTreeMap::<String, (serde_json::Value, serde_json::Value, String)>::new();
+    let mut closed = std::collections::BTreeSet::<String>::new();
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -88,6 +89,7 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                 serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
             let request = &body["request"];
             let error = |code: &str| serde_json::json!({"error":{"code":code,"message":code}});
+            let sold_out_closed = serde_json::json!({"error":{"code":"capacity_exceeded","message":"sold out","details":{"request_id":"closed"}}});
             let (status, response) = match request["action"].as_str().unwrap() {
                 "capabilities" => {
                     let answer = next_capability_failure.lock().unwrap().pop_front();
@@ -118,6 +120,10 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                     seen.lock().unwrap().push(request.clone());
                     let id = request["request_id"].as_str().unwrap().to_owned();
                     let pair = (request["class_id"].clone(), request["region"].clone());
+                    if closed.contains(&id) {
+                        respond(socket, "429 Too Many Requests", sold_out_closed).await;
+                        continue;
+                    }
                     let answer = next_answer.lock().unwrap().pop_front();
                     let commit = |accepted: &mut BTreeMap<_, _>| {
                         let count = accepted.len() + 1;
@@ -153,7 +159,8 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                                 .as_str()
                                 .is_some_and(|class| sold_out.contains(&class)) =>
                         {
-                            ("429 Too Many Requests", error("capacity_exceeded"))
+                            closed.insert(id);
+                            ("429 Too Many Requests", sold_out_closed)
                         }
                         (Some(Answer::LoseResponse), _) => {
                             commit(&mut accepted);
@@ -339,11 +346,12 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         .to_string();
     assert!(error.contains("big in north is out of stock"), "{error}");
     assert!(error.contains("In stock now: small in south."), "{error}");
-    // The kernel cannot know that no other try of the request is on its way: the refusal claims
-    // nothing about what the request holds.
-    assert!(!error.contains("nothing was allocated"), "{error}");
-    assert!(error.contains("is safe"), "{error}");
-    assert!(error.contains("may still be in flight"), "{error}");
+    // The service closed the request, so only now may the refusal say it holds nothing.
+    assert!(
+        error.contains("nothing was allocated or charged under it"),
+        "{error}"
+    );
+    assert!(error.contains("Use a new request_id"), "{error}");
 }
 
 #[tokio::test]
@@ -418,7 +426,7 @@ async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again
     service.offers.lock().unwrap()[0].available = false;
     let error = acquire("r1").await.unwrap_err().to_string();
     assert!(error.contains("big in north is out of stock"), "{error}");
-    assert_retry_the_same_request(&error, "r1");
+    assert_closed(&error, "r1");
     acquire("r2").await.unwrap();
     let acquires = service.acquires.lock().unwrap();
     let pairs: Vec<_> = acquires
@@ -432,24 +440,33 @@ async fn a_refused_request_resends_its_option_and_a_new_request_id_chooses_again
     );
 }
 
-/// Any refusal may leave a try of its request in flight, so it sends the caller back to that
-/// request_id: it never says nothing was charged, and another option comes with the warning that
-/// the old request_id may still allocate.
+/// A refusal that does not close its request may leave a try of it in flight, so it sends the
+/// caller back to that request_id only: it never says nothing was charged, never offers a new
+/// request_id and never treats a list of machines as proof.
 fn assert_retry_the_same_request(error: &str, request_id: &str) {
     assert!(!error.contains("nothing was allocated"), "{error}");
     assert!(!error.contains("charged"), "{error}");
+    assert!(!error.contains("new request_id"), "{error}");
+    assert!(!error.contains("machines list"), "{error}");
     assert!(
         error.contains(&format!(
             "Retrying chariox.machines.acquire with request_id {request_id} is safe"
         )),
         "{error}"
     );
+}
+
+/// A refusal of a request the service closed: nothing is held under it and nothing ever will be,
+/// so a new request_id is safe.
+fn assert_closed(error: &str, request_id: &str) {
     assert!(
         error.contains(&format!(
-            "a try of request_id {request_id} may still be in flight and allocate a machine: check the machines list"
+            "The service closed request_id {request_id}: nothing was allocated or charged under it"
         )),
         "{error}"
     );
+    assert!(error.contains("Use a new request_id"), "{error}");
+    assert!(!error.contains("machines list"), "{error}");
 }
 
 fn acquire_args(request_id: &str) -> serde_json::Value {
@@ -660,19 +677,11 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
     }
 }
 
-/// A try that chose its option but has not been sent yet (its capability call or the owner's
-/// decision still runs) can allocate under its request_id after another try of it was refused, so
-/// that refusal never says the request holds nothing: following its guidance leaves one machine.
-#[tokio::test]
-async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_the_same_request() {
-    let service = service(two_in_stock(), &[]).await;
-    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
-    let acquire = |request_id: &str| {
-        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
-    };
+/// The capability answers for one try that waits right before its acquire is sent: its own
+/// capability call answers, the one right before the acquire waits for `release`.
+fn hold_before_send(service: &Service) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
     let arrived = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    // The first try's own capability call answers; the one right before its acquire waits.
     service.capability_failures.lock().unwrap().extend([
         CapabilityAnswer::Answer,
         CapabilityAnswer::Hold {
@@ -680,6 +689,21 @@ async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_t
             release: release.clone(),
         },
     ]);
+    (arrived, release)
+}
+
+/// A try that chose its option but has not been sent yet (its capability call or the owner's
+/// decision still runs) can allocate under its request_id after another try of it was refused.
+/// A refusal that does not close the request sends the caller back to it; the caller follows that
+/// while the first try still waits, and ends with one machine.
+#[tokio::test]
+async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_the_same_request() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquire = |request_id: &str| {
+        state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
+    };
+    let (arrived, release) = hold_before_send(&service);
     service
         .answers
         .lock()
@@ -688,28 +712,81 @@ async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_t
     let interleaving = async {
         tokio::join!(acquire("r1"), async {
             arrived.notified().await;
-            let refused = acquire("r1").await;
+            let refused = acquire("r1").await.unwrap_err().to_string();
+            assert_retry_the_same_request(&refused, "r1");
+            // The caller follows the guidance while the first try still waits to be sent.
+            let retried = acquire("r1").await;
             release.notify_one();
-            refused
+            retried
         })
     };
-    let (waited, refused) = tokio::time::timeout(std::time::Duration::from_secs(60), interleaving)
+    let (waited, retried) = tokio::time::timeout(std::time::Duration::from_secs(60), interleaving)
         .await
-        .expect("both tries of r1 end");
-    let refused = refused.unwrap_err().to_string();
-    assert_retry_the_same_request(&refused, "r1");
-    let waited = waited.unwrap();
-    // The caller follows the refusal's guidance and gets the machine the waiting try allocated.
-    let retried = acquire("r1").await.unwrap();
+        .expect("every try of r1 ends");
+    let (waited, retried) = (waited.unwrap(), retried.unwrap());
     assert_eq!(
         retried.payload["allocation"]["allocation_ref"],
-        waited.payload["allocation"]["allocation_ref"]
+        "allocation-1"
+    );
+    assert_eq!(
+        waited.payload["allocation"]["allocation_ref"], "allocation-1",
+        "the waiting try replays the one machine"
     );
     let acquires = service.acquires.lock().unwrap();
     assert_eq!(acquires.len(), 3);
     assert!(acquires
         .iter()
         .all(|sent| sent["request_id"] == acquires[0]["request_id"]));
+}
+
+/// The same interleaving when the service closes the refused request: the caller follows the
+/// closed refusal to a new request_id while the first try still waits, and the first try, sent
+/// last, is refused as closed. The caller's new machine is the only one.
+#[tokio::test]
+async fn a_closed_refusal_while_another_try_waits_to_be_sent_leaves_one_machine() {
+    let service = service(two_in_stock(), &["small"]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquire =
+        |args: serde_json::Value| state.machine_tool(&token, "chariox.machines.acquire", args);
+    let (arrived, release) = hold_before_send(&service);
+    let interleaving = async {
+        tokio::join!(acquire(acquire_args("r1")), async {
+            arrived.notified().await;
+            let refused = acquire(acquire_args("r1")).await.unwrap_err().to_string();
+            assert!(
+                refused.contains("small in north is out of stock"),
+                "{refused}"
+            );
+            assert_closed(&refused, "r1");
+            // The caller follows the guidance while the first try of r1 still waits to be sent.
+            let other =
+                acquire(serde_json::json!({"request_id":"r2","class_id":"big","region":"south"}))
+                    .await;
+            release.notify_one();
+            other
+        })
+    };
+    let (waited, other) = tokio::time::timeout(std::time::Duration::from_secs(60), interleaving)
+        .await
+        .expect("every try ends");
+    let other = other.unwrap();
+    assert_eq!(
+        other.payload["allocation"]["allocation_ref"],
+        "allocation-1"
+    );
+    let waited = waited.unwrap_err().to_string();
+    assert_closed(&waited, "r1");
+    let acquires = service.acquires.lock().unwrap();
+    let sent: Vec<_> = acquires
+        .iter()
+        .map(|sent| sent["class_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        sent,
+        ["small", "big", "small"],
+        "the waiting try is sent last"
+    );
+    assert_eq!(acquires[2]["request_id"], acquires[0]["request_id"]);
 }
 
 #[tokio::test]
@@ -806,9 +883,10 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
         "{error}"
     );
     assert!(
-        error.contains("a try of request_id r1 may still be in flight"),
+        error.contains("Use a new request_id only when the service closes this one"),
         "{error}"
     );
+    assert!(!error.contains("machines list"), "{error}");
     assert_eq!(service.acquires.lock().unwrap().len(), 1);
     let named_same = state
         .machine_tool(

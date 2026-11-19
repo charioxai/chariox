@@ -4,7 +4,44 @@ use crate::local::{AgentDeadline, AgentDeadlineState};
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));
-        CREATE TABLE IF NOT EXISTS agent_deadline_intents(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,deadline_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)
+        CREATE TABLE IF NOT EXISTS agent_deadline_intents(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,deadline_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)?;
+    deadline_clock::initialize(db)
+}
+
+pub(super) fn armed(db: &Connection) -> Result<Vec<AgentDeadline>, DaemonError> {
+    let mut query = db
+        .prepare("SELECT payload FROM agent_deadlines WHERE json_extract(payload,'$.state')='armed' ORDER BY room_id,agent_id")
+        .map_err(sql)?;
+    let rows = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(sql)?;
+    rows.map(|row| decode(&row.map_err(sql)?)).collect()
+}
+
+/// The owner's explicit limit moves with the deadline it backs, or a later edit would undo the move.
+pub(super) fn move_intent(
+    db: &Connection,
+    room: &str,
+    agent: &str,
+    to: impl FnOnce(u64) -> Result<u64, DaemonError>,
+) -> Result<(), DaemonError> {
+    let intent: Option<i64> = db
+        .query_row(
+            "SELECT deadline_ms FROM agent_deadline_intents WHERE room_id=?1 AND agent_id=?2",
+            params![room, agent],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if let Some(intent) = intent {
+        let moved = to(u64::try_from(intent).map_err(|_| error("invalid deadline intent"))?)?;
+        db.execute(
+            "UPDATE agent_deadline_intents SET deadline_ms=?3 WHERE room_id=?1 AND agent_id=?2",
+            params![room, agent, sql_integer(moved)?],
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
 }
 
 pub(super) fn get(
@@ -23,7 +60,7 @@ pub(super) fn get(
     value.map(|value| decode(&value)).transpose()
 }
 
-fn save(db: &Connection, value: &AgentDeadline) -> Result<Outcome, DaemonError> {
+pub(super) fn save(db: &Connection, value: &AgentDeadline) -> Result<Outcome, DaemonError> {
     db.execute("INSERT INTO agent_deadlines(room_id,agent_id,payload) VALUES(?1,?2,?3) ON CONFLICT(room_id,agent_id) DO UPDATE SET payload=excluded.payload", params![value.session_id, value.agent_id, encode(value)?]).map_err(sql)?;
     Ok(Outcome::Deadline(Some(value.clone())))
 }
@@ -58,6 +95,8 @@ fn set_effective(
     agent: &str,
     deadline: Option<u64>,
 ) -> Result<Outcome, DaemonError> {
+    // An edit reaches the worker before it commits, so the worker holds this value.
+    deadline_clock::rearmed(db, room, agent)?;
     if let Some(mut old) = get(db, room, agent)? {
         // A parent's edit cannot revive a child whose own deadline already ended its work.
         if old.state == AgentDeadlineState::Reached {
@@ -112,6 +151,8 @@ pub(super) fn set(
     for (child, time) in inherited {
         set_effective(db, &room, &child, time)?;
     }
+    // The first armed deadline starts the heartbeat, so a kernel stopped right after has one to resume from.
+    deadline_clock::beat(db, crate::session::unix_epoch_ms())?;
     Ok(outcome)
 }
 
@@ -177,6 +218,19 @@ impl DurableKernelStateStore {
         value
             .map(|time| u64::try_from(time).map_err(|_| error("invalid deadline intent")))
             .transpose()
+    }
+    /// A starting kernel's one shift of armed deadlines by the time it was stopped.
+    pub(crate) fn resume_agent_deadlines_after_kernel_start(&self) -> Result<(), DaemonError> {
+        self.agent_lifecycle(Operation::ResumeDeadlines {
+            now: crate::session::unix_epoch_ms(),
+        })
+        .map(|_| ())
+    }
+    pub(crate) fn agent_deadlines_awaiting_rearm(
+        &self,
+    ) -> Result<Vec<WorkerHeldDeadline>, DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        deadline_clock::awaiting_rearm(&db)
     }
     pub(crate) fn agent_deadlines(&self) -> Result<Vec<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;

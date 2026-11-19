@@ -251,7 +251,6 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
-        | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::PromptSubmitted { session, .. }
         | LocalDaemonResponse::QueuedPromptSteered { session, .. }
         | LocalDaemonResponse::QueuedPromptCancelled { session, .. }

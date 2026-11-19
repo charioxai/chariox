@@ -1458,6 +1458,9 @@ fi
 [[ " $* " == *" --no-session-persistence "* ]] && exit 0
 record="$CHARIOX_FAKE_CLAUDE_RECORD"
 echo "start $$ token=${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> "$record/starts"
+# The tool servers the kernel names, with the token this process calls them with.
+prev=""
+for arg in "$@"; do [[ "$prev" == "--mcp-config" ]] && cp "$arg" "$record/mcp.json" 2>/dev/null; prev="$arg"; done
 session=11111111-2222-4333-8444-555555555555
 turn=0
 while IFS= read -r line; do
@@ -1541,6 +1544,60 @@ impl Login {
             #[cfg(target_os = "linux")]
             Login::LargeVault => Some("t".repeat(100 << 10)),
         }
+    }
+}
+
+/// The Claude process calls the kernel's tools with the token its tool config named, a runtime
+/// tool and a Vault tool: they answer before the reload and after it, whether or not a
+/// recovered prompt has claimed the run yet.
+async fn run_calls_its_tools(record: &Path, when: &str) {
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(record.join("mcp.json")).unwrap()).unwrap();
+    let (url, authorization) = config["mcpServers"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find_map(|server| {
+            Some((
+                server["url"].as_str()?.to_string(),
+                server["headers"]["Authorization"].as_str()?.to_string(),
+            ))
+        })
+        .expect("the run's tool config names the kernel's tool server");
+    for (id, tool) in [
+        (1, "chariox_list_extensions"),
+        (2, "chariox_list_credential_handles"),
+    ] {
+        let (url, authorization) = (url.clone(), authorization.clone());
+        let body = tokio::task::spawn_blocking(move || {
+            let answer = ureq::post(&url)
+                .set("Authorization", &authorization)
+                .set("Content-Type", "application/json")
+                .set("Accept", "application/json, text/event-stream")
+                .send_string(
+                    &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                        "params": {"name": tool, "arguments": {}}})
+                    .to_string(),
+                );
+            match answer {
+                Ok(response) | Err(ureq::Error::Status(_, response)) => {
+                    response.into_string().unwrap_or_default()
+                }
+                Err(error) => error.to_string(),
+            }
+        })
+        .await
+        .unwrap();
+        for refused in [
+            "invalid runtime MCP auth token",
+            "Vault operations require one authenticated provider run",
+        ] {
+            assert!(
+                !body.contains(refused),
+                "{tool} {when}: the surviving run's token was refused: {body}"
+            );
+        }
+        assert!(body.contains("\"result\""), "{tool} {when}: {body}");
     }
 }
 
@@ -1643,6 +1700,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        run_calls_its_tools(&record, "before the reload").await;
         let installed = scratch.join("bin/chariox-kernel");
         install(
             |staged| {
@@ -1656,6 +1714,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         closed_by_the_old_program(socket).await;
 
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        run_calls_its_tools(&record, "after the reload").await;
         std::fs::write(record.join("go"), "").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -2561,4 +2620,83 @@ async fn accept_as_relay(
         },
     )
     .await
+}
+
+async fn vault_is_unlocked(socket: &mut Socket) -> bool {
+    let status = request(socket, json!({"GetCredentialVaultStatus": null})).await;
+    status["CredentialVaultStatus"]["status"]["unlocked"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("{status}"))
+}
+
+/// A hot reload is not the end of the kernel: a Vault unlocked until the kernel stops stays
+/// unlocked through it, and only a real stop locks it.
+#[test]
+fn a_vault_unlocked_until_the_kernel_stops_survives_a_hot_reload_and_a_real_stop_locks_it() {
+    let scratch = std::env::temp_dir().join(format!("hr-vault-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join("home/.chariox")).unwrap();
+    std::fs::write(
+        scratch.join("home/.chariox/config.toml"),
+        format!(
+            "[credential_vault]\nbackend = \"chariox_encrypted\"\npath = \"{}\"\nservice = \"chariox\"\nunlock_policy = \"kernel_init\"\n",
+            scratch.join("vault.json").display()
+        ),
+    )
+    .unwrap();
+    let passphrase = "hot reload passphrase";
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut kernel = start_laptop_kernel(&scratch, &[]);
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        request(
+            &mut socket,
+            json!({"CreateCredentialVault": {"origin": {"kind": "passphrase", "passphrase": passphrase}}}),
+        )
+        .await;
+        if !vault_is_unlocked(&mut socket).await {
+            request(
+                &mut socket,
+                json!({"UnlockCredentialVault": {"passphrase": passphrase,
+                    "duration": {"kind": "until_kernel_stops"}, "surface": "terminal"}}),
+            )
+            .await;
+        }
+        assert!(vault_is_unlocked(&mut socket).await, "the Vault did not unlock");
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert!(
+            vault_is_unlocked(&mut socket).await,
+            "a hot reload locked the Vault: it lives until the kernel stops"
+        );
+    });
+    // A real stop ends it: the next kernel starts with a locked Vault.
+    let pid = kernel.child.id() as i32;
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kernel.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the kernel did not stop");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    kernel = start_laptop_kernel(&scratch, &[]);
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert!(
+            !vault_is_unlocked(&mut socket).await,
+            "a real stop left the Vault unlocked"
+        );
+    });
 }

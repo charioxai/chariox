@@ -308,7 +308,7 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
+    KernelTerminalRequest, ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
     RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
@@ -318,12 +318,13 @@ pub use api::{
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
     GatewayKernelVia, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
     HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
-    KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileKind,
-    KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
-    ListKernelDirectoryRequest, ListOwnerInteractionsRequest, OnBehalfOf, OwnerInteraction,
-    OwnerInteractionChoice, ReadKernelFileRequest, RenewKernelSudoRequesterRequest,
-    RequestKernelAccessRequest, RequestKernelSudoRequest, RequestVaultSecretRequest,
-    RevokeKernelAccessGrantRequest, StartFileTransferRequest, StatKernelFileRequest,
+    KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileFailure,
+    KernelFileKind, KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest,
+    ListKernelAccessGrantsRequest, ListKernelDirectoryRequest, ListOwnerInteractionsRequest,
+    OnBehalfOf, OwnerInteraction, OwnerInteractionChoice, ReadKernelFileRequest,
+    RenewKernelSudoRequesterRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
+    RequestVaultSecretRequest, RestoreKernelTrashRequest, RevokeKernelAccessGrantRequest,
+    StartFileTransferRequest, StatKernelFileRequest, TrashKernelFilesRequest, TrashedKernelFile,
     VaultPaymentApproval, VaultPaymentClaim, VaultSecretStatus, WriteKernelFileRequest,
     KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
@@ -339,7 +340,7 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue, InteractionOutcome,
     KernelAccessProviderHarness, KernelAccessRequester, KernelAccessTerm, KernelConnectionClass,
     PasskeyPrompt, PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind,
     SudoRequestPresentation,

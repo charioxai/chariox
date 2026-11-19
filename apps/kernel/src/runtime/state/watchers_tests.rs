@@ -192,7 +192,7 @@ async fn an_agent_makes_a_watcher_and_its_followers_get_each_event_once() {
     assert!(sources.to_string().contains(&source_id), "{sources}");
     rig.tool(
         "chariox.notification_subscribe",
-        json!({"source": {"workflow": {"source_id": source_id}}}),
+        json!({"source": {"workflow": {"source_id": source_id}}, "prompt": "Tell me when a statement is ready."}),
     )
     .await
     .unwrap();
@@ -266,7 +266,7 @@ async fn the_watcher_list_names_the_followers_of_its_sources_on_every_kernel() {
     .unwrap();
     rig.tool(
         "chariox.notification_subscribe",
-        json!({"source": {"workflow": {"source_id": source_id}}}),
+        json!({"source": {"workflow": {"source_id": source_id}}, "prompt": "Tell me when a statement is ready."}),
     )
     .await
     .unwrap();

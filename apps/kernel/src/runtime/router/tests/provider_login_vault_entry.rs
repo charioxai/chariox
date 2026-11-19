@@ -100,7 +100,9 @@ impl Fixture {
         let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
         config.user_config.credential_vault.backend = backend;
         if backend == crate::config::CredentialVaultBackend::CharioxEncrypted {
-            let vault = root.join("vault.enc");
+            // The Vault needs a folder of its own: agent confinement hides that folder.
+            let vault = root.join("vault/vault.enc");
+            std::fs::create_dir_all(vault.parent().unwrap()).unwrap();
             config.user_config.credential_vault.path = vault.display().to_string();
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, "correct horse battery")
                 .unwrap();

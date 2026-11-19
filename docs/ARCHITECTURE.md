@@ -264,6 +264,27 @@ so large provider tool output cannot retain and repeatedly copy the full stream.
 
 Detailed target-kernel implementation model, workflow model, workflow messaging, endpoint/run-output behavior, publication runtime behavior, agent binding rules, and observability baseline now live in [ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md](ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md). Keep this main architecture file focused on top-level component boundaries and authority rules.
 
+### 3.3.2 Hot reload
+
+A hot reload (SIGUSR2) replaces the kernel program in place and keeps its PID. It is a program
+update, not the end of the kernel: **everything that lives "until the kernel stops" survives it.**
+Only a real stop or restart ends it. This covers:
+
+- the Vault unlock: a Vault unlocked until the kernel stops stays unlocked; one with its own
+  deadline keeps that deadline (a single-use unlock stays single-use); a locked Vault stays locked;
+- the provider runs whose turns are handed over, with their ids and runtime tool tokens: a
+  surviving process keeps calling its Vault and runtime tools (timers, waits, subscriptions,
+  events) with the token it has, from the first moment of the new program, before any recovered
+  prompt claims the run. The handover carries the run's identity (who it is for, its token),
+  never what a launch carried (environment, arguments, credentials; those travel in memory);
+- the timers, waits and subscriptions the kernel owns (durable state), running terminals, jobs
+  that ended workloads left running, attachments and the listening sockets.
+
+Not carried, as after any restart: processes the kernel does not own (idle provider processes),
+live watched-process wakes (`chariox.events.process` ends with `process_lost`; the owner re-arms).
+A handover whose program prints another `--handover-format` is refused and nothing changes.
+A change that would end something at a reload that a restart keeps alive is a bug in the handover.
+
 ### 3.4 Relay Server
 
 The relay server is a lightweight transport-forwarding layer.

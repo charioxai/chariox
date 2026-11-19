@@ -145,17 +145,62 @@ impl ConnectedWorkerRig {
         &mut self,
         respond: impl FnOnce(&RelayPeerRequest) -> crate::transport::relay_peer::RelayPeerResponse,
     ) -> RelayPeerRequest {
-        use crate::transport::relay_crypto;
-        let next = async {
+        let (request_id, request) = self.next_request().await;
+        self.reply(request_id, Ok(respond(&request))).await;
+        request
+    }
+
+    /// Answer the next request with what a worker's handler returns: a refusal travels back as
+    /// the relay error the worker's request loop maps it to.
+    pub(crate) async fn serve<F>(&mut self, handle: impl FnOnce(RelayPeerRequest) -> F)
+    where
+        F: std::future::Future<
+            Output = Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError>,
+        >,
+    {
+        let (request_id, request) = self.next_request().await;
+        let answer = handle(request)
+            .await
+            .map_err(|error| super::request_errors::map_relay_error(&error));
+        self.reply(request_id, answer).await;
+    }
+
+    /// Runs `call` while answering each request it sends with `respond`; `None` leaves a request
+    /// unanswered, as a worker that never replies does.
+    pub(crate) async fn answer_while<T>(
+        &mut self,
+        call: impl std::future::Future<Output = T>,
+        mut respond: impl FnMut(
+            &RelayPeerRequest,
+        ) -> Option<crate::transport::relay_peer::RelayPeerResponse>,
+    ) -> T {
+        tokio::pin!(call);
+        loop {
             tokio::select! {
-                envelope = self.wire.recv() => envelope,
-                envelope = self.bulk.recv() => envelope,
+                output = &mut call => return output,
+                (request_id, request) = self.receive() => {
+                    if let Some(response) = respond(&request) {
+                        self.reply(request_id, Ok(response)).await;
+                    }
+                }
             }
-        };
-        let envelope = tokio::time::timeout(Duration::from_secs(5), next)
+        }
+    }
+
+    async fn next_request(&mut self) -> (String, RelayPeerRequest) {
+        tokio::time::timeout(Duration::from_secs(5), self.receive())
             .await
             .expect("the request must use the connected encrypted peer transport")
-            .expect("the connected wire stays open");
+    }
+
+    /// The next request the home sends, as the worker decrypts it.
+    pub(crate) async fn receive(&mut self) -> (String, RelayPeerRequest) {
+        use crate::transport::relay_crypto;
+        let envelope = tokio::select! {
+            envelope = self.wire.recv() => envelope,
+            envelope = self.bulk.recv() => envelope,
+        }
+        .expect("the connected wire stays open");
         let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
             request_id,
             target,
@@ -173,20 +218,45 @@ impl ConnectedWorkerRig {
             &encrypted_request,
         )
         .unwrap();
-        let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();
-        let encrypted = relay_crypto::encrypt_payload_for_peer(
-            &self.worker.relay_private_key,
-            &self.home_public_key,
-            &serde_json::to_vec(&respond(&request)).unwrap(),
-        )
-        .unwrap();
-        super::resolve_pending_peer_response_for_test(
-            &self.state,
+        (
             request_id,
-            self.worker.daemon_id.clone(),
-            encrypted,
+            serde_json::from_slice(&decoded.plaintext).unwrap(),
         )
-        .await;
-        request
+    }
+
+    pub(crate) async fn reply(
+        &self,
+        request_id: String,
+        answer: Result<
+            crate::transport::relay_peer::RelayPeerResponse,
+            chariox_relay::protocol::RelayError,
+        >,
+    ) {
+        match answer {
+            Ok(response) => {
+                let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+                    &self.worker.relay_private_key,
+                    &self.home_public_key,
+                    &serde_json::to_vec(&response).unwrap(),
+                )
+                .unwrap();
+                super::resolve_pending_peer_response_for_test(
+                    &self.state,
+                    request_id,
+                    self.worker.daemon_id.clone(),
+                    encrypted,
+                )
+                .await;
+            }
+            Err(error) => {
+                super::resolve_pending_peer_error_for_test(
+                    &self.state,
+                    request_id,
+                    self.worker.daemon_id.clone(),
+                    error,
+                )
+                .await;
+            }
+        }
     }
 }

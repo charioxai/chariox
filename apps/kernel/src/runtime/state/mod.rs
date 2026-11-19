@@ -317,6 +317,9 @@ type UncertainLeasedTasks = Arc<
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     agent_deadline_edit: Arc<tokio::sync::Mutex<()>>,
+    /// Held across the worker requests of a rearm pass, and by every deadline edit before
+    /// `agent_deadline_edit`, so a worker never ends on the older of two values.
+    agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -457,8 +460,8 @@ struct KernelRuntimeOwnedState {
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
-    /// The turn each native provider TUI run was last seen on, to settle it once it ends.
-    native_tui_turns: std::sync::Arc<
+    /// The turn each Claude native-bridge run was last seen on, to settle it once it ends.
+    native_bridge_turns: std::sync::Arc<
         std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
     >,
     private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
@@ -761,6 +764,8 @@ mod dictation_runtime;
 #[cfg(test)]
 mod file_copy_tool_tests;
 mod kernel_computer_runtime;
+#[cfg(test)]
+mod leased_agent_deadline_rearm_tests;
 #[cfg(test)]
 mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
@@ -1228,6 +1233,7 @@ impl KernelRuntimeState {
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
                 agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
+                agent_deadline_rearm: Arc::new(tokio::sync::Mutex::new(())),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
@@ -1370,7 +1376,7 @@ impl KernelRuntimeState {
                 private_assessment_results: Default::default(),
                 private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
-                native_tui_turns: Default::default(),
+                native_bridge_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
@@ -1738,6 +1744,7 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
+mod leased_agent_deadline_rearm;
 mod spawned_agent_facts;
 pub(crate) use spawned_agent_facts::SpawnedAgentFacts;
 mod agent_delivery_settlement;

@@ -166,6 +166,7 @@ pub(super) fn reads_framed_plaintext(kernel: &RelayKernelPresence) -> bool {
 /// A kernel that runs the Room terminal service says so; an older one would only answer
 /// that it cannot read the request.
 const ROOM_TERMINAL_CAPABILITY: &str = "room_terminal_v1";
+const KERNEL_TERMINAL_CAPABILITY: &str = "kernel_terminal_v1";
 
 fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
     kernel.capabilities.iter().any(|value| value == capability)
@@ -193,6 +194,11 @@ pub(super) fn incompatibility(
         }
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
             Some("it predates Room terminals".into())
+        }
+        LocalDaemonRequest::KernelTerminal(_)
+            if !advertises(kernel, KERNEL_TERMINAL_CAPABILITY) =>
+        {
+            Some("it predates the kernel's own terminals; update the target kernel".into())
         }
         _ => None,
     }

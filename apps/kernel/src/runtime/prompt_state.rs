@@ -24,6 +24,24 @@ pub(crate) fn prompt_claims_provider_run(
         })
 }
 
+/// Whether `prompt` is the turn of `provider_run`, the one that run's end
+/// settles. An unbound prompt waits for the selected run; once that run has
+/// ended (and its end or a sweep cleared the selection) it still holds it
+/// while no later run of its agent started, so the run's end fails it with a
+/// reason instead of leaving it to a settlement that would close it as
+/// completed (m3h).
+pub(crate) fn prompt_holds_provider_run(
+    prompt: &PromptQueueItem,
+    provider_run: &crate::provider::RuntimeProviderRun,
+    session: &RuntimeSession,
+    providers: &crate::provider::ProviderProcessServiceStore,
+) -> bool {
+    let unbound_run_selected = session.active_provider_run_id() == Some(provider_run.id())
+        || (provider_run.state() == crate::provider::ProviderRunState::Ended
+            && !providers.agent_started_a_later_run(provider_run));
+    prompt_claims_provider_run(prompt, provider_run.id(), unbound_run_selected)
+}
+
 #[derive(Debug, Clone, Default)]
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
@@ -412,16 +430,29 @@ impl PromptStateOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        owner
-            .agent_ids_for_session(session)
-            .into_iter()
-            .any(|agent_id| {
-                owner
-                    .states
-                    .get(&PromptStateKey::new(session.id(), &agent_id))
-                    .and_then(|state| state.active_prompt.as_ref())
-                    .is_some()
-            })
+        owner.session_has_active_prompt(session)
+    }
+
+    /// Runs `operation` only while no agent of `sessions` has an active
+    /// prompt, and holds the prompt state so none can start meanwhile: a sweep
+    /// that decided from an earlier look must not end the run a new prompt
+    /// was just given. `None` when a prompt became active.
+    pub(crate) fn while_sessions_idle<R>(
+        &self,
+        sessions: &[RuntimeSession],
+        operation: impl FnOnce() -> Result<R, DaemonError>,
+    ) -> Result<Option<R>, DaemonError> {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sessions
+            .iter()
+            .any(|session| owner.session_has_active_prompt(session))
+        {
+            return Ok(None);
+        }
+        operation().map(Some)
     }
 
     pub(crate) fn active_prompt_agent_ids(&self, session: &RuntimeSession) -> Vec<String> {
@@ -1785,6 +1816,17 @@ impl PromptStateOwnerState {
                 prompt: prompt.clone(),
             }
         }))
+    }
+
+    fn session_has_active_prompt(&self, session: &RuntimeSession) -> bool {
+        self.agent_ids_for_session(session)
+            .into_iter()
+            .any(|agent_id| {
+                self.states
+                    .get(&PromptStateKey::new(session.id(), &agent_id))
+                    .and_then(|state| state.active_prompt.as_ref())
+                    .is_some()
+            })
     }
 
     fn agent_ids_for_session(&self, session: &RuntimeSession) -> Vec<String> {

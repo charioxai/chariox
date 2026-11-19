@@ -240,7 +240,8 @@ impl KernelRuntimeState {
             })?;
         Ok(LocalDaemonResponse::InteractionResponded {
             interaction_id: answer.interaction_id.clone(),
-            session: self.session_snapshot(&answer.session_id).await?,
+            choice_id: answer.choice_id.clone(),
+            outcome: crate::local::InteractionOutcome::Answered,
         })
     }
 }

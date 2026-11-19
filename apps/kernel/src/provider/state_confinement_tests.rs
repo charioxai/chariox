@@ -507,3 +507,70 @@ fn exactly_the_declared_secrets_are_hidden() {
         assert_eq!(std::fs::read_to_string(secret).unwrap(), SECRET);
     }
 }
+
+/// The repo drills keep the durable state directly in the kernel home, which
+/// makes the whole home a secret folder; the scratch folder the kernel gives
+/// the agent there is still the agent's own. Claude creates its temp files
+/// under TMPDIR first thing, so a hidden scratch folder ends every turn.
+#[test]
+fn a_provider_run_writes_its_scratch_when_the_kernel_home_holds_the_state() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(kernel.home.join("state.db").display().to_string());
+    config.user_config.credential_vault.path = kernel.home.join("vault.json").display().to_string();
+    super::configure(&config).expect("a state folder of the kernel home is accepted");
+    let executable = kernel.workspace.parent().unwrap().join("bin/opencode");
+    write(
+        &executable,
+        "#!/bin/sh\nmkdir -p \"$TMPDIR/provider\" && echo provider > \"$TMPDIR/provider/file\" && echo \"scratch-writable $TMPDIR\"\n",
+    );
+    std::fs::set_permissions(
+        &executable,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+    let request = crate::provider::LaunchProviderRequest::new(
+        "room1",
+        "opencode",
+        "opencode",
+        "default",
+        "anthropic/claude-sonnet-4",
+    )
+    .with_agent_id("agent-scratch1")
+    .with_working_directory(kernel.workspace.clone());
+    let run = crate::provider::ProviderProcessService::new()
+        .start_run_provider_only(request)
+        .expect("the provider run is planned")
+        .run()
+        .clone();
+    let scratch = run
+        .pty_env()
+        .get("TMPDIR")
+        .expect("the run has its scratch folder")
+        .clone();
+    assert!(
+        scratch.starts_with(&kernel.home.join("t").display().to_string()),
+        "{scratch}"
+    );
+    let output = std::process::Command::new(run.pty_program().expect("the run starts a process"))
+        .args(run.pty_args())
+        .envs(run.pty_env())
+        .output()
+        .expect("the provider process runs");
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.contains(&format!("scratch-writable {scratch}")),
+        "{output}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&scratch).join("provider/file")).unwrap_or_default(),
+        "provider\n",
+        "the provider's scratch write is on disk:\n{output}"
+    );
+}

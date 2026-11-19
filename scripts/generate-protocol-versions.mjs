@@ -15,6 +15,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-catalog-aliases-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/kernel-trash-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-login-vault-entry-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-accounts-1011.json",
@@ -64,6 +65,7 @@ const currentSnapshots = [
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",
   "fixtures/owner-vault-protocol.json",
+  "fixtures/peer-agent-link-protocol.json",
   "fixtures/peer-browser-snapshot-protocol.json",
   "fixtures/totp-protocol.json",
   "fixtures/workspace-artifact-paging-protocol.json"

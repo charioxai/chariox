@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn a_draft_is_held_to_the_size_of_a_document() {
-        let big = edit(&"x".repeat(model::MAX_CONTENT + 1));
+        let big = edit(&"x".repeat(model::MAX_CONTENT));
         assert!(parse_new(&docs(), "w1", "d1", 1, &big, 5).is_err());
     }
 

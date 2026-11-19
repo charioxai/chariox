@@ -322,18 +322,18 @@ impl KernelRuntimeOwnedState {
             return Ok(false);
         };
         let session = self.session_store.get_session(session_id)?;
-        let Some(prompt) = self
-            .prompt_state_owner
-            .active_prompt_for_agent_snapshot(&session, agent_id)
-        else {
-            return Ok(false);
-        };
         // Active-only lifecycle selection stays distinct from the parking guard,
         // which preserves current-agent pending work across parallel focus changes.
-        Ok(crate::runtime::prompt_state::prompt_claims_provider_run(
-            &prompt,
-            provider_run.id(),
-            session.active_provider_run_id() == Some(provider_run.id()),
-        ))
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id)
+            .is_some_and(|prompt| {
+                crate::runtime::prompt_state::prompt_holds_provider_run(
+                    &prompt,
+                    provider_run,
+                    &session,
+                    &self.provider_store,
+                )
+            }))
     }
 }

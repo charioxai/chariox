@@ -60,9 +60,11 @@ test("a Room without a running terminal gets a new one; list and close never tak
   await assert.rejects(runRoomTerminalCommand(deps, { kind: "attach", selector: "nope" }), /No terminal "nope"/)
 })
 
-test("chariox terminal needs a session and reads its flags in any order", async () => {
+test("chariox terminal reads its flags in any order; without --session it is the kernel's own terminal", async () => {
   const { parseTerminalArgs } = await import("./terminal-command.js")
-  assert.match(String(parseTerminalArgs([])), /usage: chariox terminal --session SESSION/)
+  assert.deepEqual(parseTerminalArgs([]), { rest: [] })
+  assert.deepEqual(parseTerminalArgs(["--kernel", "b3", "list"]), { kernel: "b3", rest: ["list"] })
+  assert.match(String(parseTerminalArgs(["--kernel", "b3", "--kernel-url", "ws://x"])), /usage: chariox terminal/)
   assert.match(String(parseTerminalArgs(["--session"])), /usage: chariox terminal/)
   assert.deepEqual(parseTerminalArgs(["list", "--session", "room-a"]), { session: "room-a", rest: ["list"] })
   assert.deepEqual(parseTerminalArgs(["--kernel-url", "ws://127.0.0.1:1", "--session", "room-a", "new", "build"]), {

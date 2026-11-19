@@ -199,7 +199,10 @@ impl Terminal {
     }
 
     pub(super) fn record_program_end(&mut self, end: ProgramEnd) {
-        self.outside_ends.push(end.clone());
+        // A kernel terminal has no Room whose agents could be told it finished.
+        if self.record.scope.room_id().is_some() {
+            self.outside_ends.push(end.clone());
+        }
         self.last_program_end = Some(end);
     }
 
@@ -398,7 +401,7 @@ impl Terminal {
         let record = &self.record;
         RoomTerminalSummary {
             terminal_id: record.terminal_id.clone(),
-            session_id: record.session_id.clone(),
+            scope: record.scope.clone(),
             title: record.title.clone(),
             program: record.program.clone(),
             working_directory: record.working_directory.clone(),
