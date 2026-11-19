@@ -106,6 +106,36 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_submit_jobs()
         {
+            if matches!(
+                &finished.result,
+                Err(DaemonError::IdleProviderProcessExited { .. })
+            ) {
+                match self.redispatch_after_idle_provider_exit(&finished) {
+                    Ok(Some(dispatch)) => {
+                        follow_ups.local.push(dispatch);
+                        continue;
+                    }
+                    Ok(None) => continue,
+                    Err(error)
+                        if crate::durable_state::is_retryable_durable_write_error(&error) =>
+                    {
+                        self.provider_store
+                            .schedule_finished_structured_prompt_submit_retry(finished);
+                        continue;
+                    }
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.prompt_delivery",
+                            "could not retire the exited provider before retrying its prompt",
+                            serde_json::json!({
+                                "provider_run_id": &finished.provider_run_id,
+                                "prompt_id": &finished.prompt_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+            }
             match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
                 &self.durable_state_store,
                 self.provider_store.structured_submit_epoch(),
@@ -411,6 +441,58 @@ impl KernelRuntimeOwnedState {
             }
         }
         follow_ups
+    }
+
+    fn redispatch_after_idle_provider_exit(
+        &self,
+        finished: &crate::provider::FinishedProviderPromptSubmitJob,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let session = self.session_store.get_session(&finished.session_id)?;
+        let Some(_claim) = self
+            .prompt_state_owner
+            .try_claim_active_prompt_delivery_settlement(
+                &session,
+                &finished.agent_id,
+                &finished.prompt_id,
+                &finished.provider_run_id,
+            )
+        else {
+            return Ok(None);
+        };
+        let Some(prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &finished.agent_id)
+            .filter(|prompt| {
+                prompt.id() == finished.prompt_id
+                    && prompt.status() != crate::session::PromptStatus::Cancelling
+            })
+        else {
+            return Ok(None);
+        };
+        let ended = self
+            .provider_store
+            .terminate_run_provider_only(&finished.session_id, &finished.provider_run_id)?
+            .into_run();
+        self.clear_active_provider_run_session_pointer(&finished.session_id, ended.id())?;
+        self.provider_run_projection.update(ended);
+        // The actor refused before any provider write. Keep the same admitted
+        // prompt and its event receipt, and let dispatch rebind it to a fresh run.
+        Ok(Some(crate::app::KernelPromptDispatch {
+            session_id: finished.session_id.clone(),
+            provider_run_id: finished.provider_run_id.clone(),
+            agent_id: finished.agent_id.clone(),
+            prompt_id: finished.prompt_id.clone(),
+            target_active_prompt_id: None,
+            source_attachment_id: prompt.source_attachment_id().to_string(),
+            prompt: prompt.prompt().to_string(),
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments: prompt.attachments().to_vec(),
+            prompt_origin: prompt.prompt_origin(),
+            external_provider: prompt.external_provider().map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+            steering: false,
+        }))
     }
 
     fn prepare_failed_prompt_resume_invalidation(

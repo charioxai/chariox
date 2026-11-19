@@ -422,6 +422,8 @@ pub enum DaemonError {
     NoActiveProviderRun { session_id: String },
     #[error("provider run `{provider_run_id}` has no PTY process")]
     PtyProcessNotFound { provider_run_id: String },
+    #[error("idle provider process for run `{provider_run_id}` exited before prompt submission")]
+    IdleProviderProcessExited { provider_run_id: String },
 
     /// Internal proof that a steer was not submitted or was explicitly rejected.
     /// Unclassified errors may follow a provider write and cannot authorize replay.
