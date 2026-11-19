@@ -356,16 +356,31 @@ impl PromptStateOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let Some(head) = state.queued_prompts.front_mut() else {
-            return false;
-        };
-        if head.id() != prompt_id || head.launch_wait() == Some(message) {
+        let queue = &mut state.queued_prompts;
+        if queue.front().is_none_or(|head| head.id() != prompt_id) {
             return false;
         }
-        head.set_launch_wait(Some(message.into()));
-        self.has_provider_launch_waiters
-            .store(true, std::sync::atomic::Ordering::Release);
-        true
+        let mut after_submitted_steer = 0;
+        let mut changed = false;
+        for (index, prompt) in queue.iter_mut().enumerate() {
+            if prompt.remote_steer_reserved() {
+                after_submitted_steer = index + 1;
+            } else if prompt.launch_wait() != Some(message) {
+                prompt.set_launch_wait(Some(message.to_owned()));
+                changed = true;
+            }
+        }
+        // No waiting turn can overtake a reserved steer or change its position.
+        let eligible = &mut queue.make_contiguous()[after_submitted_steer..];
+        if !eligible.is_sorted_by_key(|prompt| !prompt.comes_from_person()) {
+            eligible.sort_by_key(|prompt| !prompt.comes_from_person());
+            changed = true;
+        }
+        if changed {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        changed
     }
 
     /// Commit delivery settlement while admission/cancellation cannot replace

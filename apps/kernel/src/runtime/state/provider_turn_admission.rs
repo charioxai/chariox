@@ -112,24 +112,34 @@ impl KernelRuntimeState {
                     };
                     if agent.remote_execution().is_some() {
                         if retry_workers {
-                            if let Err(error) = self
-                                .spawn_next_queued_remote_prompt(&session_id, &agent_id)
-                                .await
-                            {
-                                tracing::warn!(%error, %session_id, %agent_id, "Could not advance a remote turn waiting for memory");
-                            }
+                            let state = self.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = state
+                                    .spawn_next_queued_remote_prompt(&session_id, &agent_id)
+                                    .await
+                                {
+                                    tracing::warn!(%error, %session_id, %agent_id, "Could not advance a remote turn waiting for memory");
+                                }
+                            });
                         }
-                    } else if resume_local {
+                    } else if resume_local
+                        && !self
+                            .owned
+                            .prompt_state_owner
+                            .has_idle_queue_promotion(&session_id, &agent_id)
+                    {
                         if self.sample_provider_turn_pressure(&admission) {
                             memory_available_since = None;
                             resume_local = false;
                             continue;
                         }
-                        Box::pin(self.advance_project_queued_prompt_after_settlement(
-                            &session_id,
-                            &agent_id,
-                        ))
-                        .await;
+                        // This Room can wait indefinitely on a Vault card. Its
+                        // promotion claim stays local to the detached task.
+                        if let Err(error) =
+                            self.spawn_idle_local_prompt_queue_promotion(&session_id, &agent_id)
+                        {
+                            tracing::warn!(%error, %session_id, %agent_id, "Could not advance a local turn waiting for memory");
+                        }
                     }
                 }
             }
