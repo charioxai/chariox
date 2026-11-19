@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn a_request_read_by_a_busy_peer_does_not_reply_with_that_turns_answer() {
+    run_peer_test("peer-room-unrelated-answer", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let sent = rooms
+            .send(serde_json::json!({
+                "agent": "peer",
+                "room": rooms.peer_room,
+                "message": "What is the answer to topic X?",
+                "reply_requested": true,
+            }))
+            .await
+            .unwrap();
+        let sequence = sent["sequence"].as_u64().unwrap();
+        let runtime = &rooms.router.runtime_state;
+        let read = runtime
+            .read_agent_inbox(
+                &rooms.peer_room,
+                rooms.peer.id(),
+                &serde_json::json!({"sequence": sequence}),
+            )
+            .unwrap();
+        assert_eq!(
+            read["events"][0]["payload"]["message"],
+            "What is the answer to topic X?"
+        );
+        runtime
+            .ack_agent_inbox(
+                &rooms.peer_room,
+                rooms.peer.id(),
+                &serde_json::json!({"sequence": sequence, "handled": true}),
+                crate::session::unix_epoch_ms(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), false)
+            .await
+            .unwrap();
+        let source = format!("agent-event-{}-{sequence}", rooms.peer.id());
+        let inbox = rooms
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_inbox(&rooms.home, rooms.sender.id(), 0)
+            .unwrap();
+        let replies: Vec<_> = inbox
+            .iter()
+            .filter(|event| event.source_id == source)
+            .collect();
+        assert_eq!(replies.len(), 1, "{inbox:?}");
+        assert_eq!(replies[0].kind, "source_lost", "{replies:?}");
+        let answer = &replies[0].payload["public_answer"];
+        assert_eq!(answer["kind"], "no_answer", "{answer}");
+        assert!(answer["reason"].is_string(), "{answer}");
+        assert!(answer.get("prompt_id").is_none(), "{answer}");
+    });
+}
+
+#[test]
 fn a_message_reaches_an_agent_of_another_room_once_with_the_sender_stamped() {
     run_peer_test("peer-room-message", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);

@@ -1,5 +1,4 @@
-//! A reply_requested question that its recipient read inside a running turn is answered by the
-//! recipient's next message to the asker: that message settles the asker's reply obligation.
+//! A message read inside another task receives an outcome without borrowing that task's answer.
 use super::*;
 use tests::Fixture;
 
@@ -37,7 +36,7 @@ fn ask(f: &Fixture) -> InboxEvent {
     question
 }
 
-fn answer(f: &Fixture) -> InboxEvent {
+fn send_update(f: &Fixture) -> InboxEvent {
     let Outcome::Event(reply) = f.apply(Operation::Send {
         task: "pt".into(),
         prompt: "pt".into(),
@@ -62,55 +61,9 @@ fn reply_obligation(f: &Fixture) -> AgentObligation {
         .expect("the question holds a reply obligation")
 }
 
+/// A separate message cannot establish a reply while the exact delivery is unresolved.
 #[test]
-fn a_message_answering_a_question_read_in_turn_settles_the_askers_reply() {
-    let f = Fixture::new();
-    let question = ask(&f);
-    // Peer reads the question from its inbox inside its running task and answers before it acks.
-    f.apply(Operation::MarkShown {
-        room: "room".into(),
-        agent: "peer".into(),
-        sequences: vec![question.sequence],
-    });
-    let reply = answer(&f);
-    assert_ne!(
-        reply_obligation(&f).status,
-        "open",
-        "{:?}",
-        reply_obligation(&f)
-    );
-    let told = f
-        .store
-        .agent_inbox("room", "parent", 0)
-        .unwrap()
-        .into_iter()
-        .find(|e| e.kind == "source_completed")
-        .expect("the asker hears its reply arrived");
-    assert_eq!(
-        told.payload["public_answer"]["reply_sequence"],
-        reply.sequence
-    );
-    assert_eq!(
-        told.payload["public_answer"]["excerpt"],
-        "Yes, both, with geometry samples."
-    );
-    let asked = f
-        .store
-        .agent_inbox("room", "peer", 0)
-        .unwrap()
-        .into_iter()
-        .find(|e| e.sequence == question.sequence)
-        .unwrap();
-    assert_eq!(
-        asked.state, "handled",
-        "the answered question is not delivered again"
-    );
-}
-
-/// The question is steered into the peer's running task: its delivery is still in flight (no
-/// receipt yet) when the peer already answers by message.
-#[test]
-fn a_message_answering_a_question_whose_delivery_is_in_flight_settles_the_askers_reply() {
+fn a_separate_message_does_not_settle_an_in_flight_request() {
     for state in ["submitting", "uncertain"] {
         let f = Fixture::new();
         let question = ask(&f);
@@ -134,8 +87,8 @@ fn a_message_answering_a_question_whose_delivery_is_in_flight_settles_the_askers
                 now: 3,
             });
         }
-        answer(&f);
-        assert_ne!(
+        send_update(&f);
+        assert_eq!(
             reply_obligation(&f).status,
             "open",
             "delivery {state}: {:?}",
@@ -148,7 +101,7 @@ fn a_message_answering_a_question_whose_delivery_is_in_flight_settles_the_askers
 fn a_message_before_the_question_was_read_is_not_its_reply() {
     let f = Fixture::new();
     ask(&f);
-    answer(&f);
+    send_update(&f);
     assert_eq!(reply_obligation(&f).status, "open");
 }
 
@@ -183,14 +136,14 @@ fn peer_task_ends(f: &Fixture, success: bool, answer: Option<serde_json::Value>)
 }
 
 #[test]
-fn a_message_answering_an_acknowledged_question_settles_the_askers_reply() {
+fn a_separate_message_does_not_settle_an_acknowledged_request() {
     for handled in [false, true] {
         let f = Fixture::new();
         let question = ask(&f);
         read(&f, &question);
         ack_question(&f, &question, handled);
-        answer(&f);
-        assert_ne!(
+        send_update(&f);
+        assert_eq!(
             reply_obligation(&f).status,
             "open",
             "acked with handled={handled}: {:?}",
@@ -247,9 +200,9 @@ fn an_asker_waiting_on_the_reply_and_another_source_resumes_when_both_end() {
         now: 3,
     });
     assert_eq!(f.task().state, ExecutionState::Waiting);
-    // The peer reads the question inside its turn and answers by message, then the build ends.
     read(&f, &question);
-    answer(&f);
+    ack_question(&f, &question, true);
+    peer_task_ends(&f, true, Some(serde_json::json!({"excerpt": "unrelated"})));
     f.apply(Operation::SourceOutcome {
         room: "room".into(),
         source: "build".into(),
@@ -266,7 +219,7 @@ fn an_asker_waiting_on_the_reply_and_another_source_resumes_when_both_end() {
     );
     let events = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert!(
-        events.iter().any(|e| e.kind == "source_completed"
+        events.iter().any(|e| e.kind == "source_lost"
             && e.source_id == format!("agent-event-peer-{}", question.sequence)),
         "the asker hears the reply: {events:?}"
     );
@@ -303,7 +256,7 @@ fn a_recipient_task_cancelled_after_reading_the_question_ends_the_askers_reply()
 }
 
 #[test]
-fn a_recipient_task_ending_without_an_answer_after_reading_the_question_answers_it() {
+fn a_recipient_finishing_other_work_returns_no_answer_to_the_request() {
     let f = Fixture::new();
     let question = ask(&f);
     read(&f, &question);
@@ -324,9 +277,51 @@ fn a_recipient_task_ending_without_an_answer_after_reading_the_question_answers_
         .agent_inbox("room", "parent", 0)
         .unwrap()
         .into_iter()
-        .find(|e| e.kind == "source_completed")
-        .expect("the asker hears its reply arrived");
-    assert_eq!(told.payload["public_answer"]["excerpt"], "done, covered");
+        .find(|e| e.kind == "source_lost")
+        .expect("the asker hears why the request has no answer");
+    assert_eq!(
+        told.payload["public_answer"],
+        ReplyOutcome::no_answer("peer")
+    );
+}
+
+#[test]
+fn requests_read_during_the_same_turn_settle_once_each_after_reopening() {
+    let mut f = Fixture::new();
+    let first = ask(&f);
+    let Outcome::Event(second) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: message("parent", "peer", "q2", "Where is the report?", true),
+    }) else {
+        panic!("second question admitted")
+    };
+    for request in [&first, &second] {
+        read(&f, request);
+        ack_question(&f, request, true);
+    }
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+
+    let temporary = DurableKernelStateStore::open_owned(f.root.join("temporary.sqlite")).unwrap();
+    drop(std::mem::replace(&mut f.store, temporary));
+    f.store = DurableKernelStateStore::open_owned(f.root.join("state.sqlite")).unwrap();
+    for _ in 0..2 {
+        peer_task_ends(&f, true, Some(serde_json::json!({"excerpt": "unrelated"})));
+    }
+    let results = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(results.len(), 2, "{results:?}");
+    for request in [first, second] {
+        let source = format!("agent-event-peer-{}", request.sequence);
+        let result = results
+            .iter()
+            .find(|event| event.source_id == source)
+            .unwrap();
+        assert_eq!(result.kind, "source_lost");
+        assert_eq!(
+            result.payload["public_answer"],
+            ReplyOutcome::no_answer("peer")
+        );
+    }
 }
 
 #[test]

@@ -1191,7 +1191,10 @@ messages wait behind active work; idle/yielded receivers wake. Urgent messages
 use the existing exact-turn steer path, with rejected/unsupported steering
 retained for a later wake and uncertainty pinned. Explicitly stopped receivers
 keep pending items. `reply_requested=true` creates one correlated reply
-obligation; ordinary messages must not produce courtesy feedback loops.
+obligation. An answer comes from the task started by the request. If the
+recipient handles the request in another task, the sender receives a
+`source_lost` event with `public_answer.kind = "no_answer"` and a reason. Ordinary
+messages do not settle requested replies or create courtesy feedback loops.
 
 Blocked tasks create one kernel-owned **Agent needs your action** interaction.
 A helper's decision goes first to its nearest eligible parent as an urgent

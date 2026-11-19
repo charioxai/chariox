@@ -214,7 +214,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested the agent is asked to answer, exactly as for `agent message`: its answer reaches your inbox as a source_completed event whose public_answer.excerpt is the bounded, redacted end of its reply. This is chariox.send_agent_message with urgent set.",
+        description: "Send an urgent message to an agent: it steers the agent's running turn, or starts a turn if the agent is idle. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested, the answer comes from a turn started by the request. When the request joins another turn, your inbox records why there is no answer. This is chariox.send_agent_message with urgent set.",
     },
     MetaCommandDoc {
         name: "agent message",

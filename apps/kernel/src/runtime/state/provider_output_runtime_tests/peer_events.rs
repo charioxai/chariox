@@ -323,9 +323,9 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
     std::fs::remove_dir_all(history_root).unwrap();
 }
 
-/// What a steer asked for is answered like a message: the steerer hears the peer's reply.
+/// A steer joins an existing turn, so that turn's answer cannot answer the request.
 #[tokio::test]
-async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
+async fn a_steered_request_gets_a_correlated_no_answer_outcome() {
     let team = family("peer-steer-reply", 2, None, true).await;
     let (steerer, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
     let store = &team.runtime.owned.durable_state_store;
@@ -385,14 +385,14 @@ async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
     let heard = inbox(&team, &steerer);
     let reply = heard
         .iter()
-        .find(|event| event.kind == "source_completed")
-        .unwrap_or_else(|| panic!("the steerer hears the reply: {heard:?}"));
+        .find(|event| event.kind == "source_lost")
+        .unwrap_or_else(|| panic!("the steerer hears why there is no reply: {heard:?}"));
     assert_eq!(
         reply.source_id,
         format!("agent-event-{peer}-{}", sent.sequence)
     );
     assert_eq!(reply.payload["public_answer"]["agent_id"], peer.as_str());
-    assert!(reply.payload["public_answer"]["excerpt"].is_string());
+    assert_eq!(reply.payload["public_answer"]["kind"], "no_answer");
 }
 
 #[tokio::test]

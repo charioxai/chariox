@@ -13,7 +13,7 @@ pub(super) const WAKE_TEXT_LIMIT: usize = 240;
 /// `after` is the sequence the agent's inbox read starts behind.
 pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> String {
     if lead.reply_requested {
-        return format!("Inbox: 1 message with a reply requested (sequence {}). Read it with chariox.events.inbox after {after}. Your final answer of this turn goes back to the sender; do not send a separate message.", lead.sequence);
+        return format!("Inbox: 1 message with a reply requested (sequence {}). Read it with chariox.events.inbox after {after}. If this request started your turn, your final answer goes back to the sender.", lead.sequence);
     }
     let count = 1 + batch.len();
     let mut kinds: Vec<(String, usize)> = Vec::new();
@@ -199,6 +199,6 @@ mod tests {
             text.contains("after 40") && text.contains("final answer"),
             "{text}"
         );
-        assert!(text.contains("do not send a separate message"), "{text}");
+        assert!(text.contains("If this request started your turn"), "{text}");
     }
 }

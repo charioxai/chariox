@@ -129,8 +129,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE UNIQUE INDEX IF NOT EXISTS agent_task_turn ON agent_tasks(room_id,agent_id,prompt_id);
     CREATE TABLE IF NOT EXISTS agent_progress_receipts(task_id TEXT NOT NULL,receipt_id TEXT NOT NULL,recorded_at_ms INTEGER NOT NULL,PRIMARY KEY(task_id,receipt_id));
     CREATE TABLE IF NOT EXISTS agent_delegation_messages(sequence INTEGER PRIMARY KEY,task_id TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS agent_urgent_reply_links(sequence INTEGER PRIMARY KEY,target_task_id TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS agent_read_questions(sequence INTEGER PRIMARY KEY,task_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_reply_turns(sequence INTEGER PRIMARY KEY,task_id TEXT NOT NULL,started_by_request INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS agent_reply_turns_by_task ON agent_reply_turns(task_id);
     CREATE TABLE IF NOT EXISTS agent_registrations(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_interrupted_blocks(task_id TEXT PRIMARY KEY,blocked_revision INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
@@ -1583,7 +1583,7 @@ fn receipt_folded(tx: &Transaction<'_>, e: &InboxEvent) -> Result<bool, DaemonEr
 // Retain occurrence identity for replay dedup; age the delivered message window.
 // Source outcomes and unresolved reply links keep their handling authority.
 fn age_delivered_events(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), DaemonError> {
-    tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','expired') WHERE sequence IN (SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state') IN ('accepted','acknowledged') AND NOT EXISTS(SELECT 1 FROM agent_urgent_reply_links l WHERE l.sequence=agent_inbox.sequence) ORDER BY sequence DESC LIMIT -1 OFFSET 256)", params![room,agent]).map_err(sql)?;
+    tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','expired') WHERE sequence IN (SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state') IN ('accepted','acknowledged') AND NOT EXISTS(SELECT 1 FROM agent_reply_turns l WHERE l.sequence=agent_inbox.sequence) ORDER BY sequence DESC LIMIT -1 OFFSET 256)", params![room,agent]).map_err(sql)?;
     Ok(())
 }
 fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
@@ -1767,7 +1767,7 @@ pub(super) fn is_plain(
     }
     let owes_reply: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_urgent_reply_links WHERE target_task_id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM agent_reply_turns WHERE task_id=?1 AND started_by_request=1)",
             [&task.task_id],
             |r| r.get(0),
         )
