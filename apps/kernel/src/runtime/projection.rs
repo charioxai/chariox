@@ -5,6 +5,7 @@ mod agent_liveness;
 mod agent_runtime_projection;
 mod config_projection;
 mod daemon_health_model;
+pub(crate) mod machine_list_renewal;
 mod provider_projection;
 mod queued_prompt_controls;
 mod remote_relay_inventory_projection;

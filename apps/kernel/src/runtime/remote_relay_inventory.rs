@@ -30,12 +30,14 @@ pub(crate) async fn projected_remote_machines_response(
         .relay_heartbeat_ms
         .saturating_mul(2)
         .max(1_000);
-    let stale = !remote_relay_inventory_projection
-        .is_fresh(crate::session::unix_epoch_ms(), stale_after_ms);
+    let now_ms = crate::session::unix_epoch_ms();
+    let stale = !remote_relay_inventory_projection.is_fresh(now_ms, stale_after_ms);
     let renewing = if stale && relay_state.read().await.connected() {
         let projection = remote_relay_inventory_projection.clone();
         renewed_machine_list(
             &remote_relay_inventory_projection,
+            now_ms,
+            stale_after_ms,
             move || {
                 refresh_remote_inventory_projection(
                     config_projection,
@@ -45,7 +47,7 @@ pub(crate) async fn projected_remote_machines_response(
             },
             STALE_LIST_RENEWAL_WAIT,
         )
-        .await
+        .await?
     } else {
         request_remote_relay_inventory_projection_refresh(
             relay_state,
@@ -66,27 +68,36 @@ pub(crate) async fn projected_remote_machines_response(
     })
 }
 
-/// Renews the machine list before an answer, waiting at most `budget`; true when the answer is the
-/// last list because the renewal is still running. The renewal outlives the wait (it is shared,
-/// `shared_renewal`): it finishes, publishes, and the next request waits for the same pass.
+/// Renews the machine list before an answer, waiting at most `budget`: Ok(false) when the renewed
+/// list is in the projection, Ok(true) when the answer is the last list because the renewal still
+/// runs (it goes on and publishes), and the failure with its reason when the renewal failed. A
+/// request takes a renewal that started within its freshness bound (`now_ms - stale_after_ms`);
+/// otherwise it starts one (`machine_list_renewal`).
 async fn renewed_machine_list<F>(
     projection: &RemoteRelayInventoryProjectionStore,
+    now_ms: u64,
+    stale_after_ms: u64,
     renew: impl FnOnce() -> F + Send + 'static,
     budget: std::time::Duration,
-) -> bool
+) -> Result<bool, DaemonError>
 where
     F: std::future::Future<Output = Result<(), DaemonError>> + Send + 'static,
 {
-    let pass = projection.shared_renewal(move || async move {
-        if let Err(error) = renew().await {
-            crate::logging::warn_with_fields(
-                "daemon.router",
-                "machine list renewal failed",
-                serde_json::json!({ "error": error.to_string() }),
-            );
-        }
-    });
-    tokio::time::timeout(budget, pass).await.is_err()
+    let wait = projection.renewal().request(
+        now_ms.saturating_sub(stale_after_ms),
+        now_ms,
+        move || async move { renew().await.map_err(|error| error.to_string()) },
+    );
+    match crate::runtime::projection::machine_list_renewal::outcome_within(wait, budget).await {
+        None => Ok(true),
+        Some(Ok(())) => Ok(false),
+        Some(Err(reason)) => Err(DaemonError::LocalTransport {
+            operation: "renew the machine list",
+            message: format!(
+                "the machine list could not be renewed ({reason}); the last list is stale, ask again"
+            ),
+        }),
+    }
 }
 
 pub(crate) async fn execute_list_remote_machines_request(
@@ -311,11 +322,17 @@ mod renewal_tests {
                 }
             }
         };
-        let renewing = renewed_machine_list(&projection, pass(), Duration::from_millis(50)).await;
+        let renewing =
+            renewed_machine_list(&projection, 1_000, 1_000, pass(), Duration::from_millis(50))
+                .await
+                .expect("answers");
         assert!(renewing, "the answer says the list is being renewed");
         assert_eq!(projection.inventory().machines.len(), 1, "the last list");
 
-        let renewing = renewed_machine_list(&projection, pass(), Duration::from_secs(5)).await;
+        let renewing =
+            renewed_machine_list(&projection, 1_100, 1_000, pass(), Duration::from_secs(5))
+                .await
+                .expect("answers");
         assert!(!renewing);
         assert_eq!(
             started.load(Ordering::SeqCst),
@@ -331,6 +348,80 @@ mod renewal_tests {
                 .collect::<Vec<_>>(),
             vec!["known", "joined"],
             "the pass that outlived the first answer finished"
+        );
+    }
+}
+
+#[cfg(test)]
+mod renewal_findings {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    // #1474 review 5969448770 P2-2: a renewal that fails within the budget is a failure with its
+    // reason, never a successful answer of the stale list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewal_that_fails_answers_with_its_failure() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let answer = renewed_machine_list(
+            &projection,
+            1_000,
+            1_000,
+            || async {
+                Err(DaemonError::LocalTransport {
+                    operation: "relay metadata",
+                    message: "the relay metadata query timed out".into(),
+                })
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        let error = answer.expect_err("a failed renewal is not a successful list");
+        assert!(
+            error
+                .to_string()
+                .contains("the relay metadata query timed out"),
+            "{error}"
+        );
+    }
+
+    // #1474 review 5969448770 P2-1: a pass whose waiter timed out finishes in the background;
+    // after another stale interval a new request starts a new pass, not the finished one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_finished_renewal_is_not_reused_once_its_list_went_stale() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let started = Arc::new(AtomicUsize::new(0));
+        let pass = |delay_ms: u64| {
+            let started = Arc::clone(&started);
+            move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    Ok(())
+                }
+            }
+        };
+        let renewing = renewed_machine_list(
+            &projection,
+            1_000,
+            1_000,
+            pass(200),
+            Duration::from_millis(20),
+        )
+        .await
+        .expect("answers");
+        assert!(renewing, "the waiter timed out");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Another stale interval later (the first pass started at 1_000; the bound is 4_000).
+        let renewing =
+            renewed_machine_list(&projection, 5_000, 1_000, pass(0), Duration::from_secs(5))
+                .await
+                .expect("answers");
+        assert!(!renewing);
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            2,
+            "the stale finished pass was not reused: a new one ran"
         );
     }
 }

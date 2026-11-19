@@ -12,13 +12,9 @@ pub(crate) struct RemoteRelayInventoryProjectionStore {
     /// Clients following the machine list, local and over the relay: while any is attached the
     /// connector keeps the list fresh.
     watchers: Arc<std::sync::atomic::AtomicUsize>,
-    /// The renewal a request waits for (`shared_renewal`).
-    renewal: Arc<StdMutex<Option<SharedRenewal>>>,
+    /// The renewal of the list that requests wait for.
+    renewal: super::machine_list_renewal::MachineListRenewal,
 }
-
-/// One live pass that requests share.
-pub(crate) type SharedRenewal =
-    futures_util::future::Shared<futures_util::future::BoxFuture<'static, ()>>;
 
 /// One client following the machine list; dropping it ends its demand.
 pub(crate) struct RemoteInventoryWatch(Arc<std::sync::atomic::AtomicUsize>);
@@ -211,28 +207,9 @@ impl RemoteRelayInventoryProjectionStore {
         false
     }
 
-    /// The renewal of the list that requests wait for: one at a time, run as its own task, so a
-    /// request that stops waiting does not cancel it, and the next request waits for the same pass.
-    pub(crate) fn shared_renewal<F>(&self, start: impl FnOnce() -> F) -> SharedRenewal
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        use futures_util::FutureExt;
-        let mut slot = self
-            .renewal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pass) = slot.as_ref().filter(|pass| pass.peek().is_none()) {
-            return pass.clone();
-        }
-        let task = tokio::spawn(start());
-        let pass = async move {
-            let _ = task.await;
-        }
-        .boxed()
-        .shared();
-        *slot = Some(pass.clone());
-        pass
+    /// The renewal of the list that requests wait for (`machine_list_renewal`).
+    pub(crate) fn renewal(&self) -> &super::machine_list_renewal::MachineListRenewal {
+        &self.renewal
     }
 
     /// A client starts following the machine list.
