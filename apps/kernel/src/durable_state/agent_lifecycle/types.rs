@@ -411,6 +411,11 @@ pub(crate) enum Operation {
         parent_task: String,
         child_task: String,
     },
+    /// The runtime admitted the initial prompt from the child's parent in another Room.
+    BindCrossRoomDelegate {
+        parent_task: String,
+        child_task: String,
+    },
     RegisterObligation {
         owner: String,
         room: String,

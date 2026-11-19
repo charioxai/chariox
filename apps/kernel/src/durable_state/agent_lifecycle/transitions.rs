@@ -270,6 +270,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             super::delegation::bind(tx, &parent_task, &child_task)?;
             Ok(Outcome::Saved)
         }
+        Operation::BindCrossRoomDelegate {
+            parent_task,
+            child_task,
+        } => {
+            super::delegation::bind_admitted(tx, &parent_task, &child_task, true)?;
+            Ok(Outcome::Saved)
+        }
         Operation::Withdraw { task } => {
             let t = load(tx, &task)?;
             // Only an untouched fresh admission can be withdrawn; any recorded

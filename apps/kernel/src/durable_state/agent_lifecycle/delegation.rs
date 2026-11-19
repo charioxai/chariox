@@ -9,7 +9,7 @@ pub(super) fn bind(
 }
 
 /// Cross-Room binding is used only for an instruction the kernel admitted from the child's parent.
-fn bind_admitted(
+pub(super) fn bind_admitted(
     tx: &Transaction<'_>,
     parent_id: &str,
     child_id: &str,
