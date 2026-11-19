@@ -2733,7 +2733,7 @@ fn a_vault_unlocked_until_the_kernel_stops_survives_a_hot_reload_and_a_real_stop
         scratch.join("home/.chariox/config.toml"),
         format!(
             "[credential_vault]\nbackend = \"chariox_encrypted\"\npath = \"{}\"\nservice = \"chariox\"\nunlock_policy = \"kernel_init\"\n",
-            scratch.join("vault.json").display()
+            scratch.join("vault/vault.json").display()
         ),
     )
     .unwrap();
