@@ -2182,6 +2182,17 @@ test("GATE-bytes: a first paint sends only the used rules of large sheets; their
     assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
   }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
 
+// Review #1475 (P2): the kernel prunes a large cross-origin sheet after the sanitizer rewrote it. A rule on a link's href
+// value (now `chariox-href`) or on `:target` (now `[chariox-target]`) is checked as the page wrote it, and stays.
+test("GATE-bytes: a first paint keeps a large cross-origin sheet's rules on href values and :target", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/h.css"><p class="used">text</p><a href="/a.pdf">pdf</a><p id="t">t</p>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const first = JSON.stringify(await next(0, true));
+    assert(first.includes("rgb(1, 2, 3)") && !first.includes("h-unused-1999"), "the sheet is pruned for the first paint");
+    assert(first.includes("rgb(20, 21, 22)"), "the rule on the link's href value stays");
+    assert(first.includes("rgb(23, 24, 25)"), "the :target rule stays");
+  }, { "/h.css": { type: "text/css", body: 'a[href$=".pdf"]{color:rgb(20, 21, 22)}p:target{color:rgb(23, 24, 25)}' + bulkCss("h") } }));
+
 // browserperf r6 (CPU): pruning a large sheet checks a selector against the few elements its rightmost compound names,
 // not with a whole-document query per selector (most of the in-page sheet cost of every navigation's first paint).
 const narrowCss = "p.used{color:rgb(1, 2, 3)}" + Array.from({ length: 1500 }, (_, i) => `.absent-${i % 7} .c${i % 300}{padding:${i}px}`).join("");

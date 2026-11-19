@@ -40,8 +40,30 @@ export function sanitizeMirrorCss(text, base, resource) {
   // custom elements instead of registering tags in a registry its next document would reuse.
   if (/:defined/i.test(out)) out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
   // A link travels with href `#` (it never navigates) and its own value as inert `chariox-href`: a selector on the value
-  // (`a[href*="cookie" i]`, `:not([href^="#"])`) reads that one, a presence test still the href.
-  if (/\[\s*href\s*[~|^$*]?=/i.test(out)) out = out.replace(/\[(\s*)href(\s*[~|^$*]?=)/gi, '[$1chariox-href$2');
+  // (`a[href*="cookie" i]`, `:not([href^="#"])`) reads that one, a presence test still the href. Only a selector changes:
+  // a `[href=` in a string, a comment, another attribute's value or a declaration (a style attribute has only those)
+  // stays as the page wrote it, so a statement's `[href=` is rewritten once its `{` shows it was a selector.
+  if (/\[\s*href\s*[~|^$*]?=/i.test(out)) {
+    const value = /\[(\s*)href(?=\s*[~|^$*]?=)/iy, selectors = [];
+    let pending = [];
+    for (let i = 0; i < out.length; i++) {
+      const c = out[i];
+      if (c === '\\') i++;
+      else if (c === '"' || c === "'") { for (i++; i < out.length && out[i] !== c && out[i] !== '\n'; i++) if (out[i] === '\\') i++; }
+      else if (c === '/' && out[i + 1] === '*') { const end = out.indexOf('*/', i + 2); i = end < 0 ? out.length : end + 1; }
+      else if (c === '[') { value.lastIndex = i; if (value.test(out)) pending.push(i); }
+      else if (c === '{') { selectors.push(...pending); pending = []; }
+      else if (c === ';' || c === '}') pending = [];
+    }
+    let rewritten = '', from = 0;
+    for (const at of selectors) {
+      value.lastIndex = at;
+      const [token, space] = value.exec(out);
+      rewritten += `${out.slice(from, at)}[${space}chariox-href`;
+      from = at + token.length;
+    }
+    out = rewritten + out.slice(from);
+  }
   // Invalidates (never rewrites) legacy executable/binding constructs.
   if (/expression|behavior|-moz-binding|javascript/i.test(out)) out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
   if (/@import/i.test(out)) out = out.replace(/@import[^;]*;/gi, '');
@@ -248,7 +270,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         return list === null || list.length > 64 ? root.querySelector(member) !== null : list.some(element => element.isConnected && element.matches(member));
       };
       const matches = selector => {
-        const plain = selector.replace(DYNAMIC, '');
+        // A cross-origin sheet is pruned after the sanitizer: its href values and `:target` read as the page wrote them.
+        const plain = selector.replace(/\[(\s*)chariox-href(?=\s*[~|^$*]?=)/gi, '[$1href').replace(/\[chariox-target\]/g, '').replace(DYNAMIC, '');
         if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
         try { return split(plain, c => c === ',').some(member => used(member.trim())); } catch { return true; }
       };
