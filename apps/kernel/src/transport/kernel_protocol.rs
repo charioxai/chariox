@@ -1280,6 +1280,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ProviderAdapterNotFound { .. } => {
             kernel_error("provider_adapter_not_found", error, false)
         }
+        DaemonError::ProviderDevStubDisabled => {
+            kernel_error(crate::error::PROVIDER_DEV_STUB_DISABLED_CODE, error, false)
+        }
         DaemonError::ProviderProtocol { .. } => {
             kernel_error("provider_protocol_error", error, true)
         }

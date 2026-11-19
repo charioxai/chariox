@@ -29,7 +29,7 @@ pub struct Kernel {
 impl Drop for Kernel {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
-        if pid > 1 {
+        if pid > 1 && self.child.try_wait().unwrap().is_none() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -39,6 +39,12 @@ impl Drop for Kernel {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+impl Kernel {
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
     }
 }
 

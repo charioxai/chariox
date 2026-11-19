@@ -2,7 +2,9 @@ use thiserror::Error;
 mod actionable_refusals;
 mod provider_profile_refusal;
 mod user_domain_refusal;
-pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub(crate) use actionable_refusals::{
+    message as actionable_refusal_message, PROVIDER_DEV_STUB_DISABLED_CODE,
+};
 pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
@@ -387,6 +389,8 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
+    #[error("{}", actionable_refusals::PROVIDER_DEV_STUB_DISABLED_MESSAGE)]
+    ProviderDevStubDisabled,
     #[error("provider adapter `{adapter_key}` does not support managed workspace live sync write enforcement: {message}")]
     ProviderWorkspaceLiveSyncUnsupported {
         adapter_key: String,

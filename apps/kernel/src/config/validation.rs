@@ -37,6 +37,15 @@ fn validate_credential_vault_path(path: &str) -> Result<(), DaemonError> {
 
 impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
+        if crate::provider::dev_stub_enabled()
+            && (crate::provider::managed_provider_isolation_required()
+                || hosted_relay_configured(self))
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: crate::provider::DEV_STUB_ENV,
+                message: "dev-stub is restricted to private development kernels. Unset CHARIOX_PROVIDER_DEV_STUB before starting a hosted or managed kernel.",
+            });
+        }
         if self.lease_worker_home_caller_parse_error {
             return Err(DaemonError::InvalidConfig {
                 field: "lease_worker_home_caller",
@@ -179,6 +188,27 @@ impl DaemonConfig {
             });
         }
         Ok(())
+    }
+}
+
+fn hosted_relay_configured(config: &DaemonConfig) -> bool {
+    if let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(config) {
+        // The loopback relay is used by local Cloud integration drills.
+        return url::Url::parse(&profile.relay_url).map_or(true, |url| !relay_is_loopback(&url));
+    }
+    config
+        .relay_url
+        .as_deref()
+        .and_then(|url| url::Url::parse(url).ok())
+        .is_some_and(|url| url.scheme() == "wss" && !relay_is_loopback(&url))
+}
+
+fn relay_is_loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.trim_end_matches('.') == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
     }
 }
 

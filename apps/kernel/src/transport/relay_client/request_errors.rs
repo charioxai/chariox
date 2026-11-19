@@ -35,6 +35,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
         | DaemonError::ProviderProfileRefused { .. }
+        | DaemonError::ProviderDevStubDisabled
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }

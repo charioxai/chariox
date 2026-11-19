@@ -53,7 +53,7 @@ pub(crate) fn load_provider_catalog(
         crate::provider::claude_provider_catalog()
     };
     let mut catalogs = vec![claude_catalog];
-    if crate::provider::dev_stub_public_inventory_enabled() {
+    if crate::provider::dev_stub_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();

@@ -1,4 +1,8 @@
 //! MP-08 / MP-10 / MP-11: constant remediations safe at every external boundary.
+pub(crate) const PROVIDER_DEV_STUB_DISABLED_CODE: &str = "provider_dev_stub_disabled";
+pub(super) const PROVIDER_DEV_STUB_DISABLED_MESSAGE: &str =
+    "dev-stub is disabled. For a private development kernel, start it with CHARIOX_PROVIDER_DEV_STUB=1.";
+
 pub(crate) fn message(code: &str) -> Option<&'static str> {
     if crate::provider_account_copy::is_public_code(code) {
         return Some(crate::provider_account_copy::failure_message(code));
@@ -13,6 +17,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "provider_profile_unauthenticated" => "provider profile is not authenticated; choose Sign in for this account in Provider Accounts, then retry",
         "provider_profile_usage_exhausted" => "provider profile usage is exhausted; select another account in Provider Accounts before starting work",
         "provider_profile_unavailable" => "provider profile is not registered for this owner on this kernel; run ListProviderAccountProfiles {provider}, then link or select a profile on the executing kernel",
+        PROVIDER_DEV_STUB_DISABLED_CODE => PROVIDER_DEV_STUB_DISABLED_MESSAGE,
         "provider_account_name_taken" => "an account with this name already exists on this kernel; choose another name or use the existing account",
         "provider_login_code_incomplete" => "the sign-in code is incomplete; paste the whole code the provider showed and submit it again",
         "provider_login_code_invalid" => "the provider rejected the sign-in code; start the sign-in again and paste the new code",

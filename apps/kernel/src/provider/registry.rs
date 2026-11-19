@@ -57,12 +57,22 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn terminate(&self, run: &RuntimeProviderRun);
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ProviderRegistry;
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderRegistry {
+    pub(super) dev_stub_enabled: bool,
+}
+
+impl Default for ProviderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ProviderRegistry {
     pub fn new() -> Self {
-        Self
+        Self {
+            dev_stub_enabled: cfg!(test) || super::dev_stub_enabled(),
+        }
     }
 
     pub fn registered_adapter_count(&self) -> usize {
