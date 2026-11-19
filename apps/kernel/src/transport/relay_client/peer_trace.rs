@@ -244,6 +244,9 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
             "pull_project_environment_registration"
         }
         RelayPeerRequest::EnsureRemoteSkillPackages { .. } => "ensure_remote_skill_packages",
+        RelayPeerRequest::ReadLeasedSkillNativeInventory { .. } => {
+            "read_leased_skill_native_inventory"
+        }
         RelayPeerRequest::RequestProviderAccountCopy { .. } => "request_provider_account_copy",
         RelayPeerRequest::InstallProviderAccountCopy { .. } => "install_provider_account_copy",
         RelayPeerRequest::EnsureRemoteProviderAccount { .. } => "ensure_remote_provider_account",

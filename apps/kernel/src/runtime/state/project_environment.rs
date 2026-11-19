@@ -25,6 +25,7 @@ fn extension_entry(extension: ProjectEnvironmentExtension) -> ExtensionEntry {
 /// A project-file entry is present while its declaring file still declares it in this checkout (Git carries the file,
 /// so a clone has it); a registration is present while this kernel holds it.
 fn extension_views(
+    registrations: &UserRegistrations,
     kind: EnvironmentEntryKind,
     checkout: &Path,
     entries: &[ExtensionEntry],
@@ -34,7 +35,7 @@ fn extension_views(
         .map(|entry| {
             let here = match entry.file_path() {
                 Some(path) => declared_in(checkout, path).contains(&entry.name),
-                None => UserRegistrations.has(kind, &entry.name),
+                None => registrations.has(kind, &entry.name),
             };
             ProjectEnvironmentExtensionView {
                 name: entry.name.clone(),
@@ -139,6 +140,7 @@ impl KernelRuntimeState {
             ..Default::default()
         });
         let presence = secret_presence(&config, project.id(), &record.secrets)?;
+        let registrations = self.user_registrations(project.id());
         let setup_state = if exists {
             self.owned.project_environment_setups.state_for(
                 project.id(),
@@ -172,8 +174,18 @@ impl KernelRuntimeState {
                     ProjectEnvironmentFileView::new(path.clone(), file_presence(&checkout, path))
                 })
                 .collect(),
-            mcps: extension_views(EnvironmentEntryKind::Mcp, &checkout, &record.mcps),
-            skills: extension_views(EnvironmentEntryKind::Skill, &checkout, &record.skills),
+            mcps: extension_views(
+                &registrations,
+                EnvironmentEntryKind::Mcp,
+                &checkout,
+                &record.mcps,
+            ),
+            skills: extension_views(
+                &registrations,
+                EnvironmentEntryKind::Skill,
+                &checkout,
+                &record.skills,
+            ),
             changed_at_ms: record.changed_at_ms,
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),

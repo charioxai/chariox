@@ -603,5 +603,7 @@ pub use workspace::*;
 /// docs/PROTOCOL.md, "Move to Trash"); `KernelTerminal` and the `kernel_terminal` stream scope serve the kernel's own
 /// terminals, a terminal summary carries its `scope` (`session_id` only for a Room's) and the `kernel_terminal_v1`
 /// capability names them (docs/PROTOCOL.md, "Kernel terminals"); a job request may name a machine the agent
-/// already holds (`machine`), which runs it through that machine's own kernel.
+/// already holds (`machine`), which runs it through that machine's own kernel; Skills v2: Chariox and Project
+/// skill catalogs, the Auto / Manual / Off states, packages, repository install and update, and delivery to every
+/// execution place; the per-agent skill grants and the `skill` extension kind are gone.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

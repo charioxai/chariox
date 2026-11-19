@@ -23,6 +23,7 @@ const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
 mod handover;
+mod hook_receipts;
 mod input;
 mod plan_exit;
 mod process;
@@ -95,6 +96,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
+    let child_started_at_ms = crate::session::unix_epoch_ms();
     let (child, stdin, output, resources, adopted) = match crate::hot_reload::take_claude(run.id())
     {
         Some(handover) => {
@@ -148,6 +150,8 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                     .ok()
                     .map(|(identity, _)| identity),
             )),
+            child_started_at_ms: adopted.is_none().then_some(child_started_at_ms),
+            run_process_start: None,
             child,
             resources: Some(resources),
             stdin,
@@ -173,6 +177,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             completed_text_blocks: Default::default(),
             exit_reported: false,
             adopted_turn: None,
+            hook_events_offset: 0,
         },
         selection: ClaudeRunSelection {
             model: Some(run.model().to_string()),
@@ -334,6 +339,12 @@ pub(crate) fn drain_claude_events(
         }
     }
     apply_claude_usage_capture(run, state, &mut batch);
+    match hook_receipts::take_context_delivered(state) {
+        Ok(delivered) => batch.hook_context_delivered = delivered,
+        Err(error) => batch.notices.push(format!(
+            "Claude hook delivery receipts are unreadable: {error}"
+        )),
+    }
 
     if let Some(limit) = state
         .resources
@@ -555,6 +566,9 @@ fn handle_claude_tool_uses(
 ) -> Result<(), DaemonError> {
     let payloads = state.tool_transcript.observe(value);
     push_claude_tool_payloads(provider_run_id, payloads, batch)?;
+    batch
+        .skill_tool_delivery_acknowledgements
+        .extend(state.tool_transcript.take_skill_deliveries());
     if state.tool_transcript.take_truncation_notice() {
         batch.notices.push(
             "Claude tool transcript truncated to resource limits; provider execution is unchanged"
@@ -684,6 +698,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
+    let child_started_at_ms = crate::session::unix_epoch_ms();
     let (child, stdin, output, resources) = spawn_claude_child(
         run.id(),
         run.agent_instance_id().unwrap_or(run.id()),
@@ -703,6 +718,10 @@ fn restart_claude_runtime(
         crate::runtime::kernel_access::process::inspect(child.id())
             .ok()
             .map(|(identity, _)| identity);
+    state.child_started_at_ms = Some(child_started_at_ms);
+    if let Some(start) = &state.run_process_start {
+        start.record(child_started_at_ms);
+    }
     state.child = child;
     state.resources = Some(resources);
     state.stdin = stdin;
@@ -808,6 +827,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod hook_receipts;
     mod model_observation;
     mod process_resources;
     #[cfg(target_os = "linux")]
@@ -868,6 +888,8 @@ mod tests {
                 main_stream_has_context: true,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                child_started_at_ms: None,
+                run_process_start: None,
                 child,
                 resources: None,
                 stdin,
@@ -891,6 +913,7 @@ mod tests {
                 completed_text_blocks: Default::default(),
                 exit_reported: false,
                 adopted_turn: None,
+                hook_events_offset: 0,
             },
             ProviderPromptSignalBatch::default(),
         )
@@ -2367,6 +2390,38 @@ done
     }
 
     #[test]
+    fn result_usage_keeps_the_last_call_context_not_the_turn_sum() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [],
+                    "usage": { "input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 40000 }
+                }
+            }),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "usage": { "input_tokens": 30, "output_tokens": 15, "cache_read_input_tokens": 120000 }
+            }),
+            &mut batch,
+        );
+        let usage = batch.resolved_usage.expect("result usage");
+        assert_eq!(usage.context_tokens, Some(40010));
+        assert_eq!(usage.total_tokens, Some(120045));
+    }
+
+    #[test]
     fn normalizes_claude_rate_limit_event_for_selected_account() {
         let (mut state, mut batch) = parser_state();
 
@@ -2560,6 +2615,23 @@ done
         write_claude_hidden_context("run-1", &mut state, &plain).unwrap();
         assert_eq!(written(), "no base");
         let _ = std::fs::remove_file(file);
+    }
+
+    // SV-05: the kernel hears of a compaction from the stream and from the transcript;
+    // both carry one ID, so the compaction starts one recovery epoch.
+    #[test]
+    fn a_streamed_compaction_carries_its_transcript_record_id() {
+        let (mut state, mut batch) = parser_state();
+        let record = json!({"type": "system", "subtype": "compact_boundary", "uuid": "c1"});
+        apply_claude_message("run-1", &mut state, record.clone(), &mut batch);
+        assert_eq!(
+            batch.native_compactions,
+            vec!["compact_boundary-c1".to_string()]
+        );
+        assert_eq!(
+            crate::app::claude_compaction_turn_id(&record, Some(1)).as_deref(),
+            Some("compact_boundary-c1")
+        );
     }
 
     #[test]

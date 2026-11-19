@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 pub struct AgentMoveRequirements {
     pub agent_configuration_sha256: String,
     pub extensions: crate::extension::RemoteExtensionManifest,
-    pub skills: Vec<crate::transport::relay_peer::RequiredRemoteSkill>,
 }
 
 impl AgentMoveRequirements {

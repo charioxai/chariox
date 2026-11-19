@@ -1,3 +1,10 @@
+mod skill_ack;
+pub(crate) use skill_ack::completed_native_skill_tool;
+#[cfg(test)]
+pub(crate) use skill_ack::completed_skill_tool;
+pub use skill_ack::SkillToolDeliveryAcknowledgement;
+pub mod skill_delivery;
+pub mod skill_inventory;
 pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
@@ -89,8 +96,8 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    read_claude_rate_limits, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
+    verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -198,7 +205,7 @@ pub(crate) use run_actor::{
     ProviderRunOperationPermit,
 };
 pub(crate) use runtime_run::{
-    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id, ProcessStart,
 };
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};

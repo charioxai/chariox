@@ -685,7 +685,8 @@ mod tests {
     use super::*;
     use crate::local::{EnvironmentOperationKind, EnvironmentOperationView};
     use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig};
-    use crate::skill::CharioxSkillRegistry;
+    use crate::skill::service::SkillCatalogService;
+    use crate::skill::storage::SkillCatalogStorage;
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
@@ -768,14 +769,21 @@ mod tests {
     /// The registrations of the kernel under test on disk, written the way the user's are.
     struct DiskRegistrations {
         mcps: CharioxMcpRegistry,
-        skills: CharioxSkillRegistry,
+        skills: SkillCatalogService,
     }
+
+    const PROJECT: &str = "project-1";
 
     impl DiskRegistrations {
         fn under(root: &Path) -> Self {
+            let home = root.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let durable =
+                crate::durable_state::DurableKernelStateStore::open(root.join("kernel.db"))
+                    .unwrap();
             Self {
                 mcps: CharioxMcpRegistry::new(vec![root.join("mcps")]),
-                skills: CharioxSkillRegistry::new(vec![root.join("skills")]),
+                skills: SkillCatalogService::new(SkillCatalogStorage::new(&home, durable).unwrap()),
             }
         }
     }
@@ -784,7 +792,12 @@ mod tests {
         fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool {
             match kind {
                 EnvironmentEntryKind::Mcp => self.mcps.get(name).unwrap().is_some(),
-                EnvironmentEntryKind::Skill => self.skills.get(name).unwrap().is_some(),
+                EnvironmentEntryKind::Skill => self
+                    .skills
+                    .project_skill_names(PROJECT)
+                    .unwrap()
+                    .iter()
+                    .any(|held| held == name),
                 EnvironmentEntryKind::Secret | EnvironmentEntryKind::File => false,
             }
         }
@@ -792,7 +805,12 @@ mod tests {
             Ok(None)
         }
         fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
-            super::super::registrations::install_if_absent(&self.mcps, &self.skills, registration)
+            super::super::registrations::install_if_absent(
+                &self.mcps,
+                Some(&self.skills),
+                PROJECT,
+                registration,
+            )
         }
     }
 
@@ -1734,31 +1752,30 @@ mod tests {
     async fn a_skill_saved_while_its_import_is_pending_is_kept_byte_for_byte() {
         let rig = Rig::new();
         let host = DiskRegistrations::under(&rig.root);
-        let origin = CharioxSkillRegistry::new(vec![rig.root.join("origin")]);
-        let write_skill = |dir: &Path, name: &str, body: &str| {
-            std::fs::create_dir_all(dir).unwrap();
+        let staging = rig.root.join("staging");
+        let package = |name: &str, body: &str| {
+            let dir = staging.join(format!("{name}-{:032x}", rand::random::<u128>()));
+            std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("SKILL.md"),
                 format!("---\nname: {name}\ndescription: {body}\n---\n{body}\n"),
             )
             .unwrap();
+            crate::skill::package_skill_directory(&dir).unwrap()
         };
-        let staging = rig.root.join("staging");
         let mut pulled = Vec::new();
         for name in ["late", "free", "broken"] {
-            write_skill(&staging.join(name), name, "from the source");
-            origin.upsert_from_path(&staging.join(name)).unwrap();
-            let mut package = origin.package(name).unwrap().unwrap();
+            let mut pulled_package = package(name, "from the source");
             if name == "broken" {
-                package.files[0].sha256 = "0".repeat(64);
+                pulled_package.files[0].sha256 = "0".repeat(64);
             }
             pulled.push((
                 EnvironmentEntryKind::Skill,
                 name.to_string(),
-                Registration::Skill(package),
+                Registration::Skill(pulled_package),
             ));
         }
-        let local_dir = rig.root.join("skills").join("late");
+        let local = package("late", "typed locally");
         let view = import_while_saving(
             &rig,
             &host,
@@ -1766,8 +1783,10 @@ mod tests {
             &["late", "free", "broken"],
             pulled,
             || {
-                write_skill(&local_dir, "late", "typed locally");
-                std::fs::write(local_dir.join("notes.txt"), "mine").unwrap();
+                assert!(host
+                    .skills
+                    .install_project_skill_if_absent(PROJECT, &local)
+                    .unwrap());
             },
         )
         .await;
@@ -1787,18 +1806,19 @@ mod tests {
             Some("Already registered here")
         );
         assert_eq!(
-            std::fs::read_to_string(local_dir.join("SKILL.md")).unwrap(),
-            "---\nname: late\ndescription: typed locally\n---\ntyped locally\n"
+            host.skills
+                .project_skill_package(PROJECT, "late")
+                .unwrap()
+                .unwrap()
+                .version_hash,
+            local.version_hash
         );
+        let mut names = host.skills.project_skill_names(PROJECT).unwrap();
+        names.sort();
         assert_eq!(
-            std::fs::read_to_string(local_dir.join("notes.txt")).unwrap(),
-            "mine"
-        );
-        assert!(host.skills.get("free").unwrap().is_some());
-        assert_eq!(
-            entries_in(&rig.root.join("skills")),
+            names,
             vec!["free".to_string(), "late".into()],
-            "the refused and the failed entries leave no directory behind, not even a backup"
+            "the refused and the failed entries leave no skill behind"
         );
     }
 }

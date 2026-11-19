@@ -41,7 +41,8 @@ use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use project_trust::trusted_workspace_notice;
 use project_trust::{ClaudeStateUpdate, StateChange};
 pub(crate) use usage_probe::{
-    read_claude_rate_limits, verify_claude_account_credential, ClaudeCredentialCheckError,
+    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
+    ClaudeCredentialCheckError,
 };
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";

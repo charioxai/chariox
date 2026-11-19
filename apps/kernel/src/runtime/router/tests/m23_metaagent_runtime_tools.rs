@@ -205,11 +205,14 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == crate::transport::runtime_tools::PEEK_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                || spec.name == crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                || spec.name == crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                || spec.name == crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
                 || spec.name == crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "metaagents should only see the cached sudo interface (kernel request and Vault generation, capture and use), meta, Environment, agent collaboration, file copy to leased agents, Files on the owner's machines, machine acquisition, agent peek, read-only workspace, and recall tools: {meta_specs:?}"
+        "metaagents should only see the cached sudo interface (kernel request and Vault generation, capture and use), meta, Environment, agent collaboration, Skills, file copy to leased agents, Files on the owner's machines, machine acquisition, agent peek, read-only workspace, and recall tools: {meta_specs:?}"
     );
 
     // Discovery lets the official harness cache the interface before sudo.

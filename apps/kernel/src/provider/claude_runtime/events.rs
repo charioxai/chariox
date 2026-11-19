@@ -42,6 +42,9 @@ fn apply_system_message(
     if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
         // The summary replaces the history that held the run base.
         state.delivered_hidden_base = None;
+        batch
+            .native_compactions
+            .extend(crate::app::claude_compaction_turn_id(value, None));
     }
     if value.get("subtype").and_then(Value::as_str) == Some("init") {
         state.turn_watchdog.record_process_init();

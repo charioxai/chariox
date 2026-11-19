@@ -56,3 +56,4 @@ export type OutsideEvent = {
   | { type: "notification"; value: { source_id: string; source_kind: "workflow_exit" | "owner_action" | "workflow_run" | "app_event" | "watcher"; display_name: string; occurrence_id: string; output: { message: string; artifacts?: unknown[] }; deadline_ms: number } }
 )
 export type EventsBatch = { events: OutsideEvent[]; next_cursor: number; oldest_cursor: number; timed_out: boolean }
+export type * from "./kernel-types-skills-v2.js"

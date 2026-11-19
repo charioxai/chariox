@@ -1661,6 +1661,7 @@ mod tests {
     use super::*;
     mod catalog_admission;
     mod profile_admission;
+    mod skill_names;
 
     #[test]
     fn codex_leased_agent_creation_refuses_endpoint_capacity_before_mutation() {

@@ -559,6 +559,8 @@ fn leased_agent(id: &str, mode: Mode, level: Level) -> crate::execution_lease::L
         applied_home_steer_ids: Vec::new(),
         home_steer_receipts: Vec::new(),
         replayable_completion: None,
+        skill_names: None,
+        skill_view_revision: 0,
         created_at_ms: 1,
     }
 }

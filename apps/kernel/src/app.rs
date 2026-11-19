@@ -64,7 +64,8 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, discover_external_provider_sessions_for_profiles,
+    claude_compaction_turn_id, discover_external_provider_sessions,
+    discover_external_provider_sessions_for_profiles,
     external_provider_session_candidate_paths_for_profiles,
     external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
@@ -91,6 +92,8 @@ pub(crate) use prompt_lifecycle::{
 pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
     claude_headless_owner_decision_pending, claude_headless_prompt_queued_behind_running_turn,
     claude_headless_prompt_written, claude_headless_stuck_screen_line,
@@ -322,7 +325,7 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_kernel_owned(&config)?;
         let worker_prompt_receipts =
             crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
                 durable_state.clone(),
@@ -911,6 +914,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.sessions().list_sessions().is_empty());
         drop(app_b);
@@ -992,6 +996,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.slices().list().is_empty());
         drop(app_b);
@@ -1057,6 +1062,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         {
             let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
             app.create_session(second_worktree.session_request())

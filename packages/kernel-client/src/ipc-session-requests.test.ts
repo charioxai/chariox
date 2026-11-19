@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   archiveProjectRequest,
   createSessionRequest,
+  createProjectRequest,
   deleteProjectRequest,
   listProjectsRequest,
   renameProjectRequest,
@@ -57,9 +58,13 @@ test("project session selection and lifecycle requests match the current protoco
   })
 })
 
-
 test("Room stars use the shared kernel pin request", async () => {
   const { setRoomPinnedRequest } = await import("./ipc-session-requests.js")
   assert.deepEqual(setRoomPinnedRequest("room", true), { SetRoomPinned: { session_id: "room", pinned: true } })
   assert.deepEqual(setRoomPinnedRequest("room", false), { SetRoomPinned: { session_id: "room", pinned: false } })
+})
+
+test("MP-08 MP-10 MP-11 standalone Project creation has no invented Workspace/session", () => {
+  assert.deepEqual(createProjectRequest("No folders"), { CreateProject: { name: "No folders" } })
+  assert.equal(JSON.stringify(createProjectRequest("No folders")).includes("workspace"), false)
 })

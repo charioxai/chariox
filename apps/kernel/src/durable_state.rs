@@ -66,9 +66,12 @@ mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
 };
+mod event_reader;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
+pub(crate) mod skill_reset;
+mod skill_reset_startup;
 pub(crate) mod storage_full;
 mod sync_timing;
 pub(crate) mod worker_prompt_receipts;
@@ -101,6 +104,7 @@ pub struct DurableKernelStateStore {
     _owner: Option<Arc<owner::OwnerLease>>,
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
+    skill_catalog_owner: bool,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -394,6 +398,22 @@ pub(crate) struct DurableCheckpointEntity {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn open_kernel_owned(
+        config: &crate::config::DaemonConfig,
+    ) -> Result<Self, DaemonError> {
+        let mut store = Self::open_owned(config.durable_state_path())?;
+        let mut connection =
+            Connection::open(store.path()).map_err(|_| DaemonError::LocalTransport {
+                operation: "skills.v2.reset",
+                message: "cannot open the owned startup connection".into(),
+            })?;
+        store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        Ok(store)
+    }
+    pub(crate) fn owns_skill_catalog(&self) -> bool {
+        self.skill_catalog_owner
+    }
+
     pub(crate) fn open_owned(path: PathBuf) -> Result<Self, DaemonError> {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
@@ -538,6 +558,7 @@ impl DurableKernelStateStore {
             _owner: None,
             workflow_history_authority: Default::default(),
             outside_followed,
+            skill_catalog_owner: false,
         })
     }
 

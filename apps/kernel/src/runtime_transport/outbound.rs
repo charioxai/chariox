@@ -253,6 +253,7 @@ public_events! {
     RoomListRowsChanged => "room_list_rows_changed",
     ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
+    SkillsChanged => "skills_changed",
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",
     WorkflowRunUpdated => "workflow_run_updated",

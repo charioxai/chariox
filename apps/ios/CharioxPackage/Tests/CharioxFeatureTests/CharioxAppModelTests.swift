@@ -589,28 +589,15 @@ import Testing
 }
 
 @MainActor
-@Test func slashSkillListLoadsSkillsAndWritesNotice() async {
-    let client = SequencedMockKernelClient(responses: [
-        .skillsListed([
-            CharioxSkillMetadata(
-                name: "swiftui-expert",
-                description: "SwiftUI guidance",
-                shortDescription: "SwiftUI",
-                path: "/skills/swiftui"
-            ),
-        ]),
-    ])
+@Test func skillsRequireTheConnectedKernelRuntimeCapability() async {
+    let client = SequencedMockKernelClient(responses: [.runtimeCapabilities([])])
     let defaults = UserDefaults(suiteName: "CharioxAppModelTests.skillList")!
     defaults.removePersistentDomain(forName: "CharioxAppModelTests.skillList")
     let model = CharioxAppModel(client: client, defaults: defaults)
     model.promptDraft = "/skill list"
-
     await model.submitPrompt()
-
-    #expect(model.connectionState == .connected)
-    #expect(model.promptDraft.isEmpty)
-    #expect(model.skills.map(\.name) == ["swiftui-expert"])
-    #expect(model.transcriptEntries.last?.text.contains("Skills") == true)
+    #expect(model.skills.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("updated kernel runtime") == true)
 }
 
 @MainActor

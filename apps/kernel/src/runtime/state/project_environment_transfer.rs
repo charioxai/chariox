@@ -8,7 +8,7 @@ use crate::local::{
 use crate::project_environment::{
     environment_error, read_file_slice, register_environment_files, run_import, source_holdings,
     Begun, EnvironmentSource, FileSlice, ImportTarget, Registration, RegistrationHost, SourceError,
-    SourceSnapshot, UserRegistrations, MAX_IMPORT_FILE_BYTES,
+    SourceSnapshot, MAX_IMPORT_FILE_BYTES,
 };
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteFileBytes,
@@ -237,6 +237,7 @@ impl KernelRuntimeState {
                 }
             };
             let store = runtime.environment_store();
+            let registrations = runtime.user_registrations(&project_id);
             let on_record = move |record: &crate::project_environment::ProjectEnvironmentRecord| {
                 register_environment_files(&checkouts, &record.files)
             };
@@ -248,7 +249,7 @@ impl KernelRuntimeState {
                     checkout: &checkout,
                     store: &store,
                     vault: vault.as_ref(),
-                    registrations: &UserRegistrations,
+                    registrations: &registrations,
                     on_record: &on_record,
                 },
                 entries,
@@ -342,7 +343,7 @@ impl KernelRuntimeState {
             {
                 return refuse(&format!("{name} is not in the Environment of {label}"));
             }
-            return match UserRegistrations.read(kind, name) {
+            return match self.user_registrations(project.id()).read(kind, name) {
                 Ok(registration) => Ok(RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
                     registration: registration.map(RemoteProjectRegistration),
                 }),
@@ -383,7 +384,7 @@ impl KernelRuntimeState {
             &store,
             project.id(),
             vault.as_ref(),
-            &UserRegistrations,
+            &self.user_registrations(project.id()),
             &checkout,
             label,
         )?;

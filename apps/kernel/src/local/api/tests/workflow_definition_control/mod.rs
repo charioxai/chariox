@@ -1,7 +1,7 @@
 use super::*;
 use crate::local::{
     CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
-    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, ListWorkflowPublicationsRequest,
+    ExportWorkflowPublicationPackageRequest, ListWorkflowPublicationsRequest,
     RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;

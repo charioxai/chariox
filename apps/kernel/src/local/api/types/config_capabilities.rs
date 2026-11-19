@@ -300,8 +300,6 @@ pub struct ProviderCapabilityImportReport {
     pub summary: ProviderCapabilityImportSummary,
     #[serde(default)]
     pub mcps: Vec<ProviderCapabilityImportEntry>,
-    #[serde(default)]
-    pub skills: Vec<ProviderCapabilityImportEntry>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,12 +345,6 @@ pub struct ProviderCapabilityImportDuplicate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetMcpServerRequest {
-    pub workspace_id: Option<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GetSkillRequest {
     pub workspace_id: Option<String>,
     pub name: String,
 }
@@ -492,48 +484,9 @@ pub struct TestConnectorRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpsertSkillRequest {
-    pub workspace_id: Option<String>,
-    pub source: SkillInstallSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SkillInstallSource {
-    Content { skill_md: String },
-    Url { url: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstallSkillRequest {
-    pub workspace_id: Option<String>,
-    pub source_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateSkillRequest {
-    pub workspace_id: Option<String>,
-    pub source_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UninstallSkillRequest {
-    pub workspace_id: Option<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportSkillsRequest {
-    pub workspace_id: Option<String>,
-    pub provider: String,
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
     Mcp,
-    Skill,
     Script,
     Connector,
     App,
@@ -543,7 +496,6 @@ impl From<ExtensionKind> for crate::extension::ExtensionKind {
     fn from(value: ExtensionKind) -> Self {
         match value {
             ExtensionKind::Mcp => Self::Mcp,
-            ExtensionKind::Skill => Self::Skill,
             ExtensionKind::Script => Self::Script,
             ExtensionKind::Connector => Self::Connector,
             ExtensionKind::App => Self::App,
@@ -586,11 +538,6 @@ pub struct ListHomeExtensionAuditRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMcpServersRequest {
-    pub workspace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListSkillsRequest {
     pub workspace_id: Option<String>,
 }
 

@@ -32,3 +32,4 @@ export * from "./ipc-screenshot-requests.js"
 export * from "./provider-account-copy.js"
 
 export * from "./ipc-control-plane-requests.js"
+export * from "./ipc-skills-v2-requests.js"

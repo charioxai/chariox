@@ -1326,7 +1326,12 @@ pub(super) mod tests {
         let path = std::path::PathBuf::from(config.user_config.state.path.clone().unwrap());
         {
             let store = crate::durable_state::DurableKernelStateStore::open(path).unwrap();
-            for event in &events[..cut] {
+            // The Skills home pin names the journal it was written to; this copy lives at a
+            // new path, so the restarted kernel pins its own journal instead.
+            for event in events[..cut]
+                .iter()
+                .filter(|event| event.kind != "skills.v2.home")
+            {
                 store
                     .append_event(&event.kind, event.subject_id.clone(), event.payload.clone())
                     .unwrap();

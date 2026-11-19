@@ -140,6 +140,7 @@ mod relay_transport;
 mod room_list_workspace;
 mod room_workflows;
 mod screenshot;
+mod skills_v2;
 
 mod leased_agent_file_copy;
 mod machine_files;

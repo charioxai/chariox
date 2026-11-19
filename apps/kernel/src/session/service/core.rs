@@ -695,8 +695,13 @@ impl SessionService {
                         ),
                     ));
                 }
-                // A hidden lease uses the Project without registering its synthetic workspace.
-                if !request.hidden && !project.contains_workspace(&request.workspace_id) {
+                // A hidden lease uses the Project without registering its synthetic
+                // workspace. A folderless Project stays folderless: the session's
+                // working directory is a provider need, not a Project folder.
+                if !request.hidden
+                    && !project.workspace_ids().is_empty()
+                    && !project.contains_workspace(&request.workspace_id)
+                {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
                     let workspaces = normalize_project_workspace_ids(workspaces)?;
@@ -771,7 +776,7 @@ impl SessionService {
         id
     }
 
-    fn next_named_project_number(&self, owner_user_id: &str) -> u64 {
+    pub(super) fn next_named_project_number(&self, owner_user_id: &str) -> u64 {
         self.projects
             .values()
             .filter(|project| project.owner_user_id() == owner_user_id)
@@ -840,7 +845,7 @@ impl SessionService {
         }
     }
 
-    fn ensure_project_name_available(
+    pub(super) fn ensure_project_name_available(
         &self,
         owner_user_id: &str,
         name: &str,
@@ -862,7 +867,7 @@ impl SessionService {
         Ok(())
     }
 
-    fn next_named_project_id(
+    pub(super) fn next_named_project_id(
         &self,
         owner_user_id: &str,
         workspace_id: &str,
@@ -1820,10 +1825,10 @@ const MAX_PROJECT_WORKSPACES: usize = 32;
 const MAX_PROJECT_WORKSPACE_ID_BYTES: usize = 4 * 1024;
 
 fn normalize_project_workspace_ids(workspace_ids: Vec<String>) -> Result<Vec<String>, DaemonError> {
-    if workspace_ids.is_empty() || workspace_ids.len() > MAX_PROJECT_WORKSPACES {
+    if workspace_ids.len() > MAX_PROJECT_WORKSPACES {
         return Err(project_error(
             "project.workspaces.update",
-            format!("a project must contain between 1 and {MAX_PROJECT_WORKSPACES} Workspaces"),
+            format!("a project may contain at most {MAX_PROJECT_WORKSPACES} Workspaces"),
         ));
     }
     let mut seen = BTreeSet::new();
@@ -1844,7 +1849,7 @@ fn normalize_project_workspace_ids(workspace_ids: Vec<String>) -> Result<Vec<Str
     Ok(workspace_ids)
 }
 
-fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
+pub(super) fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
     let normalized = name.trim();
     if normalized.is_empty() {
         return Err(project_error(
@@ -1894,7 +1899,7 @@ fn truncate_project_name(name: &str, max_chars: usize) -> String {
     name.chars().take(max_chars).collect()
 }
 
-fn project_error(operation: &'static str, message: String) -> DaemonError {
+pub(super) fn project_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
 

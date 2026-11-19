@@ -410,6 +410,7 @@ export type SessionConfigState = {
 }
 
 export type CharioxUserConfig = {
+  skills?: { metadata_budget_percent: number }
   version: number
   agents?: { offload_without_asking?: boolean }
   slices?: {

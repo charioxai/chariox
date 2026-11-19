@@ -40,9 +40,7 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REGISTER_MCP_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_SKILL_PATH_TOOL));
+        assert!(!specs.iter().any(|spec| spec.name == "register_skill_path"));
         assert!(specs
             .iter()
             .any(|spec| spec.name == REGISTER_ENVIRONMENT_TOOL));

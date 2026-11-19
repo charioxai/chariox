@@ -58,6 +58,9 @@ pub struct RuntimeProviderRun {
     #[serde(skip)]
     requested_provider_env_remove: Option<Vec<String>>,
     working_directory: Option<PathBuf>,
+    /// MP-08 / MP-10 / MP-11: actual launch discovery inputs, never auth or wire.
+    #[serde(skip)]
+    native_skill_discovery_environment: BTreeMap<String, String>,
     structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_mcp_server_url: Option<String>,
@@ -138,6 +141,10 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_diagnostic: Option<String>,
     started_at_ms: u64,
+    // Clones share it, so a Claude child the run actor restarts moves it for every
+    // holder of the run.
+    #[serde(skip)]
+    process_started_at_ms: ProcessStart,
     last_activity_at_ms: u64,
     /// When the provider last wrote output; the run's start until it does.
     /// Kept in memory only: a restarted kernel counts a turn's quiet from its start.
@@ -163,6 +170,11 @@ impl RuntimeProviderRun {
     ) -> Self {
         let now = unix_epoch_ms();
         let preparation_base_path = provider_preparation_base_path(&launch_result);
+        let native_skill_discovery_environment =
+            super::skill_inventory::capture_launch_skill_environment(
+                &launch_result.pty_env,
+                &launch_result.pty_env_remove,
+            );
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -187,6 +199,7 @@ impl RuntimeProviderRun {
             pty_env_remove: launch_result.pty_env_remove,
             requested_provider_env_remove: Some(request.provider_env_remove.clone()),
             working_directory: launch_result.working_directory,
+            native_skill_discovery_environment,
             structured_endpoint: launch_result.structured_endpoint,
             runtime_mcp_server_url: request
                 .runtime_mcp_binding
@@ -234,6 +247,7 @@ impl RuntimeProviderRun {
                 .map(str::to_string),
             terminal_diagnostic: None,
             started_at_ms: now,
+            process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
             last_output_at_ms: now,
         }
@@ -272,6 +286,7 @@ impl RuntimeProviderRun {
             pty_env_remove: Vec::new(),
             requested_provider_env_remove: None,
             working_directory: None,
+            native_skill_discovery_environment: BTreeMap::new(),
             structured_endpoint: None,
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
@@ -305,6 +320,7 @@ impl RuntimeProviderRun {
             provider_session_id: None,
             terminal_diagnostic: None,
             started_at_ms: now,
+            process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
             last_output_at_ms: now,
         }
@@ -427,6 +443,10 @@ impl RuntimeProviderRun {
     pub fn pty_env_remove(&self) -> &[String] {
         &self.pty_env_remove
     }
+    pub(crate) fn native_skill_discovery_environment(&self) -> &BTreeMap<String, String> {
+        &self.native_skill_discovery_environment
+    }
+
     pub fn working_directory(&self) -> Option<&PathBuf> {
         self.working_directory.as_ref()
     }
@@ -724,6 +744,8 @@ impl RuntimeProviderRun {
             &path,
         )?;
         self.pty_args = pty_args;
+        self.native_skill_discovery_environment
+            .insert("HOME".to_string(), home.clone());
         self.pty_env.insert("HOME".to_string(), home);
         self.pty_env.insert("PATH".to_string(), path);
         self.touch_activity();
@@ -904,6 +926,21 @@ impl RuntimeProviderRun {
         )
     }
 
+    /// When the run's current provider process started (Unix ms). Claude reads its
+    /// skills when its process starts, so a restarted child has read later ones.
+    /// A process the run did not start itself (a handed-over child) counts from
+    /// the run's start, the earliest it can have started.
+    pub fn process_started_at_ms(&self) -> u64 {
+        self.process_started_at_ms
+            .0
+            .load(std::sync::atomic::Ordering::Acquire)
+            .max(self.started_at_ms)
+    }
+
+    pub(crate) fn process_start(&self) -> ProcessStart {
+        self.process_started_at_ms.clone()
+    }
+
     pub fn last_activity_at_ms(&self) -> u64 {
         self.last_activity_at_ms
     }
@@ -1006,6 +1043,26 @@ fn provider_preparation_base_path(launch_result: &ProviderLaunchResult) -> Optio
     }
     std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned())
 }
+
+/// When the current provider process started (Unix ms); 0 until the run starts one.
+#[derive(Clone, Default)]
+pub(crate) struct ProcessStart(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl ProcessStart {
+    pub(crate) fn record(&self, started_at_ms: u64) {
+        self.0
+            .store(started_at_ms, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl PartialEq for ProcessStart {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+            == other.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl Eq for ProcessStart {}
 
 pub(crate) fn projected_leased_provider_run_id(
     leased_agent_id: &str,
