@@ -11,6 +11,16 @@ pub(super) enum ClaudeTurnStallAction {
     FailStart,
 }
 
+/// A turn's start state across a hot reload: whether the process ended its
+/// start phase and since when the turn waits on it. `Instant`s do not cross
+/// the `exec`, so the wait is carried in wall-clock time; the reload itself
+/// counts against the start budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct ClaudeStartState {
+    process_started: bool,
+    waiting_since_unix_ms: Option<u64>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ClaudeTurnWatchdog {
     last_activity_at: Option<Instant>,
@@ -52,6 +62,27 @@ impl ClaudeTurnWatchdog {
         self.waiting_since = Some(now);
         self.restart_count = self.restart_count.saturating_add(1);
         self.saw_runtime_message = false;
+    }
+
+    pub(super) fn start_state(&self, now: Instant, now_unix_ms: u64) -> ClaudeStartState {
+        ClaudeStartState {
+            process_started: self.process_started,
+            waiting_since_unix_ms: self.waiting_since.map(|since| {
+                let waited = u64::try_from(now.saturating_duration_since(since).as_millis())
+                    .unwrap_or(u64::MAX);
+                now_unix_ms.saturating_sub(waited)
+            }),
+        }
+    }
+
+    /// Continues a handed-over turn with the start state it had.
+    pub(super) fn adopt(&mut self, start: ClaudeStartState, now: Instant, now_unix_ms: u64) {
+        self.begin(now);
+        self.process_started = start.process_started;
+        self.waiting_since = start.waiting_since_unix_ms.map(|since| {
+            now.checked_sub(Duration::from_millis(now_unix_ms.saturating_sub(since)))
+                .unwrap_or(now)
+        });
     }
 
     pub(super) fn settle(&mut self) {

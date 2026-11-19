@@ -244,9 +244,11 @@ pub(crate) fn submit_claude_prompt(
         );
         state.active_turn_id = adopted.turn_id;
         state.active_prompt_message = adopted.prompt_message;
-        // The process reported its `init` to the previous kernel program.
-        state.turn_watchdog.record_process_init();
-        state.turn_watchdog.begin(Instant::now());
+        state.turn_watchdog.adopt(
+            adopted.start,
+            Instant::now(),
+            crate::session::unix_epoch_ms(),
+        );
         state.output.release();
         return Ok(());
     }
@@ -1329,6 +1331,77 @@ cat >/dev/null
     // Claude starts a turn even when the Chariox MCP server did not answer in
     // time; that turn must end failed with a reason, never as a success.
     #[cfg(unix)]
+    // A hot reload while Claude still connects its tools keeps the turn's
+    // start phase: no early restart and no fresh start budget.
+    #[test]
+    fn a_hot_reload_keeps_a_starting_turn_s_start_deadline() {
+        let worktree = crate::test_support::TestWorktree::new("claude-reload-start");
+        let run = RuntimeProviderRun::new(
+            "provider-run-reload-start",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                // Still connecting its tools: it reads the prompt and says nothing.
+                pty_args: vec![
+                    "-c".to_string(),
+                    "cat >/dev/null".to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "use your tools",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let stall = super::claude_turn_stall_timeout();
+        let Some(delivered) =
+            std::time::Instant::now().checked_sub(stall + std::time::Duration::from_secs(1))
+        else {
+            super::stop_child(&mut binding.state.child);
+            return;
+        };
+        binding.state.turn_watchdog.begin(delivered);
+
+        let handover =
+            super::hand_over_claude_runtime(binding.state).expect("a running turn is handed over");
+        // The next program reads the handover from a file.
+        let handover: super::ClaudeHandover =
+            serde_json::from_str(&serde_json::to_string(&handover).unwrap()).unwrap();
+        crate::hot_reload::adopt_claude_for_tests(run.id(), handover);
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let mut batch = ProviderPromptSignalBatch::default();
+        let policy = super::apply_claude_turn_stall_policy(&run, &mut binding.state, &mut batch);
+        let still_starting = binding.state.active_turn_id.is_some() && batch.chunks.is_empty();
+        let deadline = binding.state.turn_watchdog.action(
+            std::time::Instant::now() + super::CLAUDE_START_BUDGET - stall,
+            stall,
+        );
+        super::stop_child(&mut binding.state.child);
+
+        policy.expect("stall policy should run");
+        assert!(
+            still_starting,
+            "a starting turn must not be restarted after a hot reload"
+        );
+        assert_eq!(
+            deadline,
+            super::watchdog::ClaudeTurnStallAction::FailStart,
+            "60 s after the reload the budget counted from the delivery has run out: neither a restart nor a fresh budget"
+        );
+    }
+
     #[test]
     fn a_turn_whose_chariox_tools_did_not_connect_ends_failed() {
         let worktree = crate::test_support::TestWorktree::new("claude-tools-missing");
