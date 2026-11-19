@@ -4768,7 +4768,7 @@ A local-dev browser terminal (`CHARIOX_RELAY_URL`/`CHARIOX_RELAY_TOKEN`, no Clou
 ### Provider account portability preflight, protocol 491 (MP-08 / MP-10 / MP-11)
 
 `PreflightProviderAccountPortability` accepts only `providerAccounts` selection
-metadata. The ordinary kernel owner gate applies to local and relay callers;
+metadata and, since local 1066, the launch's `kernelContext`. The ordinary kernel owner gate applies to local and relay callers;
 shared-session membership, another realm, and kernel peers cannot use it. The
 kernel checks the selected accounts through the existing provider-native managed
 context exporter and discards the exported bytes. Success is
@@ -7557,7 +7557,12 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package that carries Vault logins and reaches a machine whose Vault is not open
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. Local 1066: preflight also carries the launch's
+required `kernelContext` (`empty`, `source_kernel` or `source_kernel_without_credentials`). A copy of this kernel
+(`source_kernel`) exports its Vault even with no login selected, so its preflight finds the Vault unlocked and holds
+that unlock for the export exactly as for a Vault login, and the export of a `source_kernel` package takes the hold.
+Clients preflight every copy. Focused checks: `a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login`
+and `the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared`. A package that carries Vault logins and reaches a machine whose Vault is not open
 is refused whole, before anything is imported, with `target_vault_locked` (unless the package installs that Vault
 itself); the retry after the owner unlocks completes. The `omittedProviderAccounts` receipt (relay peer
 `omitted_provider_accounts`, import `providerAccounts.omitted`) is retired with local 1002 / relay peer 441. Focused

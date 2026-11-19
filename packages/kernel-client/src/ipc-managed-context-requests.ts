@@ -100,8 +100,9 @@ export function getManagedContextLaunchTargetRequest(contextId: string, planDige
 }
 
 // MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
-export const providerAccountPortabilityPreflightMinimumProtocolVersion = 491
+// 1066: the check carries the launch's kernel-context choice; a copy of the kernel holds its Vault unlock for the export.
+export const providerAccountPortabilityPreflightMinimumProtocolVersion = 1066
 /** `launchId` names the launch, so its transfer start finds the Vault unlock this preflight holds. */
-export function preflightProviderAccountPortabilityRequest(providerAccounts: ProviderAccountTransferSelection, launchId?: string) {
-  return {PreflightProviderAccountPortability: {providerAccounts, ...(launchId ? {launchId} : {})}} as const
+export function preflightProviderAccountPortabilityRequest(providerAccounts: ProviderAccountTransferSelection, kernelContext: "empty" | "source_kernel" | "source_kernel_without_credentials", launchId?: string) {
+  return {PreflightProviderAccountPortability: {providerAccounts, kernelContext, ...(launchId ? {launchId} : {})}} as const
 }

@@ -98,6 +98,7 @@ impl Fixture {
                     account_profile: profile.profile_id.clone(),
                 }],
             },
+            kernel_context: crate::managed_context::package::ManagedContextKernelSelection::Empty,
             launch_id: None,
         };
         Self {
@@ -290,6 +291,35 @@ async fn the_unlock_taken_at_preflight_is_held_for_the_export_and_used_once() {
         .await
         .expect("the export takes the held unlock without asking again");
     assert!(fx.login_readable(), "the export reads the login");
+    drop(export);
+    assert!(!fx.unlocked(), "the one use ends with the export");
+}
+
+// A copy of this kernel exports its Vault even when it carries no login, so its preflight takes the
+// unlock too: under "ask every time" the export would otherwise find the Vault locked after the
+// machine was rented.
+#[tokio::test]
+async fn a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let mut fx = Fixture::new().await;
+    fx.request = crate::local::PreflightProviderAccountPortabilityRequest {
+        provider_accounts: crate::local::ProviderAccountTransferSelection::None,
+        kernel_context:
+            crate::managed_context::package::ManagedContextKernelSelection::SourceKernel,
+        launch_id: None,
+    };
+
+    fx.preflight_answering_the_card().await;
+    assert!(
+        fx.unlocked(),
+        "the unlock outlives preflight until the export"
+    );
+    let export = fx
+        .runtime
+        .vault_for_login_export(Some(&fx.session_id), None)
+        .await
+        .expect("the export takes the held unlock without asking again");
     drop(export);
     assert!(!fx.unlocked(), "the one use ends with the export");
 }
