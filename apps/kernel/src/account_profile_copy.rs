@@ -236,6 +236,7 @@ impl ProviderAccountProfileRegistry {
         if let Some(index) = existing {
             next.profiles[index].public = public;
             next.profiles[index].transferred_from = transferred_from;
+            next.profiles[index].local_credential_source = None;
         } else {
             next.profiles.push(StoredProviderAccountProfile {
                 public,
@@ -248,6 +249,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from,
+                local_credential_source: None,
             });
         }
         next.account_copies[operation].phase = AccountCopyPhase::Installed;
@@ -310,6 +312,7 @@ impl ProviderAccountProfileRegistry {
         linked.replica_previous_default_profile_id = None;
         linked.replica_root_identity = None;
         linked.managed_context_replica = None;
+        linked.local_credential_source = Some(binding.source_profile_id.clone());
         linked.transferred_from = Some(TransferredAccountOrigin {
             source_kernel_id: binding.source_kernel_id.clone(),
             source_profile_id: binding.source_profile_id.clone(),
@@ -338,20 +341,17 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut source = resolve_stored_profile(&document, owner, provider, profile_id)?;
         let mut visited = std::collections::BTreeSet::new();
-        while source.public.origin == ProviderAccountProfileOrigin::Linked {
-            let Some(origin) = &source.transferred_from else {
-                break;
-            };
+        while let Some(source_id) = &source.local_credential_source {
             if !visited.insert(source.public.profile_id.as_str()) {
                 return Err(registry_error(
                     "resolve linked account",
                     "the linked account forms a cycle; remove the link and create it again",
                 ));
             }
-            source = find_stored_profile(&document, owner, provider, &origin.source_profile_id)
+            source = find_stored_profile(&document, owner, provider, source_id)
                 .filter(|candidate| candidate.locator.same_credential_scope(&source.locator))
                 .ok_or_else(|| registry_error("resolve linked account", format!(
-                    "source account `{}` is unavailable; sign in again to that account on this machine, or remove this link and create it again", origin.source_profile_id,
+                    "source account `{}` is unavailable; sign in again to that account on this machine, or remove this link and create it again", source_id,
                 )))?;
         }
         Ok(source.public.profile_id.clone())

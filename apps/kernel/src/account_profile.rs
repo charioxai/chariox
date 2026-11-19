@@ -1012,6 +1012,9 @@ struct StoredProviderAccountProfile {
     /// Which account of which kernel a managed-context transfer or an account copy installed here, so a lease from that kernel can use it instead of making a second copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transferred_from: Option<TransferredAccountOrigin>,
+    /// Only same-kernel copies depend on another registration; remote provenance is independent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1036,6 +1039,8 @@ struct ManagedContextReplicaBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ReplacedProviderAccountProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1274,6 +1279,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: None,
             });
             changed = true;
         }
@@ -1913,6 +1919,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1975,6 +1982,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -2034,6 +2042,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -3523,6 +3532,7 @@ impl ProviderAccountProfileRegistry {
                 .map(|stored| ReplacedProviderAccountProfile {
                     public: stored.public.clone(),
                     locator: stored.locator.clone(),
+                    local_credential_source: stored.local_credential_source.clone(),
                     label_source: stored.label_source,
                 })
         });
@@ -3580,6 +3590,7 @@ impl ProviderAccountProfileRegistry {
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
             existing.transferred_from = None;
+            existing.local_credential_source = None;
             existing.public.clone()
         } else {
             let public = new_public_profile(
@@ -3601,6 +3612,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
                 transferred_from: None,
+                local_credential_source: None,
             });
             public
         };
@@ -3723,6 +3735,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: replaced.local_credential_source,
             };
         } else {
             document.profiles.remove(index);
