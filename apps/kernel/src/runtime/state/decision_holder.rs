@@ -379,16 +379,18 @@ impl KernelRuntimeOwnedState {
         interaction_id: &str,
         pending: &PendingInteraction,
     ) {
-        if let DecisionHolder::Agent(holder) = &pending.holder
-            && let Ok(agent) = self.agent_store.get_agent(holder)
-        {
-            self.withdraw_child_decision_event(
-                agent.session_id(),
-                holder,
-                pending.holder_tenure,
-                interaction_id,
-            );
-        }
+        let DecisionHolder::Agent(holder) = &pending.holder else {
+            return;
+        };
+        let Ok(agent) = self.agent_store.get_agent(holder) else {
+            return;
+        };
+        self.withdraw_child_decision_event(
+            agent.session_id(),
+            holder,
+            pending.holder_tenure,
+            interaction_id,
+        );
     }
 
     /// Moves every decision `agent` holds to the next holder above it, at once and without a
