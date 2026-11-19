@@ -86,7 +86,7 @@ pub(super) fn read_in_turn(
 ) -> Result<(), DaemonError> {
     let asks_reply: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3 AND json_extract(payload,'$.reply_requested')=1 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.prompt_id') IS NULL)",
+            "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3 AND json_extract(payload,'$.reply_requested')=1 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state')='pending')",
             params![room, agent, sql_integer(sequence)?],
             |r| r.get(0),
         )
@@ -98,10 +98,10 @@ pub(super) fn read_in_turn(
         .into_iter()
         .rfind(|task| task.state == ExecutionState::Working);
     if let Some(task) = receiver {
-        // A read does not replace a binding established by delivery, including
-        // a leased retry whose task id differs from the request source.
+        // While the request remains pending a later turn may be the one that
+        // handles it. After acknowledgement the handling turn is fixed.
         tx.execute(
-            "INSERT INTO agent_reply_turns VALUES(?1,?2,0) ON CONFLICT(sequence) DO NOTHING",
+            "INSERT INTO agent_reply_turns VALUES(?1,?2,0) ON CONFLICT(sequence) DO UPDATE SET task_id=excluded.task_id,started_by_request=0",
             params![sql_integer(sequence)?, task.task_id],
         )
         .map_err(sql)?;
