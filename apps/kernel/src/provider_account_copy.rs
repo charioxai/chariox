@@ -62,6 +62,11 @@ pub(crate) fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
 }
 
+pub(crate) enum AccountCopyInstall {
+    Fresh(ProviderAccountCopyReceipt),
+    Replay(ProviderAccountCopyReceipt),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountCopyReceipt {
     pub operation_id: String,

@@ -2,7 +2,8 @@
 //! publication share one atomic registry write; credential bytes stay in Vault.
 use super::*;
 use crate::provider_account_copy::{
-    failure, ProviderAccountCopyBinding, ProviderAccountCopyCredential, ProviderAccountCopyReceipt,
+    failure, AccountCopyInstall, ProviderAccountCopyBinding, ProviderAccountCopyCredential,
+    ProviderAccountCopyReceipt,
 };
 use sha2::{Digest, Sha256};
 
@@ -70,11 +71,8 @@ impl ProviderAccountProfileRegistry {
         owner: &str,
         binding: &ProviderAccountCopyBinding,
         credential: &ProviderAccountCopyCredential,
-    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+    ) -> Result<AccountCopyInstall, DaemonError> {
         binding.validate()?;
-        if binding.source_kernel_id == binding.target_kernel_id {
-            return self.install_account_link(owner, binding);
-        }
         let map_storage = |_| failure("provider_account_copy_install_failed");
         let mut guard = self.write_document().map_err(map_storage)?;
         let digest = format!("{:x}", Sha256::digest(credential.value().as_bytes()));
@@ -95,7 +93,8 @@ impl ProviderAccountProfileRegistry {
                 return Err(failure("provider_account_copy_conflict"));
             }
             if recorded.phase == AccountCopyPhase::Installed {
-                return installed_receipt(config, owner, binding, credential, existing.is_some());
+                return installed_receipt(config, owner, binding, credential, existing.is_some())
+                    .map(AccountCopyInstall::Replay);
             }
             if recorded.credential_sha256 != digest {
                 return Err(failure("provider_account_copy_conflict"));
@@ -181,7 +180,8 @@ impl ProviderAccountProfileRegistry {
         });
         // An identical retry may have published while this verifier was running.
         if recorded.phase == AccountCopyPhase::Installed {
-            return installed_receipt(config, owner, binding, credential, existing.is_some());
+            return installed_receipt(config, owner, binding, credential, existing.is_some())
+                .map(AccountCopyInstall::Replay);
         }
         if recorded.credential_sha256 != digest {
             return Err(failure("provider_account_copy_conflict"));
@@ -255,14 +255,17 @@ impl ProviderAccountProfileRegistry {
         next.account_copies[operation].phase = AccountCopyPhase::Installed;
         self.persist_locked(&next).map_err(map_storage)?;
         *guard = next;
-        Ok(ProviderAccountCopyReceipt::installed(binding))
+        Ok(AccountCopyInstall::Fresh(
+            ProviderAccountCopyReceipt::installed(binding),
+        ))
     }
 
-    fn install_account_link(
+    pub(crate) fn install_account_link(
         &self,
         owner: &str,
         binding: &ProviderAccountCopyBinding,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+        binding.validate()?;
         let mut document = self.write_document()?;
         let source = find_stored_profile(
             &document,

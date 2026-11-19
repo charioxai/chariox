@@ -13,7 +13,7 @@ pub(super) async fn check_native_copy(
     let executable = root.join("codex-copy-check");
     std::fs::write(&executable, "#!/bin/sh\n[ \"$1 $2\" = 'login status' ] || exit 2\n[ -s \"$CODEX_HOME/auth.json\" ] || exit 1\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::env::set_var("CHARIOX_CODEX_BIN", executable);
+    std::env::set_var("CHARIOX_CODEX_BIN", &executable);
     let canary = r#"{"tokens":{"access_token":"synthetic-native-copy"}}"#;
     let profile = source_profiles
         .create_managed("local", "codex", "Native source")
@@ -120,7 +120,7 @@ pub(super) async fn check_native_copy(
         .collect::<Vec<_>>();
     assert_eq!(matching.len(), 1);
     assert_eq!(matching[0]["body"]["notice"]["read"], true);
-    let mut conflict = request;
+    let mut conflict = request.clone();
     conflict["CopyProviderAccountToKernel"]["operation_id"] = "native-conflict".into();
     assert_code(
         source_request(source_router, conflict).await,
@@ -205,6 +205,78 @@ pub(super) async fn check_native_copy(
             .iter()
             .any(|card| card["body"]["notice"]["action"]["account_profile"] == id));
     }
+    let approval = root.join("approve-copy-target");
+    let launches = root.join("copy-target-account-endpoints");
+    let quote = |s: &Path| format!("'{}'", s.to_str().unwrap().replace('\'', "'\\''"));
+    std::fs::write(&executable, format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit; fi\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --listen ]; then shift; export CTXFIX_ACCOUNT_LISTEN=\"$1\"; break; fi; shift; done\nexport CTXFIX_ACCOUNT_LOG={}\nexport CTXFIX_ACCOUNT_LOGIN_COMPLETE={}\nexec {} --exact local::provider_requests::catalog::codex_refresh_tests::account_endpoint_child --ignored --nocapture\n",
+        quote(&launches), quote(&approval), quote(&std::env::current_exe().unwrap())
+    )).unwrap();
+    std::fs::write(
+        &target_auth,
+        r#"{"tokens":{"access_token":"synthetic-accepted-login-interim"}}"#,
+    )
+    .unwrap();
+    let started = source_request(
+        target_router,
+        serde_json::json!({"StartProviderLogin":{
+            "provider":"codex", "account_profile":id, "method":"device_code"
+        }}),
+    )
+    .await
+    .unwrap();
+    let login_id = started["ProviderLoginStarted"]["login"]["login_id"]
+        .as_str()
+        .unwrap();
+    std::fs::write(approval, "approve").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = source_request(
+                target_router,
+                serde_json::json!({"GetProviderLoginStatus":{
+                    "login_id":login_id
+                }}),
+            )
+            .await
+            .unwrap();
+            if status["ProviderLoginStatus"]["login"]["state"] == "succeeded" {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("independent target sign-in must complete");
+    let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+        .await
+        .unwrap();
+    assert!(
+        !inbox["PersonInbox"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|card| card["body"]["notice"]["action"]["account_profile"] == id),
+        "independent sign-in must clear copy advice before replay"
+    );
+    let target_login = std::fs::read_to_string(&target_auth).unwrap();
+    assert!(target_login.contains("new-device"));
+    assert_eq!(
+        source_request(source_router, request).await.unwrap(),
+        response
+    );
+    assert!(std::fs::read_to_string(&target_auth).unwrap() == target_login);
+    let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+        .await
+        .unwrap();
+    assert!(
+        !inbox["PersonInbox"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|card| card["body"]["notice"]["action"]["account_profile"] == id),
+        "retrying a completed copy must not recreate sign-in advice after independent sign-in"
+    );
+    crate::provider::shutdown_codex_account_endpoints();
     source_profiles
         .remove_registration("local", "codex", &profile.profile_id)
         .unwrap();

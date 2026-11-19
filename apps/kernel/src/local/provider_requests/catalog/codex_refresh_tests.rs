@@ -279,14 +279,7 @@ fn automatic_refresh_keeps_pending_login_server() {
         target_key_thumbprint: "a".repeat(64),
         replace: false,
     };
-    let receipt = registry
-        .install_account_copy(
-            &config,
-            "local",
-            &binding,
-            &crate::provider_account_copy::ProviderAccountCopyCredential::new(String::new()),
-        )
-        .unwrap();
+    let receipt = registry.install_account_link("local", &binding).unwrap();
     let _alias_cleanup = Cleanup(root.join("unused-alias"), receipt.account_profile.clone());
     let launches = std::fs::read_to_string(&log).unwrap().lines().count();
     for account_profile in [&receipt.account_profile, &linked.profile_id] {

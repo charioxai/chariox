@@ -2,8 +2,8 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::*;
 use crate::provider_account_copy::{
-    failure, ProviderAccountCopyBinding, ProviderAccountCopyCredential, ProviderAccountCopyReceipt,
-    PROVIDER_ACCOUNT_COPY_CAPABILITY,
+    failure, AccountCopyInstall, ProviderAccountCopyBinding, ProviderAccountCopyCredential,
+    ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_CAPABILITY,
 };
 
 fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
@@ -69,12 +69,7 @@ impl KernelRuntimeState {
             }
             let profiles = self.provider_account_profile_registry().clone();
             let receipt = tokio::task::spawn_blocking(move || {
-                profiles.install_account_copy(
-                    &config,
-                    &owner,
-                    &binding,
-                    &ProviderAccountCopyCredential::new(String::new()),
-                )
+                profiles.install_account_link(&owner, &binding)
             })
             .await
             .map_err(|_| failure("provider_account_copy_install_failed"))??;
@@ -275,23 +270,25 @@ impl KernelRuntimeState {
                 crate::secret::lock_chariox_encrypted_vault(expand_vault_path(&vault.path))?;
                 crate::secret::clear_vault_secret_process_cache()?;
             }
-            Ok(receipt)
+            Ok::<_, DaemonError>(receipt)
         })
         .await
         .map_err(|_| failure("provider_account_copy_install_failed"))?;
-        if let Ok(receipt) = &result {
-            self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
-                .await;
-            self.record_room_list_change();
-            let owner = self
-                .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
-            let profile = self.provider_account_profile_registry().get(
-                &owner,
-                &receipt.provider,
-                &receipt.account_profile,
-            )?;
-            self.notify_provider_account_sign_in(&profile, true).await?;
-        }
-        result
+        let receipt = match result? {
+            AccountCopyInstall::Replay(receipt) => return Ok(receipt),
+            AccountCopyInstall::Fresh(receipt) => receipt,
+        };
+        self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        self.record_room_list_change();
+        let owner =
+            self.provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
+        let profile = self.provider_account_profile_registry().get(
+            &owner,
+            &receipt.provider,
+            &receipt.account_profile,
+        )?;
+        self.notify_provider_account_sign_in(&profile, true).await?;
+        Ok(receipt)
     }
 }
