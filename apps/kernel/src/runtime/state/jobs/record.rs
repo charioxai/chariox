@@ -44,6 +44,15 @@ pub(super) struct Record {
     pub(super) remote: RemoteStage,
 }
 
+impl Record {
+    /// The job asked for, holds or may still hold something on a remote machine.
+    pub(super) fn has_remote_trace(&self) -> bool {
+        self.placement == JobPlacement::Remote
+            || self.allocation_ref.is_some()
+            || self.remote != RemoteStage::Idle
+    }
+}
+
 impl JobDriver {
     pub(super) fn path(&self, id: &str) -> Result<PathBuf, DaemonError> {
         if !id.starts_with("job-") || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
