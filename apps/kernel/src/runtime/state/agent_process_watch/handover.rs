@@ -255,9 +255,16 @@ impl KernelRuntimeState {
 mod tests {
     use super::super::tests::{yield_on_watches_with, WatchRig, YieldedWatches};
     use super::*;
-    use crate::runtime::process_resources::ProcessDomain;
+    use crate::runtime::process_resources::{pause_sampling_for_key, ProcessDomain};
 
-    type Reloaded = (YieldedWatches, Vec<WatchedHandover>, Vec<ProcessDomain>);
+    #[derive(Default)]
+    struct PreviousWatches {
+        // Resume before dropping the resource guards, which join the watchers.
+        sampling_pauses: Vec<std::sync::mpsc::Sender<()>>,
+        resources: Vec<ProcessDomain>,
+    }
+
+    type Reloaded = (YieldedWatches, Vec<WatchedHandover>, PreviousWatches);
 
     /// A process watched when the kernel hot-reloads, as the next program
     /// finds it: handed over with its pipes, which the exec keeps open, and
@@ -283,18 +290,25 @@ mod tests {
     fn reload(rig: YieldedWatches) -> Reloaded {
         let processes = &rig.state.owned.agent_wakes.processes;
         let mut handed_over = Vec::new();
-        let mut resources = Vec::new();
+        let mut previous = PreviousWatches::default();
         for transfer in processes.hand_over() {
             for pipe in transfer.pipes {
                 std::mem::forget(pipe);
             }
+            if let Some(resources) = transfer.resources {
+                // Exec ends the old watcher before the successor moves the
+                // workload out of its cgroup. Park it in this in-process test.
+                previous
+                    .sampling_pauses
+                    .push(pause_sampling_for_key(&transfer.handover.wake));
+                previous.resources.push(resources);
+            }
             handed_over.push(transfer.handover);
-            resources.extend(transfer.resources);
         }
         // The old runtime is dropped before exec. Only the resources owned by
         // the prepared swap may keep the process alive through that drop.
         processes.live.lock().unwrap().clear();
-        (rig, handed_over, resources)
+        (rig, handed_over, previous)
     }
 
     /// The previous program's delivery has stopped hearing signals.
