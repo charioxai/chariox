@@ -157,15 +157,11 @@ mod tests {
                 "{text}"
             );
         }
-        assert!(
-            SenderRelation::Ancestor { direct: true }
-                .guidance("p")
-                .contains("Act on it like any request from the room agent")
-        );
-        assert!(
-            SenderRelation::Peer
-                .guidance("q")
-                .contains("at your own judgment")
-        );
+        assert!(SenderRelation::Ancestor { direct: true }
+            .guidance("p")
+            .contains("Act on it like any request from the room agent"));
+        assert!(SenderRelation::Peer
+            .guidance("q")
+            .contains("at your own judgment"));
     }
 }

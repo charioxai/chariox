@@ -635,11 +635,9 @@ mod identity_tests {
         // Legacy snapshots may already contain an alias that is another ID.
         let mut agents = vec![agent("agent-1", "agent-2"), agent("agent-2", "peer")];
         for _ in 0..2 {
-            assert!(
-                resolve_session_agent(&agents, "agent-2")
-                    .unwrap_err()
-                    .contains("ambiguous")
-            );
+            assert!(resolve_session_agent(&agents, "agent-2")
+                .unwrap_err()
+                .contains("ambiguous"));
             assert_eq!(
                 resolve_session_agent(&agents, "@PEER").unwrap().id(),
                 "agent-2"

@@ -9,7 +9,7 @@ use crate::local::{DestroyAgentRequest, LocalDaemonRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::state::peer_agent_inbound::peer_spawn_key;
 use crate::transport::relay_peer::{
-    RELAY_PEER_PROTOCOL_VERSION, RelayPeerRequest, RelayPeerResponse,
+    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 use std::time::Duration;
 

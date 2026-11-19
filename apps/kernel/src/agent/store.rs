@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{AgentInstance, AgentState, calculate_agent_layout};
+use super::{calculate_agent_layout, AgentInstance, AgentState};
 
 #[derive(Debug, Default, Clone)]
 pub struct AgentStore {
@@ -334,12 +334,10 @@ mod tests {
         store.insert(worker);
 
         assert_eq!(store.session_summary("session-a").count, 1);
-        assert!(
-            store
-                .session_summary("session-a")
-                .aliases
-                .contains("worker")
-        );
+        assert!(store
+            .session_summary("session-a")
+            .aliases
+            .contains("worker"));
 
         let mut second = agent("agent-3", "session-a", Some("second"));
         second.set_parent_agent(None);

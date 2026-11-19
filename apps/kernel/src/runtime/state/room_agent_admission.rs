@@ -282,7 +282,7 @@ impl KernelRuntimeState {
 /// agent's owner itself, or that act on a Room's workflows and Apps, so they are named here.
 fn rooms_named(request: &LocalDaemonRequest) -> Vec<String> {
     use crate::runtime::session_membership::scope::{
-        SessionMembershipScope, request_session_scope,
+        request_session_scope, SessionMembershipScope,
     };
     match request_session_scope(request) {
         Some(SessionMembershipScope::SessionId(room)) => return vec![room],

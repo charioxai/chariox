@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    AgentInstance, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop, calculate_agent_layout,
-    generate_agent_ref, recalculate_positions,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
+    RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -1489,28 +1489,22 @@ mod workflow_copy_alias_tests {
     fn security_f6_alias_cannot_squat_on_future_agent_id() {
         let mut service = AgentService::new();
         let source = insert_source(&mut service, "room", "child");
-        assert!(
-            service
-                .alias_agent(source.id(), Some("agent-999999".into()))
-                .is_err()
-        );
+        assert!(service
+            .alias_agent(source.id(), Some("agent-999999".into()))
+            .is_err());
         assert_eq!(
             service.get_agent(source.id()).unwrap().alias(),
             Some("child")
         );
-        assert!(
-            service
-                .alias_agent(
-                    source.id(),
-                    Some("agent-0123456789abcdef0123456789abcdef".into())
-                )
-                .is_err()
-        );
-        assert!(
-            service
-                .alias_agent(source.id(), Some("agent-helper".into()))
-                .is_ok()
-        );
+        assert!(service
+            .alias_agent(
+                source.id(),
+                Some("agent-0123456789abcdef0123456789abcdef".into())
+            )
+            .is_err());
+        assert!(service
+            .alias_agent(source.id(), Some("agent-helper".into()))
+            .is_ok());
     }
 
     #[test]
@@ -1781,11 +1775,9 @@ mod workflow_copy_alias_tests {
             .set_focused_agent(session.id(), Some(copy.id().to_string()))
             .expect("hidden runtime focus should be stored");
 
-        assert!(
-            service
-                .repair_stale_session_focus(session.id(), &mut sessions)
-                .expect("stale focus should repair")
-        );
+        assert!(service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("stale focus should repair"));
         assert_eq!(
             sessions
                 .get_session(session.id())
@@ -1807,11 +1799,9 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
-        assert!(
-            !service
-                .repair_stale_session_focus(session.id(), &mut sessions)
-                .expect("valid focus should stay unchanged")
-        );
+        assert!(!service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("valid focus should stay unchanged"));
     }
 
     #[test]
@@ -1881,11 +1871,9 @@ mod workflow_copy_alias_tests {
             .focus_agent(session.id(), hidden.id(), &mut sessions)
             .expect("legacy hidden focus should be stored");
 
-        assert!(
-            service
-                .repair_stale_session_focus(session.id(), &mut sessions)
-                .expect("hidden-only focus should repair")
-        );
+        assert!(service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("hidden-only focus should repair"));
         assert_eq!(
             sessions
                 .get_session(session.id())
@@ -2034,14 +2022,12 @@ mod default_agent_alias_tests {
                 Err(DaemonError::AgentAliasConflict { .. })
             ));
         }
-        assert!(
-            service
-                .create_agent(
-                    CreateAgentRequest::new(&session_id, "codex").with_alias("agent-9"),
-                    &mut sessions,
-                )
-                .is_err()
-        );
+        assert!(service
+            .create_agent(
+                CreateAgentRequest::new(&session_id, "codex").with_alias("agent-9"),
+                &mut sessions,
+            )
+            .is_err());
     }
 
     #[test]

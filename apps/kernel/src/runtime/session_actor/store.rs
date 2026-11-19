@@ -17,7 +17,7 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
 
 use super::projection_policy::{
-    SessionProjectionAction, session_id_for_projection_refresh, session_response_projection_action,
+    session_id_for_projection_refresh, session_response_projection_action, SessionProjectionAction,
 };
 
 mod agent;

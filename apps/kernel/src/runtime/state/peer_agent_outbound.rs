@@ -4,12 +4,12 @@
 //! failure into one typed refusal the agent can act on. An unknown room, kernel or agent and one
 //! the caller may not address give the same refusal.
 use super::*;
-use crate::durable_state::agent_lifecycle::Operation;
 use crate::durable_state::agent_lifecycle::created_peers::CreatedPeer;
+use crate::durable_state::agent_lifecycle::Operation;
 use crate::runtime::room_tool_admission::{denied, retry_later};
 use crate::transport::relay_peer::{
-    PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority,
-    RELAY_PEER_PROTOCOL_VERSION, RelayPeerRequest, RelayPeerResponse,
+    PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority, RelayPeerRequest,
+    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 const PEER_AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

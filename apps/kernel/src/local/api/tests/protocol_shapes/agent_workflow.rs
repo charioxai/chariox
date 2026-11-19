@@ -35,21 +35,19 @@ fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
             alias: None,
         })
     );
-    assert!(
-        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"CreateAgentWorkflow": {
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"CreateAgentWorkflow": {
             "session_id": "s", "agent_id": "a", "reason": "bind", "surface": "web"
-        }}))
-        .is_err()
-    );
+        }})
+    )
+    .is_err());
 
     let mut workflow = WorkflowDefinition::new("workflow-1", Some("builder-trigger".into()));
     // A workflow without an origin serializes exactly as before.
-    assert!(
-        serde_json::to_value(&workflow)
-            .unwrap()
-            .get("origin")
-            .is_none()
-    );
+    assert!(serde_json::to_value(&workflow)
+        .unwrap()
+        .get("origin")
+        .is_none());
     workflow.set_origin(WorkflowOrigin {
         source_agent_id: "agent-1".into(),
         reason: WorkflowOriginReason::Trigger,
@@ -197,12 +195,10 @@ fn room_creator_lineage_protocol_450_snapshot() {
         assert!(legacy.get(key).is_none());
         // Old definition/run/queue snapshots deserialize without inventing an actor.
         match legacy["id"].as_str().unwrap() {
-            "definition" => assert!(
-                serde_json::from_value::<WorkflowDefinition>(legacy)
-                    .unwrap()
-                    .created_by_agent_id()
-                    .is_none()
-            ),
+            "definition" => assert!(serde_json::from_value::<WorkflowDefinition>(legacy)
+                .unwrap()
+                .created_by_agent_id()
+                .is_none()),
             "run" => assert!(
                 serde_json::from_value::<crate::session::WorkflowRun>(legacy)
                     .unwrap()
@@ -217,12 +213,10 @@ fn room_creator_lineage_protocol_450_snapshot() {
             ),
         }
     }
-    assert!(
-        agent
-            .materialized_for_workflow_runtime("copy", "copy-ref", "room", "worktree")
-            .parent_agent_id()
-            .is_none()
-    );
+    assert!(agent
+        .materialized_for_workflow_runtime("copy", "copy-ref", "room", "worktree")
+        .parent_agent_id()
+        .is_none());
 }
 
 /// Protocol 1000: the parent edge, the spawn key and the user-only SetAgentParent.

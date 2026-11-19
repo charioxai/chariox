@@ -5,7 +5,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
 use crate::provider::AgentPermissionLevel;
-use crate::runtime::state::decision_holder::{UserOnly, user_only};
+use crate::runtime::state::decision_holder::{user_only, UserOnly};
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionCustomChoice,
     RuntimeInteractionKind, RuntimeInteractionLevel,

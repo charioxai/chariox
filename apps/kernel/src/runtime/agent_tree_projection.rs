@@ -15,7 +15,7 @@ use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
 use crate::session::{
-    CollaborationLevel, RuntimeSession, effective_agent_execution_config_with_parents,
+    effective_agent_execution_config_with_parents, CollaborationLevel, RuntimeSession,
 };
 
 /// What the latest task of an agent says about its turn.
@@ -352,17 +352,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(shape, vec![("c1", 1), ("c2", 1), ("g", 2)]);
         assert_eq!(tree.totals.live, 0, "idle nodes are not live");
-        assert!(
-            project_agent_tree(
-                &session,
-                session.agents(),
-                "missing",
-                &|_| false,
-                &|_| None,
-                &|_| None
-            )
-            .is_none()
-        );
+        assert!(project_agent_tree(
+            &session,
+            session.agents(),
+            "missing",
+            &|_| false,
+            &|_| None,
+            &|_| None
+        )
+        .is_none());
     }
 
     fn shape(tree: &AgentTree) -> Vec<(&str, u32)> {
@@ -397,14 +395,12 @@ mod tests {
             .filter(|node| node.agent_id == "x")
             .count();
         assert_eq!(x_nodes, 1, "listed once, as a descendant");
-        assert!(
-            session
-                .agents()
-                .iter()
-                .find(|a| a.id() == "x")
-                .unwrap()
-                .is_sub_agent()
-        );
+        assert!(session
+            .agents()
+            .iter()
+            .find(|a| a.id() == "x")
+            .unwrap()
+            .is_sub_agent());
     }
 
     #[test]

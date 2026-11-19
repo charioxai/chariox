@@ -80,13 +80,13 @@ impl KernelRuntimeOwnedState {
                     if r.overwrite =>
                 {
                     let name = r.name.as_deref().unwrap_or(&r.package.name);
-                    let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![
-                        self.config_projection
+                    let registry =
+                        crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![self
+                            .config_projection
                             .snapshot()
                             .workflow_code_artifact_root()
                             .join("rooms")
-                            .join(&r.session_id),
-                    ]);
+                            .join(&r.session_id)]);
                     registry
                         .get(name)?
                         .map(|artifact| artifact.metadata.provenance.created_by.metaagent_id)
@@ -350,13 +350,12 @@ impl KernelRuntimeOwnedState {
     }
 
     fn room_artifact_creator(&self, room: &str, name: &str) -> Result<Option<String>, DaemonError> {
-        let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![
-            self.config_projection
-                .snapshot()
-                .workflow_code_artifact_root()
-                .join("rooms")
-                .join(room),
-        ]);
+        let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![self
+            .config_projection
+            .snapshot()
+            .workflow_code_artifact_root()
+            .join("rooms")
+            .join(room)]);
         let artifact = registry.get(name)?.ok_or_else(|| {
             crate::runtime::room_tool_admission::denied("artifact is unavailable in this room")
         })?;
@@ -729,37 +728,32 @@ mod tests {
         app.sessions_mut()
             .archive_terminal_workflow_runs(&session_id)
             .expect("terminal run should archive");
-        assert!(
-            app.sessions()
-                .resolve_workflow_run_ref(&session_id, &run_id)
-                .is_err()
-        );
+        assert!(app
+            .sessions()
+            .resolve_workflow_run_ref(&session_id, &run_id)
+            .is_err());
         drop(app);
 
         let restored = crate::app::DaemonApp::bootstrap(config).expect("daemon should restart");
         let runtime = runtime_state_from_app(restored);
-        assert!(
-            runtime
-                .owned
-                .ensure_workflow_run_controlled_by_metaagent(
-                    &session_id,
-                    &run_id,
-                    "metaagent-owner",
-                    "get workflow run",
-                )
-                .is_ok()
-        );
-        assert!(
-            runtime
-                .owned
-                .ensure_workflow_run_controlled_by_metaagent(
-                    &session_id,
-                    &run_id,
-                    "other-metaagent",
-                    "get workflow run",
-                )
-                .is_err()
-        );
+        assert!(runtime
+            .owned
+            .ensure_workflow_run_controlled_by_metaagent(
+                &session_id,
+                &run_id,
+                "metaagent-owner",
+                "get workflow run",
+            )
+            .is_ok());
+        assert!(runtime
+            .owned
+            .ensure_workflow_run_controlled_by_metaagent(
+                &session_id,
+                &run_id,
+                "other-metaagent",
+                "get workflow run",
+            )
+            .is_err());
         assert_eq!(
             runtime
                 .owned

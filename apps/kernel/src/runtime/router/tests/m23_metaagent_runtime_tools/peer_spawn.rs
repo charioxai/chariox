@@ -1,5 +1,5 @@
 // Cross-Room children use the authenticated Room commands and local client reads.
-use super::subtree::{World, error_text, launch, room_command, world};
+use super::subtree::{error_text, launch, room_command, world, World};
 use super::*;
 use crate::provider::AgentPermissionLevel;
 use crate::transport::runtime_tools::RuntimeToolResult;
@@ -116,12 +116,10 @@ async fn clamp() {
         !raised.ok && error_text(&raised).contains("more authority than its parent"),
         "{raised:?}"
     );
-    assert!(
-        agents_of(&world, &room)
-            .await
-            .iter()
-            .all(|agent| agent.alias() != Some("px"))
-    );
+    assert!(agents_of(&world, &room)
+        .await
+        .iter()
+        .all(|agent| agent.alias() != Some("px")));
     let inherited = spawn_into(&world, "a", &room, "").await;
     assert!(inherited.ok, "{inherited:?}");
     let id = inherited.payload["response"]["agent"]["id"]
@@ -218,13 +216,11 @@ fn cross_room_spawn_from_a_child_keeps_the_same_tree() {
             Some(world.ids["b"].as_str()),
         );
         let listed = room_command(&world, "a", "agent children").await;
-        assert!(
-            listed.payload["response"]["children"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|child| child["alias"] == "px" && child["depth"] == 2)
-        );
+        assert!(listed.payload["response"]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|child| child["alias"] == "px" && child["depth"] == 2));
     });
 }
 
@@ -249,12 +245,10 @@ async fn other_owner() {
     // The room refuses a non-member before the spawn is admitted.
     let refused = spawn_into(&world, "a", &foreign, "").await;
     assert!(!refused.ok, "{refused:?}");
-    assert!(
-        agents_of(&world, &foreign)
-            .await
-            .iter()
-            .all(|agent| agent.alias() != Some("px"))
-    );
+    assert!(agents_of(&world, &foreign)
+        .await
+        .iter()
+        .all(|agent| agent.alias() != Some("px")));
     // The admission itself refuses a room of another owner for a member (a guest of that room).
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
         max_context_tokens: None,
@@ -320,12 +314,10 @@ async fn parse_refusals() {
             "{command}: {refused:?}"
         );
     }
-    assert!(
-        agents_of(&world, &room)
-            .await
-            .iter()
-            .all(|agent| agent.alias() != Some("px"))
-    );
+    assert!(agents_of(&world, &room)
+        .await
+        .iter()
+        .all(|agent| agent.alias() != Some("px")));
 }
 
 #[test]
@@ -344,12 +336,10 @@ async fn unknown_machine_refused() {
         .await;
         assert!(!refused.ok, "{flag}: {refused:?}");
     }
-    assert!(
-        agents_of(&world, &world.room)
-            .await
-            .iter()
-            .all(|agent| agent.alias() != Some("sx"))
-    );
+    assert!(agents_of(&world, &world.room)
+        .await
+        .iter()
+        .all(|agent| agent.alias() != Some("sx")));
 }
 
 #[test]
@@ -542,12 +532,10 @@ fn cross_room_spawn_is_controlled_by_its_parent() {
             let result = room_command(&world, "a", &command).await;
             assert!(result.ok, "{command}: {result:?}");
         }
-        assert!(
-            agents_of(&world, room)
-                .await
-                .iter()
-                .all(|agent| agent.id() != id)
-        );
+        assert!(agents_of(&world, room)
+            .await
+            .iter()
+            .all(|agent| agent.id() != id));
     });
 }
 
@@ -593,11 +581,9 @@ fn a_cross_room_peer_cannot_be_deleted_by_an_unrelated_agent() {
             !refused.ok && error_text(&refused).contains("agents above"),
             "{refused:?}"
         );
-        assert!(
-            agents_of(&world, other)
-                .await
-                .iter()
-                .any(|agent| agent.id() == peer.id())
-        );
+        assert!(agents_of(&world, other)
+            .await
+            .iter()
+            .any(|agent| agent.id() == peer.id()));
     });
 }
