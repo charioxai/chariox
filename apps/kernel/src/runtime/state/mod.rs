@@ -124,6 +124,7 @@ mod job_compute;
 mod jobs;
 mod leased_agent_file_serve;
 mod machine_acquisition;
+pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;

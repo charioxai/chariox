@@ -54,10 +54,28 @@ pub(crate) async fn execute(
             ))
         };
     };
+    let mut acquisition_hold = None;
     if matches!(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
+        // A machine acquired without asking that ended elsewhere frees its place before the limits apply.
+        if state.has_running_acquired_machines() {
+            if let ControlPlaneResponse::Machines { machines, .. } =
+                crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+                    profile.api_url.clone(),
+                    "/control-plane",
+                    cloud_request_body(
+                        &profile.account_id,
+                        credential,
+                        &ControlPlaneRequest::List {},
+                    ),
+                )
+                .await?
+            {
+                state.settle_ended_acquired_machines(&machines);
+            }
+        }
         let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
             profile.api_url.clone(),
             "/control-plane",
@@ -74,38 +92,69 @@ pub(crate) async fn execute(
                 "The connected service did not return its machine offer",
             ));
         };
-        state
+        let approval = state
             .approve_machine_acquisition(command, request, machine_allocation.as_ref())
             .await?;
-        if let Some(grant) = &grant {
-            state.authorize_external_request(grant, &request_shape)?;
-        } else if let Some(reach) = command.reach_caller_id() {
-            state.authorize_gateway_request(&reach, &request_shape)?;
-        }
-        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
-            (request, command.caller.caller_id.strip_prefix("job:"))
-        {
-            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
-            if job_ref != job_id
-                || command.session_id.as_deref() != Some(room.as_str())
-                || command.agent_id.as_deref() != Some(agent.as_str())
-                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
-                || command.caller.user_id.as_deref() != Some(owner.as_str())
-            {
-                return Err(unavailable(
-                    "control_plane_binding_invalid",
-                    "The accepted job no longer matches its Room, agent and owner",
-                ));
+        let still_allowed = (|| {
+            if let Some(grant) = &grant {
+                state.authorize_external_request(grant, &request_shape)?;
+            } else if let Some(reach) = command.reach_caller_id() {
+                state.authorize_gateway_request(&reach, &request_shape)?;
             }
+            if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+                (request, command.caller.caller_id.strip_prefix("job:"))
+            {
+                let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+                if job_ref != job_id
+                    || command.session_id.as_deref() != Some(room.as_str())
+                    || command.agent_id.as_deref() != Some(agent.as_str())
+                    || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                    || command.caller.user_id.as_deref() != Some(owner.as_str())
+                {
+                    return Err(unavailable(
+                        "control_plane_binding_invalid",
+                        "The accepted job no longer matches its Room, agent and owner",
+                    ));
+                }
+            }
+            Ok(())
+        })();
+        if let crate::runtime::state::Approval::WithoutAsking(hold) = approval {
+            if let Err(error) = still_allowed {
+                state.settle_acquisition_hold(hold, None);
+                return Err(error);
+            }
+            acquisition_hold = Some(hold);
         }
+        still_allowed?;
     }
-    let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+    let sent = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
         cloud_request_body(&profile.account_id, credential, request),
     )
-    .await
-    .map_err(
+    .await;
+    if let Some(hold) = acquisition_hold {
+        let allocation_ref = match &sent {
+            Ok(ControlPlaneResponse::Machine { allocation_ref, .. }) => {
+                Some(allocation_ref.as_str())
+            }
+            _ => None,
+        };
+        state.settle_acquisition_hold(hold, allocation_ref);
+    }
+    // A machine acquired without asking ends when a release or a status read finds it going away.
+    if let (
+        Ok(ControlPlaneResponse::Machine { state: machine, .. }),
+        ControlPlaneRequest::Release { allocation_ref, .. }
+        | ControlPlaneRequest::Get { allocation_ref },
+    ) = (&sent, request)
+    {
+        if machine == "deleting" || machine == "deleted" {
+            state.end_acquired_machine(allocation_ref, crate::session::unix_epoch_ms());
+        }
+    }
+    let mut result = sent.map_err(
         |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some(
                 "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",

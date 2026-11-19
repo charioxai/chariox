@@ -75,6 +75,7 @@ mod writer_fence;
 #[cfg(test)]
 mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
+pub(crate) mod acquired_machines;
 pub(crate) mod notification_target;
 mod steered_prompts;
 mod trigger_firings;
@@ -262,6 +263,7 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    AcquiredMachine(acquired_machines::AcquiredMachineWrite),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
@@ -503,6 +505,12 @@ impl DurableKernelStateStore {
         trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.trigger_firings",
             message: error.to_string(),
+        })?;
+        acquired_machines::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.acquired_machines",
+                message: error.to_string(),
+            }
         })?;
         let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
         let writer = DurableStateWriter::start(&path, Arc::clone(&outside_followed))?;
@@ -1936,6 +1944,9 @@ fn commit_durable_write_batch(
                 records,
                 sequence,
             } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            DurableWriteOperation::AcquiredMachine(write) => {
+                acquired_machines::apply(&transaction, write)
+            }
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
