@@ -144,9 +144,9 @@ pub(crate) async fn execute_get_provider_auth_status_request(
             .await;
         runtime_state.record_room_list_change();
     }
-    if let Some(profile) = after.filter(|profile| profile.auth_error.is_some()) {
+    if let Some(profile) = after {
         runtime_state
-            .notify_provider_account_sign_in(&profile, false)
+            .reconcile_provider_account_sign_in_notice(&profile)
             .await?;
     }
     result
@@ -509,6 +509,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
             }
         };
         let login = if authenticated {
+            let profile = runtime_state.provider_account_profile_registry().get(
+                owner_user_id,
+                "codex",
+                &record.account_profile,
+            )?;
+            runtime_state.clear_provider_account_sign_in_notice(&profile)?;
             let login = runtime_state.provider_login_process_store().set_state(
                 owner_user_id,
                 &request.login_id,

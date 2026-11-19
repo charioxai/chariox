@@ -138,6 +138,83 @@ pub(super) async fn check_native_copy(
     if let Ok(inbox) = foreign {
         assert!(!inbox.to_string().contains(id));
     }
+    // A stranded copy replaces the already-read advice with an unread recovery
+    // card. A successful sign-in clears it, and another expiry can notify again.
+    for _ in 0..2 {
+        target_profiles
+            .update_observation(
+                "local",
+                "codex",
+                id,
+                ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        source_request(
+            target_router,
+            serde_json::json!({"GetProviderAccountProfile":{
+                "provider":"codex", "account_profile":id
+            }}),
+        )
+        .await
+        .unwrap();
+        let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+            .await
+            .unwrap();
+        let card = inbox["PersonInbox"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|card| card["body"]["notice"]["action"]["account_profile"] == id)
+            .unwrap();
+        assert!(card["body"]["notice"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("Sign in again on"));
+        assert_eq!(card["body"]["notice"]["read"], false);
+        assert_eq!(card["body"]["notice"]["priority"], "high");
+        target_profiles
+            .update_observation(
+                "local",
+                "codex",
+                id,
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        source_request(
+            target_router,
+            serde_json::json!({"GetProviderAccountProfile":{
+                "provider":"codex", "account_profile":id
+            }}),
+        )
+        .await
+        .unwrap();
+        let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+            .await
+            .unwrap();
+        assert!(!inbox["PersonInbox"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|card| card["body"]["notice"]["action"]["account_profile"] == id));
+    }
+    source_profiles
+        .remove_registration("local", "codex", &profile.profile_id)
+        .unwrap();
+    assert_eq!(
+        target_profiles
+            .resolve_environment("local", "codex", id)
+            .unwrap(),
+        target_environment,
+        "an independent copy resolves without its source profile or kernel"
+    );
     assert!(!std::fs::read_dir(
         target_auth
             .parent()

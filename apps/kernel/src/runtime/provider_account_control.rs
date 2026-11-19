@@ -229,9 +229,14 @@ pub(crate) async fn execute_provider_account_request(
         );
     }
     if let Ok(LocalDaemonResponse::ProviderAccountProfile { profile }) = &response {
-        if profile.auth_error.is_some() {
+        runtime_state
+            .reconcile_provider_account_sign_in_notice(profile)
+            .await?;
+    }
+    if let Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles }) = &response {
+        for profile in profiles {
             runtime_state
-                .notify_provider_account_sign_in(profile, false)
+                .reconcile_provider_account_sign_in_notice(profile)
                 .await?;
         }
     }

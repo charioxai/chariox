@@ -235,16 +235,25 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
                 timeout,
                 reply,
             }) => {
-                aliases.insert(key, scope.clone());
-                let result = ensure(
-                    name,
-                    &mut endpoints,
-                    &mut unreaped,
-                    (scope, credential_revision),
-                    healthy,
-                    timeout,
-                    launch,
-                );
+                let previous = aliases.insert(key, scope.clone());
+                let result = (|| {
+                    if let Some(previous) = previous.filter(|previous| {
+                        previous != &scope && !aliases.values().any(|value| value == previous)
+                    }) {
+                        if let Some(endpoint) = endpoints.remove(&previous) {
+                            stop(name, endpoint, &mut unreaped)?;
+                        }
+                    }
+                    ensure(
+                        name,
+                        &mut endpoints,
+                        &mut unreaped,
+                        (scope, credential_revision),
+                        healthy,
+                        timeout,
+                        launch,
+                    )
+                })();
                 let _ = reply.send(result);
             }
             Ok(Command::Invalidate { key, reply }) => {

@@ -138,9 +138,6 @@ impl KernelRuntimeState {
             if !crate::provider::renewal_failure::renewal_failed(run.adapter_key(), message) {
                 return Ok(false);
             }
-            let Some(agent_id) = run.agent_instance_id() else {
-                return Ok(false);
-            };
             let owner = self.resolved_provider_account_owner_for_run(run).await?;
             let account = self.owned.provider_account_profiles.get(
                 &owner,
@@ -159,6 +156,9 @@ impl KernelRuntimeState {
             )?;
             self.notify_provider_account_sign_in(&account, false)
                 .await?;
+            let Some(agent_id) = run.agent_instance_id() else {
+                return Ok(false);
+            };
             let setup_token = run.adapter_key() == "claude"
                 && crate::provider::provider_account_credential_registered(
                     &owner,

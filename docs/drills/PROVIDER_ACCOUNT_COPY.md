@@ -1,8 +1,8 @@
 # MP-08 / MP-09 / MP-10 / MP-11 — independent provider account copy
 
-`CopyProviderAccountToKernel` is an explicit source-kernel operation. It is separate from credential-free owner Copy and copies exactly one authenticated Vault-backed Claude profile. The request contains `provider`, exact `account_profile`, stable `operation_id`, enrolled `target_kernel_id`, pinned `target_key_thumbprint`, and `replace` (false by default). The source caller must be its local or enrolled Cloud owner under existing kernel access authority.
+`CopyProviderAccountToKernel` is an explicit source-kernel operation. It is separate from credential-free owner Copy and copies exactly one authenticated Vault-backed Claude or native Codex profile. The request contains `provider`, exact `account_profile`, stable `operation_id`, enrolled `target_kernel_id`, pinned `target_key_thumbprint`, and `replace` (false by default). The source caller must be its local or enrolled Cloud owner under existing kernel access authority.
 
-The source checks the existing authenticated Cloud owner-peer directory, live relay key, advertised `provider_account_copy_v1` capability and peer protocol >=215 before resolving the selected Vault credential. The protected encrypted peer payload binds provider/profile, source/destination identities and keys, operation ID and replacement choice. No local response carries the credential. The target validates relay-bound owner/realm/key claims and its own enrollment, then verifies using official Claude. It stores under its own canonical provider-only Vault handle before atomically publishing the managed profile and safe receipt. No credential enters native profile files. Target and source remain independent.
+The source checks the existing authenticated Cloud owner-peer directory, live relay key, advertised `provider_account_copy_v1` capability and peer protocol >=215 before resolving the selected Vault credential. The protected encrypted peer payload binds provider/profile, source/destination identities and keys, operation ID and replacement choice. No local response carries the credential. The target validates relay-bound owner/realm/key claims and its own enrollment, then verifies using the official provider. It stores under its own canonical provider-only Vault handle before atomically publishing the managed profile and safe receipt. Claude tokens stay in the Vault. Codex credentials are verified in a private staging profile and published to the target native auth file; future launches use the provider-owned file, never the saved transfer. Target and source remain independent.
 
 The target derives a stable copy profile ID from source kernel/key/provider/profile and destination kernel. Existing profiles need a new operation with explicit replacement. Successful exact-operation retries return the saved receipt. Interrupted publication can retry after recovery; an orphan Vault handle is not a selectable authenticated profile. Verification failure leaves the previous profile and credential intact. Unlock Vaults through existing product controls; this operation does not solicit or accept passkeys or raw credentials.
 
@@ -24,7 +24,7 @@ MP-08 / MP-09 / MP-10 / MP-11: verification releases the profile registry lock a
 
 MP-08 / MP-09 / MP-10 / MP-11: local protocol 710 and peer protocol 274 add
 `ListProviderAccountCopyOffers` and `CopyProviderAccountFromKernel`. Offers are
-metadata for authenticated, Vault-backed Claude profiles on live, same-owner
+metadata for authenticated local profiles (same-kernel links, including while offline) and authenticated Vault-backed Claude or native Codex profiles on live, same-owner
 enrolled peers with pinned keys and `provider_account_copy_pull_v1`. They are
 separate from the receiving kernel's selectable local profile inventory. The relay metadata
 uses an explicit `copyable` flag; native authentication type retains its meaning.
@@ -57,3 +57,22 @@ checks metadata-only discovery and cancellation, accepts the shared approval,
 then removes the target registration and checks the source remains usable.
 Real acceptance still requires all five scenarios in
 [the target-scope validation plan](../PROVIDER_ACCOUNT_TARGET_SCOPE_VALIDATION_PLAN.md).
+
+## Local 1072: Codex copies, same-kernel links and sign-in notices
+
+Cross-kernel copies remain usable without their source kernel. Same-kernel requests use the existing transaction/receipt to register a link to the same credential; they do not fork a refresh lineage. Installed Codex retries preserve target credentials after rotation or a new device login. Profile auth failures expose a safe `auth_error`.
+
+The existing person Inbox notice carries optional `action: {kind: "provider_sign_in", kernel_id, provider, account_profile, label}`. After copying, it advises a separate target-machine login; after expiry it offers **Sign in again on <machine>**. The client dispatches existing StartProviderLogin on action.kernel_id. The Cloud button is a coordinated change, not implemented in this OSS repository. Read/snooze remain in the existing Inbox store. A recovery notice replaces read copy advice and becomes unread; successful authentication clears the recovery item.
+
+| Cell | Required live scenario |
+| --- | --- |
+| K1 | Copy to another kernel works immediately, with target sign-in advice visible at DPR1 and DPR2. |
+| K2 | Target device sign-in creates its own login; both accounts work across rotation on either side. |
+| K3 | A stranded interim copy shows Sign in again, routes to that machine and recovers. |
+| K4 | Same-kernel linked profiles survive rotation using one credential/helper. |
+| K5 | Remove the source kernel; targets work until their own expiry, then request sign-in. |
+| 5 | Same-operation retries preserve rotated target credentials; replace=false conflicts are actionable. |
+| 6 | Busy source, reload, web and CLI follow the same copy/link path. |
+| 7 | Missing/unauthenticated sources fail clearly without exposing a half-installed profile. |
+
+Run builds/tests through cargo-slot.sh. Run drill kernels, relay and Chrome on buildfarm machines, with isolated CHARIOX_HOME. A synthetic public-router/encrypted-relay regression proves transaction behavior; it does not replace real provider rotation or the web cells above.

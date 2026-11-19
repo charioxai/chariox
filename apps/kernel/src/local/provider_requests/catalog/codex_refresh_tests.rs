@@ -240,4 +240,80 @@ fn automatic_refresh_keeps_pending_login_server() {
         saved.get("auth_error").is_none(),
         "successful validation clears the failure"
     );
+    let binding = crate::provider_account_copy::ProviderAccountCopyBinding {
+        operation_id: "cache-alias".into(),
+        provider: "codex".into(),
+        source_profile_id: linked.profile_id.clone(),
+        source_kernel_id: "local-kernel".into(),
+        target_kernel_id: "local-kernel".into(),
+        source_key_thumbprint: "a".repeat(64),
+        target_key_thumbprint: "a".repeat(64),
+        replace: false,
+    };
+    let receipt = registry
+        .install_account_copy(
+            &config,
+            "local",
+            &binding,
+            &crate::provider_account_copy::ProviderAccountCopyCredential::new(String::new()),
+        )
+        .unwrap();
+    let _alias_cleanup = Cleanup(root.join("unused-alias"), receipt.account_profile.clone());
+    let launches = std::fs::read_to_string(&log).unwrap().lines().count();
+    for account_profile in [&receipt.account_profile, &linked.profile_id] {
+        provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "codex".into(),
+                account_profile: account_profile.clone(),
+            },
+            &config,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        launches,
+        "two linked profiles reuse one app-server for the same native credential"
+    );
+    std::fs::write(
+        linked_home.join("auth.json"),
+        r#"{"tokens":{"access_token":"synthetic-accepted-login-rotated"}}"#,
+    )
+    .unwrap();
+    for account_profile in [&linked.profile_id, &receipt.account_profile] {
+        let response = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "codex".into(),
+                account_profile: account_profile.clone(),
+            },
+            &config,
+        )
+        .unwrap();
+        assert!(
+            matches!(response, LocalDaemonResponse::ProviderAuthStatus { status } if status.auth_state == "authenticated")
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        launches + 1,
+        "rotation retires the shared cached helper once, not once per linked profile"
+    );
+    registry
+        .mark_logged_out("local", "codex", &receipt.account_profile)
+        .unwrap();
+    for account_profile in [&linked.profile_id, &receipt.account_profile] {
+        let profile = registry.get("local", "codex", account_profile).unwrap();
+        assert_eq!(
+            profile.auth_state,
+            crate::account_profile::ProviderAccountAuthState::NotConfigured
+        );
+        assert!(serde_json::to_value(profile)
+            .unwrap()
+            .get("auth_error")
+            .is_none());
+    }
 }

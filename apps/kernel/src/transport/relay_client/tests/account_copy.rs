@@ -200,6 +200,22 @@ fn account_copy_same_kernel_links_share_the_source_credential() {
                 "operation_id":format!("link-{provider}"),"target_kernel_id":config.daemon_id,
                 "target_key_thumbprint":key,"replace":false
             }});
+            let offers = source_request(
+                &router,
+                serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+            )
+            .await
+            .unwrap();
+            assert!(
+                offers["ProviderAccountCopyOffers"]["offers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|offer| offer["provider"] == provider
+                        && offer["account_profile"] == source.profile_id
+                        && offer["source_kernel_id"] == config.daemon_id),
+                "an authenticated local profile can be linked while relay is disconnected"
+            );
             let response = source_request(&router, request.clone()).await.unwrap();
             let id = response["ProviderAccountCopied"]["receipt"]["account_profile"]
                 .as_str()
