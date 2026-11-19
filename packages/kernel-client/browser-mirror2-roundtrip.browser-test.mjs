@@ -192,6 +192,14 @@ test('MP-10 M2: the renderer paints the prefix and retains it while ordinary chi
     assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
   }));
 
+// A density-2 viewer draws a srcset image from its 2x candidate at that candidate's intrinsic size (the kernel's page draws at 1).
+test('MP-10: a density-2 viewer draws the 2x srcset candidate at its density-2 size',()=>roundtrip(
+  '<!doctype html><img id="x" srcset="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMCIgaGVpZ2h0PSI0MCI+PHBhdGggZmlsbD0iI2ZmMDAwMCIgZD0iTTAgMGgzMHY0MEgweiIvPjwvc3ZnPg== 1x, data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MCIgaGVpZ2h0PSI4MCI+PHBhdGggZmlsbD0iIzAwMDBmZiIgZD0iTTAgMGg2MHY4MEgweiIvPjwvc3ZnPg== 2x">','',async({page,next,apply})=>{
+    const drawn=()=>page.evaluate(()=>{const image=window.r.frame.contentDocument.getElementById('x');const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;});
+    for(let n=0;n<20&&!(await drawn());n++)await apply(await next());
+    assert.deepEqual(await drawn(),[30,'0000ff']);
+  },{dpr:2}));
+
 // MP-08/MP-10/MP-11 M2: WHATWG's explanatory title attributes contain a
 // javascript: literal away from the start; the strict client rejects them.
 test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',()=>roundtrip(

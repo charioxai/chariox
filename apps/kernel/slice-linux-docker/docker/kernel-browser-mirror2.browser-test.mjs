@@ -1133,6 +1133,28 @@ for (const picture of [false, true]) test(`MP-10: a lazy ${picture ? 'picture' :
     assert(delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee')), 'MP-10: the mirrored image key has the selected candidate bytes');
   }, { '/candidate.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#c0ffee" d="M0 0h30v40H0z"/></svg>' } }));
 
+// The kernel's page draws at density 1 (the owned desktop); a viewer at density 2 draws each image from the candidate
+// the page would pick at 2, with that density (its intrinsic size), as a page on a density-2 screen.
+const DENSITY_IMAGES = `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40"><img id="w" srcset="/one.svg 30w, /two.svg 60w" sizes="(max-width: 10px) 5px, calc(2 * 10px + .625em)"><picture><source srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>`;
+for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer gets each srcset image's density-${scale} candidate and its density`, () => mirrored(DENSITY_IMAGES, async ({ next }) => {
+    const snapshot = await next(), images = rows(snapshot.nodes).filter(row => row.tag === 'img'), delivered = [...snapshot.resources], keys = new Map(images.map(row => [row.id, row.res]));
+    const color = key => { const resource = delivered.find(resource => resource.key === key); return resource && /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]; };
+    for (let i = 0; i < 20 && images.some(row => !color(keys.get(row.id))); i++) { const packet = await next(500); for (const op of packet.ops) if (op.op === 'res') keys.set(op.id, op.res); delivered.push(...packet.resources); }
+    assert.deepEqual(images.map(row => [row.attrs.id, color(keys.get(row.id)), row.attrs['chariox-density'] ?? null]), ['x', 'w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]));
+  }, { '/one.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#ff0000" d="M0 0h30v40H0z"/></svg>' }, '/two.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#0000ff" d="M0 0h30v40H0z"/></svg>' }, '/fallback.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#00ff00" d="M0 0h30v40H0z"/></svg>' } }, { device_scale_factor: scale }));
+
+// A srcset change re-picks at the viewer's density: the new candidate's key travels with its density.
+test("MP-10: a srcset change at viewer density 2 sends the new density-2 candidate and its density", () => mirrored(
+  `<img id="x" src="/one.svg" width="30" height="40">`, async ({ next, evaluate }) => {
+    const image = rows((await next()).nodes).find(row => row.attrs.id === 'x');
+    assert.equal(image.attrs['chariox-density'] ?? null, null);
+    await evaluate("document.getElementById('x').srcset = '/one.svg 1x, /two.svg 2x'; true");
+    const ops = []; for (let i = 0; i < 20 && !ops.some(op => op.op === 'res' && op.id === image.id); i++) ops.push(...(await next(500)).ops);
+    const res = ops.findLast(op => op.op === 'res' && op.id === image.id), density = ops.findLast(op => op.op === 'attr' && op.id === image.id && op.name === 'chariox-density');
+    assert.notEqual(res?.res, image.res, 'MP-10: the image takes a new key');
+    assert.equal(density?.value, '2');
+  }, { '/one.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#ff0000" d="M0 0h30v40H0z"/></svg>' }, '/two.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#0000ff" d="M0 0h30v40H0z"/></svg>' } }, { device_scale_factor: 2 }));
+
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");

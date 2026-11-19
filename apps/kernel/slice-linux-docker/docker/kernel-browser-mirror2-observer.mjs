@@ -128,7 +128,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const SHADOW_HOSTS = new Set('article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
-    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined chariox-href'.split(' '));
+    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined chariox-href chariox-density'.split(' '));
     // Attribute denylist (audit 2026-10-10): every other attribute travels. Names the UA renders or
     // exposes keep values up to 64 KB; any other value up to 1 KB. Credential-like names never travel.
     const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
@@ -377,7 +377,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); reportedRequirements.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); densityOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); reportedRequirements.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -389,7 +389,87 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A lazy image Chromium has not started loading has no currentSrc yet, but it is laid out as an image (by its
     // width/height), never as its alt text: its src travels as the key until its bytes exist.
     // The capture-phase image load handler above rechecks a late currentSrc selection without an attribute mutation.
-    const imageSource = node => node.currentSrc || node.src;
+    const imageSource = node => imageChoice(node).url;
+    // The kernel's page draws at its own density (1 on the owned desktop), the viewer at the subscription's: an image
+    // with candidates is drawn from the one Blink picks at the viewer's density (a density-2 viewer drew the 1x one
+    // blurred), and that candidate's density travels as inert `chariox-density`, the viewer's intrinsic size for it.
+    let viewerDensity = 0;
+    const IMAGE_TYPES = /^image\/(png|apng|jpeg|jpg|pjpeg|gif|webp|avif|svg\+xml|bmp|x-icon|vnd\.microsoft\.icon)$/i;
+    // Comma-separated parts outside parentheses (a sizes list).
+    const topLevel = text => { const out = []; let depth = 0, from = 0; for (let i = 0; i < text.length; i++) { if (text[i] === '(') depth++; else if (text[i] === ')') depth--; else if (text[i] === ',' && !depth) { out.push(text.slice(from, i)); from = i + 1; } } out.push(text.slice(from)); return out; };
+    // HTML srcset parsing: a URL is a run of non-space (trailing commas end it), descriptors run to a comma outside parentheses.
+    const srcsetEntries = text => {
+      const out = []; let i = 0;
+      while (i < text.length) {
+        while (i < text.length && /[\s,]/.test(text[i])) i++;
+        if (i >= text.length) break;
+        let from = i; while (i < text.length && !/\s/.test(text[i])) i++;
+        let url = text.slice(from, i), descriptors = '';
+        if (url.endsWith(',')) url = url.replace(/,+$/, '');
+        else { from = i; let depth = 0; while (i < text.length && (text[i] !== ',' || depth)) { if (text[i] === '(') depth++; else if (text[i] === ')') depth--; i++; } descriptors = text.slice(from, i).trim(); i++; }
+        const descriptor = descriptors ? descriptors.split(/\s+/).find(part => /^\d*\.?\d+[wx]$/.test(part)) : '1x';
+        if (url && descriptor) out.push({ url, value: Number(descriptor.slice(0, -1)), unit: descriptor.at(-1) });
+      }
+      return out;
+    };
+    // A sizes length: a plain length or a calc() of lengths and numbers (em is the initial 16px, as in sizes).
+    const lengthPx = (text, node) => {
+      if (text === 'auto') return node.getBoundingClientRect().width || null;
+      if (text === '0') return 0;
+      const unit = { px: 1, vw: innerWidth / 100, vh: innerHeight / 100, vmin: Math.min(innerWidth, innerHeight) / 100, vmax: Math.max(innerWidth, innerHeight) / 100, em: 16, rem: 16 };
+      const amount = (token, bare) => { const match = /^(\d*\.?\d+)([a-z]*)$/i.exec(token ?? ''); return !match ? NaN : match[2] ? match[1] * (unit[match[2].toLowerCase()] ?? NaN) : bare ? Number(match[1]) : NaN; };
+      if (!/^calc\(.*\)$/i.test(text)) { const value = amount(text, false); return Number.isFinite(value) ? value : null; }
+      const tokens = text.slice(4).match(/\d*\.?\d+[a-z]*|\S/gi) ?? []; let at = 0;
+      const factor = () => { const token = tokens[at++]; if (token !== '(') return amount(token, true); const value = sum(); return tokens[at++] === ')' ? value : NaN; };
+      const product = () => { let value = factor(); while (tokens[at] === '*' || tokens[at] === '/') value = tokens[at++] === '*' ? value * factor() : value / factor(); return value; };
+      const sum = () => { let value = product(); while (tokens[at] === '+' || tokens[at] === '-') value = tokens[at++] === '+' ? value + product() : value - product(); return value; };
+      const value = sum(); return at === tokens.length && Number.isFinite(value) ? value : null;
+    };
+    // The source size: the first sizes entry whose media matches and whose length parses; else 100vw.
+    const sourceSize = (sizes, node) => {
+      for (const entry of topLevel(sizes ?? '')) {
+        const text = entry.trim(); if (!text) continue;
+        let at = text.length;
+        if (text.endsWith(')')) { let depth = 0; do { at--; if (text[at] === ')') depth++; else if (text[at] === '(') depth--; } while (at > 0 && depth); while (at > 0 && /[\w-]/.test(text[at - 1])) at--; }
+        else at = text.search(/\S+$/);
+        const media = text.slice(0, at).trim(), size = lengthPx(text.slice(at), node);
+        if (size !== null && size >= 0 && (!media || matchMedia(media).matches)) return size;
+      }
+      return innerWidth;
+    };
+    // An image's candidates with their densities: its picture's first matching source, else its own srcset (with src as 1x).
+    const imageCandidates = node => {
+      let set = null;
+      for (const source of node.parentElement?.localName === 'picture' ? node.parentElement.children : []) {
+        if (source === node) break;
+        const media = source.getAttribute('media'), type = source.getAttribute('type');
+        if (source.localName !== 'source' || !source.getAttribute('srcset') || media && !matchMedia(media).matches || type && !IMAGE_TYPES.test(type.trim())) continue;
+        set = { srcset: source.getAttribute('srcset'), sizes: source.getAttribute('sizes'), src: null }; break;
+      }
+      set ??= node.getAttribute('srcset') ? { srcset: node.getAttribute('srcset'), sizes: node.getAttribute('sizes'), src: node.getAttribute('src') } : null;
+      if (!set) return null;
+      const entries = srcsetEntries(set.srcset), widths = entries.some(entry => entry.unit === 'w'), size = widths ? sourceSize(set.sizes, node) : 1;
+      const out = entries.map(entry => ({ url: entry.url, density: entry.unit === 'x' ? entry.value : entry.value / size })).filter(entry => entry.density > 0 && Number.isFinite(entry.density));
+      if (set.src && !widths && !out.some(entry => entry.density === 1)) out.push({ url: set.src, density: 1 });
+      return out.length ? out : null;
+    };
+    // Blink's pick: the lowest density at or above the screen's, or the one below when their geometric mean exceeds it.
+    const imageChoice = node => {
+      const candidates = imageCandidates(node), own = node.currentSrc || node.src;
+      if (!candidates) return { url: own, density: 1 };
+      const target = viewerDensity || devicePixelRatio;
+      if (target === devicePixelRatio) {
+        const used = own && candidates.find(entry => { try { return new URL(entry.url, node.baseURI).href === own; } catch { return false; } });
+        return { url: own, density: used?.density ?? 1 };
+      }
+      const sorted = candidates.sort((a, b) => a.density - b.density);
+      let at = sorted.findIndex(entry => entry.density >= target); if (at < 0) at = sorted.length - 1;
+      if (at > 0 && Math.sqrt(sorted[at - 1].density * sorted[at].density) > target) at--;
+      return sorted[at];
+    };
+    // The `chariox-density` value each image record last sent.
+    const densityOf = new Map();
+    const densityOp = (id, attrs, ops) => { const value = attrs['chariox-density'] ?? null; if (value === (densityOf.get(id) ?? null)) return; if (value) densityOf.set(id, value); else densityOf.delete(id); ops.push({ op: 'attr', id, name: 'chariox-density', value }); };
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [width, height] = layoutSize(node);
@@ -439,6 +519,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         const own = node.getAttribute('href');
         if (own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
       }
+      if (html && node.localName === 'img') { const { density } = imageChoice(node); if (density !== 1) attrs['chariox-density'] = String(density); }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
       if (viewportHost(node)) attrs.style = `${attrs.style ? `${attrs.style};` : ''}position:fixed!important;inset:0 auto auto 0!important`;
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
@@ -560,6 +641,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         walk.then = { id, depth, nested }; return record;
       }
       if (ns === HTML && tag === 'img' && imageSource(node)) { const key = resource(imageSource(node), base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
+      if (record.attrs['chariox-density']) densityOf.set(id, record.attrs['chariox-density']);
       if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
       if (stateful(node)) stateRecord(node, record);
@@ -822,7 +904,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = (known = [], options = {}) => {
-      retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null;
+      retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null; viewerDensity = [1, 2].includes(options.density) ? options.density : 0;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
@@ -861,8 +943,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (node.nodeType === 3) { if (node.data !== old.data) ops.push({ op: 'text', id: oldId, text: node.data }); }
       else {
         const before = attributes(old, old.baseURI), after = attributes(node, node.baseURI);
-        for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name]) ops.push({ op: 'attr', id: oldId, name, value: after[name] ?? null });
-        if (node.localName === 'img') imageOp(node, oldId, ops);
+        for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name] && name !== 'chariox-density') ops.push({ op: 'attr', id: oldId, name, value: after[name] ?? null });
+        if (node.localName === 'img') { densityOp(oldId, after, ops); imageOp(node, oldId, ops); }
         if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(oldId); sentStates.delete(oldId); }
         if (node.scrollLeft || node.scrollTop) ops.push({ op: 'scroll', id: oldId, scroll: [node.scrollLeft, node.scrollTop] });
       }
@@ -953,12 +1035,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if ((kind === 'mask') !== secretElement(node)) { dirty.replace.add(node); continue; }
         if (kind === 'mask') continue; // protected boxes retain only their admitted mask geometry
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
-        if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
+        const image = node.localName === 'img' && (names.has('src') || names.has('srcset') || names.has('sizes'));
+        if (image) imageOp(node, id, ops);
         if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
         // A new input type, or a select gaining/losing `multiple` (its options become/stop being form controls), re-serializes.
         // Pages re-set the same type on every render (github.com): that keeps the viewer's node (and its focus/caret).
         if ((node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) && controlShape(node) !== controlShapes.get(id)) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
+        if (image) densityOp(id, attrs, ops);
         for (const name of names) {
           if (name === 'href' || name === 'xlink:href') {
             // An SVG image's external URL travels as a resource key (the viewer sets href to the bytes); a
@@ -1434,7 +1518,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
     const resourceEntries = () => [...resourceDocuments()].flatMap(doc => { try { return doc.defaultView?.performance.getEntriesByType('resource') ?? []; } catch { return []; } });
     const resourceImages = () => imageNodes.values();
-    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
+    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) { names.add(img.currentSrc); try { names.add(new URL(imageSource(img), img.baseURI).href); } catch {} } return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
     // Changes when the page loads something (an image may complete without a new entry).
     const loadedCount = () => { let complete = 0; for (const img of resourceImages()) if (img.complete) complete++; return timed.size + resourceEntries().length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS

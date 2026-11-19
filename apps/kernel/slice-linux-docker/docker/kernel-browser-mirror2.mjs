@@ -206,11 +206,16 @@ export class Mirror2 {
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
   // Protocol 629: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
+  // `density`: the viewer's device scale factor where it is not the page's (see viewerDensity).
   snapshotOptions(stream, world) {
-    if (!stream.viewportFirst && !stream.visitedLinks) return null;
+    const density = this.viewerDensity(stream);
+    if (!stream.viewportFirst && !stream.visitedLinks && !density) return null;
     let origin = null; try { origin = new URL(world.frame?.url).origin; } catch {}
-    return { ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
+    return { ...(density ? { density } : {}), ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
   }
+  // The viewer's density where the page draws at another (the owned desktop's page draws at 1): its images draw
+  // from the candidates the page would pick at the viewer's.
+  viewerDensity(stream) { return stream.density !== undefined && stream.density !== this.host.viewport?.().device_scale_factor ? stream.density : null; }
   // Protocol 629: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
   visited(origin, url) {
     const expression = stream => `${stream.world.ref}.visited(${JSON.stringify(origin)},${JSON.stringify(url)})`;

@@ -92,10 +92,11 @@ export class MirrorFrames {
   // Attach every foreign frame named in this packet's records; others become
   // opaque regions. Returns rebased child snapshot records (document under owner).
   // Child snapshot with the frame's Vault fill targets protected by identity.
-  async snapshot(child, loaderId, policy, tab, slot) {
+  async snapshot(child, loaderId, policy, tab, slot, stream) {
     child.documentId = loaderId;
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
-    const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`, false, undefined, true);
+    const density = this.mirror.viewerDensity(stream);
+    const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot(${density ? `[],${JSON.stringify({ density })}` : ''})`, false, undefined, true);
     delete snap.full_pending; // a child frame sends its sheets whole
     await this.mirror.markClosedHosts(child, snap);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
@@ -120,7 +121,7 @@ export class MirrorFrames {
     const slot = ++stream.frameSlot;
     const child = await this.world(host, frame, stream.id);
     const loaderId = await this.loaderId(child);
-    const snap = await this.snapshot(child, loaderId, policy, tab, slot);
+    const snap = await this.snapshot(child, loaderId, policy, tab, slot, stream);
     const entry = { slot, owner, child, loaderId, hostSlot, depth, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
     stream.frames.set(owner, entry); stream.frameSlots.set(slot, entry);
     const records = snap.nodes.map(r => rebaseRecord(r, slot));
