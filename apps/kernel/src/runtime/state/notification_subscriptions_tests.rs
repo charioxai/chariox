@@ -132,10 +132,17 @@ async fn the_table_lists_a_subscription_with_its_pick_and_counters_and_pause_hol
     .await;
     review_requested(&rig, "pr-976-resumed", 976);
     rig.pass().await;
+    // The agent is busy, so the resumed event joins the prompt that already waits.
+    let queued = rig.queued_prompts();
     assert_eq!(
-        rig.queued_prompts().len(),
-        2,
-        "resume delivers the next event"
+        queued.len(),
+        1,
+        "resume delivers the next event: {queued:?}"
+    );
+    assert!(
+        queued[0].contains("2 notifications arrived while you were busy:"),
+        "resume delivers the next event: {}",
+        queued[0]
     );
     let row = rig.rows().remove(0);
     assert_eq!(

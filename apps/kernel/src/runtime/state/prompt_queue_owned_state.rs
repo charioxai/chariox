@@ -2048,6 +2048,73 @@ impl KernelRuntimeOwnedState {
         Ok(Some(prompt))
     }
 
+    /// While the agent is busy, an occurrence of a notification trigger joins that
+    /// trigger's prompt already waiting in the agent's queue instead of queueing a turn
+    /// of its own. Returns the prompt that now delivers it and whether it joined just
+    /// now, or `None` when no such prompt waits and the occurrence needs its own.
+    pub(super) fn join_queued_agent_notification(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        trigger_id: &str,
+        notification: crate::session::QueuedNotification,
+        deadline_ms: u64,
+    ) -> Result<Option<(String, bool)>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(trigger) = session
+            .agent_triggers()
+            .iter()
+            .find(|trigger| trigger.id() == trigger_id)
+        else {
+            return Ok(None);
+        };
+        // A workflow's responsible agent gets the kernel's own text per run; a steering
+        // trigger joins the running turn instead of waiting.
+        if trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
+            || trigger.responsible_for().is_some()
+        {
+            return Ok(None);
+        }
+        let base = trigger.prompt().to_string();
+        let Some((prompt, changed)) = self.prompt_state_owner.join_queued_notification(
+            &session,
+            agent_id,
+            trigger_id,
+            notification,
+            deadline_ms,
+            |notifications| {
+                format!(
+                    "{base}\n\n{}",
+                    super::agent_inbox_wake_text::coalesced_notification_notice(notifications)
+                )
+            },
+        ) else {
+            return Ok(None);
+        };
+        if changed {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.mirror_prompt_owner_agent_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            crate::logging::info_with_fields(
+                "daemon.agent_notifications",
+                "notification joined the agent's queued notification prompt",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "trigger_id": trigger_id,
+                    "prompt_id": prompt.id(),
+                    "occurrences": prompt.queued_notifications().len(),
+                }),
+            );
+        }
+        Ok(Some((prompt.id().to_string(), changed)))
+    }
+
     pub(super) fn update_queued_prompt(
         &self,
         session_id: &str,

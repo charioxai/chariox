@@ -130,7 +130,7 @@ pub use types::{
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
 };
-pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
+pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification};
 pub(crate) use workflow_definition::{
     WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
 };

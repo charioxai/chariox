@@ -226,6 +226,7 @@ impl SessionService {
             prompt: trigger.prompt().into(),
             busy_policy: trigger.busy_policy(),
             responsible: trigger.responsible_for().is_some(),
+            notification: None,
         }))
     }
 
@@ -311,6 +312,7 @@ impl SessionService {
                         prompt: trigger.prompt().to_string(),
                         busy_policy: trigger.busy_policy(),
                         responsible: false,
+                        notification: None,
                     });
                 }
             }
@@ -385,6 +387,22 @@ impl SessionService {
         };
         trigger.defer_dispatch(now_ms);
         Ok(Some(trigger.clone()))
+    }
+
+    pub(crate) fn count_agent_trigger_joined_occurrence(
+        &mut self,
+        session_id: &str,
+        trigger_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.agent_trigger_session_mut(session_id)?;
+        if let Some(trigger) = session
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|trigger| trigger.id() == trigger_id)
+        {
+            trigger.count_joined_occurrence();
+        }
+        Ok(())
     }
 
     pub(crate) fn mark_agent_trigger_coalesced(

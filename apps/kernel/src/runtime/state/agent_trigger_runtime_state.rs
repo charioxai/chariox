@@ -297,6 +297,7 @@ impl KernelRuntimeState {
             prompt: delivery.prompt().to_string(),
             busy_policy: delivery.busy_policy(),
             responsible: false,
+            notification: None,
         };
         self.deliver_agent_trigger_prompt(
             &dispatch,
@@ -647,6 +648,10 @@ impl KernelRuntimeState {
             scheduled_context,
             &scheduled_manifest_entry,
         ));
+        let prompt = match &dispatch.notification {
+            Some(notification) => prompt.with_queued_notification(notification.clone()),
+            None => prompt,
+        };
         let prompt = if origin == crate::session::PromptOrigin::Notification {
             if let Some(payload) = &dispatch.payload {
                 use sha2::{Digest, Sha256};
