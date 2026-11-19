@@ -145,6 +145,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_promotions(prompt_id TEXT PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
@@ -1060,6 +1061,36 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
+
+/// The wake rows and their promoted prompt become durable in the same transaction.
+pub(super) fn record_prompt_state_in(
+    tx: &Transaction<'_>,
+    state: &crate::durable_prompt_state::DurablePromptStateEventPayload,
+) -> rusqlite::Result<()> {
+    let Some(prompt) = state
+        .active_prompt
+        .as_ref()
+        .filter(|prompt| !prompt.inbox_wakes().is_empty())
+    else {
+        return Ok(());
+    };
+    if tx.execute(
+        "INSERT OR IGNORE INTO agent_inbox_promotions(prompt_id) VALUES(?1)",
+        [prompt.id()],
+    )? == 0
+    {
+        return Ok(());
+    }
+    delivery::admit_promoted_wakes(
+        tx,
+        &state.session_id,
+        &state.agent_id,
+        prompt.id(),
+        prompt.inbox_wakes(),
+    )
+    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
 pub(super) fn execute(
     db: &mut Connection,
     request: Request,
@@ -1670,6 +1701,7 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
     e.sequence = tx.last_insert_rowid() as u64;
+    e.arrived_at_ms = Some(crate::session::unix_epoch_ms());
     save_event(tx, &e)?;
     if let Some(task) = e.occurrence_id.strip_prefix("child-finished-") {
         tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
@@ -1812,6 +1844,7 @@ pub(crate) fn occurrence(
         prompt_id: None,
         target_prompt_id: None,
         provider_run_id: None,
+        arrived_at_ms: None,
         attempted_at_ms: None,
         submit_epoch: None,
         resumed_at_ms: None,

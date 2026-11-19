@@ -2085,6 +2085,7 @@ fn commit_durable_write_batch(
                                 payload_json,
                             )
                             .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        agent_lifecycle::record_prompt_state_in(&transaction, &prompt_state)?;
                         workflow_notifications::agent_lineage::record_prompt_state_in(
                             &transaction,
                             &prompt_state,
