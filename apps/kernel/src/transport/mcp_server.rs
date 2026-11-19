@@ -188,6 +188,7 @@ async fn handle_http_request_inner(
     match *request.method() {
         Method::GET => Ok(catalog_notification_stream(
             router,
+            &catalogs,
             request.headers(),
             shutdown,
         )),
@@ -200,11 +201,12 @@ async fn handle_http_request_inner(
 /// One authenticated GET stream carries both invalidation sources. The
 /// run-scoped stream admits the connection (run identity, stream capacity,
 /// server shutdown) and signals runtime catalog refreshes; the registry stream
-/// compares this token's catalog after grant and registration changes. Both
+/// forwards the catalog monitor's changes to this token's listing. Both
 /// open with an immediate frame, delivered together, and the merged stream
 /// closes with the run-scoped one.
 fn catalog_notification_stream(
     router: Arc<CommandRouter>,
+    catalogs: &catalog::CatalogMonitor,
     headers: &hyper::HeaderMap,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Response<HttpBody> {
@@ -214,7 +216,7 @@ fn catalog_notification_stream(
     if scoped.status() != StatusCode::OK {
         return scoped;
     }
-    let registry = catalog::stream_response(router, headers);
+    let registry = catalog::stream_response(catalogs, headers);
     if registry.status() != StatusCode::OK {
         return scoped;
     }
@@ -496,7 +498,7 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let previous_catalog = catalog::snapshot(&router, auth_token);
+            let previous_catalog = catalog::listing(&router, auth_token).await;
             let result = router
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
@@ -526,8 +528,9 @@ async fn handle_json_rpc_value(
                 Ok(result) => {
                     let (content, structured_content) =
                         tool_content::runtime_tool_content(result.payload);
+                    let changed = previous_catalog != catalog::listing(&router, auth_token).await;
                     Ok(catalog::tool_response(
-                        previous_catalog != catalog::snapshot(&router, auth_token),
+                        changed,
                         serde_json::json!({
                             "jsonrpc": JSON_RPC_VERSION,
                             "id": id,

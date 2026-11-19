@@ -6,19 +6,31 @@ use std::sync::OnceLock;
 use futures_util::stream;
 use http_body_util::StreamBody;
 use hyper::body::Frame;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use super::*;
 
-type Signature = Vec<(String, String, Value)>;
+type Listing = Vec<(String, String, Value)>;
 
-/// Arms continuations and reloads for real catalog changes; notification
-/// streams compare the full listed `snapshot` instead. It runs beside the
-/// accept loop: computing every running provider's catalog can take seconds on
-/// a busy kernel, and a provider whose first connection waits behind it starts
-/// its turn without its tools.
+/// How often the monitor compares catalogs without a change hint: some
+/// changes (a sudo window closing) send none.
+const UNHINTED_REFRESH: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct Catalog {
+    listing: Listing,
+    /// Wakes this run's notification streams when its listing changes; dropped
+    /// with the entry when the run ends, which ends its streams.
+    listed: watch::Sender<()>,
+}
+
+/// The kernel's one view of every running provider's catalog. It computes
+/// each catalog once per change, beside the accept loop and off the async
+/// runtime: on a busy kernel that takes seconds, and neither a provider's
+/// first connection nor its open notification stream may wait for it. A
+/// change to a run's listing wakes its streams; a change outside the sudo
+/// tools also arms the run's reload or continuation.
 pub(super) struct CatalogMonitor {
-    catalogs: std::sync::Mutex<std::collections::BTreeMap<String, Signature>>,
+    catalogs: std::sync::Mutex<std::collections::BTreeMap<String, Catalog>>,
 }
 
 impl CatalogMonitor {
@@ -28,14 +40,18 @@ impl CatalogMonitor {
         }
     }
 
-    /// Refreshes once at start and again after every change hint; hints that
-    /// arrive during a refresh are folded into the next one.
+    /// Refreshes once at start, again after every change hint (hints that
+    /// arrive during a refresh are folded into the next one) and at least
+    /// every `UNHINTED_REFRESH`.
     pub(super) async fn watch(self: Arc<Self>, router: Arc<CommandRouter>) -> Infallible {
         let mut changes = changes().subscribe();
         loop {
             let (monitor, router) = (Arc::clone(&self), Arc::clone(&router));
             let _ = tokio::task::spawn_blocking(move || monitor.refresh(&router)).await;
-            let _ = changes.recv().await; // lag also requires comparing current catalogs
+            tokio::select! {
+                _ = changes.recv() => {} // lag also requires comparing current catalogs
+                _ = tokio::time::sleep(UNHINTED_REFRESH) => {}
+            }
             while changes.try_recv().is_ok() {}
         }
     }
@@ -51,22 +67,35 @@ impl CatalogMonitor {
             if router.runtime_mcp_catalog_run(&token).is_none() {
                 return;
             }
-            let signature = router.runtime_catalog_signature(&token);
-            monitor.lock().entry(token).or_insert(signature);
+            let listing = router.runtime_catalog_listing(&token);
+            monitor.lock().entry(token).or_insert_with(|| Catalog {
+                listing,
+                listed: watch::channel(()).0,
+            });
         })
         .await;
     }
 
+    /// Wakes when this run's listing changes and closes when the run ends;
+    /// `None` for a token without a running run or without tools.
+    fn subscribe(&self, token: &str) -> Option<watch::Receiver<()>> {
+        self.lock()
+            .get(token)
+            .filter(|catalog| !catalog.listing.is_empty())
+            .map(|catalog| catalog.listed.subscribe())
+    }
+
     /// Only this refresh replaces a known run's catalog; a run seeded while it
-    /// computed keeps the catalog its first request was served after.
+    /// computed keeps the catalog its first request was served after. Returns
+    /// how many runs it armed a reload for.
     pub(super) fn refresh(&self, router: &CommandRouter) -> usize {
         let known = self.lock().keys().cloned().collect::<BTreeSet<_>>();
         let next = router
             .runtime_tool_catalog_auth_tokens()
             .into_iter()
             .map(|token| {
-                let signature = router.runtime_catalog_signature(&token);
-                (token, signature)
+                let listing = router.runtime_catalog_listing(&token);
+                (token, listing)
             })
             .collect::<Vec<_>>();
         // Read after computing, so a run seeded meanwhile is not dropped.
@@ -78,20 +107,30 @@ impl CatalogMonitor {
         {
             let mut catalogs = self.lock();
             catalogs.retain(|token, _| running.contains(token));
-            for (token, signature) in next {
+            for (token, listing) in next {
                 if !running.contains(&token) {
                     continue;
                 }
                 match catalogs.get_mut(&token) {
                     Some(current) if known.contains(&token) => {
-                        if *current != signature {
-                            *current = signature;
+                        if current.listing == listing {
+                            continue;
+                        }
+                        if !reload_view(&current.listing).eq(reload_view(&listing)) {
                             changed.push(token);
                         }
+                        current.listing = listing;
+                        current.listed.send_replace(());
                     }
                     Some(_) => {}
                     None => {
-                        catalogs.insert(token, signature);
+                        catalogs.insert(
+                            token,
+                            Catalog {
+                                listing,
+                                listed: watch::channel(()).0,
+                            },
+                        );
                     }
                 }
             }
@@ -102,11 +141,17 @@ impl CatalogMonitor {
         changed.len()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Signature>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Catalog>> {
         self.catalogs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+fn reload_view(listing: &Listing) -> impl Iterator<Item = &(String, String, Value)> {
+    listing
+        .iter()
+        .filter(|tool| crate::runtime::state::arms_catalog_reload(&tool.0))
 }
 
 fn changes() -> &'static broadcast::Sender<()> {
@@ -118,12 +163,12 @@ pub(super) fn changed() {
     let _ = changes().send(());
 }
 
-pub(super) fn snapshot(router: &CommandRouter, token: &str) -> Value {
-    let mut tools = router.runtime_tool_specs_for_auth_token(token);
-    tools.sort_by(|a, b| a.name.cmp(&b.name));
-    Value::Array(tools.into_iter().map(|tool| serde_json::json!({
-        "name": tool.name, "description": tool.description, "inputSchema": tool.input_schema,
-    })).collect())
+/// This token's listing, computed off the async runtime.
+pub(super) async fn listing(router: &Arc<CommandRouter>, token: &str) -> Option<Listing> {
+    let (router, token) = (Arc::clone(router), token.to_owned());
+    tokio::task::spawn_blocking(move || router.runtime_catalog_listing(&token))
+        .await
+        .ok()
 }
 
 fn notification() -> Value {
@@ -147,19 +192,16 @@ pub(super) fn tool_response(changed: bool, value: Value) -> Response<HttpBody> {
 }
 
 pub(super) fn stream_response(
-    router: Arc<CommandRouter>,
+    catalogs: &CatalogMonitor,
     headers: &hyper::HeaderMap,
 ) -> Response<HttpBody> {
     let Some(token) = parse_bearer_token(headers) else {
         return text_response(StatusCode::UNAUTHORIZED, "unauthorized".into());
     };
-    // Subscribe before reading the catalog so a concurrent mutation cannot be
-    // lost between the initial snapshot and the first recv.
-    let mut changes = changes().subscribe();
-    let mut catalog = snapshot(&router, &token);
-    if catalog.as_array().is_none_or(Vec::is_empty) {
+    // The monitor computes catalogs; a stream only forwards its run's changes.
+    let Some(mut listed) = catalogs.subscribe(&token) else {
         return text_response(StatusCode::UNAUTHORIZED, "unauthorized".into());
-    }
+    };
     let (sender, receiver) = mpsc::channel::<Bytes>(2);
     sender
         .try_send(Bytes::from_static(b": connected\n\n"))
@@ -168,22 +210,13 @@ pub(super) fn stream_response(
         let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
         heartbeat.tick().await;
         loop {
-            let heartbeat_due = tokio::select! {
+            let bytes = tokio::select! {
                 _ = sender.closed() => break,
-                _ = changes.recv() => false, // includes lag: compare the current catalog
-                _ = heartbeat.tick() => true,
-            };
-            let next = snapshot(&router, &token);
-            if next.as_array().is_none_or(Vec::is_empty) {
-                break; // ended/replaced provider token loses its stream too
-            }
-            let bytes = if next != catalog {
-                catalog = next;
-                Bytes::from(event(&notification()))
-            } else if heartbeat_due {
-                Bytes::from_static(b": keepalive\n\n")
-            } else {
-                continue;
+                changed = listed.changed() => match changed {
+                    Ok(()) => Bytes::from(event(&notification())),
+                    Err(_) => break, // the run ended: its stream ends too
+                },
+                _ = heartbeat.tick() => Bytes::from_static(b": keepalive\n\n"),
             };
             if sender.send(bytes).await.is_err() {
                 break;

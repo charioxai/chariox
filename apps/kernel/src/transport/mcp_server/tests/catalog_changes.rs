@@ -368,3 +368,94 @@ async fn a_new_connection_is_answered_while_a_catalog_refresh_waits() {
         "a new MCP connection waited {waited:?} behind a catalog refresh"
     );
 }
+
+async fn open_catalog_stream(address: std::net::SocketAddr, token: &str) -> tokio::net::TcpStream {
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    socket.write_all(format!("GET /mcp HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\nAuthorization: Bearer {token}\r\n\r\n").as_bytes()).await.unwrap();
+    let headers = receive(&mut socket, "connected").await;
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    socket
+}
+
+// Open notification streams (one per running agent on a busy kernel) never
+// compute catalogs on the async runtime: a change hint while the provider
+// store is busy must not stall the kernel's other connections.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_catalog_streams_do_not_stall_the_kernel_on_a_catalog_change() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mcpcatalog-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let _cleanup = Scratch(root.clone());
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let providers = app.providers().clone();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(super::super::run_mcp_http_server_on_listener(
+        router.clone(),
+        listener,
+    ));
+    let _streams = [
+        open_catalog_stream(address, &token).await,
+        open_catalog_stream(address, &token).await,
+        open_catalog_stream(address, &token).await,
+    ];
+    // Let the monitor's first refresh finish before the store turns busy.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _busy = providers.write();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+    });
+    holding.recv().unwrap();
+    super::super::catalog_changed();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let started = std::time::Instant::now();
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        unauthenticated_status(address),
+    )
+    .await;
+    let waited = started.elapsed();
+    // A stalled runtime outlives the holder's own 10 s bound.
+    let _ = release.send(());
+    holder.join().unwrap();
+    server.abort();
+    assert_eq!(
+        status.as_deref(),
+        Ok("HTTP/1.1 401 Unauthorized"),
+        "the kernel must answer while open streams see a catalog change (waited {waited:?})"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(1),
+        "a new MCP connection waited {waited:?} behind the open streams' catalog work"
+    );
+}

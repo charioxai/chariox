@@ -208,7 +208,10 @@ async function measureStall(ballastIds, mcpPort, attachment) {
   const churn = await phase("churn", mcpPort, ballastIds, true)
   check("FT-04-streams-open", quiet.streams >= ballastIds.length, { streams: quiet.streams, ballast: ballastIds.length })
   check("FT-04-changes-applied", churn.changes > 0 && !churn.change_error, { changes: churn.changes, error: churn.change_error })
-  check("FT-04-kernel-answers-while-catalog-changes", churn.kernel_rpc_ms.max < 1000 && churn.new_mcp_connection_ms.max < 1000, { quiet, churn })
+  const answers = p => p.kernel_rpc_ms.max < 1000 && p.new_mcp_connection_ms.max < 1000
+  check("FT-04-kernel-answers-while-catalog-changes", answers(churn) && churn.kernel_rpc_ms.p95 < 50 && churn.new_mcp_connection_ms.p95 < 50, { quiet, churn })
+  // With no catalog change at all: a stall here has another cause than catalog work.
+  check("FT-04-kernel-answers-when-quiet", answers(quiet), { quiet })
 }
 
 async function readTurns(workers) {
