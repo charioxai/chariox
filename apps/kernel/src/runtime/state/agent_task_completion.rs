@@ -42,7 +42,9 @@ impl KernelRuntimeState {
                 | crate::provider::TurnOutcomeKind::AnsweredInTurn
         );
         let source_answer = public_answer.clone().or_else(|| {
-            (outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn)
+            outcome
+                .answered_in_turn
+                .is_some()
                 .then(|| serde_json::json!({"outcome": outcome}))
         });
         let other_unfinished = self

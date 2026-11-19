@@ -266,9 +266,8 @@ impl KernelRuntimeOwnedState {
         // A leased task binds a projected run id; its history uses the worker's.
         let answer_run =
             super::agent_task_projection::task_answer_history_run(Some(run)).unwrap_or(run);
-        if self.background_answer_target(task)?.is_none()
-            && !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run)
-        {
+        let target = self.background_answer_target(task)?;
+        if target.is_none() && !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
             return Ok(None);
         }
         let prompt = crate::session::PromptQueueItem::new(
@@ -280,16 +279,48 @@ impl KernelRuntimeOwnedState {
         );
         // A task that still holds a pending continuation settles to itself;
         // that is no settlement, and the sweep must end it instead.
-        Ok(self
+        let cancelled = target
+            .as_ref()
+            .is_some_and(|(_, answer)| answer.state == ExecutionState::Cancelled);
+        let settlement = self
             .settle_agent_task_answered_by(
                 &task.room_id,
                 &task.agent_id,
                 &prompt,
                 run,
                 answer_run,
-                false,
+                cancelled,
             )?
-            .filter(|(settled, _)| settled.revision != task.revision))
+            .filter(|(settled, _)| settled.revision != task.revision);
+        if settlement.is_some() {
+            if let Some((receipt, answer)) = target {
+                let outcome = if cancelled {
+                    let mut outcome = self.finished_task_outcome(&answer, None);
+                    outcome.answered_in_turn = Some(receipt);
+                    outcome
+                } else {
+                    crate::provider::TurnOutcome::answered_in_turn(receipt)
+                };
+                // Both live release and restart supervision publish this same durable outcome.
+                self.operational_history_store.record_prompt_settlement(
+                    self.config_projection
+                        .snapshot()
+                        .user_config
+                        .history
+                        .archive
+                        .mode
+                        == crate::config::HistoryArchiveMode::External,
+                    &task.room_id,
+                    &task.agent_id,
+                    &task.prompt_id,
+                    Some(run),
+                    crate::session::unix_epoch_ms(),
+                    outcome.settlement_status().as_str(),
+                    Some(&outcome),
+                );
+            }
+        }
+        Ok(settlement)
     }
 
     pub(super) fn settle_agent_task(
@@ -925,7 +956,6 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<(), DaemonError> {
-        let target = self.owned.background_answer_target(task)?;
         let source = crate::session::PromptQueueItem::new(
             task.prompt_id.clone(),
             "kernel-supervisor",
@@ -933,53 +963,11 @@ impl KernelRuntimeState {
             "",
             crate::session::PromptStatus::Completed,
         );
-        let cancelled = target
-            .as_ref()
-            .is_some_and(|(_, answer)| answer.state == ExecutionState::Cancelled);
-        let settlement = if cancelled {
-            let Some(run) = task.provider_run_id.as_deref() else {
-                return Ok(());
-            };
-            self.owned
-                .settle_agent_task(&task.room_id, &task.agent_id, &source, run, true)?
-        } else {
-            self.owned.settle_answered_unsettled_turn(task)?
-        };
+        let settlement = self.owned.settle_answered_unsettled_turn(task)?;
         if settlement.is_none() {
             self.owned.background_holds.release(&task.task_id);
         }
-        let outcome = target.map(|(receipt, answer)| {
-            if cancelled {
-                self.owned.finished_task_outcome(&answer, None)
-            } else {
-                crate::provider::TurnOutcome::answered_in_turn(receipt)
-            }
-        });
-        if settlement.is_some() {
-            if let Some(outcome) = &outcome {
-                self.owned
-                    .operational_history_store
-                    .record_prompt_settlement(
-                        self.owned
-                            .config_projection
-                            .snapshot()
-                            .user_config
-                            .history
-                            .archive
-                            .mode
-                            == crate::config::HistoryArchiveMode::External,
-                        &task.room_id,
-                        &task.agent_id,
-                        &task.prompt_id,
-                        task.provider_run_id.as_deref(),
-                        crate::session::unix_epoch_ms(),
-                        if cancelled { "cancelled" } else { "completed" },
-                        Some(outcome),
-                    );
-            }
-        }
-        self.finish_failed_agent_task_settlement(settlement, &source, outcome.as_ref())
-            .await
+        self.finish_agent_task_settlement(settlement, &source).await
     }
     /// The provider's turn about an ended background call is the last part of the work of a child
     /// held for it: the parent hears of the finish now. A leased child's worker reports the turn's

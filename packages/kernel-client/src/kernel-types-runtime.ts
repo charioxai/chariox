@@ -139,7 +139,7 @@ export type AnsweredTurnReceipt = {
 export type TurnOutcome = {
   retryable: boolean
   reason: string
-} & ({ kind: Exclude<TurnOutcomeKind, "answered_in_turn"> } | { kind: "answered_in_turn"; answered_in_turn: AnsweredTurnReceipt })
+} & ({ kind: Exclude<TurnOutcomeKind, "answered_in_turn">; answered_in_turn?: AnsweredTurnReceipt } | { kind: "answered_in_turn"; answered_in_turn: AnsweredTurnReceipt })
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
 

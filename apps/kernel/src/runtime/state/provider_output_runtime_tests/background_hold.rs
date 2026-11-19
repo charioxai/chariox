@@ -1286,8 +1286,7 @@ async fn separate_queued_answer(written_before_notification: bool) {
         .iter()
         .any(|entry| entry.text.contains("queued-only-kernel-call"));
     assert!(
-        !held_answer.contains("SEPARATE_QUEUED_REPLY")
-            && !held_has_queued_call,
+        !held_answer.contains("SEPARATE_QUEUED_REPLY") && !held_has_queued_call,
         "the held task's answer and completed-call evidence must close before the separate reply: {held_answer}; queued_call={held_has_queued_call}",
     );
     assert_eq!(finishes_of_task(&team).len(), 1);
@@ -1654,4 +1653,135 @@ async fn a_merged_notification_settles_its_held_delivery_by_the_answer_turn_rece
             .count(),
         1
     );
+}
+
+async fn restart_recovers_a_merged_notification_receipt(cancelled: bool) {
+    let mut team = child_with_a_call_running("background-held-answer-restart").await;
+    let message_prompt = status_message(&team, false).await;
+    wait_for_prompt_delivery(&team, &message_prompt).await;
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                background_notifications: vec![crate::provider::ProviderBackgroundNotification {
+                    tool_use_id: Some("toolu_bg".into()),
+                    task_id: Some("b1".into()),
+                }],
+                chunks: vec![
+                    ended_at(crate::session::unix_epoch_ms()),
+                    text_chunk("the one combined answer"),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    let completion = if cancelled {
+        team.runtime
+            .owned
+            .fail_local_prompt_without_advance_with_termination_if_matches(
+                &team.room,
+                &team.child,
+                Some(&team.child_run),
+                Some(&message_prompt),
+                None,
+                crate::provider::TurnOutcome::cancelled(),
+            )
+    } else {
+        team.runtime.owned.complete_local_prompt_without_advance(
+            &team.room,
+            &team.child,
+            Some(&team.child_run),
+        )
+    }
+    .unwrap()
+    .unwrap();
+    let answer_prompt = completion.completion.completed;
+    assert_eq!(answer_prompt.id(), message_prompt);
+    let (answer, _) = team
+        .runtime
+        .owned
+        .settle_agent_task(
+            &team.room,
+            &team.child,
+            &answer_prompt,
+            &team.child_run,
+            cancelled,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer.state,
+        if cancelled {
+            ExecutionState::Cancelled
+        } else {
+            ExecutionState::Done
+        }
+    );
+    // Crash after Q's terminal ledger write, before publishing it or releasing H.
+    assert!(child_finished(&team).is_empty());
+    assert!(working(&team));
+    let state_path = team.runtime.owned.durable_state_store.path().to_path_buf();
+    team.runtime.owned.durable_state_store =
+        crate::durable_state::DurableKernelStateStore::open(state_path).unwrap();
+    team.runtime.owned.background_holds = Default::default();
+    sweep(&team).await;
+
+    let events = child_finished(&team);
+    let held = events
+        .iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+        .collect::<Vec<_>>();
+    assert_eq!(held.len(), 1, "one recovered delivery: {events:?}");
+    assert_eq!(held[0].payload["success"], !cancelled, "{events:?}");
+    let outcome = &held[0].payload["outcome"];
+    assert_eq!(
+        outcome["kind"],
+        if cancelled {
+            "cancelled"
+        } else {
+            "answered_in_turn"
+        },
+        "{events:?}"
+    );
+    assert_eq!(outcome["answered_in_turn"]["task_id"], answer.task_id);
+    assert_eq!(outcome["answered_in_turn"]["prompt_id"], message_prompt);
+    assert_eq!(outcome["answered_in_turn"]["session_id"], team.room);
+    assert_eq!(outcome["answered_in_turn"]["agent_id"], team.child);
+    assert!(held[0].payload["public_answer"].is_null());
+    let history = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(&team.room, &team.child, team.child_prompt.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        history.metadata[crate::history::TURN_OUTCOME_METADATA_KEY],
+        *outcome
+    );
+    sweep(&team).await;
+    assert_eq!(
+        child_finished(&team)
+            .iter()
+            .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn restart_keeps_the_completed_answer_turn_receipt_without_an_in_memory_hold() {
+    restart_recovers_a_merged_notification_receipt(false).await;
+}
+
+#[tokio::test]
+async fn restart_keeps_the_cancelled_answer_turn_receipt_without_reporting_success() {
+    restart_recovers_a_merged_notification_receipt(true).await;
 }
