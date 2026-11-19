@@ -42,7 +42,11 @@ fn process_tool_settlement_preserves_terminal_reason_at_output_bound() {
 }
 
 pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[u8]) -> Vec<u8> {
-    if bytes.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES {
+    if matches!(
+        kind,
+        TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+    ) || bytes.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES
+    {
         return bytes.to_vec();
     }
     if matches!(kind, TerminalOutputKind::ProviderTool) {
@@ -533,40 +537,46 @@ fn bounded_text_bytes(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn bounded_text_string(bytes: &[u8], limit: usize, original_len: usize) -> String {
-    let marker = format!(
-        "\n\n[chariox: output truncated, omitted {} bytes]\n",
-        original_len.saturating_sub(limit),
-    );
-    let marker_bytes = marker.as_bytes();
-    let keep_limit = limit.saturating_sub(marker_bytes.len());
-    let mut keep = keep_limit.min(bytes.len());
-    while keep > 0 && std::str::from_utf8(&bytes[..keep]).is_err() {
-        keep -= 1;
+    let mut keep = limit.min(bytes.len());
+    loop {
+        while keep > 0 && std::str::from_utf8(&bytes[..keep]).is_err() {
+            keep -= 1;
+        }
+        let marker = format!(
+            "\n\n[chariox: output truncated, omitted {} bytes]\n",
+            original_len.saturating_sub(keep),
+        );
+        // The marker and UTF-8 boundary both displace original bytes. Its digit
+        // count can grow as those bytes are removed, so size it until it fits.
+        if keep + marker.len() <= limit {
+            let mut text = String::from_utf8_lossy(&bytes[..keep]).into_owned();
+            text.push_str(&marker);
+            return text;
+        }
+        keep = limit.saturating_sub(marker.len());
     }
-    let mut text = String::from_utf8_lossy(&bytes[..keep]).into_owned();
-    text.push_str(&marker);
-    text
 }
 
 fn bounded_text_tail_string(bytes: &[u8], limit: usize, original_len: usize) -> String {
     if bytes.len() <= limit {
         return String::from_utf8_lossy(bytes).into_owned();
     }
-    let marker = format!(
-        "[chariox: output truncated, omitted {} leading bytes]\n\n",
-        original_len.saturating_sub(limit),
-    );
-    let marker_bytes = marker.as_bytes();
-    let keep_limit = limit.saturating_sub(marker_bytes.len());
-    let mut keep = keep_limit.min(bytes.len());
-    let start = bytes.len().saturating_sub(keep);
-    while keep > 0 && std::str::from_utf8(&bytes[start..]).is_err() {
-        keep -= 1;
+    let mut keep = limit.min(bytes.len());
+    loop {
+        while keep > 0 && std::str::from_utf8(&bytes[bytes.len() - keep..]).is_err() {
+            keep -= 1;
+        }
+        let marker = format!(
+            "[chariox: output truncated, omitted {} leading bytes]\n\n",
+            original_len.saturating_sub(keep),
+        );
+        if keep + marker.len() <= limit {
+            let mut text = marker;
+            text.push_str(&String::from_utf8_lossy(&bytes[bytes.len() - keep..]));
+            return text;
+        }
+        keep = limit.saturating_sub(marker.len());
     }
-    let start = bytes.len().saturating_sub(keep);
-    let mut text = marker;
-    text.push_str(&String::from_utf8_lossy(&bytes[start..]));
-    text
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -711,10 +721,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn long_reply_policy_keeps_assistant_and_reasoning_bytes() {
+        let bytes = "正文🙂".repeat(8192).into_bytes();
+        for kind in [
+            TerminalOutputKind::ProviderOutput,
+            TerminalOutputKind::ProviderReasoning,
+        ] {
+            assert_eq!(bounded_terminal_output_bytes(&kind, &bytes), bytes);
+        }
+    }
+
+    #[test]
+    fn long_reply_tool_prefix_marker_counts_every_dropped_byte() {
+        for original in [1000, 10_000, 100_000] {
+            let text = format!("{}last sentence", "正文🙂".repeat(original / 10));
+            let bounded = bounded_text_string(text.as_bytes(), 128, text.len());
+            assert!(bounded.len() <= 128);
+            let (kept, marker) = bounded
+                .split_once("\n\n[chariox: output truncated, omitted ")
+                .unwrap();
+            assert!(text.starts_with(kept));
+            assert!(!kept.is_empty());
+            let omitted: usize = marker.strip_suffix(" bytes]\n").unwrap().parse().unwrap();
+            assert_eq!(omitted, text.len() - kept.len());
+        }
+    }
+
+    #[test]
+    fn long_reply_tool_tail_marker_counts_every_dropped_byte() {
+        for original in [1000, 10_000, 100_000] {
+            let text = format!("{}last sentence", "正文🙂".repeat(original / 10));
+            let bounded = bounded_text_tail_string(text.as_bytes(), 128, text.len());
+            assert!(bounded.len() <= 128);
+            let (marker, kept) = bounded.split_once(" leading bytes]\n\n").unwrap();
+            assert!(text.ends_with(kept));
+            assert!(kept.ends_with("last sentence"));
+            let omitted: usize = marker
+                .strip_prefix("[chariox: output truncated, omitted ")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(omitted, text.len() - kept.len());
+        }
+    }
+
+    #[test]
     fn bounded_terminal_output_truncates_plain_output_with_marker() {
         let bytes = vec![b'x'; MAX_PROVIDER_OUTPUT_RECORD_BYTES + 1024];
 
-        let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderOutput, &bytes);
+        let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
 
         assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
         let text = String::from_utf8(bounded).expect("bounded output should remain utf8");
