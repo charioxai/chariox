@@ -465,6 +465,96 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
     });
 }
 
+/// TerminalScope replaced session-only persisted terminal records. A predecessor
+/// advertising their old format must be rejected before any PTY is handed over.
+#[test]
+fn a_reload_with_the_previous_terminal_record_format_keeps_scrollback_and_input() {
+    fn refusal_count(scratch: &Path) -> usize {
+        std::fs::read_dir(scratch.join("logs"))
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .map(|log| {
+                log.matches("hot reload refused; the kernel keeps running")
+                    .count()
+            })
+            .sum()
+    }
+
+    let scratch = std::env::temp_dir().join(format!("hr-terminal-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"].as_str().unwrap();
+        let opened = terminal(
+            &mut socket,
+            session_id,
+            json!({"operation": "open", "cols": 80, "rows": 24,
+                "command": ["/bin/sh", "-c", "echo scrollback-before; read line; echo continued-$line"]}),
+        )
+        .await;
+        let terminal_id = opened["terminal"]["terminal_id"].as_str().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let page = terminal(&mut socket, session_id,
+                json!({"operation": "read_output", "terminal_id": terminal_id,
+                    "after_offset": 0, "wait_ms": 500})).await;
+            let output = base64::engine::general_purpose::STANDARD
+                .decode(page["output"]["data_base64"].as_str().unwrap()).unwrap();
+            if String::from_utf8_lossy(&output).contains("scrollback-before") { break; }
+            assert!(Instant::now() < deadline, "{page}");
+        }
+        let installed = scratch.join("bin/chariox-kernel");
+        // Both 13 on the owning branch and 14 on its reviewed union carried
+        // incompatible terminal records; later union handovers also used 15.
+        for format in [13, 14, 15] {
+            let refused_before = refusal_count(&scratch);
+            install(|staged| std::fs::write(staged,
+                format!("#!/bin/sh\n[ \"$1\" = --handover-format ] && echo {format} && exit 0\nexit 2\n")).unwrap(), &installed);
+            let pid = kernel.child.id() as i32;
+            assert!(pid > 1);
+            unsafe { libc::kill(pid, libc::SIGUSR2) };
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if refusal_count(&scratch) > refused_before { break; }
+                assert!(Instant::now() < deadline, "format {format} was not refused");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let input = terminal(&mut socket, session_id,
+            json!({"operation": "input", "terminal_id": terminal_id,
+                "data_base64": base64::engine::general_purpose::STANDARD.encode("after\n")})).await;
+        assert!(input.get("input").is_some(), "{input}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let page = terminal(&mut socket, session_id,
+                json!({"operation": "read_output", "terminal_id": terminal_id,
+                    "after_offset": 0, "wait_ms": 500})).await;
+            let output = base64::engine::general_purpose::STANDARD
+                .decode(page["output"]["data_base64"].as_str().unwrap()).unwrap();
+            let text = String::from_utf8_lossy(&output);
+            if text.contains("continued-after") {
+                assert!(text.contains("scrollback-before"), "{text}");
+                assert_eq!(page["output"]["gap"], false, "{page}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "{page}");
+        }
+    });
+}
+
 /// A managed kernel reads its token from a file its supervisor wrote and
 /// deleted it; the new program must still accept the same token.
 #[test]
