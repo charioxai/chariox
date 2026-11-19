@@ -68,15 +68,23 @@ impl JobDriver {
             .join(format!("{id}.json")))
     }
     pub(super) fn read(&self, id: &str) -> Result<Record, DaemonError> {
-        let bytes = std::fs::read(self.path(id)?)
-            .map_err(|_| ledger::error("this agent has no such job"))?;
+        let bytes = std::fs::read(self.path(id)?).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ledger::error("job result is missing")
+            } else {
+                ledger::error("job result cannot be read")
+            }
+        })?;
         serde_json::from_slice(&bytes).map_err(|_| ledger::error("job record is unreadable"))
     }
     pub(super) fn save(&self, record: &Record) -> Result<(), DaemonError> {
         save_record(&self.state, record)
     }
     pub(super) fn own(&self, id: &str, task: &AgentTaskExecution) -> Result<Record, DaemonError> {
-        let record = self.read(id)?;
+        self.path(id)?;
+        let record = self.read(id).inspect_err(|error| {
+            summary::mark_read_error(&self.state, task, id, &error.to_string());
+        })?;
         if record.room_id != task.room_id || record.agent_id != task.agent_id {
             return Err(ledger::error("this agent has no such job"));
         }
@@ -92,20 +100,26 @@ pub(super) fn save_record(state: &KernelRuntimeState, record: &Record) -> Result
         .private_runtime_state_root()
         .join("jobs")
         .join(format!("{}.json", record.job_id));
-    let parent = path.parent().expect("job record parent");
-    std::fs::create_dir_all(parent).map_err(|e| ledger::error(e.to_string()))?;
-    let temporary = parent.join(format!(".job-{:032x}", rand::random::<u128>()));
-    std::fs::write(
-        &temporary,
-        serde_json::to_vec(record).map_err(|e| ledger::error(e.to_string()))?,
-    )
-    .and_then(|()| std::fs::rename(temporary, path))
-    .map_err(|e| ledger::error(e.to_string()))?;
+    let bytes = serde_json::to_vec(record).map_err(|error| ledger::error(error.to_string()))?;
+    // A list entry advertises a result only after its full body has been saved.
+    atomic_write(&path, &bytes)?;
+    summary::save(state, record, bytes.len() as u64)?;
     state
         .owned
         .session_projection
         .record_session_change(&record.room_id);
     Ok(())
+}
+
+pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
+    let parent = path.parent().expect("job record parent");
+    std::fs::create_dir_all(parent).map_err(|error| ledger::error(error.to_string()))?;
+    let temporary = parent.join(format!(".job-{:032x}", rand::random::<u128>()));
+    let result = std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| ledger::error(error.to_string()))
 }
 
 pub(super) fn public_record(record: Record) -> Result<serde_json::Value, DaemonError> {

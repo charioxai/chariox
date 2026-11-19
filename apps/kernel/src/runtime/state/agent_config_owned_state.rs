@@ -15,6 +15,7 @@ impl KernelRuntimeOwnedState {
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
         max_context_tokens: Option<Option<u64>>,
+        waive_parent_limit: Option<bool>,
     ) -> Result<owned::OwnedAgentConfigUpdate, DaemonError> {
         let workspace_id = workspace_id.map(|value| {
             value.and_then(|value| {
@@ -63,6 +64,9 @@ impl KernelRuntimeOwnedState {
         if let Some(permission_level_override) = permission_level_override {
             next_agent.set_permission_level_override(permission_level_override);
         }
+        if let Some(waived) = waive_parent_limit {
+            next_agent.set_parent_limit_waived(waived);
+        }
         if let Some(workspace_id) = workspace_id.clone() {
             next_agent.set_workspace_id(workspace_id);
         }
@@ -75,25 +79,14 @@ impl KernelRuntimeOwnedState {
             || previous_config.permission_level != next_config.permission_level;
         let working_directory_changed = next_agent.workspace_id() != agent.workspace_id()
             || next_agent.worktree_id() != agent.worktree_id();
+        if working_directory_changed {
+            self.check_cross_room_folders(&session, &next_agent)?;
+        }
         let scope_changed = effective_config_changed || working_directory_changed;
         // The agent runs, here or on its worker, with what its parent chain allows.
-        let agents = self
-            .agent_store
-            .get_session_agents(session_id)
-            .into_iter()
-            .map(|other| {
-                if other.id() == agent_id {
-                    next_agent.clone()
-                } else {
-                    other
-                }
-            })
-            .collect::<Vec<_>>();
-        let limited = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            &next_agent,
-            &agents,
-        );
+        let limited =
+            self.agent_store
+                .effective_execution_config(&session, &next_agent, &self.session_store);
         let remote_update = effective_config_changed
             .then(|| {
                 agent
@@ -123,6 +116,10 @@ impl KernelRuntimeOwnedState {
                 workspace_id,
                 worktree_id,
             )?;
+            if let Some(waived) = waive_parent_limit {
+                self.agent_store
+                    .set_agent_parent_limit_waived(agent_id, waived)?;
+            }
             // A running provider keeps the compaction point it started with; the next start takes this.
             if let Some(max_context_tokens) = max_context_tokens {
                 self.agent_store
@@ -140,6 +137,49 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    fn check_cross_room_folders(
+        &self,
+        room: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        fn check(
+            parent: &crate::agent::AgentInstance,
+            parent_room: &crate::session::RuntimeSession,
+            child: &crate::agent::AgentInstance,
+            child_room: &crate::session::RuntimeSession,
+        ) -> Result<(), DaemonError> {
+            let workspace = child
+                .workspace_id()
+                .unwrap_or_else(|| child_room.workspace_id());
+            let worktree = child
+                .worktree_id()
+                .unwrap_or_else(|| child_room.worktree_id());
+            crate::agent::authority_limit::check_directory(parent, parent_room, workspace)?;
+            if worktree != workspace {
+                crate::agent::authority_limit::check_directory(parent, parent_room, worktree)?;
+            }
+            Ok(())
+        }
+
+        if let Some(parent_id) = agent
+            .parent_agent_id()
+            .filter(|_| agent.parent_room_id().is_some())
+        {
+            let parent = self.agent_store.get_agent(parent_id)?;
+            let parent_room = self.session_store.get_session(parent.session_id())?;
+            check(&parent, &parent_room, agent, room)?;
+        }
+        for child in self.agent_store.list_agents().into_iter().filter(|child| {
+            !child.archived()
+                && child.parent_room_id() == Some(room.id())
+                && child.parent_agent_id() == Some(agent.id())
+        }) {
+            let child_room = self.session_store.get_session(child.session_id())?;
+            check(agent, room, &child, &child_room)?;
+        }
+        Ok(())
+    }
+
     /// The leased agents among `agent_id` and its descendants, by home agent id.
     pub(super) fn leased_subtree(&self, session_id: &str, agent_id: &str) -> Vec<String> {
         self.subtree_agents(session_id, agent_id, true)
@@ -150,8 +190,8 @@ impl KernelRuntimeOwnedState {
         self.subtree_agents(session_id, agent_id, false)
     }
 
-    fn subtree_agents(&self, session_id: &str, agent_id: &str, leased: bool) -> Vec<String> {
-        let agents = self.agent_store.get_session_agents(session_id);
+    fn subtree_agents(&self, _session_id: &str, agent_id: &str, leased: bool) -> Vec<String> {
+        let agents = self.agent_store.list_agents();
         agents
             .iter()
             .filter(|agent| agent.id() == agent_id)
@@ -174,10 +214,17 @@ impl KernelRuntimeOwnedState {
     }
 
     fn room_agents(&self, session_id: &str, leased: bool) -> Vec<String> {
-        self.agent_store
-            .get_session_agents(session_id)
-            .into_iter()
-            .filter(|agent| !agent.archived() && agent.remote_execution().is_some() == leased)
+        let agents = self.agent_store.list_agents();
+        agents
+            .iter()
+            .filter(|agent| {
+                !agent.archived()
+                    && agent.remote_execution().is_some() == leased
+                    && (agent.session_id() == session_id
+                        || crate::agent::authority_limit::ancestors(agent, &agents)
+                            .iter()
+                            .any(|parent| parent.session_id() == session_id))
+            })
             .map(|agent| agent.id().to_owned())
             .collect()
     }
@@ -191,13 +238,17 @@ impl KernelRuntimeOwnedState {
     pub(super) fn limit_local_runs(
         &self,
         operation: &'static str,
-        session_id: &str,
+        _session_id: &str,
         agent_ids: &[String],
         retry: &str,
     ) -> Result<LocalRunLimits, DaemonError> {
         const MOVES: usize = 4;
         let mut limits = LocalRunLimits::default();
         for agent_id in agent_ids {
+            let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+                continue;
+            };
+            let session_id = agent.session_id();
             for moved in 0.. {
                 let Some(off_limit) = self.local_run_off_limit(session_id, agent_id)? else {
                     break;
@@ -242,7 +293,8 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         let limit =
-            crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
+            self.agent_store
+                .effective_execution_config(&session, agent, &self.session_store);
         let Some(run) = self
             .provider_store
             .get_run_for_agent(session_id, agent_id)
@@ -279,21 +331,20 @@ impl KernelRuntimeOwnedState {
     /// `None` once it is no longer leased.
     pub(super) fn leased_agent_limit_now(
         &self,
-        session_id: &str,
+        _session_id: &str,
         agent_id: &str,
     ) -> Result<Option<owned::OwnedRemoteAgentConfigUpdate>, DaemonError> {
-        let session = self.session_store.get_session(session_id)?;
-        let agents = self.agent_store.get_session_agents(session_id);
-        Ok(agents
-            .iter()
-            .find(|agent| agent.id() == agent_id && !agent.archived())
-            .and_then(|agent| {
-                let binding = agent.remote_execution()?;
-                let limited = crate::session::effective_agent_execution_config_in_tree(
-                    &session, agent, &agents,
-                );
-                Some(leased_agent_limit(binding, limited))
-            }))
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Ok(None);
+        };
+        let Some(binding) = agent.remote_execution().filter(|_| !agent.archived()) else {
+            return Ok(None);
+        };
+        let session = self.session_store.get_session(agent.session_id())?;
+        let limited =
+            self.agent_store
+                .effective_execution_config(&session, &agent, &self.session_store);
+        Ok(Some(leased_agent_limit(binding, limited)))
     }
 
     /// Apply the next scope to the provider too: its process may hold session rules.
@@ -351,6 +402,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+        waive_parent_limit: Option<bool>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -366,6 +418,10 @@ impl KernelRuntimeOwnedState {
             None,
             None,
         )?;
+        if let Some(waived) = waive_parent_limit {
+            self.agent_store
+                .set_agent_parent_limit_waived(agent_id, waived)?;
+        }
         let agent = self.agent_store.get_agent(agent_id)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(agent)

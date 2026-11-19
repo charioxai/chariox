@@ -425,7 +425,7 @@ pub(super) fn evaluate(
     };
     completion::evaluation_mut(&mut t).unwrap().result = Some(receipt);
     t.revision += 1;
-    migration::audit(
+    audit::audit(
         tx,
         "goal.evaluation",
         &prompt,
@@ -656,7 +656,7 @@ fn block_check(
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":result_reason,"received_at_ms":now }));
     t.revision += 1;
-    migration::audit(
+    audit::audit(
         tx,
         "goal.evaluation",
         &prompt,

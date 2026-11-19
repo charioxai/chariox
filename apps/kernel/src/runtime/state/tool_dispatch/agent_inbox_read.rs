@@ -8,24 +8,80 @@ use std::ops::ControlFlow;
 /// Events one read returns unless the agent asks for another count.
 const READ_LIMIT_DEFAULT: usize = 16;
 const READ_LIMIT_MAX: usize = 64;
-/// A payload longer than this is cut and flagged `truncated`.
+/// One read returns at most this many bytes of a payload; the rest is read with `offset`.
 pub(super) const PAYLOAD_LIMIT: usize = 16 * 1024;
 const SUMMARY_LIMIT: usize = 160;
 const READING_NOTICE: &str = "Each event says who sent it (source.relation) and what that means for you (guidance). Follow the guidance of each event.";
 
-/// The payload of one event within the read bound, and whether it was cut.
-pub(in crate::runtime::state) fn bounded_payload(
+/// One window of an event's payload: the whole payload when it fits, otherwise the next
+/// `PAYLOAD_LIMIT` bytes of its JSON text from `offset`.
+pub(in crate::runtime::state) struct PayloadWindow {
+    pub(in crate::runtime::state) value: serde_json::Value,
+    /// Bytes of the whole payload's JSON text.
+    pub(in crate::runtime::state) total: usize,
+    /// Where the next window starts; `None` when this one reaches the end.
+    pub(in crate::runtime::state) next_offset: Option<usize>,
+}
+
+pub(in crate::runtime::state) fn payload_window(
     payload: &serde_json::Value,
-) -> (serde_json::Value, bool) {
+    offset: usize,
+) -> Result<PayloadWindow, DaemonError> {
     let text = payload.to_string();
-    if text.len() <= PAYLOAD_LIMIT {
-        return (payload.clone(), false);
+    if offset == 0 && text.len() <= PAYLOAD_LIMIT {
+        return Ok(PayloadWindow {
+            value: payload.clone(),
+            total: text.len(),
+            next_offset: None,
+        });
     }
-    let mut end = PAYLOAD_LIMIT;
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return Err(ledger::error(
+            "offset is not a position in this payload: use the next_offset of the previous read",
+        ));
+    }
+    let mut end = (offset + PAYLOAD_LIMIT).min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    (serde_json::Value::String(text[..end].to_owned()), true)
+    Ok(PayloadWindow {
+        value: serde_json::Value::String(text[offset..end].to_owned()),
+        total: text.len(),
+        next_offset: (end < text.len()).then_some(end),
+    })
+}
+
+/// The sender of an inbox event: what the tree says it is and the name the reader sees.
+pub(in crate::runtime::state) struct EventSender {
+    agent: Option<crate::agent::AgentInstance>,
+    remote: Option<crate::transport::relay_peer::PeerAgentStamp>,
+    kind: &'static str,
+    alias: Option<String>,
+    pub(in crate::runtime::state) name: String,
+    pub(in crate::runtime::state) relation: SenderRelation,
+}
+
+impl EventSender {
+    /// What `chariox.send_agent_message` needs to answer this sender, when its name is not enough:
+    /// the sender is in another room or on another kernel.
+    pub(in crate::runtime::state) fn reply_route(
+        &self,
+        room: &str,
+        event: &InboxEvent,
+    ) -> Option<String> {
+        match (&self.agent, &self.remote) {
+            (Some(agent), _) if agent.session_id() != room => Some(format!(
+                "agent {:?}, room {:?}",
+                event.source_id,
+                agent.session_id()
+            )),
+            (None, Some(stamp)) => Some(format!(
+                "agent {:?}, room {:?}, kernel {:?}",
+                stamp.agent_id, stamp.room_id, stamp.kernel_id
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl KernelRuntimeState {
@@ -41,6 +97,9 @@ impl KernelRuntimeState {
         });
         let work = self.owned.sudo_work_task(room, actor);
         let store = &self.owned.durable_state_store;
+        if let Some(sequence) = args["sequence"].as_u64() {
+            return self.read_inbox_event(room, actor, work.as_deref(), sequence, args);
+        }
         // `after` only pages: a row at or below it that was never shown is returned again.
         let mut open = store.agent_unread_inbox(room, actor, 0, after, work.as_deref())?;
         let unread_full = open.len() >= ledger::INBOX_PAGE;
@@ -64,11 +123,10 @@ impl KernelRuntimeState {
             })?;
         }
         let reader = self.owned.agent_store.get_agent(actor)?;
-        let agents = self.owned.agent_store.get_session_agents(room);
         let views: Vec<(SenderRelation, serde_json::Value)> = shown
             .iter()
-            .map(|event| self.inbox_event_view(room, &reader, &agents, event))
-            .collect();
+            .map(|event| self.inbox_event_view(room, &reader, event, 0))
+            .collect::<Result<_, _>>()?;
         let untrusted = views.iter().any(|(relation, _)| !relation.is_instruction());
         let events: Vec<serde_json::Value> = views.into_iter().map(|(_, view)| view).collect();
         let next_after = shown.last().map_or(after, |event| event.sequence);
@@ -78,6 +136,41 @@ impl KernelRuntimeState {
             "next_after": next_after,
             "more": more,
             "events": events,
+        }))
+    }
+
+    /// One event read by its sequence, whatever its state: the way to read a payload that did
+    /// not fit one read, window by window with `offset`.
+    fn read_inbox_event(
+        &self,
+        room: &str,
+        actor: &str,
+        work: Option<&str>,
+        sequence: u64,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+        let store = &self.owned.durable_state_store;
+        let event = store
+            .agent_work_inbox(room, actor, sequence.saturating_sub(1), work)?
+            .into_iter()
+            .find(|event| event.sequence == sequence)
+            .ok_or_else(|| ledger::error("event unavailable in this inbox"))?;
+        if ledger::is_open(&event) {
+            store.agent_lifecycle(Operation::MarkShown {
+                room: room.into(),
+                agent: actor.into(),
+                sequences: vec![sequence],
+            })?;
+        }
+        let reader = self.owned.agent_store.get_agent(actor)?;
+        let (relation, view) = self.inbox_event_view(room, &reader, &event, offset)?;
+        Ok(serde_json::json!({
+            "untrusted": !relation.is_instruction(),
+            "notice": READING_NOTICE,
+            "next_after": args["after"].as_u64().unwrap_or(0),
+            "more": false,
+            "events": [view],
         }))
     }
 
@@ -106,13 +199,13 @@ impl KernelRuntimeState {
             })
     }
 
-    fn inbox_event_view(
+    /// Who sent `event`, as far as the agent tree and the peer stamps tell.
+    pub(in crate::runtime::state) fn event_sender(
         &self,
         room: &str,
         reader: &crate::agent::AgentInstance,
-        agents: &[crate::agent::AgentInstance],
         event: &InboxEvent,
-    ) -> (SenderRelation, serde_json::Value) {
+    ) -> EventSender {
         let agent = self.owned.agent_store.get_agent(&event.source_id).ok();
         let session = self.owned.session_store.get_session(room).ok();
         let is_run = session.is_some_and(|session| {
@@ -130,7 +223,7 @@ impl KernelRuntimeState {
                 _ => None,
             })
             .flatten();
-        let source_kind = if agent.is_some() || remote.is_some() {
+        let kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {
             "workflow_run"
@@ -144,14 +237,42 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|stamp| format!("{}/{}", stamp.kernel_id, stamp.agent_id));
         let name = alias
-            .as_deref()
-            .or(remote_name.as_deref())
-            .unwrap_or(&event.source_id);
+            .clone()
+            .or(remote_name)
+            .unwrap_or_else(|| event.source_id.clone());
         let relation = if remote.is_some() {
             SenderRelation::Peer
         } else {
-            SenderRelation::of(reader, agent.as_ref(), agents)
+            SenderRelation::of(reader, agent.as_ref(), |id, target| {
+                self.owned.agent_store.is_ancestor(id, target)
+            })
         };
+        EventSender {
+            agent,
+            remote,
+            kind,
+            alias,
+            name,
+            relation,
+        }
+    }
+
+    fn inbox_event_view(
+        &self,
+        room: &str,
+        reader: &crate::agent::AgentInstance,
+        event: &InboxEvent,
+        offset: usize,
+    ) -> Result<(SenderRelation, serde_json::Value), DaemonError> {
+        let EventSender {
+            agent,
+            remote,
+            kind: source_kind,
+            alias,
+            name,
+            relation,
+        } = self.event_sender(room, reader, event);
+        let name = name.as_str();
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");
         summary.truncate(summary.floor_char_boundary(SUMMARY_LIMIT));
@@ -160,7 +281,7 @@ impl KernelRuntimeState {
             .as_object_mut()
             .and_then(|fields| fields.remove("attachments"))
             .unwrap_or_else(|| serde_json::json!([]));
-        let (payload, truncated) = bounded_payload(&payload);
+        let window = payload_window(&payload, offset)?;
         // The kernel stamps an agent sender with where it runs; a peer may be in another room.
         let (kernel_id, sender_room) = match &agent {
             Some(agent) => (
@@ -188,11 +309,14 @@ impl KernelRuntimeState {
             },
             "guidance": relation.guidance(name),
             "summary": summary,
-            "payload": payload,
-            "truncated": truncated,
+            "payload": window.value,
+            "payload_bytes": window.total,
+            "payload_offset": offset,
+            "next_offset": window.next_offset,
+            "truncated": window.next_offset.is_some(),
             "attachments": attachments,
         });
-        (relation, view)
+        Ok((relation, view))
     }
 
     pub(crate) async fn ack_agent_inbox(

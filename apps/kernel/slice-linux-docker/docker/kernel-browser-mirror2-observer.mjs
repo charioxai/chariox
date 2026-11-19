@@ -39,6 +39,31 @@ export function sanitizeMirrorCss(text, base, resource) {
   // `:defined` follows the kernel's definition state (protocol 492 `state.defined`): the viewer marks undefined
   // custom elements instead of registering tags in a registry its next document would reuse.
   if (/:defined/i.test(out)) out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
+  // A link travels with href `#` (it never navigates) and its own value as inert `chariox-href`: a selector on the value
+  // (`a[href*="cookie" i]`, `:not([href^="#"])`) reads that one, a presence test still the href. Only a selector changes:
+  // a `[href=` in a string, a comment, another attribute's value or a declaration (a style attribute has only those)
+  // stays as the page wrote it, so a statement's `[href=` is rewritten once its `{` shows it was a selector.
+  if (/\[\s*href\s*[~|^$*]?=/i.test(out)) {
+    const value = /\[(\s*)href(?=\s*[~|^$*]?=)/iy, selectors = [];
+    let pending = [];
+    for (let i = 0; i < out.length; i++) {
+      const c = out[i];
+      if (c === '\\') i++;
+      else if (c === '"' || c === "'") { for (i++; i < out.length && out[i] !== c && out[i] !== '\n'; i++) if (out[i] === '\\') i++; }
+      else if (c === '/' && out[i + 1] === '*') { const end = out.indexOf('*/', i + 2); i = end < 0 ? out.length : end + 1; }
+      else if (c === '[') { value.lastIndex = i; if (value.test(out)) pending.push(i); }
+      else if (c === '{') { selectors.push(...pending); pending = []; }
+      else if (c === ';' || c === '}') pending = [];
+    }
+    let rewritten = '', from = 0;
+    for (const at of selectors) {
+      value.lastIndex = at;
+      const [token, space] = value.exec(out);
+      rewritten += `${out.slice(from, at)}[${space}chariox-href`;
+      from = at + token.length;
+    }
+    out = rewritten + out.slice(from);
+  }
   // Invalidates (never rewrites) legacy executable/binding constructs.
   if (/expression|behavior|-moz-binding|javascript/i.test(out)) out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
   if (/@import/i.test(out)) out = out.replace(/@import[^;]*;/gi, '');
@@ -99,9 +124,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const NODE_BUDGET = 900000, BYTE_BUDGET = 64 * 1024 * 1024, HEAD_BYTES = 2 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
     const DROP = new Set('script noscript template meta base title param track'.split(' '));
     const OPAQUE = new Set('canvas video audio object embed applet frame frameset portal fencedframe'.split(' '));
+    // Built-in elements that accept attachShadow(); custom elements are told apart by their tag.
+    const SHADOW_HOSTS = new Set('article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
-    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined'.split(' '));
+    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target chariox-undefined chariox-href'.split(' '));
     // Attribute denylist (audit 2026-10-10): every other attribute travels. Names the UA renders or
     // exposes keep values up to 64 KB; any other value up to 1 KB. Credential-like names never travel.
     const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
@@ -125,6 +152,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
+    // Each closed host's root, handed over by the kernel: only its geometry is read, for the region's still.
+    const closedRoots = new WeakMap();
     // Resource keys by URL (and kind: an SVG sprite's bytes are its sanitized symbols, not the image), least
     // recently used first: over the budget the oldest mapping goes (a later use gets a new key). Keys are never
     // reused within a document, below the frame key slot.
@@ -241,7 +270,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         return list === null || list.length > 64 ? root.querySelector(member) !== null : list.some(element => element.isConnected && element.matches(member));
       };
       const matches = selector => {
-        const plain = selector.replace(DYNAMIC, '');
+        // A cross-origin sheet is pruned after the sanitizer: its href values and `:target` read as the page wrote them.
+        const plain = selector.replace(/\[(\s*)chariox-href(?=\s*[~|^$*]?=)/gi, '[$1href').replace(/\[chariox-target\]/g, '').replace(DYNAMIC, '');
         if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
         try { return split(plain, c => c === ',').some(member => used(member.trim())); } catch { return true; }
       };
@@ -286,6 +316,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
+    // A fixed closed host with no box of its own (Vimeo's consent manager) sits where the document ends, and the viewer's
+    // document ends elsewhere. Its content is fixed too, so its region is anchored at the viewport origin on both sides.
+    const viewportHost = node => { if (!closedRoots.has(node) || getComputedStyle(node).position !== 'fixed') return false; const r = node.getBoundingClientRect(); return !(r.width > 0 && r.height > 0); };
+    const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
@@ -401,8 +435,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         // `#` keeps :link and never navigates. Protocol 629: a link the kernel saw visited from this origin is sent as
         // `""` instead, which the viewer draws :visited (its own document's URL).
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
+        // The value a stylesheet's href selector reads (see sanitizeMirrorCss), under the bounds of any other attribute.
+        const own = node.getAttribute('href');
+        if (own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
       }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
+      if (viewportHost(node)) attrs.style = `${attrs.style ? `${attrs.style};` : ''}position:fixed!important;inset:0 auto auto 0!important`;
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
       return attrs;
     };
@@ -529,6 +567,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       spend(64 + JSON.stringify(record.attrs).length);
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
+      // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
@@ -926,6 +966,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
             const keyed = node.namespaceURI === SVG && ['image', 'use'].includes(node.localName), key = keyed ? (node.localName === 'image' ? svgImageKey(node) : spriteKey(node)) : null;
             if (keyed) imageOp(node, id, ops, key);
             if (!key || node.localName === 'use') ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
+            ops.push({ op: 'attr', id, name: 'chariox-href', value: attrs['chariox-href'] ?? null });
             continue;
           }
           if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
@@ -1009,17 +1050,36 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     const topBox = node => {
-      let [x, y, width, height] = box(node);
+      let [x, y, width, height] = hostBox(node);
       for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
       return [x, y, width, height];
     };
-    // Opaque regions visible now, in top-level viewport CSS pixels.
+    // What a closed root's content paints, which can lie outside its host's own box (a 0x0 host with fixed content),
+    // in the host's coordinates; null when it adds nothing to the host's box.
+    const closedInk = (node, [x, y, width, height]) => {
+      const root = closedRoots.get(node); if (!root) return null;
+      // The host's own frame offset (topBox) applies to its content as well.
+      const [dx, dy] = [x - hostBox(node)[0], y - hostBox(node)[1]];
+      let left = x, top = y, right = x + width, bottom = y + height, empty = !(width > 0 && height > 0), grown = false, seen = 0;
+      for (const element of root.querySelectorAll('*')) {
+        if (++seen > 4096) break;
+        const r = element.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0) || invisible(element)) continue;
+        const [l, t] = [r.x + dx, r.y + dy];
+        if (empty) { [left, top, right, bottom, empty] = [l, t, l + r.width, t + r.height, false]; grown = true; continue; }
+        if (l < left || t < top || l + r.width > right || t + r.height > bottom) grown = true;
+        left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, l + r.width); bottom = Math.max(bottom, t + r.height);
+      }
+      return grown ? [left, top, right - left, bottom - top] : null;
+    };
+    // Opaque regions visible now, in top-level viewport CSS pixels. A closed root's region also gives the box its content
+    // paints (ink), which its still covers.
     const opaqueBoxes = () => {
       const out = [];
       for (const [id, node] of nodes) {
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
-        const [x, y, width, height] = topBox(node);
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
+        const own = topBox(node), ink = closedInk(node, own), [x, y, width, height] = ink ?? own;
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: own, ...(ink ? { ink } : {}), view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
     };
@@ -1100,7 +1160,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // overlays and sticky headers above it stay mirrored DOM, never baked in. Null when tainted
     // (cross-origin pixels never leave this way), blank (WebGL without preserveDrawingBuffer), without a
     // frame yet, or another kind (plugins, closed roots, frames: masked screenshots).
-    const elementPixels = async (id, scale) => {
+    // The still keeps its CSS box: past the packet's byte budget it travels at half the pixel density, again until it fits.
+    const elementPixels = async (id, scale, budget) => {
       const node = nodes.get(id);
       if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
       const style = getComputedStyle(node), px = name => parseFloat(style[name]) || 0, video = node.localName === 'video';
@@ -1113,10 +1174,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       try {
         g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
         if (!video) { const data = g.getImageData(0, 0, W, H).data; let blank = true; for (let i = 3; i < data.length && blank; i += 4) blank = !data[i]; if (blank) return null; }
-        const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
-        if (bytes.length > 4 * 1024 * 1024) return null;
-        let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-        return { x, y, width, height, data_base64: btoa(binary) };
+        for (let still = canvas; ;) {
+          const bytes = new Uint8Array(await (await still.convertToBlob({ type: 'image/png' })).arrayBuffer());
+          if (4 * Math.ceil(bytes.length / 3) <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary) }; }
+          if (still.width === 1 && still.height === 1) return null;
+          const half = new OffscreenCanvas(Math.ceil(still.width / 2), Math.ceil(still.height / 2));
+          half.getContext('2d').drawImage(still, 0, 0, half.width, half.height); still = half;
+        }
       } catch { return null; }
     };
     // MP-08 / MP-11: input follows live geometry; Vault protection applies to model observations.
@@ -1172,11 +1236,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const point = request => {
       let node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
-      let [bx, by, width, height] = box(node), moved = false;
+      let [bx, by, width, height] = hostBox(node), moved = false;
+      // A closed root's content can paint outside its host's box: the viewer's offset stays relative to the host.
+      const ink = closedInk(node, [bx, by, width, height]), [ix, iy] = ink ? [ink[0] - bx, ink[1] - by] : [0, 0];
+      if (ink) [bx, by, width, height] = ink;
       for (let up = 0; !(width > 0 && height > 0) && node.parentElement && up < 32; up++) { node = node.parentElement; [bx, by, width, height] = box(node); moved = true; }
       if (!(width > 0 && height > 0)) throw new Error('mirror2 invisible node');
-      const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
-      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
+      const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x - ix, 0.5), width - 0.5) : width / 2;
+      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y - iy, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
       // A wheel step aimed at a node the page has scrolled past goes to the nearest visible point of the same panes and
       // frames: the viewer's earlier steps moved the node, and showing it again would take them back.
@@ -1268,9 +1335,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // CDP describes only these already serialized hosts. Unpublished records
     // can become opaque under the same id before their packet leaves the kernel.
-    const markClosedHost = function (fresh = false) {
+    const markClosedHost = function (fresh = false, root = null) {
       if (!this || this.nodeType !== 1) return true;
-      closedHosts.add(this); closedTodo.delete(this);
+      closedHosts.add(this); closedTodo.delete(this); if (root) closedRoots.set(this, root);
       const id = mirrored(this);
       if (!fresh || !id) { replaceNode(this); return true; }
       const removed = [], collect = at => { removed.push(at); for (const child of kids.get(at) ?? []) collect(child); };

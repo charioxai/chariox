@@ -110,10 +110,10 @@ test("wait asks again in four-minute pieces until it fires or the time is up", a
   await assert.rejects(runTerminalVerb("wait", [], flags({ for: "output_contains=" }), send), CommandFailure)
 })
 
-test("a command that needs a session or terminal names the missing flag", async () => {
+test("a command that needs a terminal names the missing flag, in a Room or on the kernel", async () => {
   const { send } = recorder([])
-  await assert.rejects(runTerminalVerb("list", [], { noEnter: false }, send), /--session/)
   await assert.rejects(runTerminalVerb("close", [], { noEnter: false, session: "s1" }, send), /--terminal/)
+  await assert.rejects(runTerminalVerb("close", [], { noEnter: false }, send), /--terminal/)
 })
 
 test("a terminal on a worker or slice agent is driven with --host-agent on every request", async () => {
@@ -168,3 +168,22 @@ for (const verb of ["read", "send"] as const) {
     }
   })
 }
+
+test("without --session a terminal verb asks for the kernel's own terminals, with no Room", async () => {
+  const { sent, send } = recorder([
+    { RoomTerminal: { result: { result: "opened", terminal: { ...summary(), scope: "kernel" } } } },
+    { RoomTerminal: { result: { result: "listed", terminals: [] } } },
+  ])
+  const { session: _room, ...kernelFlags } = flags({ directory: "/srv" })
+  await runTerminalVerb("open", [], kernelFlags, send)
+  await runTerminalVerb("list", [], kernelFlags, send)
+  assert.deepEqual(sent[0], { KernelTerminal: { directory: "/srv", operation: { operation: "open", cols: 120, rows: 30 } } })
+  assert.deepEqual(sent[1], { KernelTerminal: { operation: { operation: "list" } } })
+  assert.equal(sent.some(body => "RoomTerminal" in body), false)
+})
+
+test("--host-agent without --session is a usage error, not a kernel terminal", async () => {
+  const { send } = recorder([])
+  const { session: _room, ...kernelFlags } = flags({ hostAgent: "agent-a" })
+  await assert.rejects(runTerminalVerb("list", [], kernelFlags, send), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
+})

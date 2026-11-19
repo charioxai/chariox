@@ -579,9 +579,8 @@ impl SessionRuntimeStore {
         self.state.authorize_room_agent_request(actor_id, request)
     }
 
-    /// The caller is an owned agent of this room. The one exception is a room agent creating a
-    /// peer here from another room (M2 P3): `SpawnAgent` only, admitted by the Room fence, with
-    /// the owner named as this room knows it (`local` or the enrolled owner).
+    /// Cross-Room spawn and deletion enter the destination Room's command queue.
+    /// The Room fence below checks the ownership and parent edge before either mutation.
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
@@ -596,7 +595,10 @@ impl SessionRuntimeStore {
                     agent.owner_user_id() == caller_user_id
                 } else {
                     self.state.room_agent_tools_enabled()
-                        && matches!(request, LocalDaemonRequest::SpawnAgent(_))
+                        && matches!(
+                            request,
+                            LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+                        )
                         && self.state.same_owner(agent.owner_user_id(), caller_user_id)
                 }
         }) else {
@@ -705,6 +707,22 @@ impl SessionRuntimeStore {
             .set_project_pinned(&request.project_id, request.pinned, &caller_user_id)
             .await
             .map(|project| LocalDaemonResponse::ProjectPinned { project });
+        (result, None)
+    }
+
+    pub(super) async fn create_project(
+        &self,
+        request: crate::local::CreateProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .create_project(request.name, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectCreated { project });
         (result, None)
     }
 
@@ -1074,7 +1092,7 @@ impl SessionRuntimeStore {
             passkey_remember_minutes,
         } = request;
         let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
-        let result = match self
+        if let Err(error) = self
             .state
             .answer_terminal_runtime_interaction(
                 &session_id,
@@ -1088,17 +1106,24 @@ impl SessionRuntimeStore {
             )
             .await
         {
-            Ok(()) => self
-                .state
-                .session_snapshot(&session_id)
-                .await
-                .map(|session| LocalDaemonResponse::InteractionResponded {
-                    interaction_id,
-                    session,
-                }),
-            Err(error) => Err(error),
-        };
-        self.with_session_projection_action_result(result).await
+            return (Err(error), None);
+        }
+        // The Room state reaches every client through the projection and its events; the
+        // reply only says what happened to this answer.
+        let projection_action = self
+            .state
+            .session_snapshot(&session_id)
+            .await
+            .ok()
+            .map(SessionProjectionAction::Update);
+        (
+            Ok(LocalDaemonResponse::InteractionResponded {
+                interaction_id,
+                choice_id,
+                outcome: crate::local::InteractionOutcome::Answered,
+            }),
+            projection_action,
+        )
     }
 
     pub(super) async fn alias_session(

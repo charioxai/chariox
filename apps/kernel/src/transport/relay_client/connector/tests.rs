@@ -932,7 +932,7 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
                     let (stream, _) = incoming.unwrap();
                     let accepted = accepted.clone();
                     readers.spawn(async move {
-                        let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return; };
+                        let Ok(socket) = crate::transport::relay_socket_connect::accept_as_relay(stream).await else { return; };
                         let (_, mut read) = socket.split();
                         let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
                         let mut announced = false;
@@ -982,9 +982,8 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
     // This connector also awaits a router on an independent runtime. Use its
     // real socket and real deadline instead of advancing only one runtime's
     // clock; fixed yields never establish a cross-runtime timer barrier.
-    // Two read-idle deadlines watch this socket (the reader stall and the silent-relay
-    // frame deadline); the earlier one replaces it.
-    let deadline = RELAY_READ_IDLE_LIMIT.min(RELAY_READ_IDLE_TIMEOUT);
+    // The socket thread's silent-relay deadline replaces it.
+    let deadline = RELAY_READ_IDLE_TIMEOUT;
     let waiting_started = std::time::Instant::now();
     let reconnected = timeout(deadline + Duration::from_secs(10), connections.recv()).await;
     let waited = waiting_started.elapsed();
@@ -1020,4 +1019,102 @@ async fn a_rate_limited_token_refresh_waits_out_the_cloud_retry_hint() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     tokio::task::yield_now().await;
     assert!(should_start_cloud_token_refresh(Some(&task)));
+}
+
+// b3, 2026-11-18: slow reads held every kernel worker and the relay closed the link with
+// "relay heartbeat timeout". The relay's ping must be answered while the kernel runtime is
+// blocked, and the link must stay up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn relay_pings_are_answered_while_the_kernel_runtime_is_blocked() {
+    crate::test_support::isolated_env_test!();
+    const BLOCKED_FOR: Duration = Duration::from_secs(4);
+    let (address_tx, address_rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let (ping_tx, ping_rx) = std::sync::mpsc::channel::<()>();
+    let (pong_tx, pong_rx) = std::sync::mpsc::channel::<(Duration, bool)>();
+    // The relay runs on its own thread and runtime, so blocking the kernel's runtime
+    // cannot delay it.
+    let relay = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                address_tx.send(listener.local_addr().unwrap()).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
+                let (mut write, mut read) = socket.split();
+                let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
+                while let Some(Ok(message)) = read.next().await {
+                    let Message::Text(payload) = message else {
+                        continue;
+                    };
+                    let Ok((Some(payload), _)) = frames.receive(&payload) else {
+                        continue;
+                    };
+                    if matches!(
+                        serde_json::from_str::<RelayEnvelope>(&payload),
+                        Ok(RelayEnvelope::DaemonHeartbeat { .. })
+                    ) {
+                        break;
+                    }
+                }
+                ready_tx.send(()).unwrap();
+                tokio::task::spawn_blocking(move || ping_rx.recv().unwrap())
+                    .await
+                    .unwrap();
+                let pinged = std::time::Instant::now();
+                write.send(Message::Ping(Vec::new().into())).await.unwrap();
+                let ponged = timeout(BLOCKED_FOR * 2, async {
+                    while let Some(Ok(message)) = read.next().await {
+                        if matches!(message, Message::Pong(_)) {
+                            return true;
+                        }
+                    }
+                    false
+                })
+                .await
+                .unwrap_or(false);
+                pong_tx.send((pinged.elapsed(), ponged)).unwrap();
+                // Keep the socket open until the connector stops.
+                while let Some(Ok(_)) = read.next().await {}
+            });
+    });
+    let address = address_rx.recv().unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{address}"));
+    config.relay_token = Some("blocked-runtime-fixture".into());
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (stop, stopping) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector(
+        app,
+        Arc::clone(&state),
+        stopping,
+    ));
+    ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the connector registers and sends its first heartbeat");
+    // Hold the runtime's only worker the way blocking kernel work does.
+    let (blocking_tx, blocking_rx) = std::sync::mpsc::channel::<()>();
+    let blocker = tokio::spawn(async move {
+        blocking_tx.send(()).unwrap();
+        std::thread::sleep(BLOCKED_FOR);
+    });
+    blocking_rx.recv().unwrap();
+    ping_tx.send(()).unwrap();
+    let (answered_after, ponged) = pong_rx.recv().unwrap();
+    blocker.await.unwrap();
+    assert!(ponged, "the relay's ping was never answered");
+    assert!(
+        answered_after < Duration::from_secs(1),
+        "the relay's ping waited {answered_after:?} for the blocked kernel runtime"
+    );
+    assert!(state.read().await.connected(), "the relay link dropped");
+    let _ = stop.send(true);
+    connector.await.unwrap();
+    relay.join().unwrap();
 }

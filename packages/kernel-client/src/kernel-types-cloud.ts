@@ -178,12 +178,14 @@ export type SliceRecord = {
 export type SliceDevelopmentSelection =
   | { kind: "empty" }
   | {
-      kind: "source_project"
-      project_id: string
-      repositories: Array<{
-        role: "primary" | "supporting"
-        workspaceId: string
-        worktreeId?: string | null
+      kind: "source_projects"
+      projects: Array<{
+        project_id: string
+        repositories: Array<{
+          role: "primary" | "supporting"
+          workspaceId: string
+          worktreeId?: string | null
+        }>
       }>
     }
 
@@ -493,17 +495,6 @@ export type WorkspaceGitActionResult = {
   message: string
   commit_sha?: string | null
   branch?: string | null
-  generated_at_ms: number
-}
-
-export type WorkspacePullRequestRecord = {
-  workspace_id: string
-  worktree_id: string
-  branch: string
-  base_ref: string
-  url: string
-  title?: string | null
-  draft: boolean
   generated_at_ms: number
 }
 

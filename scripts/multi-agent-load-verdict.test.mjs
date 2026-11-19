@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './drills/kernel-responsiveness/multi-agent-verdict.mjs'
+import { readFileSync } from 'node:fs'
+import { budgetChecks, laneChecks, rssSlopeAfterWarmup, verdictOf } from './drills/kernel-responsiveness/multi-agent-verdict.mjs'
 
 // The other KR-06 checks are healthy, as in a run whose generators all work.
 const healthy = { plain_call_p99_under_load_ms: { value: 3, limit: 100 }, load_errors: { value: 0, limit: 0 } }
@@ -50,4 +51,23 @@ test('the RSS slope ignores the start-up ramp before the warm-up', () => {
   assert.ok(rssSlopeAfterWarmup(samples, 600) === 1)
   assert.ok(rssSlopeAfterWarmup(samples, 0) > 10)
   assert.ok(rssSlopeAfterWarmup(samples, 1800) === null)
+})
+
+const budgets = { outline_p95_ms: { max: 200 }, session_state_p95_ms: { max: 100 }, attach_view_p95_ms: { max: 300 }, stalled_operations: { max: 0 } }
+const latency = { GetSessionHistoryOutline: { p95_ms: 40 }, GetSessionState: { p95_ms: 20 }, AttachSessionView: { p95_ms: 60 } }
+
+test('GREEN when the outline, state and attach p95 are within perf-budgets/kernel.json and nothing stalled', () => {
+  const { verdict: v, red } = verdictOf(budgetChecks(budgets, latency, 0))
+  assert.ok(v === 'GREEN', red.join(' '))
+})
+
+test('RED when a p95 is over its budget, a probe never ran, or the kernel logged a stalled operation', () => {
+  assert.deepEqual(verdictOf(budgetChecks(budgets, { ...latency, GetSessionHistoryOutline: { p95_ms: 201 } }, 0)).red, ['budget_outline_p95_ms'])
+  assert.deepEqual(verdictOf(budgetChecks(budgets, { GetSessionState: { p95_ms: 20 }, AttachSessionView: { p95_ms: 60 } }, 0)).red, ['budget_outline_p95_ms'])
+  assert.deepEqual(verdictOf(budgetChecks(budgets, latency, 1)).red, ['budget_stalled_operations'])
+})
+
+test('the real budget file names every budget the drill gates', () => {
+  const real = JSON.parse(readFileSync(new URL('../perf-budgets/kernel.json', import.meta.url), 'utf8'))
+  assert.doesNotThrow(() => budgetChecks(real, latency, 0))
 })

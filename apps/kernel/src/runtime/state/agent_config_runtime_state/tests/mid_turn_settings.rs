@@ -119,7 +119,7 @@ async fn the_turn_goes_on_in_a_new_process_when_the_model_changes() {
     );
     assert_eq!(
         settings_notices(&turn),
-        vec![format!("Model changed to {NEXT_MODEL}, continuing.")]
+        vec![format!("Model changed to {NEXT_MODEL} by you, continuing.")]
     );
     let events = settings_events(&turn);
     assert_eq!(events.len(), 1);
@@ -130,6 +130,102 @@ async fn the_turn_goes_on_in_a_new_process_when_the_model_changes() {
     // The continuation is one durable recovery operation of the same turn, so a restart that
     // interrupts the swap finds it.
     assert!(prompt.durable_recovery_operation_id().is_some());
+}
+
+#[tokio::test]
+async fn a_provider_change_that_waits_for_turn_end_survives_the_old_runs_output() {
+    assert_deferred_provider_change(false).await;
+}
+
+#[tokio::test]
+async fn a_deferred_provider_change_takes_effect_after_cancellation() {
+    assert_deferred_provider_change(true).await;
+}
+
+async fn assert_deferred_provider_change(cancelled: bool) {
+    let turn = running(failing_turn_on("claude").await).await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (updated, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            owner,
+            Some("dev-stub".into()),
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            crate::runtime::state::agent_settings_change::SettingsContext::person(),
+        )
+        .await
+        .expect("the cross-provider change is accepted");
+    assert_eq!(applies, crate::local::SettingsApplies::AtTurnEnd);
+    assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
+    assert_eq!(turn.live_run().unwrap().provider(), "claude");
+
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                resolved_resume_state: Some(
+                    crate::provider::ProviderResumeState::from_claude_session_id("old-session"),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("late output from the old run is accepted");
+    turn.queue_follow_up().await;
+    if cancelled {
+        let session = turn
+            .runtime
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap();
+        turn.runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, &turn.agent_id)
+            .unwrap();
+    }
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the old turn settles and starts the queued turn");
+
+    let selected = turn
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&turn.agent_id)
+        .unwrap();
+    assert_eq!(selected.provider(), "dev-stub");
+    assert_eq!(selected.model(), Some(NEXT_MODEL));
+    assert_eq!(
+        selected.provider_account_profile(),
+        updated.provider_account_profile()
+    );
+    let old_run = turn
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&turn.failed_run_id)
+        .unwrap();
+    assert_eq!(old_run.state(), ProviderRunState::Ended);
+    assert_eq!(old_run.provider(), "claude");
+    let next = turn.active_prompt().expect("the queued turn starts");
+    assert_eq!(next.prompt(), "implement that solution");
+    let new_run = turn.live_run().expect("the queued turn has a provider run");
+    assert_eq!(next.durable_delivery_provider_run_id(), Some(new_run.id()));
+    assert_eq!(new_run.provider(), "dev-stub");
+    assert_eq!(new_run.model(), NEXT_MODEL);
+    assert_eq!(
+        new_run.account_profile(),
+        updated.provider_account_profile()
+    );
 }
 
 #[tokio::test]
@@ -213,7 +309,7 @@ async fn several_changes_of_one_step_restart_the_process_once() {
     assert_eq!(
         settings_notices(&turn),
         vec![format!(
-            "Model changed to {NEXT_MODEL}, effort changed to high, continuing."
+            "Model changed to {NEXT_MODEL}, effort changed to high by you, continuing."
         )]
     );
     assert_eq!(

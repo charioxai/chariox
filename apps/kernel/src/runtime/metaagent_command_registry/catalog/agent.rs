@@ -1,4 +1,4 @@
-pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--room <room> [--kernel <kernel-ref>] [--no-follow]] [--command-id <id>]";
+pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--room <room> [--kernel <kernel-ref>] [--no-follow]] [--command-id <id>] [--task <first-prompt>]";
 
 use super::super::{MetaCommandDoc, MetaCommandPolicy};
 
@@ -136,7 +136,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation. `--slice` takes a slice id or name, or the full worker kernel ID (`self.location.kernel_id` from scoped discovery) to place the child on the slice the calling agent runs in; `current`, aliases and ID prefixes are not accepted. Omitting placement creates the child on the home kernel. Without `--room` the child is your sub-agent in this room. `--room <room>` (a room agent only; a sub-agent is refused) must name another room of the same owner on this kernel (`room list` shows them; your own room is refused, because there the agent would be your sub-agent) and instead creates an ordinary peer agent there: it has no parent, counts in that room, starts in that room's own folder, and never has more authority than the calling agent. A peer without a parent in your own room is added by the user, not by an agent. A peer you create in another room stays until that room's owner deletes it or you end (it is deleted with you or your room): `agent delete` is refused for it, and `agent cancel <agent> --room <room>` stops its turn. It takes only the identity and permission options (`--provider`, `--model`, `--effort`, `--account-profile`, `--permission`); `--no-follow` is accepted and recorded. With `--kernel <kernel-ref>` the room is on another kernel of the same owner, named as for remote placement; it is followed the same way unless `--no-follow`, takes `--command-id` to name the call across turns (a retry with the same id, or the same spawn again in the same turn, answers the peer already created with `duplicate: true`), and a refusal names its reason (room_unavailable, kernel_unreachable, owner_unverified, not_permitted, room_full).",
+        description: "Create a sub-agent. You are its parent. Without `--room` it works in your Room. To place it in another Room on this kernel, use `--room <room>` with a Room from `room list`. That Room must have the same owner and its folders must be within your workspace or worktree, or in another worktree of your Git repository. Your child receives your instructions and reports its results to you. It appears in the other Room and in your list of sub-agents. To steer, cancel, set a deadline or delete it there, add `--room <room>` to the command. Spawn accepts provider, model, effort, account profile, permission, deadline and command id. For a child in your Room, you can also choose a directory, worktree, remote kernel or slice. `--slice` takes a slice id, name or full worker kernel ID. With `--room <room> --kernel <another-kernel>`, spawn creates a peer in the other kernel's Room of the same owner. This peer is followed unless you specify `--no-follow`. Use `--command-id` to retry and find the same peer across turns.",
     },
     MetaCommandDoc {
         name: "agent focus",
@@ -177,7 +177,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "agent delete",
         aliases: &["agent delete", "agent destroy", "agent remove"],
-        usage: "agent delete <agent-ref>",
+        usage: "agent delete <agent-ref> [--room <room>]",
         examples: &["agent delete code-reviewer"],
         tags: &["agent", "delete", "remove", "orchestration"],
         intents: &["delete an agent", "remove a worker", "clean up an agent"],
@@ -186,15 +186,23 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Delete one of this user's regular agents from the current session. If your spawned child is already deleted (for example it was removed with its own parent), succeeds with already_deleted, deleted_at_ms and the reason. A finished child is never removed for you: handling its child_finished receipt keeps it, and only this command deletes it.",
+        description: "Delete a sub-agent below you. Add `--room <room>` for a sub-agent in another Room on this kernel. If your spawned child is already deleted (for example it was removed with its own parent), succeeds with already_deleted, deleted_at_ms and the reason. A finished child is never removed for you: handling its child_finished receipt keeps it, and only this command deletes it.",
     },
     MetaCommandDoc {
         name: "agent cancel",
         aliases: &["agent cancel"],
         usage: "agent cancel <agent-ref> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]]",
-        examples: &["agent cancel worker-1", "agent cancel reviewer --room 18e6036479710b80"],
+        examples: &[
+            "agent cancel worker-1",
+            "agent cancel reviewer --room 18e6036479710b80",
+        ],
         tags: &["agent", "cancel", "stop", "orchestration"],
-        intents: &["stop a worker's turn", "interrupt a sub-agent", "cancel what a child is doing", "stop a peer's turn"],
+        intents: &[
+            "stop a worker's turn",
+            "interrupt a sub-agent",
+            "cancel what a child is doing",
+            "stop a peer's turn",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -206,9 +214,16 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         name: "agent steer",
         aliases: &["agent steer"],
         usage: "agent steer <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]] [--reply-requested]",
-        examples: &["agent steer worker-1 \"stop editing parser.rs\"", "agent steer reviewer \"use the new schema\" --room 18e6036479710b80"],
+        examples: &[
+            "agent steer worker-1 \"stop editing parser.rs\"",
+            "agent steer reviewer \"use the new schema\" --room 18e6036479710b80",
+        ],
         tags: &["agent", "steer", "message", "orchestration"],
-        intents: &["redirect a worker", "steer a sub-agent", "interrupt a peer with an instruction"],
+        intents: &[
+            "redirect a worker",
+            "steer a sub-agent",
+            "interrupt a peer with an instruction",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -220,9 +235,16 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         name: "agent message",
         aliases: &["agent message"],
         usage: "agent message <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]] [--reply-requested]",
-        examples: &["agent message worker-1 \"parser.rs is mine for the hour\"", "agent message reviewer \"which tests cover this?\" --room 18e6036479710b80 --reply-requested"],
+        examples: &[
+            "agent message worker-1 \"parser.rs is mine for the hour\"",
+            "agent message reviewer \"which tests cover this?\" --room 18e6036479710b80 --reply-requested",
+        ],
         tags: &["agent", "message", "tell", "peer", "orchestration"],
-        intents: &["tell another agent something", "ask a peer a question", "message an agent in another room"],
+        intents: &[
+            "tell another agent something",
+            "ask a peer a question",
+            "message an agent in another room",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -236,7 +258,10 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         usage: "agent promote <message-id>",
         examples: &["agent promote 188840"],
         tags: &["agent", "message", "steer", "orchestration"],
-        intents: &["make a queued message urgent", "start or steer an agent with a message I already sent"],
+        intents: &[
+            "make a queued message urgent",
+            "start or steer an agent with a message I already sent",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -256,7 +281,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "descendants, or peers of the same owner with no greater authority; never self or an ancestor",
         routed: true,
-        description: "Extend, shorten, clear or read an agent deadline. Descendants follow their parent; peers of the same owner require at least their authority, and hidden sub-agents in other rooms stay unavailable. You cannot change your own deadline. When it passes the agent stops and child_finished says deadline_reached.",
+        description: "Extend, shorten, clear or read an agent deadline. Descendants follow their parent; peers of the same owner require at least their authority, and a Room name addresses your own sub-agents when they work there. You cannot change your own deadline. When it passes the agent stops and child_finished says deadline_reached.",
     },
     MetaCommandDoc {
         name: "agent children",
@@ -278,7 +303,10 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         usage: "agent revoke <agent-ref> watched-process",
         examples: &["agent revoke worker-1 watched-process"],
         tags: &["agent", "grant", "orchestration"],
-        intents: &["withdraw a sub-agent's standing approval", "make a worker's watched commands ask again"],
+        intents: &[
+            "withdraw a sub-agent's standing approval",
+            "make a worker's watched commands ask again",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -292,7 +320,10 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         usage: "agent answer <interaction> <choice-id | text> [--room <room-id>]",
         examples: &["agent answer perm-12 allow"],
         tags: &["agent", "decision", "orchestration"],
-        intents: &["answer a sub-agent's question", "approve a sub-agent's tool"],
+        intents: &[
+            "answer a sub-agent's question",
+            "approve a sub-agent's tool",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -306,7 +337,10 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         usage: "agent pass <interaction>",
         examples: &["agent pass perm-12"],
         tags: &["agent", "decision", "orchestration"],
-        intents: &["hand a sub-agent's question to my parent", "let the user decide"],
+        intents: &[
+            "hand a sub-agent's question to my parent",
+            "let the user decide",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -337,7 +371,15 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
             "agent settings set --account-profile work --reason 'the personal account hit its limit'",
             "agent settings set --permission required",
         ],
-        tags: &["agent", "settings", "model", "effort", "account", "permission", "mode"],
+        tags: &[
+            "agent",
+            "settings",
+            "model",
+            "effort",
+            "account",
+            "permission",
+            "mode",
+        ],
         intents: &[
             "change my own model or effort",
             "switch my account",
@@ -374,7 +416,10 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         usage: "agent profiles",
         examples: &["agent profiles"],
         tags: &["agent", "account", "orchestration"],
-        intents: &["list account profiles", "choose an account profile for a worker"],
+        intents: &[
+            "list account profiles",
+            "choose an account profile for a worker",
+        ],
         scope: "session",
         mutates: false,
         policy: MetaCommandPolicy::Allow,
@@ -411,7 +456,14 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
             "trigger add schedule --every 30m --prompt 'Check the build and report what changed'",
             "trigger add schedule --cron '0 30 9 * * 1-5' --timezone Europe/Berlin --prompt 'Morning review'",
         ],
-        tags: &["trigger", "schedule", "recurring", "heartbeat", "cron", "timer"],
+        tags: &[
+            "trigger",
+            "schedule",
+            "recurring",
+            "heartbeat",
+            "cron",
+            "timer",
+        ],
         intents: &[
             "wake me every N minutes",
             "set up a recurring heartbeat",

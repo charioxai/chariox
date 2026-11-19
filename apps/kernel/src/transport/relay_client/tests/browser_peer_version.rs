@@ -128,7 +128,8 @@ async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>)
         let worker_config = worker_config.clone();
         let home_private_key = home_config.relay_private_key.clone();
         tokio::spawn(async move {
-            let (mut socket, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+            let relay_url = format!("ws://{addr}");
+            let (mut socket, handshake) = connect_async(&relay_url).await.unwrap();
             let registration = chariox_relay::protocol::DaemonRegistration {
                 auth_token: "peer-version-fixture".into(),
                 daemon_id: worker_config.daemon_id.clone(),
@@ -148,9 +149,17 @@ async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>)
             };
             socket
                 .send(Message::Text(
-                    serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
-                        .unwrap()
-                        .into(),
+                    serde_json::to_string(
+                        &crate::transport::relay_socket_connect::daemon_register(
+                            &relay_url,
+                            &handshake,
+                            registration,
+                            &worker_config.relay_private_key,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                    .into(),
                 ))
                 .await
                 .unwrap();
@@ -364,13 +373,7 @@ async fn room_app_agent_request(
             crate::session::unix_epoch_ms(),
         )
         .unwrap();
-    app.slices()
-        .set_status(
-            &slice.id,
-            SliceStatus::Running,
-            crate::session::unix_epoch_ms(),
-        )
-        .unwrap();
+    let slices = app.slices().clone();
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         2,
@@ -380,9 +383,17 @@ async fn room_app_agent_request(
         .bind_room_environment_slice(
             crate::local::BindRoomEnvironmentSliceRequest {
                 session_id: room.id().into(),
-                slice_ref: slice.id,
+                slice_ref: slice.id.clone(),
             },
             room.owner_user_id(),
+        )
+        .unwrap();
+    // The Room binds while the slice is stopped; the worker is up once it starts.
+    slices
+        .set_status(
+            &slice.id,
+            SliceStatus::Running,
+            crate::session::unix_epoch_ms(),
         )
         .unwrap();
     let result = state

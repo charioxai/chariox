@@ -132,14 +132,13 @@ async fn exec_early_output_and_interactive_input_are_not_staged() {
 }
 
 #[tokio::test]
-async fn exec_slow_reader_backpressures_without_dropping_bytes() {
+async fn exec_slow_reader_keeps_output_below_the_shared_byte_ceiling() {
     let service = RoomExecService::default();
     let id = open(&service, "head -c 4194304 /dev/zero");
     tokio::time::sleep(Duration::from_millis(200)).await;
     let record = service.record("room", &id).unwrap();
     let retained = record.output.lock().unwrap().retained_bytes();
     assert!(retained > 0 && retained <= buffer::OUTPUT_BYTES);
-    assert!(service.has_running_work());
     let (stdout, stderr, outcome) =
         tokio::time::timeout(Duration::from_secs(10), collect(&service, &id))
             .await
@@ -276,42 +275,89 @@ async fn exec_room_end_cancels_the_whole_owned_process_tree() {
     }
 }
 
+// A job that leaves the command's tree (its own session, its parent gone) before anything
+// looked at the tree is still the command's: cleanup owns it from the spawn, not from a snapshot.
+// The second command's launcher exits at once, so it is usually gone before ownership is
+// captured and its environment cannot name the claim.
+#[cfg(target_os = "linux")]
 #[tokio::test]
-async fn exec_cancel_never_reports_truncated_output_as_success() {
+async fn exec_cleanup_ends_a_job_that_left_the_tree_before_any_snapshot() {
+    for script in [
+        "(setsid sh -c 'echo $$; exec sleep 60' &) ; sleep 0.3; wait",
+        "(setsid sh -c 'echo $$; exec sleep 60' &)",
+    ] {
+        ends_with_its_command(script).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn ends_with_its_command(script: &str) {
     let service = RoomExecService::default();
-    // The extra pipe read fits in the OS pipe after the bounded buffer fills,
-    // allowing a successful process exit while its output task stays parked.
-    let directory = crate::test_support::TestWorktree::new("exec-cancel-exited-output");
+    let id = open(&service, script);
+    let page = service
+        .read("room", &id, 0, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let bytes = page
+        .chunks
+        .iter()
+        .flat_map(|chunk| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&chunk.data_base64)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let pid: u32 = String::from_utf8(bytes).unwrap().trim().parse().unwrap();
+    assert!(pid > 1);
+    service.end_session("room");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+    let ended = stat.as_ref().map_or(true, |stat| {
+        stat.rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('Z')
+    });
+    // The test may have failed first: never leave the sleeper running.
+    // SAFETY: a PID this test just read from its own child's output.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    assert!(
+        ended,
+        "the detached job must be ended with its command: {stat:?}"
+    );
+}
+
+#[tokio::test]
+async fn job_admission_output_pressure_finishes_with_an_explicit_loss_marker() {
+    let service = RoomExecService::default();
+    let directory = crate::test_support::TestWorktree::new("exec-output-pressure");
     let marker = directory.path().join("exited");
     let id = open(
         &service,
-        &format!("head -c 1081344 /dev/zero; : > '{}'", marker.display()),
+        &format!("head -c 17825792 /dev/zero; : > '{}'", marker.display()),
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !marker.exists() {
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while !marker.exists() || service.has_running_work() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    service.cancel("room", &id).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while service.has_running_work() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let (stdout, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
-        .await
-        .unwrap();
-    assert!(stdout.len() < 1081344);
-    assert!(
-        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
-        "{outcome:?}"
-    );
+    .await;
+    if ended.is_err() {
+        service.close("room", &id).unwrap();
+        panic!("unread output must not park a completed command");
+    }
+    let (stdout, stderr, outcome) = collect(&service, &id).await;
     service.close("room", &id).unwrap();
+    assert!(stdout.len() <= 16 * 1024 * 1024);
+    assert!(String::from_utf8_lossy(&stderr).contains("Older unread command output was dropped"));
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
 }
 
 async fn abandoned_reader_expires(script: &str) -> ExecOutcome {
@@ -352,7 +398,8 @@ async fn exec_abandoned_stdin_reader_expires_and_releases_managed_work() {
 
 #[tokio::test]
 async fn exec_abandoned_output_reader_expires_and_releases_managed_work() {
-    let outcome = abandoned_reader_expires("head -c 8388608 /dev/zero").await;
+    // Keep the producer alive explicitly: unread output no longer backpressures a finished command.
+    let outcome = abandoned_reader_expires("head -c 8388608 /dev/zero; sleep 3600").await;
     assert_eq!(
         outcome,
         ExecOutcome::Failed {
@@ -518,6 +565,10 @@ async fn offload_job_declared_memory_queues_before_creating_a_process() {
     assert!(!marker.exists());
 }
 
+/// The pool stops a command it sees growing; one that already holds its memory
+/// at the first sample only waits, so the memory arrives over several samples.
+const GROWING_PAST_THE_POOL: &str = "import time\nx = []\nfor _ in range(16):\n    x.append(bytearray(32 * 1024 * 1024))\n    time.sleep(0.2)\ntime.sleep(30)";
+
 #[tokio::test]
 async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_settle() {
     let directory = crate::test_support::TestWorktree::new("offload-job-memory-outcome");
@@ -527,17 +578,13 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
             "room",
             crate::session::DEFAULT_LOCAL_USER_ID,
             directory.path(),
-            &[
-                "python3".into(),
-                "-c".into(),
-                "import time; x=bytearray(512*1024*1024); time.sleep(30)".into(),
-            ],
+            &["python3".into(), "-c".into(), GROWING_PAST_THE_POOL.into()],
             &crate::local::JobNeeds::default(),
             None,
             Some("agent".into()),
         )
         .unwrap();
-    let input = serde_json::json!({"argv":["python3", "-c", "import time; x=bytearray(512*1024*1024); time.sleep(30)"], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
+    let input = serde_json::json!({"argv":["python3", "-c", GROWING_PAST_THE_POOL], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
     let offset = service
         .write(
             "room",
@@ -549,12 +596,78 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
     service.close_stdin("room", &id, offset).unwrap();
     let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(15), collect(&service, &id))
         .await
-        .unwrap();
+        .expect("the command grew past the pool and was never stopped for memory");
     assert!(
         matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0),
         "{outcome:?}"
     );
     assert!(!service.has_running_work());
+    service.close("room", &id).unwrap();
+}
+
+/// Limits the command's own domain (a `process-*` leaf the kernel made) to 128 MiB, then
+/// allocates 512 MiB: the memory controller, not the kernel's pool, kills it.
+fn memory_controller_kill(after: &str) -> String {
+    format!(
+        "cg=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup); \
+         case \"$cg\" in */process-*) ;; *) echo \"no command domain: $cg\"; exit 3;; esac; \
+         unit=$(dirname $cg); \
+         echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; {after}"
+    )
+}
+
+async fn killed_by_the_memory_controller(after: &str) -> (String, ExecOutcome) {
+    let service = RoomExecService::default();
+    let id = open(&service, &memory_controller_kill(after));
+    let (_, stderr, outcome) =
+        tokio::time::timeout(Duration::from_secs(20), collect(&service, &id))
+            .await
+            .unwrap();
+    service.close("room", &id).unwrap();
+    (String::from_utf8_lossy(&stderr).into_owned(), outcome)
+}
+
+#[tokio::test]
+#[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+async fn a_command_the_memory_controller_killed_ends_as_memory_limit_with_the_reason() {
+    let (stderr, outcome) = killed_by_the_memory_controller(
+        "exec python3 -c 'x=bytearray(512*1024*1024); print(len(x))'",
+    )
+    .await;
+    assert!(
+        matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0 && limit_bytes <= 134217728),
+        "{outcome:?} {stderr}"
+    );
+    assert!(stderr.contains("killed: out of memory"), "{stderr}");
+}
+
+#[tokio::test]
+#[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+async fn a_command_that_fails_after_the_memory_controller_killed_its_child_ends_as_memory_limit() {
+    let (stderr, outcome) = killed_by_the_memory_controller(
+        "python3 -c 'x=bytearray(512*1024*1024); print(len(x))'; exit 101",
+    )
+    .await;
+    assert!(
+        matches!(outcome, ExecOutcome::MemoryLimit { .. }),
+        "{outcome:?} {stderr}"
+    );
+    assert!(stderr.contains("killed: out of memory"), "{stderr}");
+}
+
+#[tokio::test]
+async fn a_signalled_command_names_the_signal() {
+    let service = RoomExecService::default();
+    let id = open(&service, "kill -TERM $$");
+    let (_, stderr, outcome) =
+        tokio::time::timeout(Duration::from_secs(10), collect(&service, &id))
+            .await
+            .unwrap();
+    assert!(
+        matches!(outcome, ExecOutcome::Signaled { signal: 15 }),
+        "{outcome:?}"
+    );
+    assert!(String::from_utf8_lossy(&stderr).contains("killed by signal 15 (SIGTERM)"));
     service.close("room", &id).unwrap();
 }
 
@@ -609,4 +722,119 @@ async fn offload_exec_close_stdin_after_fast_exit_still_drains_outcome() {
     assert!(stderr.is_empty());
     assert_eq!(outcome, ExecOutcome::Exited { code: 7 });
     service.close("room", &id).unwrap();
+}
+
+#[tokio::test]
+async fn a_closed_exec_leaves_no_detached_job_running() {
+    let root = std::env::temp_dir().join(format!("exec-detached-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let pid_file = root.join("exec.pid");
+    let service = RoomExecService::default();
+    let id = open(
+        &service,
+        &format!(
+            "nohup {} </dev/null >/dev/null 2>&1 &",
+            crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8897),
+        ),
+    );
+    let (_, _, outcome) = collect(&service, &id).await;
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+    let read_pid = || {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while read_pid().is_none() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let pid = read_pid().expect("the detached job started");
+    service.close("room", &id).unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let alive = crate::test_support::process_alive(pid);
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    std::fs::remove_dir_all(&root).ok();
+    assert!(!alive, "a detached job outlived its closed exec");
+}
+
+#[tokio::test]
+async fn job_admission_many_finished_unread_commands_share_one_output_byte_bound() {
+    let service = RoomExecService::default();
+    let ids: Vec<_> = (0..40)
+        .map(|_| open(&service, "head -c 524288 /dev/zero"))
+        .collect();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while service
+            .list("room")
+            .iter()
+            .any(|exec| exec.state != ExecState::Finished)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let retained: usize = service
+        .list("room")
+        .iter()
+        .map(|exec| exec.buffered_bytes)
+        .sum();
+    let next = service.open_as(
+        "room",
+        "owner",
+        Path::new("/"),
+        &["/bin/true".into()],
+        None,
+        None,
+    );
+    let mut marked = false;
+    for id in &ids {
+        let (_, stderr, outcome) = collect(&service, id).await;
+        marked |=
+            String::from_utf8_lossy(&stderr).contains("Older unread command output was dropped");
+        assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+        service.close("room", id).unwrap();
+    }
+    if let Ok(id) = &next {
+        service.close("room", id).unwrap();
+    }
+    assert!(next.is_ok(), "retained output must not refuse a launch");
+    assert!(
+        retained <= 16 * 1024 * 1024,
+        "shared retained output was {retained} bytes"
+    );
+    assert!(marked, "dropped unread output must be explicit");
+}
+
+#[tokio::test]
+async fn job_admission_ordinary_commands_have_no_count_limit() {
+    let service = RoomExecService::default();
+    let mut ids = Vec::new();
+    let mut refusal = None;
+    for _ in 0..80 {
+        match service.open_as(
+            "room",
+            "owner",
+            Path::new("/"),
+            &["/bin/true".into()],
+            None,
+            None,
+        ) {
+            Ok(id) => ids.push(id),
+            Err(error) => {
+                refusal = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    for id in &ids {
+        service.close("room", id).unwrap();
+    }
+    assert!(
+        refusal.is_none(),
+        "launch refused at {}: {refusal:?}",
+        ids.len()
+    );
+    assert_eq!(ids.len(), 80);
 }

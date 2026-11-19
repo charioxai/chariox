@@ -14,7 +14,7 @@ impl KernelRuntimeState {
         // A Project's Environment holds names and text only, so there is nothing to confirm for it.
         if matches!(
             development,
-            ManagedContextDevelopmentSelection::SourceProject { .. }
+            ManagedContextDevelopmentSelection::SourceProjects { .. }
         ) {
             return Ok(());
         }

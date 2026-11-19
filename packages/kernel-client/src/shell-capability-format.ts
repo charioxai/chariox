@@ -4,11 +4,9 @@ import type {
   CharioxEnvironmentConfig,
   CharioxMcpServerConfig,
   CharioxScriptMetadata,
-  CharioxSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
   ProviderCapabilityImportReport,
-  SkillImportOutcome,
 } from "./kernel-types.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
@@ -52,16 +50,6 @@ export function formatMcpList(mcps: CharioxMcpServerConfig[]): string {
   }).join("\n")
 }
 
-export function formatSkillList(skills: CharioxSkillMetadata[]): string {
-  if (skills.length === 0) {
-    return "no skills installed"
-  }
-  return skills.map((skill) => {
-    const description = skill.short_description || skill.description || skill.path
-    return `${skill.name} - ${description}`
-  }).join("\n")
-}
-
 export function formatMcpImportOutcome(outcome: McpImportOutcome): string {
   const lines: string[] = []
   if (outcome.imported.length > 0) {
@@ -74,24 +62,12 @@ export function formatMcpImportOutcome(outcome: McpImportOutcome): string {
   return lines.length === 0 ? "No MCPs imported." : lines.join("\n")
 }
 
-export function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
-  const lines: string[] = []
-  if (outcome.imported.length > 0) {
-    lines.push(`Imported skills: ${outcome.imported.map((skill) => skill.name).join(", ")}`)
-  }
-  if (outcome.skipped.length > 0) {
-    lines.push("Skipped skills:")
-    lines.push(...outcome.skipped.map((skip) => `- ${skip.name}: ${skip.reason}`))
-  }
-  return lines.length === 0 ? "No skills imported." : lines.join("\n")
-}
-
 export function formatProviderCapabilityImportReport(report: ProviderCapabilityImportReport): string {
   const s = report.summary
   const lines = [
     `${report.dry_run ? "Provider capability import dry run" : "Provider capability import"}: providers=${report.providers.join(", ") || "none"} candidates=${s.candidates} imported=${s.imported} updated=${s.updated} already_installed=${s.already_installed} deduped=${s.deduped} skipped=${s.skipped} errors=${s.errors}`,
   ]
-  const entries = [...(report.mcps ?? []), ...(report.skills ?? [])]
+  const entries = report.mcps ?? []
   if (entries.length === 0) {
     lines.push("No provider capabilities found.")
     return lines.join("\n")
@@ -172,7 +148,7 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   }
   const status = agent.remote_extension_manifest_sync
   if (!status && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-    return `${agentLabel} has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected.`
+    return `${agentLabel} has no active home-proxy tools; no home-proxy manifest is projected.`
   }
   const rows = [
     `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,

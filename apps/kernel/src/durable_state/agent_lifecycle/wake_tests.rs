@@ -502,6 +502,107 @@ fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
     assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
 }
 
+/// A wake turn the kernel lost before it finished leaves the task blocked with its wait and the
+/// wake's prompt still retained. Once the wake is handled, nothing is left to wait for, so a later
+/// turn retires the attempt instead of leaving its owner card open.
+#[test]
+fn a03_a_later_turn_retires_an_interrupted_wake_turn_whose_wake_was_handled() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.wait_on(&["t1"]);
+    assert_eq!(f.wakes(Operation::FireWakes { now: 1_500 }).len(), 1);
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        prompt: "wake-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1_600,
+        work: None,
+        through: 0,
+    });
+    f.apply(Operation::EndFailedTurn {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Interrupted before it finished".into(),
+    });
+    let interrupted = f.task();
+    assert_eq!(interrupted.state, ExecutionState::Blocked);
+    assert!(interrupted.wait.is_some() && interrupted.pending_prompt_id.is_some());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        state: "accepted".into(),
+        now: 1_700,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        handled: true,
+        now: 1_800,
+    });
+    f.apply(Operation::RetireRestartFailure {
+        task: "p".into(),
+        revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
+        now: 2_000,
+    });
+    let retired = f.task();
+    assert_eq!(retired.state, ExecutionState::Cancelled);
+    assert!(retired.wait.is_none() && retired.pending_prompt_id.is_none());
+}
+
+/// The same interrupted turn keeps its owner action while another wake it waits on is still armed.
+#[test]
+fn a03_a_later_turn_keeps_an_interrupted_wake_turn_with_another_wake_still_armed() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.create("t2", "timer", Some(9_000_000), None);
+    f.wait_on(&["t1", "t2"]);
+    f.wakes(Operation::FireWakes { now: 1_500 });
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        prompt: "wake-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1_600,
+        work: None,
+        through: 0,
+    });
+    f.apply(Operation::EndFailedTurn {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Interrupted before it finished".into(),
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        state: "accepted".into(),
+        now: 1_700,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        handled: true,
+        now: 1_800,
+    });
+    let interrupted = f.task();
+    f.apply(Operation::RetireRestartFailure {
+        task: "p".into(),
+        revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
+        now: 2_000,
+    });
+    assert_eq!(f.task(), interrupted, "t2 is still armed for this task");
+}
+
 #[test]
 fn a03_interval_timer_coalesces_missed_fires_and_stays_armed() {
     let f = Fixture::new();
@@ -882,27 +983,38 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             work: None,
             through: 0,
         });
-        f.apply(Operation::Receipt {
-            room: "room".into(),
-            agent: "agent".into(),
-            sequence: e.sequence,
-            state: "accepted".into(),
-            now: now + 1,
-        });
-        f.apply(Operation::Begin {
+        let bind_run = |now| Operation::Begin {
             owner: "owner".into(),
             room: "room".into(),
             agent: "agent".into(),
             prompt: prompt.clone(),
             run: Some("run".into()),
-            now: now + 2,
+            now,
+        };
+        f.apply(bind_run(now + 2));
+        f.apply(Operation::BindSubmission {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            prompt: prompt.clone(),
+            target: None,
+            run: "run".into(),
+            submit_epoch: 1,
+            now: now + 3,
+        });
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+            now: now + 4,
         });
         f.apply(Operation::Ack {
             room: "room".into(),
             agent: "agent".into(),
             sequence: e.sequence,
             handled: true,
-            now: now + 3,
+            now: now + 5,
         });
         f.apply(Operation::Yield {
             task: "p".into(),
@@ -911,8 +1023,15 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             cursor: e.sequence,
             deadline: Some(10_000_000),
             reason: "next check-in".into(),
-            now: now + 4,
+            now: now + 6,
         });
+        if n == 2 {
+            // The restored provider yielded before the successor finished
+            // binding this already-running turn during restart recovery.
+            let accepted_wait = f.task().wait.unwrap();
+            f.apply(bind_run(now + 7));
+            assert_eq!(f.task().wait, Some(accepted_wait));
+        }
         f.apply(Operation::Settle {
             room: "room".into(),
             agent: "agent".into(),
@@ -920,7 +1039,7 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             run: "run".into(),
             has_answer: true,
             cancelled: false,
-            now: now + 5,
+            now: now + 8,
         });
         assert_eq!(
             f.task().state,
@@ -1009,11 +1128,6 @@ fn a03_teardown_settles_inflight_uncertain_delivery_before_timeout() {
     teardown_settles_inflight_deliveries("uncertain");
 }
 
-#[test]
-fn a03_teardown_settles_inflight_blocked_delivery() {
-    teardown_settles_inflight_deliveries("blocked");
-}
-
 fn teardown_settles_inflight_deliveries(state: &str) {
     for agent in [Some("agent"), None] {
         let f = Fixture::new();
@@ -1039,13 +1153,6 @@ fn teardown_settles_inflight_deliveries(state: &str) {
                 sequence,
                 state: state.into(),
                 now: 1_002,
-            });
-        } else if state == "blocked" {
-            f.apply(Operation::Sweep {
-                now: 1_001 + DELIVERY_TIMEOUT_MS,
-                vault_wait_recipients: Vec::new(),
-                busy_recipients: vec![],
-                held_work: Vec::new(),
             });
         }
         assert_eq!(f.inbox()[0].state, state);
@@ -2472,11 +2579,6 @@ mod driver_sources {
         teardown_settles_inflight_deliveries("uncertain");
     }
 
-    #[test]
-    fn a03_teardown_settles_inflight_blocked_delivery() {
-        teardown_settles_inflight_deliveries("blocked");
-    }
-
     fn teardown_settles_inflight_deliveries(state: &str) {
         for agent in [Some("agent"), None] {
             let f = Fixture::new();
@@ -2502,13 +2604,6 @@ mod driver_sources {
                     sequence,
                     state: state.into(),
                     now: 1_002,
-                });
-            } else if state == "blocked" {
-                f.apply(Operation::Sweep {
-                    now: 1_001 + DELIVERY_TIMEOUT_MS,
-                    vault_wait_recipients: Vec::new(),
-                    busy_recipients: vec![],
-                    held_work: Vec::new(),
                 });
             }
             assert_eq!(f.inbox()[0].state, state);

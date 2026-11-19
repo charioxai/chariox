@@ -22,9 +22,15 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSaved { environment: ProjectEnvironmentView },
     ProjectEnvironmentConflict { environment: ProjectEnvironmentView },
     EnvironmentOperation { operation: EnvironmentOperationView },
+    SkillsV2 { result: crate::skill::v2::SkillsV2Response },
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
+    Watcher { watcher: WatcherSummary },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
+    WatcherDryRun { result: WatcherDryRun },
+    WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
@@ -37,6 +43,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
+    OwnerInteractionsListed { interactions: Vec<OwnerInteraction> },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
@@ -50,6 +57,10 @@ pub enum LocalDaemonResponse {
     KernelFileStat { stat: KernelFileStat, },
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
     KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
+    /// Protocol 1012: what moved to the trash, and what could not (at least one item moved).
+    KernelFilesTrashed { trashed: Vec<TrashedKernelFile>, failed: Vec<KernelFileFailure>, },
+    /// Protocol 1012: what was put back (its original path), and what could not (at least one item came back).
+    KernelTrashRestored { restored: Vec<String>, failed: Vec<KernelFileFailure>, },
     KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     FileTransfer { job: FileTransferJob, },
     FileTransfers { jobs: Vec<FileTransferJob>, },
@@ -137,6 +148,7 @@ pub enum LocalDaemonResponse {
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
     ProjectsListed { projects: Vec<RuntimeProject>, },
     ProjectPinned { project: RuntimeProject, },
+    ProjectCreated { project: RuntimeProject, },
     ProjectRenamed { project: RuntimeProject, },
     ProjectWorkspacesUpdated { project: RuntimeProject, },
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
@@ -237,13 +249,6 @@ pub enum LocalDaemonResponse {
     Connector { connector: CharioxConnectorDefinition, },
     ConnectorsListed { connectors: Vec<CharioxConnectorDefinition>, },
     ConnectorTested { execution: ConnectorExecution, },
-    Skill { skill: CharioxSkillMetadata, },
-    SkillInstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpserted { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpdated { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUninstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillsImported { outcome: SkillImportOutcome, },
-    SkillsListed { skills: Vec<CharioxSkillMetadata>, },
     RelayStatus { status: RelayStatus, },
     RelayConfigured { status: RelayStatus, },
     CloudRelayStatus { profile: Option<CloudRelayProfile>, },
@@ -302,6 +307,17 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
+    NotificationSubscriptions {
+        subscriptions: Vec<NotificationSubscriptionRow>,
+        responsibilities: Vec<PersonResponsibilityRow>,
+    },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {
@@ -318,10 +334,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
-    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
+    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, workspace_empty: bool, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
-    WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
     WorkspaceGitOverview { overview: WorkspaceGitOverview, },
     WorkspaceFilesListed { listing: WorkspaceRepoFileListing, },
     WorkspaceFileContent { content: WorkspaceFileContent, },
@@ -356,6 +371,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
+    ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },
@@ -398,7 +414,9 @@ pub enum LocalDaemonResponse {
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
     RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
-    InteractionResponded { interaction_id: String, session: RuntimeSession, },
+    /// Protocol 1012: a small acknowledgement. The Room state follows on the event stream,
+    /// never in this reply (a large Room made it exceed the gateway's reply limit).
+    InteractionResponded { interaction_id: String, choice_id: String, outcome: InteractionOutcome, },
     DeploymentCredentialEnrollmentArmed {
         enrollment_id: String,
         profile_id: String,

@@ -14,16 +14,29 @@ pub(crate) trait AccountVault: Send + Sync {
 /// Reads the kernel's own Vault through its configuration.
 pub(crate) struct KernelAccountVault(pub(crate) EventConfig);
 
-impl AccountVault for KernelAccountVault {
-    fn authorization(&self, credential_id: &str, origin: &str) -> Result<Zeroizing<String>> {
+impl KernelAccountVault {
+    fn service(&self) -> Result<crate::secret::RuntimeSecretService> {
         let config = self.0.get().ok_or(HttpError::AccountUnavailable)?;
-        let service = crate::secret::RuntimeSecretService::with_vault_config(
+        crate::secret::RuntimeSecretService::with_vault_config(
             crate::credential::load_user_credentials()
                 .map_err(|_| HttpError::AccountUnavailable)?,
             &config.snapshot().user_config.credential_vault,
         )
-        .map_err(|_| HttpError::AccountUnavailable)?;
-        service
+        .map_err(|_| HttpError::AccountUnavailable)
+    }
+
+    /// The bare token of the entry `credential_id`, for `git push` to the
+    /// repositories of `origin`'s provider (see `app_account_token`).
+    pub(crate) fn token(&self, credential_id: &str, origin: &str) -> Result<Zeroizing<String>> {
+        self.service()?
+            .app_account_token(credential_id, origin)
+            .map_err(|_| HttpError::AccountUnavailable)
+    }
+}
+
+impl AccountVault for KernelAccountVault {
+    fn authorization(&self, credential_id: &str, origin: &str) -> Result<Zeroizing<String>> {
+        self.service()?
             .app_account_authorization(credential_id, origin)
             .map_err(|_| HttpError::AccountUnavailable)
     }

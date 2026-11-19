@@ -93,9 +93,6 @@ pub struct UpdateAgentConfigRequest {
     pub worktree_id: Option<String>,
     #[serde(default)]
     pub clear_worktree_id: bool,
-    /// What the agent may change about itself without asking; only the person sets it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub self_settings: Option<crate::agent::AgentSelfSettings>,
     /// Settles the agent's usage-limit stop; given alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit: Option<UsageLimitStopAction>,
@@ -250,6 +247,14 @@ impl std::fmt::Debug for SendProviderLoginInputRequest {
             .field("data_base64", &"[REDACTED]")
             .finish()
     }
+}
+
+/// Types the value of one Vault entry into the running API-key login. The
+/// value never leaves the kernel: neither the request nor its answer carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendProviderLoginVaultEntryRequest {
+    pub login_id: String,
+    pub credential_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

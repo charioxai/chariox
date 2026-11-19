@@ -558,13 +558,32 @@ impl KernelRuntimeState {
         let current = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(session, sender.id())
-            .ok_or_else(|| ledger::error("sender has no running turn"))?;
-        if current.id() != args.origin_prompt_id
-            || current.status() != crate::session::PromptStatus::Running
-        {
-            return Err(ledger::error("stale sender turn"));
-        }
+            .active_prompt_for_agent(session, sender.id());
+        let current = match current {
+            Some(current)
+                if current.id() == args.origin_prompt_id
+                    && current.status() == crate::session::PromptStatus::Running =>
+            {
+                current
+            }
+            other => {
+                let refusal = if other.is_none() {
+                    "sender has no running turn"
+                } else {
+                    "stale sender turn"
+                };
+                let tool_args = serde_json::json!({"origin_prompt_id": args.origin_prompt_id});
+                self.log_refused_turn_tool(
+                    session,
+                    sender.id(),
+                    None,
+                    "send_agent_message",
+                    &tool_args,
+                    refusal,
+                );
+                return Err(ledger::error(refusal));
+            }
+        };
         if let Some(kernel) = args.kernel.as_deref() {
             if let Some(kernel) = self.resolve_peer_kernel(kernel).await? {
                 return self
@@ -580,21 +599,6 @@ impl KernelRuntimeState {
         }
         if args.urgent {
             self.authorize_peer_control(sender, target, super::peer_rooms::PeerControl::Steer)?;
-        }
-        // Refuse here, while the sender can still react: a message the peer's account cannot
-        // start would otherwise stay durable and pending behind the sender's goal.
-        if let Err(error) =
-            self.owned
-                .require_agent_account_authenticated(target, None, "send agent message")
-        {
-            // The refusal is definite: a delegate that cannot start never completes, so nothing
-            // may keep the sender's turn waiting on it.
-            self.owned.settle_failed_delegate_start(
-                session.id(),
-                target.id(),
-                &error.to_string(),
-            )?;
-            return Err(error);
         }
         // Admission precedes resource lookup; another room reveals only its ordinary agents.
         // A key the sender chose names the message across turns, so it can promote the message by
@@ -626,13 +630,32 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
+        self.owned
+            .ensure_agent_before_deadline(target_room, target.id())?;
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        if let Err(error) =
+            self.owned
+                .require_agent_account_authenticated(target, None, "send agent message")
+        {
+            // The refusal is definite: a delegate that cannot start never completes, so nothing
+            // may keep the sender's turn waiting on it.
+            self.owned.settle_failed_delegate_start(
+                session.id(),
+                target.id(),
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
         let mut event = ledger::occurrence(
             target_room,
             target.id(),
             sender.id(),
             &occurrence,
             "message",
-            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
+            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),
+                "cross_room_child": session.id() != target_room && target.parent_agent_id() == Some(sender.id()),
+                "no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
         event.urgent = args.urgent;
         event.reply_requested = args.reply_requested;
@@ -693,30 +716,53 @@ impl KernelRuntimeState {
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
             self.publish_task_change(target_room);
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))}),
-            });
+            let mut payload = serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))});
+            if let Some(note) =
+                self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+            {
+                payload["held"] = true.into();
+                payload["note"] = note.into();
+            }
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
-            self.owned.record_notice_for_agent(
-                target_room,
-                None,
-                Some(target.id()),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(target_room),
-                format!(
-                    "Event {} is durable and pending: {}",
-                    event.sequence,
-                    crate::secret_redaction::redact_secrets(&error.to_string())
-                ),
-            );
+        // The message is stored; the sender never waits for the receiver's provider to take it.
+        // The receiver reads it at its next possible point and a following sender gets the
+        // delivery event then.
+        self.spawn_agent_inbox_delivery(
+            target_room.to_owned(),
+            target.id().to_owned(),
+            event.sequence,
+        );
+        let mut payload = serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
+        if let Some(note) =
+            self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+        {
+            payload["held"] = true.into();
+            payload["note"] = note.into();
         }
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested}),
-        })
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+    /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
+    /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
+    pub(super) fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
+        let state = self.as_kernel();
+        tokio::spawn(async move {
+            if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
+                state.owned.record_notice_for_agent(
+                    &room,
+                    None,
+                    Some(&agent),
+                    state
+                        .owned
+                        .attachment_store
+                        .list_session_attachment_ids(&room),
+                    format!(
+                        "Event {sequence} is durable and pending: {}",
+                        crate::secret_redaction::redact_secrets(&error.to_string())
+                    ),
+                );
+            }
+        });
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.
@@ -761,11 +807,11 @@ impl KernelRuntimeState {
             },
         })
     }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
-    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
-    /// no longer the active prompt, settle its task definitively. The person drives the provider
-    /// TUI, so there is no completion-check turn.
-    pub(super) async fn settle_finished_native_tui_turn(
+    /// Claude native-bridge turns (native TUI and headless) end at the provider Stop event, which
+    /// completes the prompt without the managed-provider settlement. Each output pass remembers
+    /// the turn the run is on; once it is no longer the active prompt, settle its task at once, so
+    /// the supervision sweep never finds a finished turn Working and ends it as interrupted.
+    pub(super) async fn settle_finished_native_bridge_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
@@ -783,7 +829,7 @@ impl KernelRuntimeState {
         let finished = {
             let mut turns = self
                 .owned
-                .native_tui_turns
+                .native_bridge_turns
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous = turns
@@ -817,7 +863,7 @@ impl KernelRuntimeState {
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
-                "native TUI task settlement retained for sweep",
+                "native bridge task settlement retained for sweep",
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
@@ -933,6 +979,52 @@ impl KernelRuntimeState {
             .await
     }
     /// `failure` is why the turn behind a task that ends cancelled failed.
+    /// A prompt steered into a running turn has no turn of its own: its task settles with the
+    /// task of the turn it was steered into, and its answer is that turn's reply after the steer.
+    /// Left Working, the sweep would find it without an executor and block it as interrupted.
+    async fn settle_prompts_steered_into(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = task.provider_run_id.as_deref() else {
+            return Ok(());
+        };
+        let store = &self.owned.durable_state_store;
+        for prompt in store.prompts_steered_into(&task.room_id, &task.task_id)? {
+            let Some(steered) = store.agent_turn_task(&task.room_id, &task.agent_id, &prompt)?
+            else {
+                continue;
+            };
+            if steered.task_id == task.task_id || steered.state != ExecutionState::Working {
+                continue;
+            }
+            let source = crate::session::PromptQueueItem::new(
+                prompt,
+                "kernel-supervisor",
+                &task.agent_id,
+                "",
+                crate::session::PromptStatus::Completed,
+            );
+            let settlement = self.owned.settle_agent_task(
+                &task.room_id,
+                &task.agent_id,
+                &source,
+                run,
+                task.state == ExecutionState::Cancelled,
+            )?;
+            crate::logging::info_with_fields(
+                "runtime.agent_lifecycle",
+                "a prompt steered into a turn settled with that turn",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id,
+                    "task_id": steered.task_id, "steered_into_task_id": task.task_id,
+                    "state": settlement.as_ref().map(|(settled, _)| &settled.state),
+                }),
+            );
+            Box::pin(self.finish_agent_task_settlement(settlement, &source)).await?;
+        }
+        Ok(())
+    }
     pub(super) async fn finish_failed_agent_task_settlement(
         &self,
         settlement: Option<(AgentTaskExecution, bool)>,
@@ -942,6 +1034,9 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        if task.state != ExecutionState::Working {
+            Box::pin(self.settle_prompts_steered_into(&task)).await?;
+        }
         match task.state {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
@@ -959,6 +1054,20 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
+        if changed && task.state == ExecutionState::Blocked {
+            // Every card a task raises says, in the log, which task and why.
+            crate::logging::warn_with_fields(
+                "runtime.agent_lifecycle",
+                "a task is blocked for its owner",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                    "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id,
+                    "blocked_revision": task.blocked_revision,
+                    "cause": crate::secret_redaction::redact_secrets(&task.reason),
+                    "turn_failure": failure.map(crate::provider::TurnOutcome::notice),
+                }),
+            );
+        }
         if changed {
             let name = self.agent_notice_name(&task.agent_id);
             let message = super::agent_task_projection::task_status_notice(&task, &name);
@@ -1287,20 +1396,29 @@ impl KernelRuntimeState {
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
         #[cfg(test)]
         self.lifecycle_sweeps.record_run();
-        self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
-            .await
+        let swept = self
+            .sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
+            .await;
+        self.owned.agent_wakes.sweep_step.leave();
+        swept
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
+        let step = &self.owned.agent_wakes.sweep_step;
+        step.enter("the lost-workspace check");
         Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
+        // Before any task is judged: a delivery the kernel can settle is not unresolved work.
+        self.settle_interrupted_deliveries(now)?;
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
+        step.enter("the wake dead-man check");
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
         }
@@ -1344,11 +1462,14 @@ impl KernelRuntimeState {
             }
         }
         let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        step.enter("leased worker probes");
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
+        step.enter("worker stop obligations");
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
@@ -1634,8 +1755,12 @@ impl KernelRuntimeState {
                 // it instead of blocking an answered task.
                 match self.owned.settle_answered_unsettled_turn(&task) {
                     Ok(Some(settlement)) => {
-                        tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
-                            "MP-08/MP-09/MP-10/MP-11 A03: supervisor assessed an answered turn whose end was never settled");
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "supervision sweep settled an answered turn whose end was never settled",
+                            serde_json::json!({"room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                                "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id}),
+                        );
                         let source = crate::session::PromptQueueItem::new(
                             task.prompt_id.clone(),
                             "kernel-supervisor",
@@ -1648,15 +1773,26 @@ impl KernelRuntimeState {
                         continue;
                     }
                     Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: unsettled turn assessment failed; blocking")
-                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "unsettled turn assessment failed; ending the turn as interrupted",
+                        serde_json::json!({"task_id": task.task_id, "prompt_id": task.prompt_id,
+                            "error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                    ),
                 }
                 if let Some(ended) = ledger::end_failed_turn(
                     &self.owned.durable_state_store,
                     &task,
                     "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
                 )? {
+                    // The sweep found no live executor for a Working turn and no answer to settle it with.
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep ended a turn with no live executor as interrupted",
+                        serde_json::json!({"room_id": ended.room_id, "agent_id": ended.agent_id, "task_id": ended.task_id,
+                            "prompt_id": ended.prompt_id, "provider_run_id": ended.provider_run_id,
+                            "state": ended.state, "last_progress_at_ms": task.last_progress_at_ms}),
+                    );
                     blocked.push(ended);
                 }
             }
@@ -1666,6 +1802,7 @@ impl KernelRuntimeState {
         let mut busy_recipients = Vec::new();
         let mut vault_wait_recipients = Vec::new();
         let mut held_work = Vec::new();
+        step.enter("the ledger commit");
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1725,11 +1862,14 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
             }
-            if task.state == ExecutionState::Blocked
-                && self
-                    .ensure_task_owner_interaction(task.clone())
-                    .await
-                    .is_err()
+            if task.state != ExecutionState::Blocked {
+                continue;
+            }
+            step.enter(format!("the owner decision of task {}", task.task_id));
+            if self
+                .ensure_task_owner_interaction(task.clone())
+                .await
+                .is_err()
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
@@ -1740,6 +1880,9 @@ impl KernelRuntimeState {
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.
+        // A delivery submits or steers a turn and projects the whole Room, which
+        // grows with the Room: each recipient's runs in its own work, so a Room of
+        // many agents never holds this sweep past its cadence.
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1748,10 +1891,11 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&room).is_err() {
                 continue;
             }
-            if let Err(error) = Box::pin(self.deliver_agent_inbox(&room, &agent)).await {
-                tracing::warn!(%error, room_id=%room, agent_id=%agent, "MP-08/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
-            }
-            let _ = self.owned.session_snapshot(&room);
+            self.spawn_task_work(format!("inbox:{room}:{agent}"), move |state| async move {
+                let delivered = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
+                let _ = state.owned.session_snapshot(&room);
+                delivered
+            });
         }
         Ok(())
     }

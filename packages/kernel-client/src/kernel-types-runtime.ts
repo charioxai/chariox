@@ -75,7 +75,7 @@ export type AgentActiveTurn = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   status: "none" | "queued" | "running" | "cancelling" | "settling"
-  phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
+  phase: "accepted" | "awaiting_first_output" | "thinking" | "streaming" | "settling"
   started_at_ms?: number | null
 }
 
@@ -207,6 +207,8 @@ export type AppConfirmationFrame = {
   publisher_id: string
   publisher_name: string
   action_name: string
+  /** The exact input the kernel runs on Confirm, formatted by the kernel (pretty JSON as the agent supplied it, cut with a byte count). */
+  input: string
   /** The App's own rows for this exact input, when no App Tab shows the preview. Plain text. */
   preview?: { label: string; value: string }[]
 }
@@ -408,6 +410,7 @@ export type SessionConfigState = {
 }
 
 export type CharioxUserConfig = {
+  skills?: { metadata_budget_percent: number }
   version: number
   agents?: { offload_without_asking?: boolean }
   slices?: {
@@ -536,9 +539,14 @@ export type AgentMoveStatus = { target_ref?: string | null } & (
 
 export type AgentInstance = {
   /** The agent that controls this one and everything below it; only the user changes it. */
-  parent_agent_id?: { agent_id: string } | null
+  parent_agent_id?: { agent_id: string; room_id?: string; started_by?: string } | null
   /** The parent's command id of the spawn that created this agent. */
   spawn_key?: string | null
+  /** The authority ceiling admitted for a peer spawn with a first prompt. */
+  peer_spawn_limit?: {
+    mode: "build" | "plan"
+    permission_level: "required" | "yolo"
+  } | null
   id: string
   agent_ref: string
   session_id: string
@@ -576,8 +584,6 @@ export type AgentInstance = {
   /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
   substitution_timeout_ms?: number | null
-  /** What the person lets this agent change about itself without asking; `"*"` allows any value. */
-  self_settings?: AgentSelfSettings
   /** Set while a provider usage limit has stopped this agent's turn. */
   usage_limit_stop?: UsageLimitStop | null
   archived?: boolean
@@ -591,13 +597,6 @@ export type AgentInstance = {
   grid_col_span: number
   created_at_ms: number
   last_activity_at_ms: number
-}
-
-export type AgentSelfSettings = {
-  models?: string[]
-  efforts?: string[]
-  account_profiles?: string[]
-  directories?: string[]
 }
 
 /** The decision for an agent a usage limit stopped (`UpdateAgentConfig.usage_limit`). */
@@ -688,12 +687,26 @@ export type KernelAccessStatus = {
   holder_executable: string
   holder_harness?: "codex" | "claude" | "opencode"
   grant?: KernelAccessGrant
+  /** Protocol 1012: how many targets and sources the granted holder's event subscription follows; absent without a grant. */
+  follows?: number
   reason?: { code: string; message: string }
 }
 export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelAccessStatus } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+/** Protocol 1012: one open card of the owner; `person_only` says why only the person answers it. */
+export type OwnerInteraction = {
+  /** The card's Room; absent for a card outside any Room (answered with AnswerUserDomainInteraction). */
+  session_id?: string
+  interaction_id: string
+  title?: string
+  message: string
+  choices: { id: string; label: string }[]
+  reply_choice_id?: string
+  person_only?: string
+}
+export type OwnerInteractionsListedResponse = { OwnerInteractionsListed: { interactions: OwnerInteraction[] } }
 
 export type KernelSudoTurn = {
   entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string
@@ -715,6 +728,9 @@ export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ende
 export interface AgentTreeNode {
   agent_id: string
   parent_agent_id: string | null
+  room_id?: string
+  room_alias?: string
+  started_by?: string
   kernel_id: string | null
   alias: string | null
   provider: string

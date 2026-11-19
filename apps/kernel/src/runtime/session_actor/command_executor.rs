@@ -223,6 +223,9 @@ impl SessionRuntimeCommandExecutor {
                     async move { self.store.set_project_pinned(request, caller_user_id).await },
                 )
             }
+            LocalDaemonRequest::CreateProject(request) => {
+                Box::pin(async move { self.store.create_project(request, caller_user_id).await })
+            }
             LocalDaemonRequest::RenameProject(request) => {
                 Box::pin(async move { self.store.rename_project(request, caller_user_id).await })
             }
@@ -377,12 +380,22 @@ impl SessionRuntimeCommandExecutor {
             }),
             LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
-                    .update_agent_config(request, caller_user_id, caller_metaagent_id)
+                    .update_agent_config(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        connection_class,
+                    )
                     .await
             }),
             LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
                 self.store
-                    .update_agent_profile(request, caller_user_id, caller_metaagent_id)
+                    .update_agent_profile(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        connection_class,
+                    )
                     .await
             }),
             LocalDaemonRequest::AliasAgent(request) => {

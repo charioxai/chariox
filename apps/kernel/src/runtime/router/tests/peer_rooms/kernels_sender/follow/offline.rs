@@ -827,6 +827,7 @@ fn every_peer_request(a: &Kernel, b: &Kernel) -> Vec<RelayPeerRequest> {
             protocol_version: v,
             request_id: "fence-spawn".into(),
             sender: sender.clone(),
+            sender_name: "Lead".into(),
             room: b.room.clone(),
             provider: "dev-stub".into(),
             account_profile: None,

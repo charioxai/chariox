@@ -11,12 +11,14 @@
   },
   "appContractVersion": 2,
   "resourcePolicy": "chariox.app.resources.v1",
-  "world": "chariox:app/app@1.0.0",
+  "world": "chariox:app/app@1.1.0",
   "requiredFeatures": [
     "wasm-component",
     "ui-actions",
     "directed-events",
-    "credentialed-http"
+    "credentialed-http",
+    "event-routing",
+    "workspace"
   ],
   "runtime": {
     "engine": "wasm",
@@ -151,6 +153,14 @@
           },
           {
             "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+            "safety": "read",
+            "redirectHosts": [
+              "*.blob.core.windows.net"
+            ]
+          },
+          {
+            "method": "GET",
             "path": "/repos/{owner}/{repo}/branches",
             "safety": "read"
           },
@@ -241,7 +251,34 @@
           }
         ]
       }
-    ]
+    ],
+    "eventRouting": {
+      "generator": "dev.chariox.github",
+      "incoming": [
+        "check_run_completed",
+        "check_suite_completed",
+        "issue_comment_created",
+        "issue_opened",
+        "issues_closed",
+        "issues_labeled",
+        "pull_request_closed",
+        "pull_request_labeled",
+        "pull_request_opened",
+        "pull_request_ready_for_review",
+        "pull_request_reopened",
+        "pull_request_review_comment_created",
+        "pull_request_review_submitted",
+        "pull_request_updated",
+        "push",
+        "release_published",
+        "review_requested",
+        "workflow_run_completed"
+      ],
+      "maxRoutes": 200
+    },
+    "workspace": {
+      "credential": "github"
+    }
   },
   "events": "schemas/events.json",
   "uiActions": "schemas/ui-actions.json",
@@ -249,21 +286,26 @@
     "get_check_output",
     "get_checks",
     "get_compare",
+    "get_event_sources",
     "get_mergeability",
     "get_pull_request",
     "get_pull_request_diff",
     "get_pull_request_files",
     "get_pull_request_summary",
     "get_status",
+    "get_subscription",
     "list_accounts",
     "list_assignees",
     "list_branches",
     "list_comments",
     "list_commits",
+    "list_connection_repositories",
+    "list_deliveries",
     "list_labels",
     "list_pull_requests",
     "list_repositories",
     "list_reviews",
+    "list_subscriptions",
     "preview_close_pull_request",
     "preview_delete_branch",
     "preview_merge_pull_request",

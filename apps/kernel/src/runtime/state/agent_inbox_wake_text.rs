@@ -1,7 +1,7 @@
-//! The prompt that wakes an agent for its inbox: counts and kinds only, so
-//! payloads and agent-authored text stay in the inbox, which the agent reads
-//! with a tool whose result is marked untrusted. The one exception is the
-//! task a parent gives its sub-agent: that message is the sub-agent's prompt.
+//! The pointer part of a wake prompt: counts and kinds only, for the events whose text
+//! `agent_inbox_inline` could not carry. Their payloads and agent-authored text stay in the
+//! inbox, which the agent reads with a tool whose result is marked untrusted. A parent's
+//! message to its sub-agent is the exception: it is the sub-agent's prompt.
 use crate::durable_state::agent_lifecycle::InboxEvent;
 
 const LABELS_SHOWN: usize = 3;
@@ -44,6 +44,48 @@ pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> 
         "Inbox: at least {count} new {noun} ({}). Read {pronoun} with chariox.events.inbox after {after}, then chariox.events.ack each one you handled.",
         shown.join(", ")
     )
+}
+
+/// The one line a notification's prompt carries: what happened and where to read it. The
+/// occurrence itself stays in the inbox row `sequence`, behind the tool that marks it untrusted.
+pub(super) fn notification_notice(title: &str, source: &str, sequence: u64) -> String {
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "Notification: {} (from {}). Read it with chariox.events.inbox after {}, then chariox.events.ack it.",
+        one_line(title),
+        one_line(source),
+        sequence.saturating_sub(1)
+    )
+}
+
+/// The lines of one prompt that delivers several occurrences of one subscription,
+/// oldest first; each occurrence stays in its own inbox row.
+pub(super) fn coalesced_notification_notice(
+    notifications: &[crate::session::QueuedNotification],
+) -> String {
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = format!(
+        "{} notifications arrived while you were busy:",
+        notifications.len()
+    );
+    for notification in notifications {
+        text.push_str(&format!(
+            "\n- {} (from {}), inbox event {}",
+            one_line(&notification.title),
+            one_line(&notification.source),
+            notification.sequence
+        ));
+    }
+    let first = notifications
+        .iter()
+        .map(|notification| notification.sequence)
+        .min()
+        .unwrap_or(0);
+    text.push_str(&format!(
+        "\nRead them with chariox.events.inbox after {}, then chariox.events.ack each one you handled.",
+        first.saturating_sub(1)
+    ));
+    text
 }
 
 /// The prompt of a sub-agent whose parent sent it a message: the parent's text,

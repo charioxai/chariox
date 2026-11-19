@@ -165,6 +165,7 @@ Each failure is a typed error with a code, one plain sentence and the next step.
 | `kernel_unreachable` | Relay or connect timeout (10 s) | Retry; check the relay. |
 | `kernel_unpaired` | Self-hosted: not paired, or pairing revoked there | Re-pair with a new link. |
 | `kernel_incompatible` | Remote protocol below the minimum for this request | Update that kernel; names the minimum. |
+| `kernel_update_needed` | The target runs a protocol below the oldest the gateway serves (found by asking it for its status) | Update that kernel; names its protocol and the needed one. |
 | `kernel_request_timeout` | No answer within the request deadline (default 30 s, per request override) | For state-changing requests: retry once with the same `--command-id` (below). |
 | `kernel_outcome_unknown` | Retry found a reservation without a receipt (target crashed mid-request) | Check the state before asking again; the request is not re-run. |
 | `kernel_not_available` | The frame came from something that is not a grant holder | Use the local kernel's own connection. |

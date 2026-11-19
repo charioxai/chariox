@@ -188,18 +188,26 @@ async fn a_routine_choice_is_told_with_its_question() {
         .expect("the holder can answer what it is shown");
 }
 
+// A provider sign-in card is the person's, and a holder answers it for the person: it is
+// offered as a question.
+#[tokio::test]
+async fn a_sign_in_decision_is_offered_to_the_holder_as_a_question() {
+    let f = fixture("choice-sign-in");
+    let id = "provider-auth-recovery:codex";
+    let _rx = f.register(f.interaction(id, RuntimeInteractionLevel::Info), None);
+    let pending = f.event(id, "pending");
+    assert!(pending["value"]["question"].is_object(), "{pending}");
+    f.state
+        .authorize_external_request(&f.grant, &f.respond(id, "red"))
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_decision_the_holder_cannot_answer_has_a_pointer_and_no_question() {
     // One Room agent holds one open decision at a time, so each kind gets its own Room.
-    for (n, id) in [
-        "critical",
-        "secret-entry",
-        "provider-auth-recovery:codex",
-        "handoff-1",
-        "credential-owner",
-    ]
-    .into_iter()
-    .enumerate()
+    for (n, id) in ["critical", "secret-entry", "handoff-1", "credential-owner"]
+        .into_iter()
+        .enumerate()
     {
         let f = fixture(&format!("choice-refused-{n}"));
         let routine = RuntimeInteractionLevel::Info;

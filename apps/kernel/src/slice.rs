@@ -402,6 +402,36 @@ mod tests {
     }
 
     #[test]
+    fn a_started_slice_binds_a_room_only_after_it_is_stopped() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("late-bind"))
+            .expect("slice should create");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 42)
+            .expect("slice should start");
+        let refused = store
+            .bind_environment("room-1", &slice.id, 43, |_| Ok(()))
+            .expect_err("the running worker was started without this Room");
+        assert!(refused
+            .to_string()
+            .contains("stop it, bind the Room, then start it"));
+        assert_eq!(store.environment_slice("room-1"), None);
+        store
+            .set_status(&slice.id, SliceStatus::Stopped, 44)
+            .expect("slice should stop");
+        store
+            .bind_environment("room-1", &slice.id, 45, |_| Ok(()))
+            .expect("a stopped slice takes the Room for its next start");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 46)
+            .expect("slice should start with the Room");
+        store
+            .bind_environment("room-1", &slice.id, 47, |_| Ok(()))
+            .expect("repeating the binding of the Room it started with stays idempotent");
+    }
+
+    #[test]
     fn room_environment_uses_share_a_slice_but_exclude_slice_operations() {
         let store = SliceStore::default();
         let slice = store

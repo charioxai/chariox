@@ -832,6 +832,49 @@ fn an_app_with_event_routing_needs_the_minor_world_its_feature_and_its_import() 
     assert_eq!(error.code, ErrorCode::ImportNotAllowed);
 }
 
+fn workspace_fixture() -> Fixture {
+    let mut fixture = routing_fixture();
+    fixture.manifest.capabilities.event_routing = None;
+    fixture.manifest.capabilities.workspace = Some(crate::WorkspaceAccess {
+        credential: "github".into(),
+    });
+    fixture.manifest.capabilities.network = vec![crate::NetworkDestination {
+        origin: crate::WORKSPACE_ACCOUNT_ORIGIN.into(),
+        methods: vec![crate::HttpMethod::Get],
+        credential: Some("github".into()),
+        routes: vec![crate::CredentialRoute {
+            method: crate::HttpMethod::Get,
+            path: "/user".into(),
+            safety: crate::RouteSafety::Read,
+            redirect_hosts: Vec::new(),
+        }],
+    }];
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    fixture
+}
+
+#[test]
+fn an_app_with_workspace_access_needs_the_minor_world_and_its_feature() {
+    let shipped = workspace_fixture();
+    assert!(shipped
+        .manifest
+        .required_features
+        .contains(&RequiredFeature::Workspace));
+    assert!(!shipped
+        .manifest
+        .required_features
+        .contains(&RequiredFeature::EventRouting));
+    shipped.manifest.validate(&Limits::default()).unwrap();
+
+    let mut old_world = workspace_fixture();
+    old_world.manifest.world = APP_WORLD.into();
+    assert!(old_world.manifest.validate(&Limits::default()).is_err());
+
+    let mut understated = workspace_fixture();
+    understated.manifest.required_features = vec![RequiredFeature::WasmComponent];
+    assert!(understated.manifest.validate(&Limits::default()).is_err());
+}
+
 #[test]
 fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
     let fixture = base();

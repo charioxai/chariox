@@ -207,8 +207,7 @@ mod adopted {
             }
             let status = if libc::WIFSIGNALED(raw) {
                 let signal = libc::WTERMSIG(raw);
-                let name = unsafe { std::ffi::CStr::from_ptr(libc::strsignal(signal)) };
-                ExitStatus::with_signal(&name.to_string_lossy())
+                ExitStatus::with_signal(&signal.to_string())
             } else {
                 ExitStatus::with_exit_code(libc::WEXITSTATUS(raw) as u32)
             };

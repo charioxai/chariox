@@ -244,7 +244,7 @@ async function selection(source, target, id, paths) {
     const reply = variant(await source.client.send({ QueryFreshRemoteMachineKernels: { machine_ref: target.status.machine_id } }), 'FreshRemoteMachineKernelsObserved');
     const presence = reply.kernels.find(k => (k.kernel_id ?? k.daemon_id) === target.status.daemon_id);
     assert.ok(presence?.public_key, 'Fresh target key required');
-    return { target: { relayRealmId: source.profile.realm_id, machineId: target.status.machine_id, kernelId: target.status.daemon_id, relayPublicKey: presence.public_key, keyThumbprint: sha(presence.public_key) }, contextSelection: { kernelContext: 'empty', developmentSetup: { kind: 'source_project', projectId: id, repositories: [{ role: 'primary', workspaceId: paths.primary, worktreeId: paths.primary }, { role: 'supporting', workspaceId: paths.notes, worktreeId: null }] } } };
+    return { target: { relayRealmId: source.profile.realm_id, machineId: target.status.machine_id, kernelId: target.status.daemon_id, relayPublicKey: presence.public_key, keyThumbprint: sha(presence.public_key) }, contextSelection: { kernelContext: 'empty', developmentSetup: { kind: 'source_projects', projects: [{ projectId: id, repositories: [{ role: 'primary', workspaceId: paths.primary, worktreeId: paths.primary }, { role: 'supporting', workspaceId: paths.notes, worktreeId: null }] }] } } };
 }
 async function cli(r, args) {
     const child = spawnOwned(binary, [...args, '--kernel-url', r.url], { cwd: r.path, env: r.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

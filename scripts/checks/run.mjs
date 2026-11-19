@@ -104,7 +104,8 @@ async function main() {
   for (const check of checks) {
     const started = performance.now()
     if (check.ratchet === 'diff' && !ctx.base) console.error(`lint:rules: WARNING ${check.name} compared nothing: ${ctx.baseReason}`)
-    const findings = check.scan(ctx)
+    let findings
+    try { findings = check.scan(ctx) } catch (error) { console.error(`lint:rules: ${check.name}: ${error.message}`); process.exit(1) }
     if (check.ratchet === 'diff') lines.push(...findings.map(f => `${f.file}:${f.line ?? 0}: ${f.what}. Root fix: ${check.rootFix}. Rule: ${check.rule}`))
     else {
       const list = listOf(check)

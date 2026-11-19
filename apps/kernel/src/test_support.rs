@@ -6,7 +6,9 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod account_models;
 pub(crate) mod allocation;
+pub(crate) use account_models::{seed_account_models, seed_default_account_models};
 #[cfg(unix)]
 mod claude_executable;
 #[cfg(unix)]
@@ -21,6 +23,7 @@ mod pre_exec_child;
 mod room_turn;
 mod runtime_mcp;
 pub(crate) mod secret_scan;
+mod skill_catalog;
 pub(crate) mod task_delta;
 mod task_subscription;
 #[cfg(target_os = "linux")]
@@ -34,6 +37,7 @@ pub(crate) use environment::{environment_test_isolated, isolate_environment_test
 pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
+pub(crate) use skill_catalog::install_skill_through_requests;
 pub(crate) use task_subscription::mixed_task_subscription_updates;
 #[cfg(target_os = "linux")]
 pub(crate) use thread_stack::{
@@ -120,9 +124,26 @@ pub(crate) struct TestWorktree {
 pub(crate) fn test_workspace_root() -> PathBuf {
     let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .unwrap_or_else(session_workspace_temp_dir);
     assert!(root.is_absolute(), "test workspace parent must be absolute");
     root
+}
+
+/// A test started as a Chariox job gets a TMPDIR inside the lane's `~/.chariox` state. A session
+/// workspace there is refused at launch ("inside protected Chariox service state"), so every
+/// fixture that runs a command would end with no exit status. Those tests take a workspace
+/// parent that is not service state, which `CHARIOX_TEST_WORKTREE_ROOT` still overrides.
+fn session_workspace_temp_dir() -> PathBuf {
+    let temp = std::env::temp_dir();
+    match crate::git_worktree_placement::preflight_working_directory(
+        &temp,
+        "test workspace",
+        false,
+        &[],
+    ) {
+        Ok(_) => temp,
+        Err(_) => PathBuf::from("/var/tmp"),
+    }
 }
 
 impl TestWorktree {

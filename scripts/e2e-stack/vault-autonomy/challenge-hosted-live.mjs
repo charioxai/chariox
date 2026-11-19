@@ -19,8 +19,8 @@ if(existingRoot)assert.equal(existingRoot,'/root/.chariox/dev/vault-drill-kernel
 assert.match(origin ?? '',/^https:\/\/pr[0-9]+-(?:vflag[a-z0-9]*|gmailprep)\.val\.51-255-87-178\.sslip\.io$/)
 assert.ok(path.isAbsolute(evidence ?? '')&&path.isAbsolute(binaryDir ?? ''))
 const expected=process.env.VFLAG_EXPECT ?? 'green'
-assert.ok(['green','encoding-red','grant-red'].includes(expected))
-const recoverBrowser=process.env.VFLAG_RECOVER_BROWSER==='1'||expected==='grant-red'
+assert.ok(['green','encoding-red'].includes(expected))
+const recoverBrowser=process.env.VFLAG_RECOVER_BROWSER==='1'
 const requestEncoding=process.env.VFLAG_ENCODING ?? 'json'
 const segmented=process.env.VFLAG_SEGMENTED==='1'
 assert.ok(['json','urlencoded'].includes(requestEncoding))
@@ -99,7 +99,7 @@ try {
     await page.locator('[data-prompt-input]').waitFor()
     await fixture.send({KernelBrowser:{command:{op:'grant_room_computer',agent_id:agentId}}})
     await fixture.send({FocusAgent:{session_id:sessionId,agent_id:agentId}})
-    const prompt=`MP-08 / MP-09 / MP-10 / MP-11. Owned local verification rehearsal ONLY. Use real Chariox tools. Write visible updates and the card message directly to the person in plain words. Do not narrate tool names, refs, grants, provider reloads, internal receipts or task bookkeeping. Load kernel browser if needed and continue on automatic reload. Open ${challenge.url}; take a fresh snapshot and obtain the ref for main#challenge, NOT an input or heading. Then request_popup wait:false, title "Verification ${tag}", message "Press Send Code, enter the test code, then select Verify.", choices ONLY [{"id":"cancel","label":"Cancel","reply":"cancel"}], view browser_region with that exact tab_id and main ref, verification ${JSON.stringify({challenge_id:challenge.id,url:challenge.url+'/verify',accepted_json_pointer:'/accepted'})}. Do NOT click Send Code, enter any code, navigate, close, cancel, or steer while the person acts. The card MUST exist before a code is requested. Yield on the returned card registration, deadline 90 minutes from now. On wakes, read the inbox. Acknowledge a retired or unavailable card occurrence as handled before asking for browser approval. After successful token use and capture removal, acknowledge the accepted card completion occurrence as handled using the original asking task id and the inbox sequence before your final reply. After browser approval, read browser state first and find the original challenge tab in its tabs before taking a fresh snapshot. If browser access was revoked or the card became unavailable, keep the same tab, request browser access, wait for the owner decision, then take a fresh snapshot and raise a fresh verification card. This recovery is part of the current request; never treat an unavailable card as a completed task. Do not treat rejection, dialog disappearance, source loss or card answer as acceptance. Only after the card condition_met with a matching accepted verification_result receipt, take a fresh snapshot, capture the readonly Scoped API token field through chariox.vault.capture_browser read node, request_id "capture_${tag}", label "verification-${tag}", use_binding {target:{kind:"command_environment",name:"REHEARSAL_TOKEN",origin:"${new URL(challenge.url).origin}"},value_kind:"secret"}. Use the returned credential_id with chariox.vault.use_env, origin "${new URL(challenge.url).origin}", env {"REHEARSAL_TOKEN":<credential_id>}, argv ${JSON.stringify(['node','-e',"fetch(process.argv[1],{headers:{authorization:'Bearer '+process.env.REHEARSAL_TOKEN}}).then(async r=>{console.log(JSON.stringify({status:r.status,authenticated:(await r.json()).authenticated}));process.exitCode=r.status===200?0:1})",challenge.url+'/me'])}. Require exit_code0, HTTP200 and authenticated true. Never print code/token or use shell to read it. Remove your own capture with chariox.vault.remove_capture. Finish with the plain message Verification complete. The token works. only on successful capture, authenticated call and removal. Otherwise explain what still needs to be done in plain words.`
+    const prompt=`MP-08 / MP-09 / MP-10 / MP-11. Owned local verification rehearsal ONLY. Use real Chariox tools. Write visible updates and the card message directly to the person in plain words. Do not narrate tool names, refs, grants, provider reloads, internal receipts or task bookkeeping. Load kernel browser if needed and continue on automatic reload. Open ${challenge.url}; take a fresh snapshot and obtain the ref for main#challenge, NOT an input or heading. Then request_popup wait:false, title "Verification ${tag}", message "Press Send Code, enter the test code, then select Verify.", choices ONLY [{"id":"cancel","label":"Cancel","reply":"cancel"}], view browser_region with that exact tab_id and main ref, verification ${JSON.stringify({challenge_id:challenge.id,url:challenge.url+'/verify',accepted_json_pointer:'/accepted'})}. Do NOT click Send Code, enter any code, navigate, close, cancel, or steer while the person acts. The card MUST exist before a code is requested. Yield on the returned card registration, deadline 90 minutes from now. On wakes, read the inbox. Acknowledge a retired or unavailable card occurrence as handled before loading the kernel browser again. After successful token use and capture removal, acknowledge the accepted card completion occurrence as handled using the original asking task id and the inbox sequence before your final reply. After browser approval, read browser state first and find the original challenge tab in its tabs before taking a fresh snapshot. If browser access was revoked or the card became unavailable, keep the same tab, request browser access, wait for the owner decision, then take a fresh snapshot and raise a fresh verification card. This recovery is part of the current request; never treat an unavailable card as a completed task. Do not treat rejection, dialog disappearance, source loss or card answer as acceptance. Only after the card condition_met with a matching accepted verification_result receipt, take a fresh snapshot, capture the readonly Scoped API token field through chariox.vault.capture_browser read node, request_id "capture_${tag}", label "verification-${tag}", use_binding {target:{kind:"command_environment",name:"REHEARSAL_TOKEN",origin:"${new URL(challenge.url).origin}"},value_kind:"secret"}. Use the returned credential_id with chariox.vault.use_env, origin "${new URL(challenge.url).origin}", env {"REHEARSAL_TOKEN":<credential_id>}, argv ${JSON.stringify(['node','-e',"fetch(process.argv[1],{headers:{authorization:'Bearer '+process.env.REHEARSAL_TOKEN}}).then(async r=>{console.log(JSON.stringify({status:r.status,authenticated:(await r.json()).authenticated}));process.exitCode=r.status===200?0:1})",challenge.url+'/me'])}. Require exit_code0, HTTP200 and authenticated true. Never print code/token or use shell to read it. Remove your own capture with chariox.vault.remove_capture. Finish with the plain message Verification complete. The token works. only on successful capture, authenticated call and removal. Otherwise explain what still needs to be done in plain words.`
     await writeFile(path.join(fixture.workspace,'VERIFICATION_REHEARSAL.md'),prompt+'\n')
     await page.locator('[data-prompt-input]').fill(`Open ${challenge.url} and help me verify my identity. Follow VERIFICATION_REHEARSAL.md in this workspace: show the live card, wait while I finish, then check the temporary token works.`);await page.locator('[data-action=send-prompt]').click()
     const card=page.locator('[data-interaction-id]').filter({hasText:'Press Send Code, enter the test code, then select Verify.'})
@@ -116,28 +116,15 @@ try {
       row.retired_card_id=previous.id
       await fixture.send({KernelBrowser:{command:{op:'revoke_grants',agent_id:agentId}}})
       await waitFor(async()=>!((await state()).active_interactions??[]).some(item=>item.id===previous.id),'the revoked card retires without pretending to verify')
+      // Every agent has the kernel browser: the agent loads it again itself, no card asks the owner.
       await waitFor(async()=>{
         const snapshot=await state()
-        return (snapshot.active_interactions??[]).some(item=>item.choices?.some(choice=>choice.id==='allow_browser'))
-          || snapshot.agent_tasks?.some(task=>task.agent_id===agentId&&['blocked','done'].includes(task.state))
-      },'the agent requests browser approval after its card retires',180_000)
-      if(expected==='grant-red') {
-        const blocked=(await state()).active_interactions??[]
-        assert.equal(blocked.some(item=>item.choices?.some(choice=>choice.id==='allow_browser')),false,'old path has no in-place browser approval')
-        await page.screenshot({path:path.join(evidence,cell.id+'-grant-recovery-stuck.png')})
-        row.status='EXPECTED RED';row.retired_card_recovery_stuck=true;await save();await fixture.send({EndSession:{session_id:sessionId}});break
-      }
-      const allow=page.getByRole('button',{name:'Allow browser',exact:true})
-      await allow.waitFor({timeout:30_000})
-      await page.screenshot({path:path.join(evidence,cell.id+'-allow-browser.png')})
-      await allow.click()
-      await waitFor(async()=>{
-        live=((await state()).active_interactions??[]).find(item=>item.id!==previous.id&&item.title==='Verification '+tag&&item.view?.browser_region)
+        assert.equal((snapshot.active_interactions??[]).some(item=>item.choices?.some(choice=>choice.id==='allow_browser')),false,'no browser approval card')
+        live=(snapshot.active_interactions??[]).find(item=>item.id!==previous.id&&item.title==='Verification '+tag&&item.view?.browser_region)
         return !!live
-      },'approval continues the task and raises a fresh live card',300_000)
+      },'the agent reloads the browser and raises a fresh live card',300_000)
       assert.equal(live.view.browser_region.tab_id,previous.view.browser_region.tab_id,'recovery uses the same tab')
-      row.browser_access_restored_in_place=true;row.fresh_card_after_retirement=true
-      assert.equal(await allow.count(),0,'the resolved browser block disappears')
+      row.browser_reloaded_without_card=true;row.fresh_card_after_retirement=true
     }
 
     assert.equal(live.timeout_sec ?? null,null,'an owner verification card has no automatic expiry')

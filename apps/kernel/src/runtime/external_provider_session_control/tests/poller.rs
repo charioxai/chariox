@@ -870,3 +870,47 @@ fn parked_provider_run_without_attachment_is_not_observed() {
         "parked detached runs must not keep observer polling hot"
     );
 }
+
+#[test]
+fn a_target_poll_resolves_only_its_own_account_profile() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = TestWorktree::new("poll-own-profile");
+    let default_codex_home = root.path().join("default-codex");
+    let previous_codex_home = env::var_os("CODEX_HOME");
+    env::set_var("CODEX_HOME", &default_codex_home);
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+    runtime.block_on(async {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+        ));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime_state = router.runtime_state();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let target = runtime_state
+            .provider_account_profile_registry()
+            .create_managed(owner, "claude", "Target")
+            .expect("target profile should register");
+        // Resolving the default Codex profile would create its home again.
+        let _ = fs::remove_dir_all(&default_codex_home);
+
+        let roots = registered_external_provider_profile_roots_for(
+            &runtime_state,
+            owner,
+            "claude",
+            &target.profile_id,
+        );
+
+        assert_eq!(roots.len(), 1, "the target's own profile resolves");
+        assert!(
+            !default_codex_home.exists(),
+            "a target's poll resolves no other account profile"
+        );
+    });
+
+    restore_env_var("CODEX_HOME", previous_codex_home);
+}

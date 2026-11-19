@@ -513,3 +513,239 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         );
     }
 }
+
+mod kernel_terminal_access {
+    use super::*;
+    use crate::local::{KernelTerminalRequest, LocalDaemonResponse};
+    use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommandSource};
+
+    fn owner() -> KernelCaller {
+        KernelCaller::for_source(&KernelCommandSource::LocalCli)
+    }
+
+    fn list() -> KernelTerminalRequest {
+        KernelTerminalRequest {
+            directory: None,
+            operation: RoomTerminalOperation::List,
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_kernel_owner_reaches_the_kernels_own_terminals() {
+        let fixture = fixture("kernel-terminal-access");
+        let runtime = &fixture.runtime;
+        runtime
+            .kernel_terminal_for_client(&owner(), list())
+            .await
+            .expect("the owner's client lists the kernel's terminals");
+
+        let guest = KernelCaller {
+            caller_kind: KernelCallerKind::RemoteClient,
+            user_id: Some("a-room-guest".to_string()),
+            ..owner()
+        };
+        let peer_kernel = KernelCaller {
+            caller_kind: KernelCallerKind::RemoteKernel,
+            ..owner()
+        };
+        let metaagent = KernelCaller {
+            caller_kind: KernelCallerKind::Metaagent,
+            ..owner()
+        };
+        for (who, caller) in [
+            ("a Room guest", guest),
+            ("a peer kernel", peer_kernel),
+            ("a metaagent", metaagent),
+        ] {
+            let refused = runtime
+                .kernel_terminal_for_client(&caller, list())
+                .await
+                .expect_err(who);
+            assert!(
+                refused.to_string().contains("only this kernel's owner"),
+                "{who}: {refused}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rooms_terminal_list_never_shows_the_kernels_terminals() {
+        let fixture = fixture("kernel-terminal-invisible");
+        let open = KernelTerminalRequest {
+            directory: Some(std::env::temp_dir().display().to_string()),
+            operation: RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: None,
+            },
+        };
+        let opened = fixture
+            .runtime
+            .kernel_terminal_for_client(&owner(), open)
+            .await
+            .expect("the owner opens a kernel terminal");
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { terminal },
+        } = opened
+        else {
+            panic!("unexpected {opened:?}");
+        };
+        assert_eq!(terminal.scope, crate::room_terminal::TerminalScope::Kernel);
+        // The path an agent's terminal list and a Room client take: the Room's own list.
+        let in_room = fixture.terminal(RoomTerminalOperation::List).await.unwrap();
+        assert!(
+            matches!(in_room, RoomTerminalResult::Listed { terminals } if terminals.is_empty())
+        );
+        // Nor can a Room reach it by id.
+        let by_id = fixture
+            .terminal(RoomTerminalOperation::Snapshot {
+                terminal_id: terminal.terminal_id.clone(),
+            })
+            .await;
+        assert!(by_id.is_err());
+        // Commands with their own streams need a Room.
+        let exec = KernelTerminalRequest {
+            directory: None,
+            operation: RoomTerminalOperation::ExecList,
+        };
+        let refused = fixture
+            .runtime
+            .kernel_terminal_for_client(&owner(), exec)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("belong to a Room"),
+            "{refused}"
+        );
+        fixture
+            .runtime
+            .kernel_terminal_for_client(
+                &owner(),
+                KernelTerminalRequest {
+                    directory: None,
+                    operation: RoomTerminalOperation::Close {
+                        terminal_id: terminal.terminal_id,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_folder_is_chosen_at_open_and_a_bad_one_leaves_no_terminal() {
+        let fixture = fixture("kernel-terminal-directory");
+        let runtime = &fixture.runtime;
+        let with_folder = |operation| KernelTerminalRequest {
+            directory: Some("/tmp".to_string()),
+            operation,
+        };
+        // Any later operation that names a folder is refused, as the one-shot CLI must not send one.
+        let refused = runtime
+            .kernel_terminal_for_client(&owner(), with_folder(RoomTerminalOperation::List))
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("chosen when a terminal is opened"),
+            "{refused}"
+        );
+        // A folder that does not exist refuses the open and starts nothing.
+        let missing = KernelTerminalRequest {
+            directory: Some("/nonexistent-kernel-terminal-folder".to_string()),
+            operation: RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: Some(vec!["sleep".into(), "300".into()]),
+            },
+        };
+        runtime
+            .kernel_terminal_for_client(&owner(), missing)
+            .await
+            .unwrap_err();
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { terminals },
+        } = runtime
+            .kernel_terminal_for_client(&owner(), list())
+            .await
+            .unwrap()
+        else {
+            panic!("a list answers a list");
+        };
+        assert!(terminals.is_empty());
+    }
+
+    /// What `chariox exec` sends on a kernel with no Room: open the command, wait for it to
+    /// finish, close. A command that leaves a detached job must not outlive that close.
+    #[tokio::test]
+    async fn a_one_shot_kernel_exec_leaves_no_detached_job_after_its_close() {
+        let fixture = fixture("kernel-exec-detached");
+        let directory = std::env::temp_dir().join(format!("kernel-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let pid_file = directory.join("job.pid");
+        let script = format!(
+            "nohup {} </dev/null >/dev/null 2>&1 & sleep 1",
+            crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8898),
+        );
+        let caller = owner();
+        let call = |operation| {
+            fixture.runtime.kernel_terminal_for_client(
+                &caller,
+                KernelTerminalRequest {
+                    directory: None,
+                    operation,
+                },
+            )
+        };
+        let opened = call(RoomTerminalOperation::Open {
+            cols: 200,
+            rows: 50,
+            title: None,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .await
+        .expect("the command opens");
+        let LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { terminal },
+        } = opened
+        else {
+            panic!("unexpected {opened:?}");
+        };
+        let waited = call(RoomTerminalOperation::Wait {
+            terminal_id: terminal.terminal_id.clone(),
+            watches: vec![crate::room_terminal::RoomTerminalWatch::Finished],
+            after_offset: Some(0),
+            timeout_ms: 20_000,
+        })
+        .await
+        .expect("the wait answers");
+        assert!(
+            matches!(
+                waited,
+                LocalDaemonResponse::RoomTerminal {
+                    result: RoomTerminalResult::Waited { ref waited }
+                } if waited.fired.is_some()
+            ),
+            "{waited:?}"
+        );
+        let pid = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .expect("the detached job started");
+        let started = crate::test_support::process_alive(pid);
+        call(RoomTerminalOperation::Close {
+            terminal_id: terminal.terminal_id,
+        })
+        .await
+        .expect("the terminal closes");
+        let alive = crate::test_support::process_alive(pid);
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        std::fs::remove_dir_all(&directory).ok();
+        assert!(started, "the detached job did not start");
+        assert!(!alive, "the detached job outlived the closed exec");
+    }
+}

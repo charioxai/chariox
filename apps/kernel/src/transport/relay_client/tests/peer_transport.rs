@@ -29,14 +29,20 @@ async fn run_controlled_workspace_live_sync_target(
         if *shutdown.borrow() {
             return;
         }
-        let (mut socket, _) = connect_async(&relay_url)
+        let (mut socket, socket_handshake) = connect_async(&relay_url)
             .await
             .expect("controlled workspace target should connect to relay");
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: registration.clone(),
-                })
+                serde_json::to_string(
+                    &crate::transport::relay_socket_connect::daemon_register(
+                        &relay_url,
+                        &socket_handshake,
+                        registration.clone(),
+                        &private_key,
+                    )
+                    .unwrap(),
+                )
                 .expect("controlled target registration should serialize")
                 .into(),
             ))
@@ -245,7 +251,6 @@ fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted(
         workflow_context: None,
         git_context: None,
         required_mcps: Vec::new(),
-        required_skills: None,
         remote_extension_manifest: Default::default(),
         provider_launch_credential: Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -256,6 +261,7 @@ fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted(
                 ),
             },
         ),
+        native_skill_selections: Default::default(),
     };
     let debug = format!("{request:?}");
     assert!(!debug.contains("setup-token-secret"));
@@ -286,6 +292,92 @@ fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted(
             ..
         }
     ));
+}
+
+// MP-08 / MP-10 / MP-11: a leased turn carries the home-validated `From <Provider>`
+// selections; an older sender omits the field and decodes as none.
+#[test]
+fn submit_leased_prompt_carries_native_skill_selections() {
+    let selection = crate::skill::v2::SkillSelection::Native {
+        entry_id: "entry-1".into(),
+        name: "review".into(),
+        provider: "claude".into(),
+        account_profile: "work".into(),
+        execution_id: "worker:run-1".into(),
+        inventory_revision: "rev-1".into(),
+    };
+    let request = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "claude".to_string(),
+            account_profile: "work".to_string(),
+            model: None,
+            effort: None,
+        },
+        provider_resume_state: None,
+        prompt: "$review the diff".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: None,
+        required_mcps: Vec::new(),
+        remote_extension_manifest: Default::default(),
+        provider_launch_credential: None,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills {
+            catalog_revision: 9,
+            selections: vec![selection.clone()],
+        },
+    };
+    let mut value = serde_json::to_value(&request).expect("request should serialize");
+    assert_eq!(
+        value.pointer("/native_skill_selections/selections/0/name"),
+        Some(&serde_json::json!("review"))
+    );
+    let decoded: RelayPeerRequest = serde_json::from_value(value.clone()).expect("round trip");
+    assert!(
+        matches!(decoded, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.catalog_revision == 9 && native_skill_selections.selections == vec![selection])
+    );
+    value
+        .as_object_mut()
+        .expect("request object")
+        .remove("native_skill_selections");
+    let older: RelayPeerRequest = serde_json::from_value(value).expect("omitted field decodes");
+    assert!(
+        matches!(older, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.is_unbound())
+    );
+}
+
+// A Chariox-only leased turn has no selections but its nonzero home catalog revision
+// binds the hidden bodies; the wire must carry that revision to the worker.
+#[test]
+fn submit_leased_prompt_carries_a_body_only_catalog_revision() {
+    let request = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "codex".to_string(),
+            account_profile: "work".to_string(),
+            model: None,
+            effort: None,
+        },
+        provider_resume_state: None,
+        prompt: "$review the diff".to_string(),
+        hidden_system_context: "skill body".to_string(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: None,
+        required_mcps: Vec::new(),
+        remote_extension_manifest: Default::default(),
+        provider_launch_credential: None,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills {
+            catalog_revision: 9,
+            selections: Vec::new(),
+        },
+    };
+    let value = serde_json::to_value(&request).expect("request should serialize");
+    let decoded: RelayPeerRequest = serde_json::from_value(value).expect("round trip");
+    assert!(
+        matches!(decoded, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.catalog_revision == 9)
+    );
 }
 
 #[test]
@@ -355,7 +447,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                 transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
                 plan_digest: format!("sha256:{}", "f".repeat(64)),
-                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
+                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource { projects: vec![crate::transport::relay_peer::RelayManagedContextImportedProject {
                     project_id: "project-1".to_string(),
                     destination_root: "/managed/context".to_string(),
                     primary_repository_id: "repo-primary".to_string(),
@@ -368,7 +460,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                         destination_path: "/managed/context/primary".to_string(),
                         head_sha: "b".repeat(40),
                     }],
-                },
+                }] },
                 kernel_context: RelayManagedKernelContextImportReceipt::Empty,
                 receipt_sha256: "c".repeat(64),
             }),
@@ -380,7 +472,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
         Some(&serde_json::json!("consumed"))
     );
     assert_eq!(
-        value.pointer("/status/receipt/development/repositories/0/role"),
+        value.pointer("/status/receipt/development/projects/0/repositories/0/role"),
         Some(&serde_json::json!("primary"))
     );
     assert_eq!(
@@ -564,7 +656,6 @@ async fn proxied_peer_requests_are_handled_through_relay() {
             workflow_context: None,
             git_context: None,
             required_mcps: Vec::new(),
-            required_skills: None,
             remote_extension_manifest: Default::default(),
             provider_launch_credential: Some(
                 crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -575,6 +666,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
                     ),
                 },
             ),
+            native_skill_selections: Default::default(),
         },
     )
     .await

@@ -3,6 +3,7 @@ import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import type { KernelAccessCoveredResponse, KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse, KernelAccessStatus, KernelAccessStatusResponse } from "@chariox/kernel-client/kernel-types"
 import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
 import { reportFailure } from "./kernels-command.js"
+import { FOLLOWS_NOTHING_NOTE } from "./events-command.js"
 
 // The kernel picks the holder from this process's host ancestry unless --holder-pid names one:
 // inside a provider sandbox, pids this process can see are not host pids.
@@ -27,9 +28,13 @@ export function parseAccessRequest(argv: string[]) {
   }
 }
 
+// A grant says what it follows: a new one follows nothing, and the answer names the commands that change that.
+function followsFields(follows: number | undefined): { follows?: number; note?: string } {
+  return follows === undefined ? {} : { follows, ...(follows === 0 ? { note: FOLLOWS_NOTHING_NOTE } : {}) }
+}
 function printStatus(status: KernelAccessStatus): void {
-  const { state, holder_pid, reason } = status
-  console.log(JSON.stringify({ status: state, holder_pid, ...(reason ? { reason: reason.code, message: reason.message } : {}) }))
+  const { state, holder_pid, reason, follows } = status
+  console.log(JSON.stringify({ status: state, holder_pid, ...followsFields(follows), ...(reason ? { reason: reason.code, message: reason.message } : {}) }))
 }
 
 async function requestAccess(argv: string[]): Promise<void> {
@@ -39,7 +44,7 @@ async function requestAccess(argv: string[]): Promise<void> {
     if (noWait) {
       const { status } = (await client.send<KernelAccessStatusResponse>(request)).KernelAccessStatus
       if (status.state === "granted" && status.grant) {
-        console.log(JSON.stringify(status.grant))
+        console.log(JSON.stringify({ ...status.grant, ...followsFields(status.follows) }))
         return
       }
       // The kernel waits for the owner and binds the answer to the holder: this process may exit.
@@ -49,7 +54,8 @@ async function requestAccess(argv: string[]): Promise<void> {
     }
     console.error("Waiting for the kernel's access popup.")
     const response = await client.send<KernelAccessGrantedResponse>(request)
-    console.log(JSON.stringify(response.KernelAccessGranted.grant))
+    // A grant just issued has made no subscription yet.
+    console.log(JSON.stringify({ ...response.KernelAccessGranted.grant, ...followsFields(0) }))
   } finally { await client.close() }
 }
 

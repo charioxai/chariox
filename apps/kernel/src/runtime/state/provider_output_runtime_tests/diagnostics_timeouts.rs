@@ -1065,6 +1065,17 @@ async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_ar
         },
     );
     run.mark_running();
+    // The run was launched from the agent's selection; only its native identity is new.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            None,
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("agent selection should match the run");
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))

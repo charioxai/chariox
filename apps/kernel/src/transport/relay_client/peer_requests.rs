@@ -383,7 +383,8 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
-        if sender.starts_with("slice:")
+        // A slice asks its home for files; no other same-owner request comes from one.
+        if (sender.starts_with("slice:") && !machine_file_request(&request))
             || identity.subject.trim().is_empty()
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && identity.subject != sender)
@@ -400,6 +401,8 @@ pub(super) async fn handle_daemon_peer_request(
         }
         let owner = if project_environment_request(&request) {
             router.environment_peer_user_id(identity)
+        } else if machine_file_request(&request) {
+            router.machine_file_peer_user_id(identity, sender, &requester_public_key)
         } else {
             router.same_owner_peer_user_id(identity)
         };
@@ -603,6 +606,8 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::ListMachineDirectory { .. }
         | RelayPeerRequest::ReadMachineFile { .. }
         | RelayPeerRequest::DeleteMachinePath { .. }
+        | RelayPeerRequest::TrashMachineFiles { .. }
+        | RelayPeerRequest::RestoreMachineTrash { .. }
         | RelayPeerRequest::StartFileTransfer { .. }
         | RelayPeerRequest::GetFileTransfer { .. }
         | RelayPeerRequest::CancelFileTransfer { .. }
@@ -1240,7 +1245,6 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         } => {
@@ -1255,7 +1259,6 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
                 )
@@ -1354,9 +1357,9 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
+            native_skill_selections,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -1369,9 +1372,9 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
+                    native_skill_selections,
                 )
                 .await;
             match submitted {
@@ -1476,7 +1479,6 @@ pub(super) async fn handle_daemon_peer_request(
             prompt,
             hidden_system_context,
             attachments,
-            required_skills,
         } => {
             let steered = router
                 .relay_steer_leased_prompt(
@@ -1486,7 +1488,6 @@ pub(super) async fn handle_daemon_peer_request(
                     &prompt,
                     &hidden_system_context,
                     attachments,
-                    required_skills,
                 )
                 .await;
             match steered {
@@ -1757,10 +1758,9 @@ pub(super) async fn handle_daemon_peer_request(
                 .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
                 .await;
             match handled {
-                Ok((result, skill_package, remote_extension_manifest)) => {
+                Ok((result, remote_extension_manifest)) => {
                     RelayPeerResponse::CapabilityRuntimeToolHandled {
                         result,
-                        skill_package,
                         remote_extension_manifest,
                     }
                 }
@@ -1942,6 +1942,26 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::CaptureForHomeVault { context, capture } => {
+            match router
+                .handle_forwarded_home_vault_capture(context, capture)
+                .await
+            {
+                Ok(crate::runtime::state::HomeVaultCaptureAnswer::Prepared { committed }) => {
+                    RelayPeerResponse::HomeVaultCapturePrepared { committed }
+                }
+                Ok(crate::runtime::state::HomeVaultCaptureAnswer::Stored { result }) => {
+                    RelayPeerResponse::HomeCredentialToolHandled { result }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change } => {
             let applied = router
                 .relay_apply_workspace_live_sync_change(context, change)
@@ -2005,12 +2025,62 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages {
+            execution_lease_id,
+            context,
+            packages,
+            manifest,
+            skill_names,
+        } => {
             let ensured = router
-                .relay_ensure_remote_skill_packages(context, packages)
+                .relay_ensure_remote_skill_packages(
+                    context.clone(),
+                    execution_lease_id.clone(),
+                    manifest.clone(),
+                    packages,
+                    skill_names,
+                )
                 .await;
             match ensured {
-                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured {
+                    execution_lease_id,
+                    context,
+                    manifest,
+                    materialized,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                        display_event: None,
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ReadLeasedSkillNativeInventory {
+            context,
+            catalog_revision,
+            refresh,
+            details_for,
+        } => {
+            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "Skills inventory sender mismatch",
+                        false,
+                    )),
+                    display_event: None,
+                };
+            }
+            match router
+                .relay_read_skill_native_inventory(context, catalog_revision, refresh, details_for)
+                .await
+            {
+                Ok((inventory, details)) => {
+                    RelayPeerResponse::LeasedSkillNativeInventory { inventory, details }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,
@@ -2596,7 +2666,8 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id, ..
         } => Some(LeaseResource::LeasedAgent(leased_agent_id)),
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. }
+        | RelayPeerRequest::ReadLeasedSkillNativeInventory { context, .. } => {
             Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
         }
         RelayPeerRequest::CheckRemoteMcpAvailability { context, .. } => {
@@ -2640,6 +2711,8 @@ fn machine_file_request(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::ListMachineDirectory { .. }
             | RelayPeerRequest::ReadMachineFile { .. }
             | RelayPeerRequest::DeleteMachinePath { .. }
+            | RelayPeerRequest::TrashMachineFiles { .. }
+            | RelayPeerRequest::RestoreMachineTrash { .. }
             | RelayPeerRequest::StartFileTransfer { .. }
             | RelayPeerRequest::GetFileTransfer { .. }
             | RelayPeerRequest::CancelFileTransfer { .. }
@@ -2791,6 +2864,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarded_vault_capture_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("vault-capture").await;
+    }
+
+    #[tokio::test]
     async fn mp11_forwarded_meta_rejects_unrelated_verified_peer() {
         mp11_unrelated_forwarded_peer("meta").await;
     }
@@ -2837,6 +2915,29 @@ mod tests {
                     worker_provider_run_id: "victim-run".into(),
                 },
                 epoch: "epoch".into(),
+            }
+        } else if kind == "vault-capture" {
+            RelayPeerRequest::CaptureForHomeVault {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: home.daemon_id.clone(),
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    leased_agent_id: "victim-leased-agent".into(),
+                    worker_kernel_id: Some("victim-worker".into()),
+                    worker_machine_id: Some("victim-machine".into()),
+                    worker_provider_run_id: "victim-run".into(),
+                },
+                capture: crate::transport::relay_peer::HomeVaultCapture::Prepare {
+                    request_id: "victim-capture".into(),
+                    host: "example.com".into(),
+                    use_binding: crate::config::VaultUseBinding {
+                        target: crate::config::VaultUseTarget::CommandEnvironment {
+                            name: "TOKEN".into(),
+                            origin: "https://example.com".into(),
+                        },
+                        value_kind: crate::config::VaultValueKind::Secret,
+                    },
+                },
             }
         } else if kind == "credential" {
             RelayPeerRequest::ResolveHomeCredentialSecret {
@@ -3187,6 +3288,243 @@ mod tests {
         }
     }
 
+    fn run_on_large_stack(
+        name: &str,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        std::thread::Builder::new()
+            .name(name.to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(future);
+            })
+            .expect("test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    fn assert_unauthorized(refused: Result<RelayPeerResponse, RelayError>) {
+        assert!(
+            matches!(&refused, Err(error) if error.code == "unauthorized"),
+            "{refused:?}"
+        );
+    }
+
+    // A slice has no Cloud profile, so the same-owner check can never admit its home: it serves
+    // the machine files of the home it is provisioned to and nobody else.
+    #[test]
+    fn a_slice_serves_machine_files_only_to_its_pinned_home() {
+        run_on_large_stack(
+            "slice machine file admission test",
+            a_slice_serves_machine_files_only_to_its_pinned_home_inner(),
+        );
+    }
+
+    async fn a_slice_serves_machine_files_only_to_its_pinned_home_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("slice-machine-file-admission");
+        std::fs::write(folder.path().join("notes.txt"), b"for my slice").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(&state_home).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        let home_thumbprint = public_key_thumbprint(&home_public_key);
+        let other_private_key = relay_crypto::generate_private_key_base64();
+        let other_public_key = relay_crypto::public_key_from_private_key_base64(&other_private_key)
+            .expect("other public key");
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = None;
+        config.managed_slice_relay_owner_public_key = Some(home_public_key.clone());
+        config.room_environment_worker_binding =
+            Some(crate::config::RoomEnvironmentWorkerBinding {
+                home_kernel_id: "kernel-home".into(),
+                home_public_key: home_public_key.clone(),
+                session_id: "home-session".into(),
+                slice_id: "owned-slice".into(),
+                provisioned_slice_id: Some("owned-slice".into()),
+            });
+        let app = DaemonApp::bootstrap(config).expect("slice kernel should boot");
+        let slice_public_key = app.config().relay_public_key.clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let notes = folder.path().join("notes.txt").display().to_string();
+        let read = || RelayPeerRequest::ReadMachineFile {
+            path: notes.clone(),
+            offset: 0,
+        };
+        let ask = |sender: &str, identity: RelayCallerIdentity, private_key: &str| {
+            let (router, state) = (router.clone(), state.clone());
+            let (sender, private_key, target) = (
+                sender.to_string(),
+                private_key.to_string(),
+                slice_public_key.clone(),
+            );
+            let request = read();
+            async move {
+                send_authenticated_peer_request_for_test(
+                    &router,
+                    &state,
+                    &sender,
+                    identity,
+                    &private_key,
+                    &target,
+                    request,
+                )
+                .await
+            }
+        };
+
+        let home = scoped_machine_identity("machine-home", Some(home_thumbprint));
+        let served = ask("kernel-home", home.clone(), &home_private_key)
+            .await
+            .expect("the pinned home is served");
+        let RelayPeerResponse::FileSliceRead { content, .. } = served else {
+            panic!("{served:?}")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"for my slice");
+        // Another kernel of the same owner, or one holding another key, is not the home.
+        assert_unauthorized(ask("kernel-other", home.clone(), &home_private_key).await);
+        let other = scoped_machine_identity(
+            "machine-home",
+            Some(public_key_thumbprint(&other_public_key)),
+        );
+        assert_unauthorized(ask("kernel-home", other, &other_private_key).await);
+        assert_unauthorized(
+            ask(
+                "kernel-home",
+                scoped_machine_identity("machine-home", None),
+                &home_private_key,
+            )
+            .await,
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
+    // The slice pulls the files it copies from its home, so the home serves the slices it
+    // provisioned, which carry no Cloud profile either, and no other slice.
+    #[test]
+    fn a_home_serves_machine_files_to_its_own_slices_only() {
+        run_on_large_stack(
+            "home machine file admission test",
+            a_home_serves_machine_files_to_its_own_slices_only_inner(),
+        );
+    }
+
+    async fn a_home_serves_machine_files_to_its_own_slices_only_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("home-machine-file-admission");
+        std::fs::write(folder.path().join("notes.txt"), b"for my slice").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(&state_home).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let slice_private_key = relay_crypto::generate_private_key_base64();
+        let slice_public_key = relay_crypto::public_key_from_private_key_base64(&slice_private_key)
+            .expect("slice public key");
+        let thumbprint = public_key_thumbprint(&slice_public_key);
+        let mut config = lease_worker_config();
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::General;
+        config.remote_lease_capacity = None;
+        let app = DaemonApp::bootstrap(config).expect("home kernel should boot");
+        let home_public_key = app.config().relay_public_key.clone();
+        let home_id = app.config().daemon_id.clone();
+        let host_machine_id = app.config().host_machine_id.clone();
+        let slices = app.slices();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let create_slice = |name: &str, owner_kernel_id: &str| {
+            slices
+                .create(
+                    owner_kernel_id,
+                    &host_machine_id,
+                    crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
+                        name: name.into(),
+                        backend: crate::slice::SliceBackendKind::LocalDocker,
+                        os: "linux".into(),
+                        display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
+                        workspace_id: None,
+                        worktree_id: None,
+                        workspace_mount: None,
+                        development: None,
+                        worker_kernel_ref: Some(format!("{name}-worker")),
+                        display_url: None,
+                        provider_auth: Vec::new(),
+                        from_saved_state: None,
+                        now_ms: 1,
+                    },
+                )
+                .expect("slice record")
+        };
+        create_slice("own", &home_id);
+        create_slice("foreign", "someone-elses-home");
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let notes = folder.path().join("notes.txt").display().to_string();
+        let ask = |sender: &str, identity: RelayCallerIdentity| {
+            let (router, state) = (router.clone(), state.clone());
+            let (sender, private_key, target) = (
+                sender.to_string(),
+                slice_private_key.clone(),
+                home_public_key.clone(),
+            );
+            let request = RelayPeerRequest::ReadMachineFile {
+                path: notes.clone(),
+                offset: 0,
+            };
+            async move {
+                send_authenticated_peer_request_for_test(
+                    &router,
+                    &state,
+                    &sender,
+                    identity,
+                    &private_key,
+                    &target,
+                    request,
+                )
+                .await
+            }
+        };
+
+        // A slice carries no Cloud user, so only the home's own slice records can admit it.
+        let mut slice = scoped_machine_identity("machine-slice", Some(thumbprint.clone()));
+        slice.user_id = None;
+        let served = ask("own-worker", slice.clone())
+            .await
+            .expect("a slice of this home is served");
+        let RelayPeerResponse::FileSliceRead { content, .. } = served else {
+            panic!("{served:?}")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"for my slice");
+        // A slice of another home, an unknown kernel and another realm are refused.
+        assert_unauthorized(ask("foreign-worker", slice.clone()).await);
+        assert_unauthorized(ask("unknown-worker", slice.clone()).await);
+        let mut other_realm = slice.clone();
+        other_realm.realm_id = "realm-2".to_string();
+        assert_unauthorized(ask("own-worker", other_realm).await);
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
     #[test]
     fn leased_agent_file_slices_serve_only_the_home_that_holds_the_lease() {
         std::thread::Builder::new()
@@ -3424,7 +3762,6 @@ mod tests {
                 None,
                 Some(git_context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should accept the prompt");
@@ -3553,7 +3890,6 @@ mod tests {
                 prompt: "late original steer must not reach provider input\n".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await;
@@ -4178,8 +4514,11 @@ mod tests {
         ));
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4358,8 +4697,11 @@ mod tests {
         ));
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4572,8 +4914,11 @@ mod tests {
         config.local_socket_path =
             DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4874,8 +5219,11 @@ mod tests {
 
         let mut config = DaemonConfig::for_tests();
         config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+        config.user_config.history.operational.path = Some(
+            root.join("operational/operational.db")
+                .display()
+                .to_string(),
+        );
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -4977,8 +5325,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: archive_path.clone(),
-                archive_sha256: exported.archive_sha256.clone(),
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: archive_path.clone(),
+                        archive_sha256: exported.archive_sha256.clone(),
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(kernel_context)),
             provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -5177,13 +5529,17 @@ mod tests {
             "managed-peer-secret-canary"
         );
         let crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
-            project_id,
-            repositories,
-            ..
+            projects,
         } = receipt.development
         else {
             panic!("selected development context became Empty")
         };
+        assert_eq!(projects.len(), 1);
+        let crate::transport::relay_peer::RelayManagedContextImportedProject {
+            project_id,
+            repositories,
+            ..
+        } = projects.into_iter().next().unwrap();
         assert_eq!(project_id, "project-managed-peer");
         assert_eq!(repositories.len(), 1);
         assert_eq!(
@@ -5290,8 +5646,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: terminal_archive_path,
-                archive_sha256: terminal_exported.archive_sha256,
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: terminal_archive_path,
+                        archive_sha256: terminal_exported.archive_sha256,
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
                 KernelContextSnapshot {
@@ -5583,8 +5943,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: root.join("development.tar.gz"),
-                archive_sha256: exported.archive_sha256,
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: root.join("development.tar.gz"),
+                        archive_sha256: exported.archive_sha256,
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
                 KernelContextSnapshot {
@@ -6005,6 +6369,10 @@ mod tests {
 #[cfg(test)]
 #[path = "owner_context_drill.rs"]
 mod owner_context_drill;
+
+#[cfg(test)]
+#[path = "retained_projects_tests.rs"]
+mod retained_projects_tests;
 
 #[cfg(test)]
 mod peer_agent_stamp_tests {

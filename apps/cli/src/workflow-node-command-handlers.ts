@@ -63,8 +63,6 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
   grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
   revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
   grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
@@ -162,7 +160,7 @@ export async function handleWorkflowNodeCommand(
     return
   }
   deps.flashFooter(
-    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | wait-for-all-inputs [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none> | extensions [workflow-ref] <node-id> | extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector|app> <name>",
+    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | wait-for-all-inputs [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none> | extensions [workflow-ref] <node-id> | extension grant|revoke [workflow-ref] <node-id> <mcp|script|connector|app> <name>",
     "error",
   )
 }
@@ -364,10 +362,10 @@ async function handleWorkflowNodeExtensionCommand(
   const hasExplicitWorkflow = args.length >= 7
   const workflowRef = context.workflowRefOrSelected(hasExplicitWorkflow ? args[3] : null)
   const nodeId = hasExplicitWorkflow ? args[4] : args[3]
-  const kind = (hasExplicitWorkflow ? args[5] : args[4]) as "mcp" | "skill" | "script" | "connector" | "app" | undefined
+  const kind = (hasExplicitWorkflow ? args[5] : args[4]) as "mcp" | "script" | "connector" | "app" | undefined
   const name = hasExplicitWorkflow ? args[6] : args[5]
   if ((action !== "grant" && action !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector|app> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
+    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|script|connector|app> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
     return
   }
   const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
@@ -402,12 +400,11 @@ async function resolveWorkflowNodeAgent(
 async function grantNodeExtension(
   deps: WorkflowNodeCommandDeps,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector" | "app",
+  kind: "mcp" | "script" | "connector" | "app",
   name: string,
   args: readonly string[],
 ): Promise<AgentInstance> {
   if (kind === "mcp" && deps.grantAgentMcp) return deps.grantAgentMcp(agentRef, name)
-  if (kind === "skill" && deps.grantAgentSkill) return deps.grantAgentSkill(agentRef, name)
   if (kind === "app" && deps.grantAgentApp) {
     if (args.some((arg) => ["--environment", "--credential", "--allow"].includes(arg))) throw new Error("App bindings take only an installation ID")
     return deps.grantAgentApp(agentRef, name)
@@ -426,11 +423,10 @@ async function grantNodeExtension(
 async function revokeNodeExtension(
   deps: WorkflowNodeCommandDeps,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector" | "app",
+  kind: "mcp" | "script" | "connector" | "app",
   name: string,
 ): Promise<AgentInstance> {
   if (kind === "mcp" && deps.revokeAgentMcp) return deps.revokeAgentMcp(agentRef, name)
-  if (kind === "skill" && deps.revokeAgentSkill) return deps.revokeAgentSkill(agentRef, name)
   if (kind === "app" && deps.revokeAgentApp) return deps.revokeAgentApp(agentRef, name)
   if (kind === "script" && deps.revokeAgentScript) return deps.revokeAgentScript(agentRef, name)
   if (kind === "connector" && deps.revokeAgentConnector) return deps.revokeAgentConnector(agentRef, name)
@@ -450,8 +446,8 @@ function readOption(args: readonly string[], name: string): string | null {
   return index >= 0 ? args[index + 1] ?? null : null
 }
 
-function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" | "app" {
-  return value === "mcp" || value === "skill" || value === "script" || value === "connector" || value === "app"
+function isExtensionKind(value: unknown): value is "mcp" | "script" | "connector" | "app" {
+  return value === "mcp" || value === "script" || value === "connector" || value === "app"
 }
 
 async function addAllRemainingWorkflowNodes(

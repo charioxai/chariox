@@ -57,3 +57,50 @@ fn deadline_clear_is_explicit_and_has_a_stable_shape() {
     )
     .is_err());
 }
+
+#[test]
+fn undelivered_deadline_message_outcome_is_versioned_and_hashed() {
+    use crate::durable_state::agent_lifecycle::DelegateGoneReason;
+
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let actual = DelegateGoneReason::AgentDeadlineReached.answer("agent");
+    assert_eq!(
+        actual,
+        serde_json::json!({"delegate_id": "agent", "kind": "delegate_gone", "reason": "agent_deadline_reached"})
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
+        "80a27c224bc71babeace7f3040b8105ff8480b86002556fe61c0fd7cece57805"
+    );
+}
+
+#[test]
+fn deadline_notice_reason_survives_operational_history_and_wire_projection() {
+    use crate::history::{
+        HistoryEvent, HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryNoticeReason,
+    };
+
+    let mut notice =
+        SessionHistoryEntry::notice("room", None, Some("sender"), "Start a new agent.");
+    notice.notice_reason = Some(SessionHistoryNoticeReason::AgentDeadlineReached);
+    let context = HistoryEventTurnContext {
+        session_id: Some("room".into()),
+        ..Default::default()
+    };
+    let recorded = HistoryEvent::transcript(1, &notice, context);
+    let restored = recorded.to_session_history_entry().unwrap();
+    assert_eq!(restored.notice_reason, notice.notice_reason);
+    let wire = serde_json::to_value(restored).unwrap();
+    let shape = serde_json::json!({"kind": wire["kind"], "notice_reason": wire["notice_reason"]});
+    assert_eq!(
+        shape,
+        serde_json::json!({"kind":"notice","notice_reason":"agent_deadline_reached"})
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "acdd8edbb2ec54bfc38e4c79c42c000af67e4165691812f536e719b0575c2f9f"
+    );
+}

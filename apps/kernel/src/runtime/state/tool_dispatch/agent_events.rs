@@ -3,7 +3,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome, Registration};
 use crate::runtime::state::agent_inbox_sender::SenderRelation;
 impl KernelRuntimeState {
-    pub(super) async fn dispatch_agent_event_tool(
+    pub(in crate::runtime::state) async fn dispatch_agent_event_tool(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         name: &str,
@@ -18,7 +18,7 @@ impl KernelRuntimeState {
         let current_run = self
             .owned
             .provider_store
-            .get_run_for_agent(run.session_id(), actor)
+            .get_tool_run_for_agent(run.session_id(), actor)
             .ok_or_else(|| ledger::error("provider run unavailable"))?;
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));
@@ -75,10 +75,46 @@ impl KernelRuntimeState {
             })
         });
         Ok(if earlier_waits {
-            format!("origin_prompt_id names an earlier turn whose task is still waiting; that wait continues without this turn. Do not yield on it again: finish this turn now (an answer is optional). {ids}")
+            format!(
+                "origin_prompt_id names an earlier turn whose task is still waiting; that wait continues without this turn. Do not yield on it again: finish this turn now (an answer is optional). {ids}"
+            )
         } else {
-            format!("origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}")
+            format!(
+                "origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}"
+            )
         })
+    }
+    /// A tool call refused for want of a running turn names, in the kernel log, what the turn
+    /// authority held at that moment, so the turn that lost its authority can be found.
+    pub(crate) fn log_refused_turn_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        actor: &str,
+        run: Option<&crate::provider::RuntimeProviderRun>,
+        tool: &str,
+        args: &serde_json::Value,
+        refusal: &str,
+    ) {
+        let task = args["task_id"].as_str().and_then(|task| {
+            self.owned
+                .durable_state_store
+                .agent_task(task)
+                .ok()
+                .flatten()
+        });
+        crate::logging::info_with_fields(
+            "runtime.agent_events",
+            "a turn tool was refused",
+            serde_json::json!({
+                "refusal": refusal, "tool": tool, "room_id": session.id(), "agent_id": actor,
+                "provider_run_id": run.map(|run| run.id()),
+                "origin_prompt_id": args["origin_prompt_id"].as_str(),
+                "task_id": args["task_id"].as_str(),
+                "task_state": task.as_ref().map(|task| &task.state),
+                "task_prompt_id": task.as_ref().map(|task| &task.prompt_id),
+                "turn": self.owned.prompt_state_owner.turn_authority_snapshot(session.id(), actor),
+            }),
+        );
     }
     async fn dispatch_agent_event_tool_for(
         &self,
@@ -88,15 +124,34 @@ impl KernelRuntimeState {
         name: &str,
         args: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let missing = crate::transport::runtime_tools::missing_agent_event_arguments(name, &args);
+        if !missing.is_empty() {
+            let missing = missing
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ledger::error(format!(
+                "{name} is missing its required argument {missing}; call it again with every required argument"
+            )));
+        }
         let session = self.owned.session_store.get_session(room)?;
         let prompt = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, actor)
-            .ok_or_else(|| ledger::error("no running turn"))?;
-        if prompt.status() != crate::session::PromptStatus::Running {
-            return Err(ledger::error("stale turn authority"));
-        }
+            .active_prompt_for_agent(&session, actor);
+        let prompt = match prompt {
+            Some(prompt) if prompt.status() == crate::session::PromptStatus::Running => prompt,
+            other => {
+                let refusal = if other.is_none() {
+                    "no running turn"
+                } else {
+                    "stale turn authority"
+                };
+                self.log_refused_turn_tool(&session, actor, run, name, &args, refusal);
+                return Err(ledger::error(refusal));
+            }
+        };
         if args["origin_prompt_id"].as_str() != Some(prompt.id()) {
             return Err(ledger::error(self.earlier_turn_origin_refusal(
                 room,
@@ -127,7 +182,9 @@ impl KernelRuntimeState {
         // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
         // inside a native turn or mutate its sources/deadline before settlement.
         if task.wait.is_some() {
-            return Err(ledger::error("Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline."));
+            return Err(ledger::error(
+                "Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline.",
+            ));
         }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
@@ -136,7 +193,7 @@ impl KernelRuntimeState {
                 serde_json::json!({
                     "task":task,
                     "registrations":self.owned.durable_state_store.agent_registrations(task_id)?,
-                    "peer_follows":self.owned.durable_state_store.agent_peer_follows(room, actor)?,
+                    "other_tasks":self.owned.durable_state_store.agent_registrations_of_other_tasks(room, actor, task_id)?,
                 })
             }
             "chariox.events.unsubscribe" => {
@@ -185,9 +242,11 @@ impl KernelRuntimeState {
                         &args,
                         peer_room,
                     )?,
-                    None => return Err(ledger::error(
-                        "that kernel is this one; follow an agent of this room without `kernel`",
-                    )),
+                    None => {
+                        return Err(ledger::error(
+                            "that kernel is this one; follow an agent of this room without `kernel`",
+                        ));
+                    }
                 }
             }
             "chariox.events.subscribe" if other_room(&args, room).is_some() => self
@@ -222,7 +281,9 @@ impl KernelRuntimeState {
                         agents.iter().find(|a| a.id() == followed),
                     ) {
                         (Some(me), Some(other)) if other.id() != actor => {
-                            SenderRelation::of(me, Some(other), &agents) == SenderRelation::Peer
+                            SenderRelation::of(me, Some(other), |id, target| {
+                                self.owned.agent_store.is_ancestor(id, target)
+                            }) == SenderRelation::Peer
                         }
                         _ => false,
                     }
@@ -276,7 +337,9 @@ impl KernelRuntimeState {
                     ),
                 };
                 if let Some(deadline) = deadline.filter(|deadline| *deadline <= now) {
-                    return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
+                    return Err(ledger::error(format!(
+                        "deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000"
+                    )));
                 }
                 let cancel: Vec<String> = match args.get("cancel") {
                     None | Some(serde_json::Value::Null) => vec![],
@@ -320,38 +383,22 @@ impl KernelRuntimeState {
                 result
             }
             "chariox.events.blocked" => {
-                let task = task_id.into();
-                let prompt = prompt.id().into();
-                let reason = args["reason"].as_str().unwrap_or_default().into();
-                let operation = match args.get("owner_action") {
-                    None => Operation::BlockForQuestion {
-                        task,
-                        prompt,
-                        reason,
+                let result = self.owned.durable_state_store.agent_lifecycle(
+                    Operation::BlockForQuestion {
+                        task: task_id.into(),
+                        prompt: prompt.id().into(),
+                        reason: args["reason"].as_str().unwrap_or_default().into(),
                     },
-                    Some(value) if value.as_str() == Some("browser_access") => {
-                        self.refuse_browser_access_card_after_start_failure(room, actor)?;
-                        Operation::BlockForBrowserAccess {
-                            task,
-                            prompt,
-                            reason,
-                        }
-                    }
-                    _ => {
-                        return Err(ledger::error(
-                            "Choose browser_access for a browser approval",
-                        ))
-                    }
-                };
-                let result = self.owned.durable_state_store.agent_lifecycle(operation)?;
+                )?;
                 if let Outcome::Task(task) = result {
                     self.ensure_task_owner_interaction(task).await?;
                 }
                 serde_json::json!({"blocked":true})
             }
-            "chariox.jobs.run" | "chariox.jobs.status" | "chariox.jobs.cancel" => {
-                self.dispatch_job_tool(run, name, &args, task).await?
-            }
+            "chariox.jobs.run"
+            | "chariox.jobs.status"
+            | "chariox.jobs.cancel"
+            | "chariox.jobs.list" => self.dispatch_job_tool(run, name, &args, task).await?,
             "chariox.events.timer"
             | "chariox.events.process"
             | "chariox.events.terminal"

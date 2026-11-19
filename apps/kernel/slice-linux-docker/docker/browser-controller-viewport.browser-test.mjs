@@ -37,9 +37,10 @@ test('MP-08/MP-10/MP-11: real headed page footer remains inside the desktop belo
     const { browser, connection } = chrome;
     const { targetInfos } = await connection.send('Target.getTargets');
     const targetId = targetInfos.find(t => t.type === 'page').targetId;
+    // A slice's canonical display is set when its controller starts, before any page session is configured.
+    browser.applyCanonicalDisplay = async () => {};
     const { sessionId } = await browser.resolvePageTarget(targetId);
     const { windowId } = await connection.send('Browser.getWindowForTarget', { targetId });
-    browser.applyCanonicalDisplay = async () => {};
     for (const [width, height] of [[1280, 800], [1920, 1080]]) for (const dpr of [1, 2]) {
       await connection.send('Emulation.clearDeviceMetricsOverride', {}, sessionId);
       await connection.send('Browser.setWindowBounds', { windowId, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr, windowState: 'normal' } });
@@ -101,6 +102,8 @@ test('MP-08/MP-10/MP-11: real headed fullscreen page applies its viewport under 
     const { browser, connection } = chrome;
     const { targetInfos } = await connection.send('Target.getTargets');
     const targetId = targetInfos.find(t => t.type === 'page').targetId;
+    // A slice's canonical display is set when its controller starts, before any page session is configured.
+    browser.applyCanonicalDisplay = async () => {};
     const { sessionId } = await browser.resolvePageTarget(targetId);
     const { windowId } = await connection.send('Browser.getWindowForTarget', { targetId });
     await connection.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'fullscreen' } });
@@ -127,7 +130,6 @@ test('MP-08/MP-10/MP-11: real headed fullscreen page applies its viewport under 
     }
     assert.equal(layout.cssVisualViewport.zoom, 1.25, 'Chromium did not apply the browser zoom');
     assert.equal(bounds.windowState, 'fullscreen');
-    browser.applyCanonicalDisplay = async () => {};
     const source = { css_width: bounds.width, css_height: bounds.height, device_scale_factor: 1,
       desktop_pixel_width: bounds.width, desktop_pixel_height: bounds.height };
     await browser.reconcile(source);

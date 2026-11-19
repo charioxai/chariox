@@ -96,6 +96,8 @@ provider state independently.
 
 Usage meters identify their source, kind, unit, limits/balance where exposed, reset time, freshness, and availability. Missing numbers mean the provider did not expose them; they are not treated as zero. Codex subscription windows and credits use app-server methods. Claude uses provider-native rate-limit observations and an explicit official-CLI `/usage` refresh with tools disabled and session persistence disabled. The refresh accepts only structured results with all required model-activity fields present and zero; missing fields are not assumed to be zero. Chariox does not rewrite Claude's onboarding or trust settings for this probe. OpenCode billing remains best-effort and extensible per upstream provider.
 
+Claude asks a person once whether to trust a folder. Before any Claude launch, the kernel records that answer for the folder Chariox chose for the agent (its own worktree, else the Room's) as `projects[<folder>].hasTrustDialogAccepted` in the launch profile's `.claude.json`, on the machine where Claude runs. The write is atomic and changes nothing else Claude wrote. The launch directory must be that folder; the home directory and a filesystem root are never recorded, and any other folder Claude asks about still reaches a person as a `claude-workspace-review` permission card. A state file the kernel cannot update fails the launch with the reason.
+
 ## Security and deletion
 
 Profile paths and credential values are private kernel state and never appear in Room list, Cloud, relay, or protocol projections. Ambient provider API-key variables are scrubbed from managed launches so a named profile cannot silently execute under unrelated environment credentials.
@@ -112,3 +114,9 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 ## Explicit account copy to another kernel
 
 MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+
+## Signing in from a Vault entry
+
+An API-key provider sign-in (OpenCode Go and Zen) takes a Vault entry instead of a pasted key. `provider login <provider> [account-profile] --method opencode_go_api_key --vault <credential_id>` starts the sign-in and sends the entry; Web Provider Accounts offers **Use a Vault entry** next to the paste field, listing the owner's entries for the provider's site. The kernel reads the value, types it into the provider's own login terminal and lets `opencode auth login` finish; the value never reaches a model, the status, history, a log or a tool result, and the login screen stays masked.
+
+The provider-to-site map is one function, `provider_enrollment_vault_origin` (OpenCode: `https://opencode.ai`). The entry must be a secret bound to exactly that site for browser or HTTP use, so an entry the owner created for the site and one `chariox.vault.copy_for_use` made for it both work, with no copy step. An entry for another site is refused with the site it must be bound to. No other Vault use widens: the entry is read only for this sign-in.

@@ -172,6 +172,48 @@ async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on
     assert_eq!(told[0]["reply"], "Browser document changed");
 }
 
+/// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
+/// code). The owner answers it, it closes, and no browser-access card ever stands beside it.
+#[tokio::test]
+async fn a_browser_region_card_is_raised_answered_by_the_owner_and_closed() {
+    let f = fixture("async-popup-region-answer", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(id).unwrap();
+        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: browser_region(),
+        }));
+        sessions.restore_session(session);
+    }
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    assert_eq!(
+        session.active_interactions()[0]
+            .view()
+            .unwrap()
+            .browser_region,
+        browser_region()
+    );
+    answer_through_router(&f, id, "local", "owner-client")
+        .await
+        .unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["reply"], "Exact reply: continue.");
+}
+
 async fn ask(f: &Fixture, extra: serde_json::Value) -> serde_json::Value {
     try_ask(f, extra).await.unwrap().payload
 }

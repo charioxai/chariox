@@ -132,13 +132,28 @@ impl KernelRuntimeOwnedState {
             }
         }
 
-        crate::provider::prepare_claude_onboarding_state(&request)?;
-        let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let session = self.session_store.get_session(&session_id)?;
         let agent_id = request
             .agent_id
             .clone()
             .expect("launch target was resolved before preparation");
+        if let Some(trusted) = crate::provider::prepare_claude_launch_state(
+            &request,
+            &crate::app::chosen_workspace(
+                session.worktree_id(),
+                self.agent_store.get_agent(&agent_id)?.worktree_id(),
+            ),
+        )? {
+            self.record_notice_for_agent(
+                &session_id,
+                None,
+                Some(&agent_id),
+                self.attachment_store
+                    .list_session_attachment_ids(&session_id),
+                crate::provider::trusted_workspace_notice(&trusted),
+            );
+        }
+        let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         self.prompt_state_owner
             .with_unarchived_agent(&session, &agent_id, || {
                 let outcome = self.provider_store.start_run_provider_only(request)?;

@@ -8,7 +8,8 @@ impl CommandRouter {
     /// A `request_popup` call that carries an `action`. The agent waits for the person's
     /// decision; on approval the kernel runs exactly the request the card described and
     /// returns its result. The person's passkey is the authority, not the agent's session. A
-    /// request that only reads the Room (see `is_read_only`) runs at once and raises no card.
+    /// request that only reads the asking agent's own Room (see `room_read`) runs at once and
+    /// raises no card.
     pub(super) async fn dispatch_action_card(
         &self,
         run: crate::provider::RuntimeProviderRun,
@@ -30,7 +31,7 @@ impl CommandRouter {
             message: "no action on this card".into(),
         })?;
         let request = crate::runtime::card_action::parse_card_action(action.request)?;
-        if crate::runtime::card_action::is_read_only(&request) {
+        if crate::runtime::card_action::room_read(&request) == Some(run.session_id()) {
             let agent = self.runtime_state.card_action_agent(&run)?;
             let payload = match self
                 .run_card_action(
@@ -105,7 +106,7 @@ impl CommandRouter {
         Ok(RuntimeToolResult { ok: true, payload })
     }
 
-    /// Runs one request as the owner's terminal: the card's approval, or the Room read that needs none.
+    /// Runs one request as the owner's terminal: the card's approval, or the read of the agent's own Room that needs none.
     async fn run_card_action(
         &self,
         caller_id: String,

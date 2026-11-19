@@ -82,6 +82,21 @@ test('MP-11: unparseable url( and @import spellings inside strings are neutraliz
   assert.ok(out.includes('url("mr:r1")'), out);
 });
 
+// Review #1475 (P2): a link's href value reads as inert `chariox-href` in the viewer. Only an href attribute selector
+// changes: text in strings and comments, other attributes' values and declarations stay as the page wrote them.
+test('MP-10: an href value selector reads chariox-href; strings, comments, other attributes and declarations stay', () => {
+  const css = 'a[href*="cookie" i] { color: red; } a:not([href^="#"]) b, a[ HREF $= ".pdf" ] { color: blue; } a[href] { color: green; } '
+    + 'main { & a[href|="en"] { color: gray; } } '
+    + '.label::after { content: "[href=help]"; } .q::before { content: \'[href^="#"]\'; } [data-example="[href=help]"] { color: red; } '
+    + '/* a[href$=".zip"] */ .c { --x: [href=help]; grid-template-areas: "[href=x]"; } a[data-href="x"] { color: red; } [x\\[href="y"] { color: red; }';
+  assert.equal(sanitizeMirrorCss(css, 'https://site.example/', () => null),
+    'a[chariox-href*="cookie" i] { color: red; } a:not([chariox-href^="#"]) b, a[ chariox-href $= ".pdf" ] { color: blue; } a[href] { color: green; } '
+    + 'main { & a[chariox-href|="en"] { color: gray; } } '
+    + '.label::after { content: "[href=help]"; } .q::before { content: \'[href^="#"]\'; } [data-example="[href=help]"] { color: red; } '
+    + '/* a[href$=".zip"] */ .c { --x: [href=help]; grid-template-areas: "[href=x]"; } a[data-href="x"] { color: red; } [x\\[href="y"] { color: red; }');
+  assert.equal(sanitizeMirrorCss('color: red; --x: [href=help]', 'https://site.example/', () => null), 'color: red; --x: [href=help]', 'a style attribute has no selector');
+});
+
 // Owner rule (2026-10-09): no value scanning in page CSS; only Vault-filled
 // plain text fields are masked (by node identity, in the observer).
 test('MP-11: executable CSS is invalidated; page CSS text is not value-scanned', () => {
@@ -943,6 +958,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
   if(expression==='m.snapshot()')return{...page,root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],opaque:false};
   if(expression==='m.opaqueBoxes()')return boxes;
   if(expression==='m.drain()'){const d={...page,...drain};drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};return d;}
+  if(expression.startsWith('m.elementPixels('))return{x:0,y:0,width:1280,height:800,data_base64:'AAAA'};
   return {...page,ops:[],changed:[],resources:[],sheets:[]};
  };
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
@@ -1210,6 +1226,20 @@ for (const distorted of [false, 'canvas']) test(`MP-08/MP-10: opaque area and st
   const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
   assert.deepEqual(shots,[{x:1400,y:820,width:80,height:40,scale:1}]);
   assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
+});
+
+// browserfidelity r2: Excalidraw's full-viewport canvas was black in the viewer of a headless browser (always on macOS).
+// Its region video lease needs the browser's native window, so without one the still is all that carries the canvas.
+for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas has a still exactly when no native window can carry its video (${display ? 'headed' : 'headless'})`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[0,0,1192,666],distorted:'canvas'}];
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),chromium:{display},async screenshot(tab,clip){
+    shots.push(clip);return {data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255))};
+  }};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>null;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,display?[]:[{x:0,y:0,width:1192,height:666,scale:1}]);
+  assert.equal(tiles.length,display?0:1);
 });
 
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {

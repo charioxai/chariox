@@ -258,9 +258,14 @@ impl ProviderRunLivenessSessionEffects {
         app: &mut DaemonApp,
         outcome: &ProviderRunLivenessOutcome,
     ) -> Result<ProviderRunExitSessionOutcome, DaemonError> {
-        let active_prompt_status = app
-            .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
-            .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()));
+        // The run's end settles only the prompt that held it, never a newer one.
+        let active_prompt_status =
+            if app.provider_run_has_active_prompt(&outcome.session_id, &outcome.ended_run)? {
+                app.prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
+                    .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()))
+            } else {
+                None
+            };
         let had_active_prompt = active_prompt_status.is_some();
         let cancelled_prompt = active_prompt_status == Some(PromptStatus::Cancelling);
         let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(

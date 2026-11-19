@@ -2118,7 +2118,13 @@ async fn mk04_capability_preparation_cannot_mutate_another_lease() {
     };
     worker
         .agents()
-        .grant_skill(&unrelated.backing_agent_id, "keep-unrelated-grant".into())
+        .grant_extension(
+            &unrelated.backing_agent_id,
+            crate::extension::ExtensionGrant::new(
+                crate::extension::ExtensionKind::Mcp,
+                "keep-unrelated-grant",
+            ),
+        )
         .unwrap();
     let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
         .prepare_agent_move_capabilities(identity, &unrelated.id, &requirements)
@@ -2129,7 +2135,10 @@ async fn mk04_capability_preparation_cannot_mutate_another_lease() {
             .agents()
             .get_agent(&unrelated.backing_agent_id)
             .unwrap()
-            .skill_grants(),
+            .extension_grants()
+            .iter()
+            .map(|grant| grant.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["keep-unrelated-grant"]
     );
 }

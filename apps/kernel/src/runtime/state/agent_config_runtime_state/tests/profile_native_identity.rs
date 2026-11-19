@@ -165,3 +165,122 @@ async fn assert_native_confirmation_survives(change: &str) {
         assert_eq!(restored_agent.provider_account_profile(), account);
     }
 }
+
+/// An account change sent while the agent's turn runs stays: the old process keeps reporting its
+/// native identity until the turn boundary, and that report must not write its own account back.
+#[tokio::test]
+async fn a_running_process_output_never_writes_its_account_over_a_mid_turn_account_change() {
+    let root = crate::test_support::TestWorktree::new("profile-mid-turn-account");
+    let (app, runtime, session, agent) = agent_config_runtime_in_worktree(
+        crate::config::DaemonConfig::for_tests(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        root.session_request(),
+    )
+    .await;
+    super::seeded_catalog::seed_claude_aliases(&app, "claude-headless").await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let first = runtime
+        .owned
+        .provider_account_profiles
+        .get(owner, "claude", "default")
+        .unwrap()
+        .profile_id;
+    let second = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(owner, "claude", "Second")
+        .unwrap()
+        .profile_id;
+    super::profile_selection::model_resolution::seed_account_models(
+        &app,
+        owner,
+        "claude-headless",
+        &second,
+        &["haiku"],
+    )
+    .await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            "claude-headless",
+            Some("haiku".into()),
+            None,
+            Some(first.clone()),
+            ProviderResumeState::from_claude_session_id("native-session"),
+        )
+        .unwrap();
+    let mut request = LaunchProviderRequest::new(
+        &session,
+        "claude",
+        "claude-headless",
+        &first,
+        "claude-haiku-5-5",
+    )
+    .with_agent_id(&agent);
+    crate::account_profile::bind_provider_account_authority(
+        &mut request,
+        owner.into(),
+        first.clone(),
+    );
+    let mut run = RuntimeProviderRun::new(
+        "running-native-run",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "metadata-only-mid-turn-account".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(run.clone());
+    sync_active_prompt(&app, &session, &agent).await;
+
+    let updated = runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            owner,
+            None,
+            Some(second.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect("a running agent accepts an account change");
+    assert_eq!(updated.provider_account_profile(), second);
+
+    runtime
+        .apply_owned_structured_output_batch(
+            &session,
+            run.id(),
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                resolved_resume_state: Some(ProviderResumeState::from_claude_session_id(
+                    "native-session",
+                )),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the running process's output is applied");
+
+    let after = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert_eq!(
+        after.provider_account_profile(),
+        second,
+        "the old process's output wrote its account back over the change"
+    );
+}

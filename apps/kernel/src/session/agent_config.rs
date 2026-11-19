@@ -6,7 +6,7 @@ use super::RuntimeSession;
 pub const SESSION_AGENT_MODE_CONFIG_KEY: &str = "agents.mode";
 pub const SESSION_AGENT_PERMISSION_CONFIG_KEY: &str = "agents.permissions";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectiveAgentExecutionConfig {
     pub mode: AgentExecutionMode,
     pub permission_level: AgentPermissionLevel,
@@ -38,34 +38,78 @@ pub fn effective_agent_execution_config(
     }
 }
 
-/// Bounds the walk up the parent edges so a corrupt cycle cannot loop.
-const PARENT_WALK_LIMIT: usize = 16;
+impl EffectiveAgentExecutionConfig {
+    pub(crate) fn lower(self, other: Self) -> Self {
+        Self {
+            mode: self.mode.lower(other.mode),
+            permission_level: self.permission_level.lower(other.permission_level),
+        }
+    }
+}
 
-/// `effective(agent) = min(own, effective(parent))` for permission level and mode, read at the
-/// moment of use: lowering a parent lowers every agent below it, and an agent the user raised
-/// above its parent still runs at the parent's limit. `agents` are the agents of the room.
+/// Permission and mode are limited by each ancestor in its own Room. A deliberate
+/// waiver by the person keeps the agent's settings and ends the walk above it.
 pub fn effective_agent_execution_config_in_tree(
     session: &RuntimeSession,
     agent: &AgentInstance,
     agents: &[AgentInstance],
 ) -> EffectiveAgentExecutionConfig {
+    effective_agent_execution_config_with_parents(
+        session,
+        agent,
+        |id| {
+            agents
+                .iter()
+                .find(|candidate| candidate.id() == id)
+                .cloned()
+        },
+        |_| None,
+    )
+}
+
+pub(crate) fn effective_agent_execution_config_with_parents(
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    find_agent: impl Fn(&str) -> Option<AgentInstance>,
+    find_room: impl Fn(&str) -> Option<RuntimeSession>,
+) -> EffectiveAgentExecutionConfig {
     let mut config = effective_agent_execution_config(session, Some(agent));
-    let mut current = agent;
-    for _ in 0..PARENT_WALK_LIMIT {
-        let Some(parent) = current
-            .parent_agent_id()
-            .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
-        else {
-            break;
+    if agent.parent_limit_waived() {
+        return config;
+    }
+    if let Some(limit) = agent.peer_spawn_limit() {
+        config = config.lower(limit);
+    }
+    let mut seen = std::collections::HashSet::from([agent.id().to_owned()]);
+    let mut parent_id = agent.parent_agent_id().map(str::to_owned);
+    while let Some(id) = parent_id.take() {
+        let Some(parent) = find_agent(&id).filter(|_| seen.insert(id)) else {
+            return config.lower(parent_unavailable_config());
         };
-        let parent_config = effective_agent_execution_config(session, Some(parent));
-        config.mode = config.mode.lower(parent_config.mode);
-        config.permission_level = config
-            .permission_level
-            .lower(parent_config.permission_level);
-        current = parent;
+        let parent_config = if parent.session_id() == session.id() {
+            effective_agent_execution_config(session, Some(&parent))
+        } else if let Some(room) = find_room(parent.session_id()) {
+            effective_agent_execution_config(&room, Some(&parent))
+        } else {
+            parent_unavailable_config()
+        };
+        config = config.lower(parent_config);
+        if parent.parent_limit_waived() {
+            break;
+        }
+        if let Some(limit) = parent.peer_spawn_limit() {
+            config = config.lower(limit);
+        }
+        parent_id = parent.parent_agent_id().map(str::to_owned);
     }
     config
+}
+
+fn parent_unavailable_config() -> EffectiveAgentExecutionConfig {
+    EffectiveAgentExecutionConfig {
+        mode: AgentExecutionMode::Plan,
+        permission_level: AgentPermissionLevel::Required,
+    }
 }
 
 pub fn effective_agent_execution_mode(
@@ -189,6 +233,66 @@ mod tests {
 
         assert_eq!(config.mode, AgentExecutionMode::Build);
         assert_eq!(config.permission_level, AgentPermissionLevel::Yolo);
+    }
+
+    #[test]
+    fn a_parent_the_person_raised_above_its_limit_limits_its_descendants_alone() {
+        use crate::agent::AgentRef;
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let agent = |id: &str, parent: Option<&str>, mode, level| {
+            let mut agent = AgentInstance::new(
+                id,
+                id,
+                session.id(),
+                None,
+                "dev-stub",
+                None,
+                None,
+                None,
+                GridPosition::new(0, 0, 1, 1),
+            );
+            agent.set_parent_agent(parent.map(AgentRef::local));
+            agent.set_execution_mode_override(Some(mode));
+            agent.set_permission_level_override(Some(level));
+            agent
+        };
+        let grandparent = agent(
+            "g",
+            None,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        );
+        let mut parent = agent(
+            "p",
+            Some("g"),
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+        let child = agent(
+            "c",
+            Some("p"),
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let run = |parent: &AgentInstance| {
+            let agents = [grandparent.clone(), parent.clone(), child.clone()];
+            effective_agent_execution_config_in_tree(&session, &child, &agents)
+        };
+        let limited = run(&parent);
+        assert_eq!(limited.mode, AgentExecutionMode::Plan);
+        assert_eq!(limited.permission_level, AgentPermissionLevel::Required);
+
+        parent.set_parent_limit_waived(true);
+        let held = run(&parent);
+        assert_eq!(
+            (held.mode, held.permission_level),
+            (AgentExecutionMode::Build, AgentPermissionLevel::Yolo),
+            "the person's raise of the parent holds for the child it may spawn"
+        );
     }
 
     #[test]

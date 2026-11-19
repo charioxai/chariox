@@ -1,0 +1,3 @@
+[
+ {"path":"apps/kernel/src/runtime/session_read_control.rs","count":3,"why":"ListSessions builds a snapshot of every Room (list_session_snapshots, twice) and ResolveSession one (resolve_session_snapshot); move them to stored-Room reads when touching the file"}
+]

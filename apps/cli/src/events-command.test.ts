@@ -17,7 +17,7 @@ test("outside event cursor expiry and ending have actionable exit codes", () => 
   assert.equal(exitCodeFor("subscription_ended"), 3)
 })
 
-import { runEventsVerb } from "./events-command.js"
+import { eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
 import { CommandFailure } from "./agent-command-table.js"
 
 test("wait drains a batch, preserving the cursor and timeout outcome", async () => {
@@ -143,4 +143,33 @@ test("unsubscribe --source detaches a followed source the kernel no longer lists
   assert.deepEqual(sent.filter(request => "UnsubscribeEvents" in (request as object)), [{ UnsubscribeEvents: { sources: ["wf_disabled"] } }, { UnsubscribeEvents: { sources: ["wf_disabled"] } }])
   await assert.rejects(runEventsVerb("unsubscribe", new Map<string, string | true>([["--source", "never followed"]]), [], send, () => {}), error => error instanceof CommandFailure && error.code === "events_refused" && /chariox events subscription/.test(error.message))
   assert.equal(sent.filter(request => "UnsubscribeEvents" in (request as object)).length, 2)
+})
+
+const EMPTY_SUBSCRIPTION = { EventSubscription: { subscription: { subscription_id: "s", targets: [], kernels: [], acknowledged_cursor: 0, ended: null } } }
+
+test("a wait over the 540 s limit is refused before anything is sent, naming the limit", async () => {
+  await assert.rejects(runEventsVerb("wait", new Map([["--timeout", "600"]]), [], async () => assert.fail("must not send"), () => {}), error => error instanceof CommandFailure && error.code === "usage" && /0 to 540/.test(error.message))
+  await assert.rejects(runEventsVerb("watch", new Map([["--timeout", "541"]]), [], async () => assert.fail("must not send"), () => {}), /0 to 540/)
+  assert.equal(eventTimeoutSeconds("wait", new Map([["--timeout", "540"]])), 540)
+})
+test("events subscription says when the grant follows nothing, and what to run", async () => {
+  const output: any[] = []
+  assert.equal(await runEventsVerb("subscription", new Map(), [], async () => EMPTY_SUBSCRIPTION, value => output.push(value)), 0)
+  assert.match(output[0].note, /follows nothing/)
+  assert.match(output[0].note, /events subscribe --kernel K --session S/)
+  assert.match(output[0].note, /events subscribe --like <grant id>/)
+  const following: any[] = []
+  const target = { kernel: "k", session_id: "room" }
+  await runEventsVerb("subscription", new Map(), [], async () => ({ EventSubscription: { subscription: { ...EMPTY_SUBSCRIPTION.EventSubscription.subscription, targets: [target] } } }), value => following.push(value))
+  assert.equal(following[0].note, undefined)
+  assert.deepEqual(following[0].subscription.targets, [target])
+})
+test("events subscribe --like names one earlier grant and no other target", async () => {
+  const sent: unknown[] = [], output: unknown[] = []
+  assert.equal(await runEventsVerb("subscribe", new Map([["--like", "access-old"]]), [], async request => { sent.push(request); return EMPTY_SUBSCRIPTION }, value => output.push(value)), 0)
+  assert.deepEqual(sent, [{ SubscribeEvents: { targets: [], like: "access-old" } }])
+  for (const other of ["--kernel", "--session", "--agent", "--source"]) {
+    await assert.rejects(runEventsVerb("subscribe", new Map([["--like", "access-old"], [other, "x"]]), [], async () => assert.fail("must not send"), () => {}), /--like takes an earlier grant id/, other)
+  }
+  await assert.rejects(runEventsVerb("subscribe", new Map<string, string | true>([["--like", true]]), [], async () => assert.fail("must not send"), () => {}), /--like takes an earlier grant id/)
 })

@@ -207,6 +207,8 @@ test('GitHub\'s own refusal of a merge is shown in its words with a code the win
   const validation = scenario({ 'POST /pulls': json(422, { message: 'Validation Failed', errors: [{ message: 'A pull request already exists for charioxai:drill/gha4-rich.' }] }) });
   await refused(validation.call('open_pull_request', { repo: REPO, title: 't', head: 'drill/gha4-rich' }), 'UNPROCESSABLE', /Validation Failed: A pull request already exists/);
   await refused(scenario({ 'POST /issues/2/comments': json(401, { message: 'Bad credentials' }) }).call('comment', { ...pull, body: 'x' }), 'ACCOUNT_UNAUTHORIZED');
+  // An installation bound below the App's highest class (the App updated to write) is told what to allow, in plain words.
+  await refused(scenario({ 'POST /issues/2/comments': () => { throw { payload: { code: 'APP_HTTP_ACCOUNT_NOT_ALLOWED', message: 'the binding allows read' } }; } }).call('comment', { ...pull, body: 'x' }), 'ACCOUNT_NOT_ALLOWED', /Allow this App to make changes.*bound to read only/);
   const limited = scenario({ 'POST /issues/2/comments': json(403, { message: 'You have exceeded a secondary rate limit.' }, { 'retry-after': '60' }) });
   await refused(limited.call('comment', { ...pull, body: 'x' }), 'RATE_LIMITED');
 });

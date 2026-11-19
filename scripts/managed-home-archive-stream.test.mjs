@@ -178,7 +178,12 @@ test("archive verification accepts large safe sizes while binding identity and e
 
 test("actual broker verification delegates safe large metadata to hashing without a wall-time ceiling", async () => {
   const source = await readFile(new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url), "utf8")
-  const body = source.slice(source.indexOf("async function inspectManagedHomeArchive("), source.indexOf("\nfunction verifyManagedHomeArchive("))
+  // inspectManagedHomeArchive calls parseManagedHomeArchiveMetadata, which throws HomeArchiveCorruption:
+  // evaluate those real definitions together so only IO is synthetic.
+  const corruption = "class HomeArchiveCorruption extends Error {}"
+  assert.ok(source.includes(corruption))
+  const functions = source.slice(source.indexOf("function parseManagedHomeArchiveMetadata("), source.indexOf("\nfunction verifyManagedHomeArchive("))
+  const body = `async (...args) => {\n${corruption}\n${functions}\nreturn inspectManagedHomeArchive(...args)\n}`
   const metadata = { schemaVersion: 1, scope: "state", id: "owned", sizeBytes: 33 * 1024 ** 3 + 1, sha256: "a".repeat(64) }
   let hashes = 0
   // IO is synthetic: exercise the actual broker policy and hash argv without

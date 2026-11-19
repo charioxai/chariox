@@ -475,6 +475,37 @@ impl OperationalHistoryStore {
         self.load_provider_tool_entries(session_id, provider_run_id, Some(prompt_id))
     }
 
+    pub(crate) fn foreground_command_interrupted_by_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM history_events
+                    WHERE session_id=?1 AND agent_id=?2 AND prompt_id=?3 AND kind='provider_tool'
+                      AND CASE WHEN json_valid(json_extract(event_json,'$.content'))
+                               THEN json_extract(json_extract(event_json,'$.content'),'$.error')=?4
+                          END
+                )",
+                params![
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    crate::app::FOREGROUND_COMMAND_RESTART_REASON
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_owned()),
+                operation: "read foreground command restart outcome",
+                message: error.to_string(),
+            })
+    }
+
     fn load_provider_tool_entries(
         &self,
         session_id: &str,

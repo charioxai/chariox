@@ -8,6 +8,7 @@ import {
   getProviderAuthStatusRequest,
   getProviderLoginStatusRequest,
   sendProviderLoginInputRequest,
+  sendProviderLoginVaultEntryRequest,
   cancelProviderLoginRequest,
   listProviderProcessesRequest,
   logoutProviderRequest,
@@ -98,6 +99,8 @@ export async function executeProviderCommand(
       const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
       return { ok: true, message: `${result.provider} logged out`, data: result }
     }
+    const options = parseLoginOptions(rest)
+    if (typeof options === "string") return { ok: false, message: options }
     if (action === "reauth" && !provider.startsWith("claude")) {
       const logoutResponse = await deps.client.send(logoutProviderRequest(provider))
       if ("ProviderLogoutStarted" in logoutResponse) {
@@ -106,11 +109,15 @@ export async function executeProviderCommand(
       }
     }
     const response = await deps.client.send(provider.startsWith("claude")
-      ? setProviderAccountCredentialRequest("claude", rest[0]?.trim() || "default", "", true,
+      ? setProviderAccountCredentialRequest("claude", options.accountProfile || "default", "", true,
         { ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.agentId ? { agentId: context.agentId } : {}) }, true)
-      : startProviderLoginRequest(provider))
+      : startProviderLoginRequest(provider, options.accountProfile, options.method))
     const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
     const verb = action === "reauth" ? "reauth" : "login"
+    if (options.vaultEntry && login.login_id) {
+      await deps.client.send(sendProviderLoginVaultEntryRequest(login.login_id, options.vaultEntry))
+      return await finishedVaultLogin(deps, login.login_id)
+    }
     return { ok: true, message: formatProviderLoginStart(login, verb), data: { login } }
   }
   if (action === "login-status") {
@@ -153,6 +160,52 @@ export async function executeProviderCommand(
     return { ok: true, message: formatProviderProcesses(processes), data: { processes } }
   }
   return { ok: false, message: "usage: provider status|login|setup-token|login-status|login-cancel|logout|reauth|processes [provider]|processes teardown <provider>" }
+}
+
+type LoginOptions = { accountProfile?: string; method?: string; vaultEntry?: string }
+
+/** `[account-profile] [--method <method>] [--vault <credential-id>]`; text is the usage error. */
+function parseLoginOptions(args: string[]): LoginOptions | string {
+  const usage = "usage: provider login <provider> [account-profile] [--method <method>] [--vault <credential-id>]"
+  const options: LoginOptions = {}
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string
+    if (arg === "--method" || arg === "--vault") {
+      const value = args[index + 1]?.trim()
+      if (!value || value.startsWith("--")) return usage
+      if (arg === "--method") options.method = value
+      else options.vaultEntry = value
+      index += 1
+    } else if (arg.startsWith("--") || options.accountProfile) {
+      return usage
+    } else {
+      options.accountProfile = arg.trim()
+    }
+  }
+  if (options.vaultEntry && !options.method) {
+    return "provider login --vault needs --method <method> of an API key sign-in, such as opencode_go_api_key"
+  }
+  return options
+}
+
+const VAULT_LOGIN_POLL_MS = 500
+const VAULT_LOGIN_POLL_LIMIT = 40
+
+/** The kernel types the entry once the login asks for its key; the answer is the login's own end state. */
+async function finishedVaultLogin(deps: ShellProviderCommandDeps, loginId: string): Promise<ShellCommandResult> {
+  for (let attempt = 0; attempt < VAULT_LOGIN_POLL_LIMIT; attempt += 1) {
+    const response = await deps.client.send(getProviderLoginStatusRequest(loginId))
+    const login = expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginStatus").login
+    if (login.state !== "running") {
+      return {
+        ok: login.state === "succeeded",
+        message: `${login.provider}/${login.account_profile} login ${login.state} with a Vault entry`,
+        data: { login },
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, VAULT_LOGIN_POLL_MS))
+  }
+  return { ok: false, message: `login ${loginId} is still running; check it with provider login-status ${loginId}` }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

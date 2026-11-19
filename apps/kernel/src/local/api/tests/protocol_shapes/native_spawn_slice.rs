@@ -81,6 +81,8 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: Some("Inspect the current change and report.".to_string()),
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -103,12 +105,16 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
         Some(&serde_json::json!("kernel-worker"))
     );
     assert_eq!(snapshot.pointer("/SpawnAgent/machine_ref"), None);
+    assert_eq!(
+        snapshot.pointer("/SpawnAgent/initial_task"),
+        Some(&serde_json::json!("Inspect the current change and report.")),
+    );
     let serialized =
         serde_json::to_string(&snapshot).expect("kernel-targeted spawn snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "712cecc5815da7fa33661de8db724f62e1aa90cfdbe56e332a5d13fbc8f4b848"
+        "e1132df5bdd5761e492920f089edb206cf55d8b0c8bd89585f71490eb73cb547"
     );
 }
 
@@ -120,6 +126,8 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -275,6 +283,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         serde_json::from_value(run_value).expect("private provider run should decode");
     let mut session_value = serde_json::to_value(crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -315,7 +324,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d0877032eeb00f9cefa0bb33668a1c0c9b3b8c2230d8590948c709e2f7f4b18b"
+        "e2162768ecfac387fa0764aa2673d0f33cd3d5890023df9c8e08b52a5eaa7dca"
     );
 }
 
@@ -717,7 +726,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
         worktree_id: Some("/repo/primary-worktree".to_string()),
         workspace_mount: Some("/repo/primary-worktree".to_string()),
         development: Some(
-            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects { projects: vec![crate::managed_context::package::ManagedContextSourceProject {
                 project_id: "project-1".to_string(),
                 repositories: vec![
                     crate::managed_context::development::DevelopmentSourceRepositoryBinding {
@@ -731,7 +740,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
                         worktree_id: None,
                     },
                 ],
-            },
+            }] },
         ),
         worker_kernel_ref: None,
         display_url: None,
@@ -752,10 +761,10 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
     let snapshot = serde_json::json!([request, publication]);
     assert_eq!(
         snapshot.pointer("/0/CreateSlice/development/kind"),
-        Some(&serde_json::json!("source_project"))
+        Some(&serde_json::json!("source_projects"))
     );
     assert_eq!(
-        snapshot.pointer("/0/CreateSlice/development/repositories/1/workspaceId"),
+        snapshot.pointer("/0/CreateSlice/development/projects/0/repositories/1/workspaceId"),
         Some(&serde_json::json!("/repo/supporting"))
     );
     assert_eq!(
@@ -775,7 +784,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "cd00f8ea87f2e45c7159acebd8c4a1a10138eb88b24c900cee9f3c041ce07293"
+        "47c3a69b8a97f40a22a488fef3c2165e1c1275ac18dc36a5a353673d0d2836ac"
     );
 }
 

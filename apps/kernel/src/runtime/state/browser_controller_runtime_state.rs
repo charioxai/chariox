@@ -1361,17 +1361,13 @@ const START_RECONCILE_MAX_DELAY: std::time::Duration = std::time::Duration::from
 /// reports them, locally or through the relay.
 fn transient_started_browser_error(error: &DaemonError) -> bool {
     let message = error.to_string();
-    [
-        "browser_cdp_timeout",
-        "browser_debugger_unavailable",
-        "browser_cdp_disconnected",
-        "browser_cdp_socket_error",
-        "viewport_apply_failed",
-    ]
-    .iter()
-    .any(|code| {
-        message.contains(&crate::runtime::browser_controller_process::controller_error_marker(code))
-    })
+    crate::runtime::browser_controller_process::TRANSIENT_CONTROLLER_CODES
+        .iter()
+        .any(|code| {
+            message.contains(
+                &crate::runtime::browser_controller_process::controller_error_marker(code),
+            )
+        })
 }
 
 fn controller_generation_error(message: &str) -> DaemonError {

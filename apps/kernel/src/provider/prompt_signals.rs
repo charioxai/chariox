@@ -10,7 +10,9 @@ const CLAUDE_ROOT_YOLO_REFUSAL: &str =
 
 #[derive(Debug, thiserror::Error)]
 enum ProviderTerminalPermissionError {
-    #[error("Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.")]
+    #[error(
+        "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox."
+    )]
     ClaudeRootYolo,
 }
 
@@ -29,6 +31,12 @@ pub struct ProviderAssistantCompletion {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProviderPromptSignalBatch {
+    /// Official completed instruction-tool responses; not transcript availability.
+    pub skill_tool_delivery_acknowledgements: Vec<super::SkillToolDeliveryAcknowledgement>,
+    /// Claude's prompt hook reported its additionalContext delivered to the model.
+    pub hook_context_delivered: bool,
+    /// Claude streamed these native compactions, by the ID its transcript observer uses.
+    pub native_compactions: Vec<String>,
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
@@ -39,6 +47,9 @@ pub struct ProviderPromptSignalBatch {
     // termination evidence. PTY/stderr classifiers keep terminal_failure for
     // prompt settlement but must not be promoted across that trust boundary.
     pub explicit_provider_error: bool,
+    /// How the turn ended when the kernel itself, not the harness's error
+    /// text, knows why; it replaces classifying `terminal_failure`.
+    pub turn_outcome: Option<crate::provider::TurnOutcome>,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,
@@ -47,6 +58,26 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_usage: Option<ProviderRunTokenUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
+    /// The model reasons without visible output; the provider's token estimate so far.
+    pub thinking_tokens: Option<u64>,
+    /// What this batch reports of a turn the provider runs with no prompt asking for it, such as
+    /// Claude reporting a finished background command.
+    pub provider_own_turn: ProviderOwnTurnSignal,
+}
+
+/// A batch's report of the provider's own turn: its start edge as well as its level, so a turn
+/// that starts and ends within one batch is still seen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProviderOwnTurnSignal {
+    /// No own turn ran during the batch.
+    #[default]
+    None,
+    /// An own turn runs at the end of the batch; it began in this batch or earlier.
+    Running,
+    /// An own turn began and ended within the batch.
+    StartedAndEnded,
+    /// The own turn that ran when the batch began ended in it.
+    Ended,
 }
 
 impl ProviderPromptSignalBatch {
@@ -56,6 +87,10 @@ impl ProviderPromptSignalBatch {
             || !self.completions.is_empty()
             || !self.notices.is_empty()
             || self.prompt_completed
+    }
+
+    pub(crate) fn note_thinking(&mut self, tokens: u64) {
+        self.thinking_tokens = Some(self.thinking_tokens.unwrap_or(0).max(tokens));
     }
 }
 
@@ -363,11 +398,31 @@ mod tests {
     #[test]
     fn failure_reasons_do_not_repeat_provider_words_or_codes() {
         for (adapter, text, reason) in [
-            ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", "The provider is at capacity"),
-            ("claude", "Claude StopFailure [rate_limit]: You've hit your session limit", "You've hit your session limit"),
-            ("opencode", "Insufficient balance. Manage your billing here.", "The provider's usage limit was reached"),
-            ("codex", "stream disconnected", "The connection to the provider was interrupted"),
-            ("codex", "upstream failed Authorization: Bearer sk-live-0123456789abcdef", "The provider could not complete this request"),
+            (
+                "codex",
+                "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.",
+                "The provider is at capacity",
+            ),
+            (
+                "claude",
+                "Claude StopFailure [rate_limit]: You've hit your session limit",
+                "You've hit your session limit",
+            ),
+            (
+                "opencode",
+                "Insufficient balance. Manage your billing here.",
+                "The provider's usage limit was reached",
+            ),
+            (
+                "codex",
+                "stream disconnected",
+                "The connection to the provider was interrupted",
+            ),
+            (
+                "codex",
+                "upstream failed Authorization: Bearer sk-live-0123456789abcdef",
+                "The provider could not complete this request",
+            ),
         ] {
             assert_eq!(provider_turn_failure_reason(adapter, text, None), reason);
         }
@@ -628,7 +683,10 @@ mod tests {
         )
         .expect("Claude root permission restriction should be terminal");
 
-        assert_eq!(failure, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
+        assert_eq!(
+            failure,
+            "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox."
+        );
         assert_eq!(
             classify_provider_terminal_failure_output_text(
                 "claude",

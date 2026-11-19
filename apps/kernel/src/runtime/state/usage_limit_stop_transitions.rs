@@ -21,6 +21,8 @@
 //! | `Settle`       | exactly the stop the scheduler selected, Resuming,   | none (the resumed turn ended without the     |
 //! |                | sent, and past `RESUME_SETTLE_MS`                    | limit: the agent is back)                    |
 //! | `Drop`         | any stop of the stopped turn that was cancelled      | none                                         |
+//! | `Continued`    | Asking, Armed or Declined, and the agent's turn runs | none (the agent went on, on another account: |
+//! |                | on an account other than the stop's                  | the stop is over, whatever route it took)    |
 //!
 //! Every other pairing is refused. No row moves a Resuming stop to Declined, and the scheduler
 //! never moves a Declined stop to Resuming, so a decision never overwrites a claim and a claim by
@@ -111,6 +113,13 @@ pub(super) enum StopEvent<'a> {
     },
     /// The task of the stopped turn was cancelled on purpose.
     Drop { prompt_id: &'a str },
+    /// The agent's turn runs on `account_profile`, which is not the account that hit the limit:
+    /// it went on by a settings change, a prompt or a decision. `account_label` names it for the
+    /// history.
+    Continued {
+        account_profile: &'a str,
+        account_label: &'a str,
+    },
 }
 
 /// How a turn that ended on the usage limit goes on, given the stop held when it ended.
@@ -224,6 +233,12 @@ pub(super) fn transition(
             },
         ) if held == *selected && now.saturating_sub(*since_ms) > RESUME_SETTLE_MS => Some(None),
         (StopEvent::Drop { prompt_id }, _) if held.prompt_id == *prompt_id => Some(None),
+        (
+            StopEvent::Continued {
+                account_profile, ..
+            },
+            Asking | Armed { .. } | Declined,
+        ) if held.account_profile != *account_profile => Some(None),
         _ => None,
     }
 }
@@ -593,6 +608,27 @@ mod tests {
             applies_to(&other_turn),
             [false; 6],
             "a newer stopped turn is not its stop"
+        );
+    }
+
+    #[test]
+    fn a_turn_on_another_account_ends_a_stop_nobody_took() {
+        let elsewhere = StopEvent::Continued {
+            account_profile: "other",
+            account_label: "Other",
+        };
+        assert_eq!(
+            applies_to(&elsewhere),
+            [false, true, true, false, false, true]
+        );
+        let same = StopEvent::Continued {
+            account_profile: "default",
+            account_label: "main",
+        };
+        assert_eq!(
+            applies_to(&same),
+            [false; 6],
+            "a turn on the limited account does not end its stop"
         );
     }
 

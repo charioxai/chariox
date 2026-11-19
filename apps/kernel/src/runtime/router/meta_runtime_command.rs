@@ -6,18 +6,17 @@ use crate::local::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
     CancelWorkflowRunRequest, CreateSliceRequest, CreateWorkflowEndpointRequest,
     CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind, FocusAgentRequest,
-    GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest, GetSkillRequest,
+    GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest,
     GetWorkflowRunRequest, GrantAgentExtensionRequest, ImportMcpServersRequest,
-    ImportProviderCapabilitiesRequest, ImportSkillsRequest, InstallMcpServerRequest,
-    InstallSkillRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
-    ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest, RemoveCredentialRequest,
-    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveWorkflowRequest,
-    ResumeWorkflowRunRequest, RevokeAgentExtensionRequest, SetWorkflowNodeCanCompleteRunRequest,
-    SetWorkflowNodeCanEmitIntermediateOutputRequest, SetWorkflowNodeMaxTurnsRequest,
-    SetWorkflowNodeWaitForAllInputsRequest, SetWorkflowResponsibleRequest, SliceRefRequest,
-    SpawnAgentRequest, UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest,
-    UpdateSkillRequest, UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
+    ImportProviderCapabilitiesRequest, InstallMcpServerRequest, InvokeWorkflowEndpointRequest,
+    ListAgentsRequest, ListCredentialsRequest, ListMcpServersRequest, ListWorkflowRunsRequest,
+    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest,
+    RemoveCredentialRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
+    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SetWorkflowNodeMaxTurnsRequest, SetWorkflowNodeWaitForAllInputsRequest,
+    SetWorkflowResponsibleRequest, SliceRefRequest, SpawnAgentRequest, UninstallMcpServerRequest,
+    UpdateMcpServerRequest, UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
     WorkflowResponsibleTarget,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
@@ -27,6 +26,7 @@ use super::CommandRouter;
 
 mod agent_peer;
 mod agent_tree;
+mod agents_run;
 mod dispatch;
 mod own_schedule;
 mod reach_lists;

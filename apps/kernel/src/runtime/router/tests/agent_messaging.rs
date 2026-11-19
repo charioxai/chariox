@@ -394,6 +394,118 @@ fn agent_message_can_start_a_human_stopped_target() {
     });
 }
 
+// AO-PEER-LIFECYCLE: a message to a peer the person stopped waits for the person's next prompt;
+// the sender is told so in the tool result instead of seeing a bare "durable".
+#[test]
+fn durable_message_to_an_owner_stopped_peer_tells_the_sender_it_is_held() {
+    run_agent_message_test_with_large_stack("agent-message-owner-stopped-held", || async {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-owner-stopped",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            target.id(),
+            "dev-stub",
+            "dev-stub",
+            "target-model",
+        );
+        let sender_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(sender.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        // The fixture runs a turn for the target too; the person stops it.
+        let target_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(target.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        app.prompt_owner_cancel_active_prompt_only(session.id(), target.id())
+            .expect("the person's stop should cancel the target");
+        let sender_token = sender_run
+            .runtime_mcp_auth_token()
+            .expect("sender needs runtime MCP auth")
+            .to_string();
+        let store = app.durable_state_store();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let crate::durable_state::agent_lifecycle::Outcome::Task(task) = store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: session.id().into(),
+                agent: target.id().into(),
+                prompt: target_prompt_id,
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the target's turn should be recorded")
+        else {
+            panic!("begin returns the task");
+        };
+        store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::CancelTask {
+                    task: task.task_id,
+                    owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                    revision: task.revision,
+                },
+            )
+            .expect("the person's stop should be recorded");
+        // The agent is told of the stop only when the person next prompts it.
+        store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Expire {
+                room: session.id().into(),
+                agent: target.id().into(),
+                sequence: 1,
+            })
+            .expect("the stop notice should retire");
+        let result = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "status please",
+                    "origin_prompt_id": sender_prompt_id,
+                }),
+            )
+            .await
+            .expect("the message should be accepted");
+        assert!(result.ok);
+        assert_eq!(result.payload["status"], "queued");
+        assert_eq!(result.payload["held"], true, "{}", result.payload);
+        assert!(
+            result.payload["note"].as_str().is_some_and(|note| note
+                .contains("stopped by its owner")
+                && note.contains("next prompt")),
+            "{}",
+            result.payload
+        );
+    });
+}
+
 // MP-08/MP-09/MP-10/MP-11 A12-S04: a message to a peer whose selected account cannot start work is
 // refused to the sender at the tool boundary, never left durable and pending behind its goal.
 #[test]
@@ -1398,4 +1510,123 @@ async fn runtime_mcp_metaagent_can_message_an_existing_session_agent() {
         .expect("Meta agent message should dispatch");
     assert!(result.ok, "{:?}", result.payload);
     assert_eq!(result.payload["status"], "started");
+}
+
+#[test]
+fn deadline_refuses_later_messages_and_settles_the_queued_message_once() {
+    use crate::durable_state::agent_lifecycle::Operation;
+
+    run_agent_message_test_with_large_stack("agent-message-deadline", || async {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (room, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-deadline",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .unwrap();
+        let target = spawn_test_agent(&mut app, room.id(), "deadline-target", "dev-stub");
+        let run = launch_test_provider(
+            &mut app,
+            room.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        let sender_prompt = app
+            .sessions()
+            .get_session(room.id())
+            .unwrap()
+            .active_prompt_for_agent(sender.id())
+            .map(|prompt| prompt.id().to_owned())
+            .unwrap_or_else(|| start_agent_message_sender_turn(&mut app, room.id(), sender.id()));
+        let token = run.runtime_mcp_auth_token().unwrap().to_owned();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+        let deadline = crate::session::unix_epoch_ms() + 60_000;
+        app.lock()
+            .await
+            .durable_state_store()
+            .agent_lifecycle(Operation::SetDeadline {
+                room: room.id().into(),
+                agent: target.id().into(),
+                deadline: Some(deadline),
+                inherited: vec![],
+            })
+            .unwrap();
+
+        let send = |message, urgent, reply_requested| {
+            router
+                .runtime_state
+                .dispatch_authenticated_runtime_tool_call(
+                    &token,
+                    crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                    serde_json::json!({
+                        "agent": target.id(),
+                        "origin_prompt_id": sender_prompt,
+                        "message": message,
+                        "urgent": urgent,
+                        "reply_requested": reply_requested,
+                    }),
+                )
+        };
+        let queued = send("Read the deployment notes", false, true)
+            .await
+            .unwrap();
+        assert!(queued.ok);
+        let sequence = queued.payload["sequence"].as_u64().unwrap();
+        {
+            let app = app.lock().await;
+            for stopped in [false, true, true] {
+                app.durable_state_store()
+                    .agent_lifecycle(Operation::ReachDeadline {
+                        room: room.id().into(),
+                        agent: target.id().into(),
+                        now: deadline,
+                        stopped,
+                    })
+                    .unwrap();
+            }
+        }
+        let time = chrono::DateTime::from_timestamp_millis(deadline as i64)
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S UTC");
+        for urgent in [false, true] {
+            let refused = send("Do not deliver after the deadline", urgent, false)
+                .await
+                .unwrap();
+            assert!(!refused.ok);
+            assert_eq!(refused.payload["code"], "agent_deadline_reached");
+            assert_eq!(
+                refused.payload["error"],
+                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+            );
+        }
+        let app = app.lock().await;
+        let store = app.durable_state_store();
+        let (message, _) = store.agent_inbox_event(sequence).unwrap().unwrap();
+        assert_eq!(message.state, "failed");
+        assert_eq!(message.payload["message"], "Read the deployment notes");
+        let target_events = store.agent_inbox(room.id(), target.id(), 0).unwrap();
+        assert_eq!(
+            target_events
+                .iter()
+                .filter(|event| event.kind == "message")
+                .count(),
+            1
+        );
+        let lost: Vec<_> = store
+            .agent_inbox(room.id(), sender.id(), 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "source_lost")
+            .collect();
+        assert_eq!(lost.len(), 1);
+        assert_eq!(
+            lost[0].payload["public_answer"]["reason"],
+            "agent_deadline_reached"
+        );
+    });
 }

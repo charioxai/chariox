@@ -270,12 +270,20 @@ pub(super) fn cloud_status_error(status: u16, body: String) -> DaemonError {
     let message = if body.is_empty() {
         format!("cloud relay request failed with {status}")
     } else if let Some(code) = cloud_api_error_code(&body) {
+        // Kept before the code, so Cloud's free-text reason can never read as a closed request.
+        let closed = if cloud_api_request_closed(&body) {
+            CLOSED_REQUEST
+        } else {
+            ""
+        };
         // A client-error denial names its Cloud reason, so a refused grant says which check refused it.
         match cloud_api_error_message(&body).filter(|_| (400..500).contains(&status)) {
-            Some(reason) => {
-                format!("cloud relay request failed with {status}: cloud_api_code={code}: {reason}")
+            Some(reason) => format!(
+                "cloud relay request failed with {status}{closed}: cloud_api_code={code}: {reason}"
+            ),
+            None => {
+                format!("cloud relay request failed with {status}{closed}: cloud_api_code={code}")
             }
-            None => format!("cloud relay request failed with {status}: cloud_api_code={code}"),
         }
     } else {
         format!("cloud relay request failed with {status}")
@@ -296,6 +304,14 @@ fn cloud_api_error_code(body: &str) -> Option<String> {
                 .and_then(|code| code.as_str())
                 .map(str::to_string)
         })
+}
+
+/// Marks an error whose request Cloud closed: `details.request_id` is `"closed"`.
+const CLOSED_REQUEST: &str = " for a closed request";
+
+fn cloud_api_request_closed(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .is_ok_and(|payload| payload["error"]["details"]["request_id"].as_str() == Some("closed"))
 }
 
 /// Cloud's public error text, printable ASCII only and bounded.
@@ -321,6 +337,57 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     Some(code.split(':').next().unwrap_or(code))
 }
 
+/// The reason Cloud gave with its code, as `cloud_status_error` keeps it for a client error.
+pub(crate) fn cloud_error_reason(error: &DaemonError) -> Option<&str> {
+    let message = match error {
+        DaemonError::LocalTransport { message, .. } => message,
+        _ => return None,
+    };
+    let (_, reason) = message.split_once("cloud_api_code=")?.1.split_once(": ")?;
+    Some(reason)
+}
+
+/// Whether Cloud closed the request this error answers.
+fn cloud_request_closed(error: &DaemonError) -> bool {
+    let DaemonError::LocalTransport { message, .. } = error else {
+        return false;
+    };
+    message
+        .split_once("cloud_api_code=")
+        .is_some_and(|(head, _)| head.ends_with(&format!("{CLOSED_REQUEST}: ")))
+}
+
+/// What a failed acquire says about the allocation under its request id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcquireFailure {
+    /// Cloud refused the request and closed it under the account lock its allocations take: it
+    /// holds no allocation under the id and refuses every later try of it, so another request_id
+    /// cannot leave two machines.
+    Closed { out_of_stock: bool },
+    /// Cloud judged this try before it held anything under the id, but did not close it: another
+    /// try of the id may still be in flight and commit afterwards, so the refusal says nothing
+    /// about the request.
+    Refused { out_of_stock: bool },
+    /// The allocation may exist: the response was lost or timed out, Cloud failed after it may
+    /// have committed, or the error does not say that nothing is held under the id.
+    Ambiguous,
+}
+
+pub(crate) fn acquire_failure(error: &DaemonError) -> AcquireFailure {
+    if cloud_request_closed(error) {
+        return AcquireFailure::Closed {
+            out_of_stock: cloud_error_code(error) == Some("capacity_exceeded"),
+        };
+    }
+    match cloud_error_code(error) {
+        Some("capacity_exceeded") => AcquireFailure::Refused { out_of_stock: true },
+        Some("budget_exceeded" | "invalid_request") => AcquireFailure::Refused {
+            out_of_stock: false,
+        },
+        _ => AcquireFailure::Ambiguous,
+    }
+}
+
 pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
     if let Some(code) = cloud_error_code(error) {
         match code {
@@ -329,6 +396,7 @@ pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
             }
             "account_deleted"
             | "authorization_denied"
+            | "budget_exceeded"
             | "identity_conflict"
             | "identity_revoked"
             | "invalid_request"
@@ -474,6 +542,7 @@ mod tests {
                 .to_string(),
         };
         assert_eq!(cloud_error_code(&error), Some("identity_conflict"));
+        assert_eq!(cloud_error_reason(&error), Some("body"));
         assert_eq!(
             cloud_error_code(&DaemonError::LocalTransport {
                 operation: "cloud relay request",
@@ -481,6 +550,98 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn only_a_refusal_before_commit_is_a_refused_acquire() {
+        let failure = |message: &str| {
+            acquire_failure(&DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                message: message.to_string(),
+            })
+        };
+        let coded = |status: u16, code: &str| {
+            failure(&format!(
+                "cloud relay request failed with {status}: cloud_api_code={code}: body"
+            ))
+        };
+        assert_eq!(
+            coded(429, "capacity_exceeded"),
+            AcquireFailure::Refused { out_of_stock: true }
+        );
+        for (status, code) in [(429, "budget_exceeded"), (400, "invalid_request")] {
+            assert_eq!(
+                coded(status, code),
+                AcquireFailure::Refused {
+                    out_of_stock: false
+                },
+                "{code}"
+            );
+        }
+        for (status, code) in [
+            (500, "internal_error"),
+            (503, "dependency_unavailable"),
+            (429, "rate_limited"),
+            (503, "admission_denied"),
+            (403, "authorization_denied"),
+            (409, "identity_conflict"),
+            (402, "subscription_required"),
+        ] {
+            assert_eq!(coded(status, code), AcquireFailure::Ambiguous, "{code}");
+        }
+        for message in [
+            "cloud relay request failed with 502",
+            "cloud relay request failed with 400",
+            "operation timed out",
+            "connection closed before message completed",
+        ] {
+            assert_eq!(failure(message), AcquireFailure::Ambiguous, "{message}");
+        }
+        assert_eq!(
+            acquire_failure(&DaemonError::MachineRequest {
+                code: "invalid_request".into(),
+                message: "local".into(),
+            }),
+            AcquireFailure::Ambiguous
+        );
+    }
+
+    #[test]
+    fn only_cloud_s_closed_detail_closes_an_acquire_request() {
+        let refused = |details: serde_json::Value, message: &str| {
+            acquire_failure(&cloud_status_error(
+                429,
+                serde_json::json!({"error":{"code":"capacity_exceeded","message":message,"details":details}})
+                    .to_string(),
+            ))
+        };
+        assert_eq!(
+            refused(serde_json::json!({"request_id":"closed"}), "sold out"),
+            AcquireFailure::Closed { out_of_stock: true }
+        );
+        assert_eq!(
+            acquire_failure(&cloud_status_error(
+                400,
+                r#"{"error":{"code":"invalid_request","details":{"request_id":"closed"}}}"#.into()
+            )),
+            AcquireFailure::Closed {
+                out_of_stock: false
+            }
+        );
+        // Neither another detail nor Cloud's free-text reason closes the request.
+        for (details, message) in [
+            (serde_json::json!({"request_id":"open"}), "sold out"),
+            (
+                serde_json::json!({}),
+                "x for a closed request: cloud_api_code=capacity_exceeded: y",
+            ),
+        ] {
+            assert_eq!(
+                refused(details, message),
+                AcquireFailure::Refused { out_of_stock: true },
+                "{message}"
+            );
+        }
     }
 
     #[test]

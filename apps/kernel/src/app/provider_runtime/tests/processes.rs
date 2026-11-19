@@ -194,6 +194,60 @@ fn provider_process_gc_reaps_idle_managed_run() {
 }
 
 #[test]
+fn provider_process_gc_keeps_a_run_whose_prompt_started_after_its_idle_check() {
+    // The sweep decides from an earlier look; a prompt given to the run since
+    // then must keep it (m3h: a Room's first run ended at its start).
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-gc-late-prompt");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session create should succeed");
+    let run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed");
+    let idle = app
+        .list_provider_processes(None)
+        .expect("provider processes should list");
+    assert_eq!(idle.len(), 1);
+    assert!(idle[0].teardown_safe);
+
+    let prompt = PromptQueueItem::new(
+        "late-prompt",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("late-run"),
+        agent.id(),
+        "first prompt",
+        PromptStatus::Queued,
+    );
+    let PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should be admitted")
+    else {
+        panic!("prompt should start");
+    };
+    crate::app::provider_processes::ProviderProcessTracker::new(&mut app)
+        .reap_tracked_process(&idle[0])
+        .expect("reap should succeed");
+
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("run should still exist")
+            .state(),
+        ProviderRunState::Running,
+    );
+}
+
+#[test]
 fn provider_process_gc_keeps_attached_managed_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

@@ -37,6 +37,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn authorize_owner_card(
         &self,
+        rooms: &crate::session::SessionService,
         source: &RuntimeSession,
         caller: &AgentInstance,
         target: &RuntimeSession,
@@ -48,17 +49,22 @@ impl KernelRuntimeOwnedState {
         match super::decision_holder::user_only(pending, interaction) {
             None | Some(UserOnly::AccessGrant | UserOnly::KernelOperation)
                 if pending.passkey_prompt.is_none()
-                    && !interaction.choices().iter().any(crate::session::RuntimeInteractionChoice::requires_passkey) => {}
-            _ => return Err(denied("this card is owner-only; secrets, passkeys, payments and owner verification must be answered by the person")),
+                    && !interaction
+                        .choices()
+                        .iter()
+                        .any(crate::session::RuntimeInteractionChoice::requires_passkey) => {}
+            _ => {
+                return Err(denied(
+                    "this card is owner-only; secrets, passkeys, payments and owner verification must be answered by the person",
+                ));
+            }
         }
-        let agents = self.agent_store.get_session_agents(source.id());
-        if !self.ancestor_can_hold(source, caller, &agents) {
+        if !self.ancestor_can_hold(rooms, caller) {
             return Err(denied(
                 "your current authority requires the owner's answer to this card",
             ));
         }
-        let mine =
-            crate::session::effective_agent_execution_config_in_tree(source, caller, &agents);
+        let mine = self.decision_execution_config(rooms, source, caller);
         if let Some(subject) = interaction
             .agent_id()
             .or_else(|| interaction.related_agent_id())
@@ -68,8 +74,7 @@ impl KernelRuntimeOwnedState {
                 .iter()
                 .find(|agent| agent.id() == subject)
                 .ok_or_else(|| denied("the asking agent is unavailable"))?;
-            let theirs =
-                crate::session::effective_agent_execution_config_in_tree(target, subject, &agents);
+            let theirs = self.decision_execution_config(rooms, target, subject);
             if !mine.permission_level.permits(theirs.permission_level)
                 || !mine.mode.permits(theirs.mode)
             {
@@ -94,10 +99,11 @@ impl KernelRuntimeState {
         let target = self.owned.session_snapshot(room)?;
         self.owned.authorize_owner_room(&source, &caller, &target)?;
         if cards {
+            let rooms = self.owned.session_store.read();
             let pending = self.owned.pending_interactions.write();
             let cards = target.active_interactions().iter().filter_map(|interaction| {
                 let p = pending.get(interaction.id()).filter(|p| p.session_id == target.id())?;
-                let refusal = self.owned.authorize_owner_card(&source, &caller, &target, p, interaction).err();
+                let refusal = self.owned.authorize_owner_card(&rooms, &source, &caller, &target, p, interaction).err();
                 Some(serde_json::json!({
                     "id": interaction.id(),
                     "agent_id": interaction.agent_id().or_else(|| interaction.related_agent_id()),

@@ -9,6 +9,9 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
+import { HostChromium } from "./kernel-browser-process.mjs";
+import { hostFailureMessage } from "./kernel-browser-error-label.mjs";
+import { encodePng } from "./kernel-browser-pixels.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-11: explicit disposable drill root required");
 
@@ -22,7 +25,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
-async function mirrored(html, run, routes = {}, initialOptions = {}) {
+async function mirrored(html, run, routes = {}, initialOptions = {}, environment = process.env) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
@@ -31,7 +34,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const apps = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "apps-")); // a managed-policy browser requires a WASM App storage root outside its temporary directory
-  const host = new KernelBrowserHost(root, { appStorageRoot: apps });
+  const host = new KernelBrowserHost(root, { appStorageRoot: apps, chromium: new HostChromium(root, { appStorageRoot: apps, environment }) });
   try {
     const opened = await host.request({ op: "open", url: `http://127.0.0.1:${server.address().port}/` });
     const evaluate = async expression => {
@@ -90,8 +93,10 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   const linkId = first.ops.find(op => op.op === "children").children[0];
   await evaluate("render(['Ada Lovelace','Adam Smith'])");
   const second = await next(600);
-  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["text"], JSON.stringify(second.ops));
-  assert.deepEqual(second.ops.map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["attr", "text"], JSON.stringify(second.ops));
+  assert.deepEqual(second.ops.filter(op => op.op === "text").map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  // The links' new href values (what an href selector reads), never their URLs as an href.
+  assert.deepEqual(second.ops.filter(op => op.op === "attr").map(op => [op.name, op.value]).sort(), [["chariox-href", "/wiki/Ada Lovelace"], ["chariox-href", "/wiki/Adam Smith"]]);
   assert(JSON.stringify(second).length < 1500, "MP-10: one keystroke-sized delta");
   // One more item: only that item's records travel.
   await evaluate("render(['Ada','Adams','Adobe'])");
@@ -199,6 +204,42 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
+
+// A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
+// mirror world can carry the old one's number. A call the old document's credit made late (its long poll, issued as the
+// page moved) must not reach the new document's observer, or it takes a change (here the main sheet loading) that no
+// packet ever carries and the viewer keeps that sheet empty.
+test("MP-10: a late call for the previous document's world does not consume the next document's changes", () => mirrored(
+  "<p>start</p>", async ({ next, evaluate, host, subscription_id, tab_id, generation }) => {
+    // A third site (127.0.0.2) puts the second document in a fresh renderer too, as the first one is; its sheet loads
+    // only after the snapshot.
+    const third = createServer((request, response) => {
+      if (request.url === "/late.css") { response.setHeader("Content-Type", "text/css"); setTimeout(() => response.end("#t { color: rgb(1, 2, 3); }"), 4000); return; }
+      response.setHeader("Content-Type", "text/html"); response.end('<!doctype html><link rel="stylesheet" href="/late.css"><p id="t">second</p>');
+    });
+    await new Promise(resolve => third.listen(0, "127.0.0.2", resolve));
+    try {
+      const port = new URL(await evaluate("location.href")).port;
+      const reach = async (url, text) => {
+        host.request({ op: "navigate", tab_id, generation, url }).catch(() => {});
+        let packet;
+        for (let i = 0; i < 40 && !JSON.stringify(packet?.nodes ?? []).includes(text); i++) packet = await next(250);
+        assert(packet.reset && JSON.stringify(packet.nodes).includes(text), `the ${text} document is snapshotted`);
+      };
+      await next();
+      await reach(`http://localhost:${port}/first`, "first");
+      const stream = host.mirror.streams.get(subscription_id), previous = stream.world;
+      await reach(`http://127.0.0.2:${third.address().port}/second`, "second");
+      assert.equal(stream.world.contextId, previous.contextId, "fixture: the new renderer reuses the mirror world's context id");
+      assert.notEqual(stream.world.uniqueContextId ?? null, previous.uniqueContextId ?? null, "each document's mirror world has its own unique context id");
+      for (let i = 0; i < 200 && await evaluate("document.styleSheets[0]?.cssRules?.length ?? 0").catch(() => 0) === 0; i++) await settle(25);
+      const late = await host.mirror.v2.evaluate(previous, `${previous.ref}.drain()`, false, 5000, true).then(() => "drained", error => error);
+      let css = "";
+      for (let i = 0; i < 12 && !css.includes("rgb(1, 2, 3)"); i++) css += JSON.stringify((await next(250)).ops.filter(op => op.op === "css"));
+      assert.match(css, /rgb\(1, 2, 3\)/, "the second document's main sheet reaches the viewer once it loads");
+      assert(late instanceof Error, "the previous document's world is gone: its late call fails");
+    } finally { third.closeAllConnections(); await new Promise(resolve => third.close(resolve)); }
+  }, { "/first": { type: "text/html", body: "<!doctype html><p>first</p>" } }));
 
 // Protocol 981: the viewer lays a frame document out in the document mode of its source (an image grid in a
 // quirks-mode frame would otherwise stretch its rows). No-quirks is the default; only the other two are named.
@@ -361,6 +402,54 @@ test("MP-10: opaque-region stills never ride on a DOM-change packet and an uncha
   let changed = []; for (let i = 0; i < 4 && !changed.length; i++) changed = (await next(600)).tiles;
   assert.equal(changed.length, 1, "MP-10: a changed still reaches the viewer");
 }));
+
+// browserfidelity r3 (vimeo): a headless browser (the kernel's on macOS and in headless Linux) keeps the still of a video
+// over most of the viewport, and its lossless pixels made the reply larger than one relay reply (MAX_REPLY_BYTES,
+// daemon_requests.rs): the relay refused that credit on every retry and the viewer stayed on an old frame. Noise pixels
+// do not compress, the worst still a page can show. A cross-origin image taints the canvas: its still is a screenshot.
+const noise = tainted => `<style>body{margin:0}canvas{display:block;width:100vw;height:100vh}</style><canvas id="c"></canvas><script>const c=document.querySelector("#c");c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0);${tainted ? 'const i=new Image();i.onload=()=>g.drawImage(i,0,0);i.src="http://localhost:PORT/dot.png"' : ''}</script>`;
+const dot = { type: "image/png", binary: Buffer.from(encodePng(1, 1, Buffer.from([0, 0, 0, 255])), "base64") };
+for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) test(`MP-10: every mirror packet fits one relay reply and the still of a full-viewport ${tainted ? "tainted " : ""}canvas still arrives (DPR${device_scale_factor})`, () => mirrored(noise(tainted), async ({ host, subscribe, evaluate }) => {
+  if (tainted) for (let i = 0; i < 200 && await evaluate('(()=>{try{document.querySelector("#c").getContext("2d").getImageData(0,0,1,1);return false}catch{return true}})()') !== true; i++) await settle(25);
+  const { subscription_id, generation } = await subscribe({ device_scale_factor });
+  let applied = 0, tiles = 0;
+  for (let i = 0; i < 6 && !tiles; i++) {
+    const packet = await host.request({ op: "mirror_next", subscription_id, generation, after_sequence: applied, drift_nodes: [], wait_ms: 1100 }); applied = packet.sequence;
+    assert(Buffer.byteLength(JSON.stringify(packet)) < 1024 * 1024, `MP-10: packet ${packet.sequence} fits one relay reply`);
+    tiles += packet.tiles?.length ?? 0;
+  }
+  assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
+}, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
+// position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
+// on it reaches the content.
+const banner = '<style>body{margin:0;height:3000px}</style><p>page</p><div style="height:2000px"></div><div id="h" style="position:fixed;z-index:9"></div><script>document.querySelector("#h").attachShadow({mode:"closed"}).innerHTML=\'<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)"><b onclick="window.top.clicked=1" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b></div>\'</script>';
+for (const device_scale_factor of [1, 2]) test(`MP-10: the still of a closed root with no box of its own covers its fixed content (DPR${device_scale_factor})`, () => mirrored(banner, async ({ subscribe, evaluate }) => {
+  const { next, input } = await subscribe({ device_scale_factor });
+  const at = await evaluate('(()=>{const r=document.querySelector("#h").getBoundingClientRect();return [r.x,r.y,r.width,r.height]})()');
+  assert.deepEqual(at.slice(2), [0, 0], "fixture: the host has no box of its own");
+  // The closed host is the page's only opaque region.
+  let closed = null, still = null, packet;
+  for (let i = 0; i < 8 && !still; i++) {
+    packet = await next(1100);
+    closed ??= [...packet.nodes ?? [], ...packet.ops.flatMap(op => op.op === "children" ? op.nodes : [])].find(n => n[4]?.reason === "closed_shadow");
+    still = packet.tiles[0] ?? null;
+  }
+  assert(closed, "the closed host is an opaque region");
+  assert(still, "the closed content's still reaches the viewer");
+  // The host sits at the document's end, which the viewer's document need not match: both sides anchor it at the viewport origin.
+  assert(at[1] >= 2000, `fixture: the host sits far below the viewport (${at[1]})`);
+  assert.match(closed[3]?.style ?? "", /position:fixed!important;inset:0 auto auto 0!important$/, "the viewer's host is anchored at the viewport origin");
+  assert.deepEqual([still.x, still.y, still.width, still.height], [100, 200, 300, 120], "the still covers the fixed content, at its viewport place");
+  const pixels = decodePng(still.data_base64, 2), pixel = (x, y) => [...pixels.pixels.subarray((y * pixels.width + x) * 4, (y * pixels.width + x) * 4 + 3)];
+  assert.equal(pixels.width / 300, pixels.height / 120, "the still keeps the content's shape at the browser's own density");
+  assert.deepEqual(pixel(pixels.width - 2, pixels.height - 2), [255, 0, 0], "banner pixels");
+  assert.deepEqual(pixel(2, 2), [0, 0, 255], "banner content pixels");
+  await input(packet.sequence, { kind: "click", node_id: still.node_id, x: still.x + 10, y: still.y + 10 });
+  for (let i = 0; i < 40 && await evaluate("window.clicked === 1") !== true; i++) await settle(25);
+  assert.equal(await evaluate("window.clicked === 1"), true, "a click on the still reaches the closed content");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
 test("MP-08/MP-10/MP-11: user keys follow a page-created editor before its mirror packet arrives", () => mirrored(
   '<input id="a"><p id="x">page</p>', async ({ next, evaluate, input }) => {
@@ -942,6 +1031,30 @@ test("MP-10: protocol 492 popover/modal/indeterminate/definition state and the f
   assert.deepEqual(Object.fromEntries(closed), { [of(r => r.attrs.id === "p")]: { popover_open: false }, [of(r => r.attrs.id === "d")]: { modal: false } });
 }));
 
+// news-arstechnica (browserfidelity r8): a link travels with href "#", so a selector on the href's value (the consent banner's
+// `a[href*="cookie" i]`, MDN's `:not([href^="#"])`) matched no link or every link in the viewer, and the banner's Cookie
+// Policy link left its place. The page's href value travels inert and those selectors read it.
+const hrefValues = '<style>a{color:rgb(0, 0, 0)} a[href*="cookie" i]{color:rgb(1, 2, 3)} a:not([href^="#"]) b{color:rgb(4, 5, 6)} a[href^="#"] b{color:rgb(7, 8, 9)} a[href$=".pdf"]{color:rgb(10, 11, 12)} a[href]:not([href=""]) i{color:rgb(13, 14, 15)}</style><a id="c" href="/Cookie-Policy">c</a><a id="t" href="#top"><b id="tb">t</b></a><a id="p" href="/a.pdf"><b id="pb">p</b></a><a id="n" href="/plain"><i id="ni">n</i></a><p id="x" chariox-href="/cookie">x</p>';
+// The viewer's document rebuilt from a snapshot's records (elements, text, style sheets), read by element id.
+const rebuiltColors = (evaluate, nodes, ids) => evaluate(`new Promise(resolve=>{const rows=${JSON.stringify(nodes)},f=document.createElement("iframe");f.srcdoc="<!doctype html>";f.onload=()=>{const d=f.contentDocument,made=new Map(),ids=[];let id=0;
+  rows.forEach((row,i)=>{id+=row[0];const key="n"+id;ids.push(key);const parent=row[1]?made.get(ids[i-row[1]]):null,into=parent??d.body;
+   if(row[2]===0){into.append(row[3]);return}if(typeof row[2]!=="string")return;
+   const e=row[2]==="html"?d.documentElement:row[2]==="head"?d.head:row[2]==="body"?d.body:d.createElement(row[2]);
+   for(const [name,value] of Object.entries(row[3]||{}))e.setAttribute(name,value);if(row[2]==="style")e.textContent=row[4]?.css??"";if(!e.isConnected)into.append(e);made.set(key,e)});
+  resolve(${JSON.stringify(ids)}.map(id=>getComputedStyle(d.getElementById(id)).color));f.remove()};document.body.append(f)})`);
+test("MP-10: a selector on a link's href value matches in the viewer as on the page (the href travels inert)", () => mirrored(hrefValues, async ({ next, evaluate }) => {
+  const ids = ["c", "t", "tb", "p", "pb", "n", "ni", "x"], snapshot = await next();
+  const source = await evaluate(`${JSON.stringify(ids)}.map(id=>getComputedStyle(document.getElementById(id)).color)`);
+  assert.deepEqual(await rebuiltColors(evaluate, snapshot.nodes, ids), source, "MP-10: every href value selector matches the same links");
+  const links = rows(snapshot.nodes).filter(row => row.tag === "a");
+  assert(links.every(row => row.attrs.href === "#"), "MP-10: a link still never navigates");
+  assert.equal(rows(snapshot.nodes).find(row => row.attrs.id === "x").attrs["chariox-href"], undefined, "MP-10: a page's own chariox-href never travels");
+  await evaluate("document.getElementById('n').setAttribute('href','/cookies');true");
+  const id = links.find(row => row.attrs.id === "n").id;
+  let op; for (let i = 0; i < 4 && !op; i++) op = (await next(2000)).ops.find(op => op.op === "attr" && op.id === id && op.name === "chariox-href");
+  assert.equal(op?.value, "/cookies", "MP-10: a changed href value reaches the viewer");
+}));
+
 // Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
 const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
 test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
@@ -1127,8 +1240,10 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     // To a fragment, then removed: the key goes, the fragment travels as an attribute.
     await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
     const later = (await next(1000)).ops;
-    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]]);
-    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", null]]);
+    // An attribute op by its name: the href, then the value an href selector reads (see sanitizeMirrorCss).
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null], ["chariox-href", null]]);
   }, {
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
@@ -1602,10 +1717,11 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     for (const banned of ["script", "onclick", "evil.test", "<image", "<a ", "javascript", "foreignObject", "animate", "<p>"]) assert(!text.includes(banned), `MP-10: ${banned} never travels`);
     await evaluate("u.setAttribute('href','/sprite.svg#other');true");
     let ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["attr", "#other"]], "MP-10: the same file, another symbol");
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(ops.map(named), [["href", "#other"], ["chariox-href", "/sprite.svg#other"]], "MP-10: the same file, another symbol");
     await evaluate("u.setAttribute('href','#sym');true");
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
+    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region
@@ -1778,6 +1894,29 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
+// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
+// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
+test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    assert(region_id, "MP-10: the canvas is an opaque region");
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
+    assert(refused, "MP-08: no region display without a display");
+    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
+// size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
+test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(
+  "<p>page</p>",
+  async ({ host, next, generation, tab_id }) => {
+    await next();
+    const refused = await host.request({ op: "display_subscribe", tab_id, generation, tab_display: true, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
+    assert(refused, "MP-08: no Tab display without a display");
+    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(
   '<style>body{margin:0}iframe{width:100px;height:80px;border:0}</style><iframe src="http://localhost:PORT/child"></iframe>',
   async({host,next,subscription_id,generation})=>{
@@ -2043,6 +2182,17 @@ test("GATE-bytes: a first paint sends only the used rules of large sheets; their
     assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
   }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
 
+// Review #1475 (P2): the kernel prunes a large cross-origin sheet after the sanitizer rewrote it. A rule on a link's href
+// value (now `chariox-href`) or on `:target` (now `[chariox-target]`) is checked as the page wrote it, and stays.
+test("GATE-bytes: a first paint keeps a large cross-origin sheet's rules on href values and :target", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/h.css"><p class="used">text</p><a href="/a.pdf">pdf</a><p id="t">t</p>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const first = JSON.stringify(await next(0, true));
+    assert(first.includes("rgb(1, 2, 3)") && !first.includes("h-unused-1999"), "the sheet is pruned for the first paint");
+    assert(first.includes("rgb(20, 21, 22)"), "the rule on the link's href value stays");
+    assert(first.includes("rgb(23, 24, 25)"), "the :target rule stays");
+  }, { "/h.css": { type: "text/css", body: 'a[href$=".pdf"]{color:rgb(20, 21, 22)}p:target{color:rgb(23, 24, 25)}' + bulkCss("h") } }));
+
 // browserperf r6 (CPU): pruning a large sheet checks a selector against the few elements its rightmost compound names,
 // not with a whole-document query per selector (most of the in-page sheet cost of every navigation's first paint).
 const narrowCss = "p.used{color:rgb(1, 2, 3)}" + Array.from({ length: 1500 }, (_, i) => `.absent-${i % 7} .c${i % 300}{padding:${i}px}`).join("");
@@ -2238,8 +2388,10 @@ test("protocol 560/168: a layout released while its override is still in flight 
     for (let i = 0; i < 5; i++) {
       const [narrow, wide] = await Promise.all([subscribe({ layout_width: 400, layout_height: 700 }), subscribe({ layout_width: 1440, layout_height: 900 })]);
       await new Promise(resolve => setTimeout(resolve, 150));
-      const owner = host.layouts.size ? "narrow" : "canonical", width = await evaluate("innerWidth");
-      assert.equal(width, owner === "narrow" ? 400 : 1280, `round ${i}: the page width follows the layout owner (${owner})`);
+      // The wide viewer's layout is the canonical page clamped to 1280, so whichever request lands last owns a layout.
+      const owner = host.pageSize([...host.tabs.keys()][0]).width, width = await evaluate("innerWidth");
+      assert(owner === 400 || owner === 1280, `round ${i}: one of the two viewers owns the layout (${owner})`);
+      assert.equal(width, owner, `round ${i}: the page width follows the layout owner (${owner})`);
       for (const s of [narrow, wide]) await host.request({ op: "mirror_close", subscription_id: s.subscription_id, generation: (await host.request({ op: "state" })).generation });
       assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
     }

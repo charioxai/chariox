@@ -85,6 +85,8 @@ async fn leased_account_authority_preserves_prompt_admission_and_queue() {
             "",
             crate::session::PromptOrigin::Chariox,
             vec![],
+            Default::default(),
+            None,
         );
     let _ = admitted.expect("leased prompt admission must keep the account");
     let agent = runtime

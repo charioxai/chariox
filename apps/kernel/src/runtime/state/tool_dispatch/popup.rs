@@ -83,7 +83,7 @@ impl KernelRuntimeState {
             let current = self
                 .owned
                 .provider_store
-                .get_run_for_agent(
+                .get_tool_run_for_agent(
                     provider_run.session_id(),
                     provider_run
                         .agent_instance_id()

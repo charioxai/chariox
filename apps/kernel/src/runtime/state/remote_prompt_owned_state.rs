@@ -86,7 +86,12 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
         if settled.is_some() {
             activity_mutation.record();
-            if delivered_run_id.is_some() {
+            if let Some(worker_run_id) = delivered_run_id {
+                self.settled_worker_runs.record(
+                    &dispatch.agent_id,
+                    &dispatch.leased_agent_id,
+                    worker_run_id,
+                );
                 // Receipt reconciliation reaches this same durable acknowledgement path.
                 self.clear_accepted_remote_lease_context(dispatch);
             }
@@ -733,7 +738,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    pub(super) async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -805,7 +810,7 @@ mod tests {
         )
     }
 
-    async fn mp11_fixture(
+    pub(super) async fn mp11_fixture(
         config: crate::DaemonConfig,
     ) -> (
         KernelRuntimeState,
@@ -848,6 +853,63 @@ mod tests {
             agent.id().into(),
             attachment.id().into(),
             binding,
+        )
+    }
+
+    /// A session whose agent runs on this kernel, with no lease, and its running
+    /// structured Claude provider run.
+    pub(super) async fn local_claude_fixture(
+        config: crate::DaemonConfig,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        crate::provider::RuntimeProviderRun,
+    ) {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("local-home", "local-home"))
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "local-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "local-claude-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude:stream-json".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        (
+            runtime,
+            session.id().into(),
+            agent.id().into(),
+            attachment.id().into(),
+            run,
         )
     }
 
@@ -1228,10 +1290,15 @@ mod tests {
                     })
                 } else {
                     admitted
-                        .with_project_prompt_environment(&session, &agent, |_| {
-                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                            Ok(())
-                        })
+                        .with_project_prompt_environment(
+                            &session,
+                            &agent,
+                            super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                            |_| {
+                                operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                                Ok(())
+                            },
+                        )
                         .await
                 }
             }
@@ -1326,17 +1393,22 @@ mod tests {
             let launches = launches.clone();
             async move {
                 runtime
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
-                            Ok(())
-                        } else {
-                            Err(DaemonError::LocalTransport {
-                                operation: "credential_vault_locked",
-                                message: "Chariox vault is locked".into(),
-                            })
-                        }
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
+                                Ok(())
+                            } else {
+                                Err(DaemonError::LocalTransport {
+                                    operation: "credential_vault_locked",
+                                    message: "Chariox vault is locked".into(),
+                                })
+                            }
+                        },
+                    )
                     .await
             }
         });
@@ -1922,39 +1994,6 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
-    // The popup lives 60 s: an owner who never answers ends the waiting check Blocked with the
-    // reason and Resume, not with a timeout that has nothing to do with the check.
-    #[tokio::test]
-    async fn timed_out_vault_popup_blocks_the_waiting_completion_check_with_its_reason() {
-        use crate::durable_state::agent_lifecycle::ExecutionState;
-        let (runtime, session, _agent, vault, unlock, _check) =
-            vault_wait_fixture("vault-timeout").await;
-        let card = vault_popup(&runtime, &session).await;
-        runtime
-            .timeout_runtime_interaction(&session, &card)
-            .await
-            .unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
-        let task = runtime
-            .owned
-            .durable_state_store
-            .agent_tasks(None, None)
-            .unwrap()
-            .remove(0);
-        assert_eq!(task.state, ExecutionState::Blocked);
-        assert_eq!(
-            task.reason,
-            "The Vault unlock timed out; unlock the Vault and Resume"
-        );
-        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
-    }
-
     #[tokio::test]
     async fn mp11_completion_receipt_cannot_settle_successor_or_rebound_prompt() {
         let (runtime, session, agent, attachment, binding) =
@@ -2372,10 +2411,15 @@ mod tests {
             let session = session.clone();
             async move {
                 admitted
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                        Ok(())
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
                     .await
             }
         });
@@ -2903,3 +2947,19 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_delivery_tests.rs"]
+mod skill_delivery_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/typed_claude_tests.rs"]
+mod typed_claude_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/composer_review_tests.rs"]
+mod composer_review_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_repository_tool_tests.rs"]
+mod skill_repository_tool_tests;

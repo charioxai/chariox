@@ -54,8 +54,8 @@ The provider sandbox and live-sync filesystem fences still apply. A worker
 checks its exact leased prompt against the home window on every watched-command
 admission and again before launch; its cached fence alone grants nothing.
 Provider permissions allow only that operation once, never a provider-wide
-session grant. Startup workspace trust can reuse an already approved launch
-for that exact workspace without treating the pending task as live tool authority.
+session grant. Startup workspace trust is never reused: the kernel trusts the
+agent's own workspace before Claude starts, and any other folder asks the owner.
 Global extension registration reuses consent only for source inside this
 workspace; outside source roots still ask, and App sandboxing stays in force.
 A live window covers every typed kernel request the owner has not reserved for
@@ -261,9 +261,9 @@ local grant or sudo MCP caller. Credential read and mutation replies redact
 literal injection values. Raw MCP/connector configuration, native login
 output/codes, pairing/Cloud admission credentials and enrollment callbacks
 are withheld; inspect those through the host terminal. An operation can complete
-while its reply is withheld; check host-terminal state before retrying. Executor failures use
-a value-free error because parser/provider diagnostics can echo secrets. Exact
-constant refusal, expiry and revocation diagnostics remain available.
+while its reply is withheld; check host-terminal state before retrying. An executor
+failure keeps its code, retry flag and the kernel's own words, so the caller and the owner
+can act on the reason; only secret-shaped text is cut out of the message.
 This preserves normal workspace/history authority and is not a file sandbox.
 
 ## MP-08 / MP-10 / MP-11: remembered proof across clients
@@ -335,8 +335,8 @@ real clients and official provider harness. Source regressions supplement it.
 - S13: OpenCode permission reuses consent; unfenced live-sync writes still deny.
 - S14: Claude print-mode permission_prompt reuses consent for the same task.
 - S15: Claude native hook and rendered permission selectors do the same.
-- S16: approved exact-workspace startup trust reuses consent; a pending,
-  unapproved sudo request or a newly selected workspace still asks.
+- S16: Claude startup workspace trust for a folder other than the agent's own
+  asks the owner, sudo window or not.
 - S17: Required-mode live-sync mutations reuse consent; identity, path and
   filesystem fences remain. Explicit denial and an ended task grant nothing.
 - S18: workspace-sourced extension registration reuses consent; another source

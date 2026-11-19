@@ -26,7 +26,10 @@ struct Rooms {
 }
 
 fn create_room(app: &mut DaemonApp, name: &str, owner: Option<&str>) -> String {
-    let mut request = CreateSessionRequest::new(name, std::env::temp_dir().to_string_lossy());
+    let directory = std::env::temp_dir();
+    let directory = directory.to_string_lossy();
+    let mut request =
+        CreateSessionRequest::new(directory.as_ref(), directory.as_ref()).with_alias(name);
     if let Some(owner) = owner {
         request = request.with_owner_user_id(owner);
     }

@@ -143,30 +143,46 @@ impl PendingInteraction {
         }
     }
 
-    /// Whether only the owner's terminal may answer `interaction`, for every choice
-    /// including refusal. The grant policy and the outside event both read this one
-    /// rule, so an event never offers a question the kernel then refuses.
-    pub(super) fn requires_terminal(
+    /// Why only the person may answer `interaction`, for every choice including refusal; None
+    /// when an external agent may answer it for them. The grant policy, the answer path and
+    /// the outside event all read this one rule, so an event never offers a question the
+    /// kernel then refuses.
+    pub(super) fn person_only(
         &self,
         interaction: &crate::session::RuntimeInteraction,
-    ) -> bool {
-        self.passkey_prompt.is_some()
-            || self.terminal_credential_owner.is_some()
-            || (self.kernel_operation_owner.is_some()
-                && !super::agent_task_owner_interactions::is_blocked_task_decision(
-                    interaction.id(),
-                ))
-            || self.user_domain_interaction.is_some()
+    ) -> Option<&'static str> {
+        use crate::session::{RuntimeInteractionChoice, RuntimeInteractionInputKind};
+        if self.terminal_credential_owner.is_some()
             || super::is_handoff_interaction_id(interaction.id())
-            || interaction.provider_login_is_human_only()
-            || interaction.level() == crate::session::RuntimeInteractionLevel::Critical
             || interaction
-                .choices()
-                .iter()
-                .any(crate::session::RuntimeInteractionChoice::requires_passkey)
-            || interaction.custom_choice().is_some_and(|custom| {
-                custom.input_kind() == crate::session::RuntimeInteractionInputKind::Secret
-            })
+                .custom_choice()
+                .is_some_and(|custom| custom.input_kind() == RuntimeInteractionInputKind::Secret)
+        {
+            Some("it asks for a secret")
+        } else if interaction
+            .choices()
+            .iter()
+            .any(|choice| choice.vault_unlock().is_some())
+        {
+            Some("it unlocks the Vault")
+        } else if super::vault_use::is_vault_payment_decision(interaction.id()) {
+            Some("it approves a payment")
+        } else if interaction
+            .choices()
+            .iter()
+            .any(RuntimeInteractionChoice::requires_passkey)
+            || self
+                .passkey_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.kind != crate::local::PasskeyPromptKind::AppInstall)
+        {
+            Some("it needs the passkey")
+        } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
+            // A critical decision is the risky, irreversible kind the passkey guards.
+            Some("it is a critical decision")
+        } else {
+            None
+        }
     }
 
     pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {

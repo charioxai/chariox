@@ -59,14 +59,23 @@ pub enum ManagedContextDevelopmentLaunchTarget {
         workspace_path: String,
     },
     FromSource {
-        #[serde(alias = "project_id")]
-        project_id: String,
-        #[serde(alias = "destination_root")]
-        destination_root: String,
-        #[serde(alias = "primary_repository_id")]
-        primary_repository_id: String,
-        repositories: Vec<ManagedContextRepositoryLaunchTarget>,
+        projects: Vec<ManagedContextProjectLaunchTarget>,
     },
+}
+
+/// One Project of a copy, in the order the Cloud plan lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextProjectLaunchTarget {
+    #[serde(alias = "project_id")]
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_origin: Option<crate::session::ProjectCopyOrigin>,
+    #[serde(alias = "destination_root")]
+    pub destination_root: String,
+    #[serde(alias = "primary_repository_id")]
+    pub primary_repository_id: String,
+    pub repositories: Vec<ManagedContextRepositoryLaunchTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -55,7 +55,7 @@ test("remote job with a cold rate explains that duration is unknown", () => {
 
 
 test("remote refusal with no allocated machine does not claim execution or deletion", () => {
-  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const, placement: "remote" as const, started_at_ms: 1000, machine_label: null, address: null, deleted: true, result: { exit_code: null, output_tail: "Daily budget reached", log: "job.log", files_back: [], conflicts: [], ran_on: { machine: "this machine", ip: null }, duration_ms: 0, outcome: "outside_end" as const } }
+  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const, placement: "remote" as const, started_at_ms: 1000, machine_label: null, address: null, deleted: true, result: { exit_code: null, reason: "Daily budget reached", files_back_count: 0, conflicts_count: 0, ran_on: { machine: "this machine", ip: null }, duration_ms: 0, outcome: "outside_end" as const } }
   const lines = remoteJobLinesForAgent([job], "a", 1000)
   assert.match(lines[0]!, /Remote request refused.*Daily budget reached/)
   assert.doesNotMatch(lines.join("\n"), /Ran on|Deleted|this machine/)
@@ -74,4 +74,15 @@ test("remote progress labels reflect upload, reconnect, return and deletion inst
     assert.doesNotMatch(lines.join("\n"), /Running on|Deleted/)
   }
   assert.match(remoteJobLinesForAgent([{ ...job, state: "running" }], "a", 1000)[0]!, /^Running on /)
+})
+
+
+test("retained job lists render accurate counts and readable damage from compact metadata", () => {
+  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const,
+    placement: "remote" as const, started_at_ms: 1, machine_label: "worker", deleted: true,
+    result: { exit_code: 0, reason: null, files_back_count: 2000, conflicts_count: 1000,
+      ran_on: { machine: "worker", ip: null }, duration_ms: 123000, outcome: "completed" as const } }
+  assert.match(remoteJobLinesForAgent([job], "a")[0]!, /2m 3s.*2000 files back.*1000 conflicts/)
+  assert.deepEqual(remoteJobLinesForAgent([{ ...job, placement: "local", read_error: "Job result is missing" }], "a"),
+    ["build · Job result is missing"])
 })

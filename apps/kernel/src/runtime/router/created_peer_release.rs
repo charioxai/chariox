@@ -76,9 +76,6 @@ impl CommandRouter {
 
     /// The delete itself; a peer that is already gone is a finished delete.
     async fn delete_created_peer(&self, link: &CreatedPeer) -> Result<(), DaemonError> {
-        if link.kernel.is_empty() {
-            return self.destroy_created_agent(&link.peer).await;
-        }
         self.runtime_state.delete_created_peer_on_kernel(link).await
     }
 

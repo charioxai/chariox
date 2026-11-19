@@ -224,8 +224,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   at most, `[data-chariox-confirmation]` root; no action runs), and the browser
   host, not the App or the agent, finds that one element and projects its pixels
   as the card's protected region. The card's frame (`app_confirmation`: App,
-  publisher, action) is written by the kernel from the verified release, never
-  by the App. The card is the person's alone: no agent holder or owner agent and no
+  publisher, action, and the exact `input` the kernel will run, as sorted pretty
+  JSON with secrets masked and a "N more bytes" note past 4096 bytes) is written
+  by the kernel from the verified release and the call, never by the App. The card is the person's alone: no agent holder or owner agent and no
   session approval or earlier answer stands in for it. A live `/sudo` task of the
   calling agent is the owner's consent to the work, so the kernel raises no card
   for it, as for a standing permission, and the action still checks the state it

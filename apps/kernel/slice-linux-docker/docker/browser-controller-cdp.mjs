@@ -529,6 +529,13 @@ export class BrowserCdpClient {
       connection.send("Runtime.enable", {}, sessionId),
       connection.send("Network.enable", responseBufferLimits, sessionId),
       connection.send("Inspector.enable", {}, sessionId),
+      // A page takes no room for scrollbars, in headless and headed Chrome and whatever scrollbar style it asks for: the
+      // viewer's mirror lays the page out without a gutter (browser-mirror2-scrollbar.ts in the web app), and a page sized
+      // to 100vw fits the window instead of scrolling sideways, as in the Chrome of a person on a Mac. The OverlayScrollbar
+      // launch feature does nothing in headless Chrome and leaves a page's own scrollbar skin its room. A slice's canonical
+      // display shows the Chrome window itself, so its pages keep the scrollbars a person there scrolls with; hidden
+      // scrollbars also keep a later session's native content measurement at the emulated size.
+      ...(this.applyCanonicalDisplay ? [] : [connection.send("Emulation.setScrollbarsHidden", { hidden: true }, sessionId)]),
       this.frameSessions.start(connection, sessionId),
     ]);
     const failed = results.find((result) => result.status === "rejected");

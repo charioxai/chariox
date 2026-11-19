@@ -40,8 +40,10 @@ mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
+mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
@@ -63,6 +65,7 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
+mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -97,8 +100,10 @@ pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -120,6 +125,7 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
+pub use watcher::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -566,5 +572,46 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
+/// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
+/// snoozed and muted by the kernel (`SetInboxCardState`, `SetInboxMute`), with a card for a failed or waiting run
+/// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
+/// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
+/// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`; a
+/// watcher is a notification source (docs/PROTOCOL.md, "A watcher as a notification source"); every agent has
+/// the kernel browser with no card (task `owner_action` is only `"question"`, grants carry no `prompt_id`); each
+/// Browser Tab names its icon by `favicon_hash`: a `state` read carries no icon PNG, and a `state_wait` carries
+/// one only when its `known_favicons` lacks the hash; `SendProviderLoginVaultEntry` →
+/// `ProviderLoginVaultEntrySent`: a running API-key provider login takes a Vault entry by handle and the kernel
+/// types its value into the login; an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions` lists the
+/// person's open cards with why the person keeps one (`person_only`); `OwnerVault` `update` changes an
+/// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
+/// managed context copy carries several source Projects (`source_projects`); an App confirmation card carries
+/// the exact input the kernel will run (`AppConfirmationFrame.input`); a queued agent message in a session
+/// carries a `preview` (its first 200 characters) and `truncated` instead of the whole `prompt`, and a session
+/// lists at most the next ten per agent; a provider catalog's model lists `aliases`, the other names the
+/// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
+/// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
+/// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
+/// agent's inbox while its prompt carries one line; the reply to `RespondToInteraction` is a small acknowledgement
+/// (`InteractionResponded` carries `interaction_id`, `choice_id` and `outcome`, no longer the Room `session`; clients
+/// read the Room from its events); `TrashKernelFiles` moves files and folders to the machine's own trash and
+/// `RestoreKernelTrash` puts them back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`;
+/// docs/PROTOCOL.md, "Move to Trash"); `KernelTerminal` and the `kernel_terminal` stream scope serve the kernel's own
+/// terminals, a terminal summary carries its `scope` (`session_id` only for a Room's) and the `kernel_terminal_v1`
+/// capability names them (docs/PROTOCOL.md, "Kernel terminals"); a job request may name a machine the agent
+/// already holds (`machine`), which runs it through that machine's own kernel; Skills v2: Chariox and Project
+/// skill catalogs, the Auto / Manual / Off states, packages, repository install and update, and delivery to every
+/// execution place; the per-agent skill grants and the `skill` extension kind are gone; an agent's active turn has
+/// the phase `thinking` while the model reasons without visible output (`awaiting_first_output` is the provider still
+/// reading the context).
+/// An event subscription's `like` copies the follows of an earlier live grant of the same owner.
+/// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
+/// Agent settings updates drop `self_settings` from the request and agent record.
+/// Copied Project launch targets carry their source kernel and Project for Environment import.
+/// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
+/// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

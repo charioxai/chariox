@@ -5,6 +5,7 @@ use super::*;
 fn test_session() -> crate::session::RuntimeSession {
     crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "/repo",
@@ -135,7 +136,7 @@ fn meta_extension_import_parser_supports_provider_sync() {
         "--provider".to_string(),
         "claude".to_string(),
         "--kind".to_string(),
-        "skill".to_string(),
+        "mcp".to_string(),
         "--name".to_string(),
         "docs-helper".to_string(),
         "--dry-run".to_string(),
@@ -149,7 +150,7 @@ fn meta_extension_import_parser_supports_provider_sync() {
     };
     assert_eq!(request.workspace_id.as_deref(), Some("workspace"));
     assert_eq!(request.providers, vec!["codex", "claude"]);
-    assert_eq!(request.kind.as_deref(), Some("skill"));
+    assert_eq!(request.kind.as_deref(), Some("mcp"));
     assert_eq!(request.name.as_deref(), Some("docs-helper"));
     assert!(request.dry_run);
 }

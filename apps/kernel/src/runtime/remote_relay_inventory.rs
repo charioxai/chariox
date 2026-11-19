@@ -130,6 +130,7 @@ pub(crate) async fn execute_remote_relay_inventory_request(
 pub(crate) async fn projected_relay_status(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    capabilities: Vec<String>,
 ) -> RelayStatus {
     let config = config_projection.snapshot();
     // A configuration switch does not move the existing socket to the new relay.
@@ -143,10 +144,7 @@ pub(crate) async fn projected_relay_status(
     RelayStatus {
         local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         runtime_process_identity: crate::runtime::kernel_process_identity::current(),
-        capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
+        capabilities,
         configured: config.relay_url.is_some() && config.relay_token.is_some(),
         connected,
         relay_url: config.relay_url,
@@ -216,7 +214,7 @@ mod tests {
         let state = Arc::new(RwLock::new(state));
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let pending = projected_relay_status(state.clone(), projection.clone()).await;
+        let pending = projected_relay_status(state.clone(), projection.clone(), Vec::new()).await;
         assert_eq!(pending.relay_url.as_deref(), Some(selected_url));
         assert!(pending.configured);
         assert!(
@@ -228,7 +226,11 @@ mod tests {
             .write()
             .await
             .test_set_connected_sender(outgoing, selected_url);
-        assert!(projected_relay_status(state, projection).await.connected);
+        assert!(
+            projected_relay_status(state, projection, Vec::new())
+                .await
+                .connected
+        );
     }
 
     #[tokio::test]
@@ -243,9 +245,11 @@ mod tests {
         let status = projected_relay_status(
             Arc::new(RwLock::new(RelayClientState::default())),
             DaemonConfigProjectionStore::new(config),
+            vec!["skills_v2_runtime".to_string()],
         )
         .await;
 
+        assert_eq!(status.capabilities, ["skills_v2_runtime"]);
         assert!(status.configured);
         assert!(!status.connected);
         assert_eq!(status.relay_url.as_deref(), Some("wss://relay.example"));

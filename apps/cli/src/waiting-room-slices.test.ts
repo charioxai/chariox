@@ -158,22 +158,18 @@ test("waiting room slices require the exact selected Project repository topology
       slice({
         id: "exact",
         development: {
-          kind: "source_project",
-          project_id: "project-1",
-          repositories: [
+          kind: "source_projects", projects: [{ project_id: "project-1", repositories: [
             { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
             { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-          ],
+          ] }],
         },
       }),
       slice({
         id: "stale",
         development: {
-          kind: "source_project",
-          project_id: "project-1",
-          repositories: [
+          kind: "source_projects", projects: [{ project_id: "project-1", repositories: [
             { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
-          ],
+          ] }],
         },
       }),
       slice({

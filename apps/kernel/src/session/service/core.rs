@@ -62,7 +62,7 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let project_id = if request.hidden
+        let selected_project = if request.hidden
             && !matches!(
                 &request.project_selection,
                 SessionProjectSelection::Existing { .. }
@@ -71,18 +71,21 @@ impl SessionService {
         } else {
             Some(self.resolve_project_selection(&request)?)
         };
+        let session_id = self.store.next_session_id();
+        let project_id = match selected_project {
+            Some(project_id) => ProjectId::new(project_id)
+                .map_err(|error| project_error("session.create", error.to_string()))?,
+            None => ProjectId::hidden_scope(&session_id),
+        };
         let mut session = RuntimeSession::new(
-            self.store.next_session_id(),
+            session_id,
+            project_id,
             alias,
             request.workspace_id,
             request.worktree_id,
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
-        if let Some(project_id) = project_id {
-            let assigned = session.assign_project_id(project_id);
-            debug_assert!(assigned);
-        }
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
@@ -234,10 +237,6 @@ impl SessionService {
         }
     }
 
-    pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
-        self.restore_session_with_default_project_name_hint(session, None)
-    }
-
     pub(crate) fn commit_publication_runtime_configuration(
         &mut self,
         session: RuntimeSession,
@@ -260,24 +259,12 @@ impl SessionService {
         Ok(self.store.insert(session))
     }
 
-    pub(crate) fn restore_session_with_default_project_name_hint(
-        &mut self,
-        mut session: RuntimeSession,
-        default_project_name_hint: Option<&str>,
-    ) -> RuntimeSession {
+    pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
         if let Some(held) = self.store.get(session.id()) {
             session.note_activity_at(held.last_activity_at_ms());
         }
         session.purge_unsupported_workflow_publications();
-        if !session.is_hidden() && session.project_id().is_empty() {
-            let project_id = self.ensure_default_project(
-                session.owner_user_id(),
-                session.workspace_id(),
-                default_project_name_hint,
-            );
-            let assigned = session.assign_project_id(project_id);
-            debug_assert!(assigned);
-        } else if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
+        if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
                 &default_project_name(session.workspace_id()),
@@ -384,7 +371,7 @@ impl SessionService {
             .store
             .list()
             .into_iter()
-            .filter(|session| !session.is_hidden() && !session.project_id().is_empty())
+            .filter(|session| !session.is_hidden())
             .fold(BTreeMap::<String, usize>::new(), |mut counts, session| {
                 *counts.entry(session.project_id().to_string()).or_default() += 1;
                 counts
@@ -521,6 +508,8 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        let target_project_id = ProjectId::new(target_project_id)
+            .map_err(|error| project_error("session.migrate", error.to_string()))?;
         session.migrate_default_project_scope(workspace_id, target_project_id, alias);
         Ok(Some(session.clone()))
     }
@@ -706,8 +695,13 @@ impl SessionService {
                         ),
                     ));
                 }
-                // A hidden lease uses the Project without registering its synthetic workspace.
-                if !request.hidden && !project.contains_workspace(&request.workspace_id) {
+                // A hidden lease uses the Project without registering its synthetic
+                // workspace. A folderless Project stays folderless: the session's
+                // working directory is a provider need, not a Project folder.
+                if !request.hidden
+                    && !project.workspace_ids().is_empty()
+                    && !project.contains_workspace(&request.workspace_id)
+                {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
                     let workspaces = normalize_project_workspace_ids(workspaces)?;
@@ -782,7 +776,7 @@ impl SessionService {
         id
     }
 
-    fn next_named_project_number(&self, owner_user_id: &str) -> u64 {
+    pub(super) fn next_named_project_number(&self, owner_user_id: &str) -> u64 {
         self.projects
             .values()
             .filter(|project| project.owner_user_id() == owner_user_id)
@@ -851,7 +845,7 @@ impl SessionService {
         }
     }
 
-    fn ensure_project_name_available(
+    pub(super) fn ensure_project_name_available(
         &self,
         owner_user_id: &str,
         name: &str,
@@ -873,7 +867,7 @@ impl SessionService {
         Ok(())
     }
 
-    fn next_named_project_id(
+    pub(super) fn next_named_project_id(
         &self,
         owner_user_id: &str,
         workspace_id: &str,
@@ -1831,10 +1825,10 @@ const MAX_PROJECT_WORKSPACES: usize = 32;
 const MAX_PROJECT_WORKSPACE_ID_BYTES: usize = 4 * 1024;
 
 fn normalize_project_workspace_ids(workspace_ids: Vec<String>) -> Result<Vec<String>, DaemonError> {
-    if workspace_ids.is_empty() || workspace_ids.len() > MAX_PROJECT_WORKSPACES {
+    if workspace_ids.len() > MAX_PROJECT_WORKSPACES {
         return Err(project_error(
             "project.workspaces.update",
-            format!("a project must contain between 1 and {MAX_PROJECT_WORKSPACES} Workspaces"),
+            format!("a project may contain at most {MAX_PROJECT_WORKSPACES} Workspaces"),
         ));
     }
     let mut seen = BTreeSet::new();
@@ -1855,7 +1849,7 @@ fn normalize_project_workspace_ids(workspace_ids: Vec<String>) -> Result<Vec<Str
     Ok(workspace_ids)
 }
 
-fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
+pub(super) fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
     let normalized = name.trim();
     if normalized.is_empty() {
         return Err(project_error(
@@ -1905,7 +1899,7 @@ fn truncate_project_name(name: &str, max_chars: usize) -> String {
     name.chars().take(max_chars).collect()
 }
 
-fn project_error(operation: &'static str, message: String) -> DaemonError {
+pub(super) fn project_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
 

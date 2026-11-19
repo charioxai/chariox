@@ -172,9 +172,11 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
         .await;
         assert!(matches!(metadata.next().await, Some(Ok(Message::Close(_)))));
         let _ = metadata.close(None).await;
-        let mut socket = accept_async(listener.accept().await.unwrap().0)
-            .await
-            .unwrap();
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(
+            listener.accept().await.unwrap().0,
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             receive(&mut socket).await,
             RelayEnvelope::DaemonRegister { .. }
@@ -560,6 +562,26 @@ fn verified_cleanup_absence_keeps_relay_business_code() {
     let mapped = crate::transport::relay_client::request_errors::map_relay_error(&error);
     assert_eq!(mapped.code, "leased_agent_not_found");
     assert!(!mapped.retryable);
+}
+
+// MP-08 / MP-10: a worker that cannot store a transferred skill package refuses
+// the turn once, with the next step, instead of a retryable transport error.
+#[test]
+fn a_skill_package_the_worker_cannot_store_is_refused_once_with_the_next_step() {
+    let error = DaemonError::LocalTransport {
+        operation: "skill.package",
+        message: "cannot create skill package directory".into(),
+    };
+    let mapped = crate::transport::relay_client::request_errors::map_relay_error(&error);
+    assert_eq!(
+        mapped.code,
+        crate::transport::relay_peer::SKILL_PACKAGE_STORE_FAILED_CODE
+    );
+    assert!(!mapped.retryable);
+    assert!(mapped
+        .message
+        .contains("cannot create skill package directory"));
+    assert!(mapped.message.contains("then send the message again"));
 }
 
 #[tokio::test]

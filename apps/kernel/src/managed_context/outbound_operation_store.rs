@@ -891,13 +891,17 @@ mod tests {
         assert_eq!(session.owner_user_id(), "owner");
         let mut project_selection = selection.clone();
         project_selection.context_selection.development_setup =
-            OwnerManagedDevelopmentSelection::SourceProject {
-                project_id: session.project_id().to_string(),
-                repositories: vec![OwnerManagedRepositorySelection {
+            OwnerManagedDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                        project_id: session.project_id().to_string(),
+                        repositories: vec![OwnerManagedRepositorySelection {
                     role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                     workspace_id: session.workspace_id().to_string(),
                     worktree_id: None,
                 }],
+                    },
+                ],
             };
         let project_ticket = store
             .prepare_owner_ticket(&config, &runtime, project_selection)
@@ -925,14 +929,18 @@ mod tests {
             };
             let mut selection = selection.clone();
             selection.context_selection.development_setup =
-                OwnerManagedDevelopmentSelection::SourceProject {
-                    project_id: session.project_id().to_string(),
-                    repositories: vec![OwnerManagedRepositorySelection {
+                OwnerManagedDevelopmentSelection::SourceProjects {
+                    projects: vec![
+                        crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                            project_id: session.project_id().to_string(),
+                            repositories: vec![OwnerManagedRepositorySelection {
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         workspace_id: session.workspace_id().to_string(),
                         worktree_id: None,
                     }],
+                        },
+                    ],
                 };
             assert_eq!(
                 store
@@ -1021,9 +1029,13 @@ mod tests {
             .is_err());
         let mut unavailable = selection.clone();
         unavailable.context_selection.development_setup =
-            OwnerManagedDevelopmentSelection::SourceProject {
-                project_id: "missing-project".into(),
-                repositories: vec![],
+            OwnerManagedDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                        project_id: "missing-project".into(),
+                        repositories: vec![],
+                    },
+                ],
             };
         assert!(reopened
             .prepare_owner_ticket(&config, &runtime, unavailable)

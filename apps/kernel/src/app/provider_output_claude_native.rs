@@ -19,18 +19,27 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
+mod first_run_notice;
 mod hidden_context;
+mod local_denial;
 mod permission;
 mod readiness;
 mod session_start;
+mod start_screen;
 mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
+mod typed_prompt;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
+pub(crate) use first_run_notice::claude_native_first_run_notice;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
+pub(crate) use start_screen::{
+    claude_headless_owner_decision_pending, claude_headless_prompt_written,
+    claude_headless_stuck_screen_line,
+};
 pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
@@ -114,6 +123,13 @@ struct ClaudeNativePromptInjection<'a> {
     attachments: &'a [PromptAttachment],
     /// Renders the provider-switch handoff within the given byte room.
     context_handoff: &'a dyn Fn(usize) -> String,
+}
+
+impl ClaudeNativePromptInjection<'_> {
+    /// A steer joins another prompt's running turn, so it is only ever typed into a busy Claude.
+    fn steers_a_running_turn(&self) -> bool {
+        self.origin_prompt_id != self.id
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,6 +505,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .and_then(|run| run.terminal_diagnostic().map(str::to_string));
             return Ok(outcome);
         }
+        self.resume_typed_native_command(session_id, &agent_id, provider_run, context_file)?;
         self.inject_pending_prompt(
             session_id,
             provider_run_id,
@@ -542,14 +559,32 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .get("hook_event_name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if event_name == "CharioxContextFailed" {
-                if let Some(prompt_id) = self.failed_context_delivery(
+            if event_name == "CharioxNativeSkillRedirected" {
+                self.accept_typed_native_redirect(
                     session_id,
                     &agent_id,
-                    provider_run_id,
+                    provider_run,
                     context_file,
                     &event,
-                )? {
+                )?;
+                continue;
+            }
+            if event_name == "CharioxContextFailed" {
+                let failed = self
+                    .failed_context_delivery(
+                        session_id,
+                        &agent_id,
+                        provider_run_id,
+                        context_file,
+                        &event,
+                    )?
+                    .or(self.failed_typed_native_command(
+                        session_id,
+                        &agent_id,
+                        context_file,
+                        &event,
+                    )?);
+                if let Some(prompt_id) = failed {
                     if let Some(policy) = self.prompt_handoff {
                         if let Some(prompt) =
                             policy.rejected(session_id, &agent_id, provider_run_id, &prompt_id)?
@@ -637,7 +672,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             }
                             let base = self.managed_base_context(
                                 session_id,
-                                &agent_id,
                                 context_file,
                                 provider_run,
                                 &ClaudeNativePromptInjection {
@@ -648,6 +682,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                     attachments: &inputs.attachments,
                                     context_handoff: &|_| String::new(),
                                 },
+                            )?;
+                            let base = crate::provider::fit_claude_native_hidden_context(
+                                provider_run_id,
+                                join_claude_context([base, inputs.skill_context]),
                             )?;
                             policy.prepare_context(
                                 session_id,
@@ -692,13 +730,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 {
                                     continue;
                                 }
+                                let redirect = typed_prompt::typed_native_redirect(
+                                    context_file,
+                                    dispatch_prompt_id,
+                                )?;
                                 context_delivery::stage(
                                     context_file,
                                     request_id,
                                     provider_run_id,
                                     dispatch_prompt_id,
                                     active.id(),
-                                    true,
+                                    if redirect.is_some() {
+                                        context_delivery::DeliveryOrigin::TypedRedirect
+                                    } else {
+                                        context_delivery::DeliveryOrigin::Managed
+                                    },
+                                    redirect.unwrap_or_default(),
                                 )?;
                                 write_claude_hook_context_response(
                                     context_file,
@@ -726,7 +773,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
                 let hook_request_id = event.get("hook_context_request_id").and_then(Value::as_str);
                 let hook_context = if hook_request_id.is_some() {
-                    let base = self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    let base = String::new();
                     let context = match self.prompt_handoff {
                         Some(policy) => policy.prepare_context(
                             session_id,
@@ -778,6 +825,54 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     prompt,
                     attachments,
                 )?;
+                let (hook_context, typed_skills) = match (&outcome, hook_context) {
+                    (
+                        crate::session::PromptSubmissionOutcome::Started { prompt: started },
+                        Some(context),
+                    ) => {
+                        let typed = match self.typed_skill_context(
+                            session_id,
+                            &agent_id,
+                            provider_run,
+                            started,
+                            context,
+                        ) {
+                            Ok(typed) => typed,
+                            Err(error) => {
+                                self.skills_not_delivered(session_id, provider_run, &error);
+                                if let Some(request_id) = hook_request_id {
+                                    context_delivery::stage(
+                                        context_file,
+                                        request_id,
+                                        provider_run_id,
+                                        started.id(),
+                                        started.id(),
+                                        context_delivery::DeliveryOrigin::Native,
+                                        Vec::new(),
+                                    )?;
+                                    permission::write_claude_hook_context_rejection(context_file, request_id,
+                                        &format!("Skills were not delivered: {error}. Refresh Skills and retry."), false)?;
+                                }
+                                continue;
+                            }
+                        };
+                        if let (Some(command), Some(request_id)) =
+                            (typed.native_command.as_deref(), hook_request_id)
+                        {
+                            self.stage_typed_native_command(
+                                context_file,
+                                request_id,
+                                started,
+                                command,
+                                &typed.context,
+                                &typed.loads,
+                            )?;
+                            continue;
+                        }
+                        (Some(typed.context), typed.loads)
+                    }
+                    (_, context) => (context, Vec::new()),
+                };
                 let native_started = matches!(
                     &outcome,
                     crate::session::PromptSubmissionOutcome::Started { .. }
@@ -820,7 +915,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             provider_run_id,
                             prompt_id,
                             prompt_id,
-                            false,
+                            context_delivery::DeliveryOrigin::Native,
+                            typed_skills,
                         )?;
                         write_claude_hook_context_response(context_file, request_id, context)?;
                         continue;
@@ -1167,6 +1263,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             active_prompt_id.as_deref(),
             &drain.enqueued_prompts,
         );
+        if drain.user_denied_tool_use {
+            if let Some(prompt_id) = active_prompt_id.as_deref() {
+                local_denial::settle_denial_in_claude_dialog(
+                    context_file,
+                    provider_run_id,
+                    prompt_id,
+                );
+            }
+        }
         if drain.chunks.is_empty()
             && drain.assistant_message_ids.is_empty()
             && drain.terminal_assistant_message_ids.is_empty()
@@ -1708,24 +1813,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
+        // Claude holding a steer in its queue is its receipt: it answers it in the running turn,
+        // so the steer must not wait for that turn to end.
+        if prompt.steers_a_running_turn()
+            && claude_headless_prompt_queued_behind_running_turn(provider_run, prompt.id)
+        {
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
+        }
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
-    }
-
-    fn claude_native_prompt_context(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt: &str,
-    ) -> Result<String, DaemonError> {
-        let agent = self.app.agents.get_agent(agent_id)?;
-        let session = self.app.sessions.get_session(session_id)?;
-        let skill_grants = agent.skill_grants();
-        crate::skill::format_granted_skill_prompt_context(
-            agent.agent_ref(),
-            &skill_grants,
-            session.workspace_id(),
-            prompt,
-        )
     }
 
     fn consume_accepted_failed_request_context(
@@ -2043,10 +2138,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if !queued_in_claude
                 && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
-                && claude_headless_prompt_waiting_in_composer(
-                    &recent,
-                    redact_native_hidden_instructions(prompt.prompt).trim(),
-                )
+                && claude_headless_prompt_waiting_in_composer(&recent, &visible_prompt)
             {
                 append_claude_headless_debug(
                     context_file,
@@ -2063,6 +2155,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     &visible_prompt,
                 );
             } else if !queued_in_claude
+                && !prompt.steers_a_running_turn()
                 && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_composer_visible(&recent)
@@ -2072,7 +2165,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 // UserPromptSubmit changes the marker to `accepted` before
                 // this grace period expires on successful submissions, so an
                 // idle composer with no acknowledgement is safe to retype.
-                let input = claude_headless_prompt_input(prompt, context_file);
+                // A busy Claude shows the same composer while it writes a
+                // steer to its queue, so a steer is never typed again.
+                let input = visible_prompt;
                 append_claude_headless_debug(
                     context_file,
                     "inject_prompt_retry",
@@ -2095,12 +2190,38 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         }
         let hidden_context =
-            self.managed_base_context(session_id, agent_id, context_file, provider_run, prompt)?;
+            self.managed_base_context(session_id, context_file, provider_run, prompt)?;
         let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
         let hidden_context =
             join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
-        let hidden_context =
-            crate::provider::fit_claude_native_hidden_context(provider_run_id, hidden_context)?;
+        // MP-08 / MP-10 / MP-11: native PTY runs use the same validated
+        // skill adapter as structured runs. Only its visible /name enters the
+        // PTY; instruction bodies remain in UserPromptSubmit additionalContext.
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            claude_typed_prompt(prompt, context_file),
+            hidden_context,
+            prompt.attachments.to_vec(),
+            crate::prompt_assembly::PromptManifest::default(),
+        )
+        .with_steering(prompt.id != prompt.origin_prompt_id);
+        let envelope = self.app.providers.prepare_skill_prompt(
+            session_id,
+            agent_id,
+            prompt.id,
+            prompt.origin_prompt_id,
+            provider_run,
+            envelope,
+        )?;
+        let visible = envelope.visible_user_prompt;
+        let skill_context = envelope
+            .skill_delivery
+            .as_ref()
+            .map(|delivery| delivery.hidden_context.clone())
+            .unwrap_or_default();
+        let hidden_context = crate::provider::fit_claude_native_hidden_context(
+            provider_run_id,
+            envelope.hidden_system_context,
+        )?;
         if provider_run
             .pty_env()
             .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
@@ -2108,14 +2229,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             // Preserve full scheduled inputs before rendering, and before any PTY submission.
             // The hook re-protects these inputs under the current Room barrier.
-            hidden_context::stage_managed_inputs(context_file, prompt)?;
+            hidden_context::stage_managed_inputs(context_file, prompt, &skill_context)?;
         }
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),
             operation: "claude_hidden_context_write",
             message: error.to_string(),
         })?;
-        let visible = claude_typed_prompt(prompt, context_file);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {
                 normalize_claude_visible_prompt_for_headless(&visible)
@@ -2166,12 +2286,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if unix_epoch_ms().saturating_sub(selected_at_ms) < CLAUDE_SUBMIT_DELAY_MS {
                 return Ok(None);
             }
-            workspace_trust::validate_selected_workspace(
-                self.app,
-                provider_run_id,
-                context_file,
-                &interaction_id,
-            )?;
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
             write_claude_headless_startup_wait_marker(context_file);
@@ -2196,14 +2310,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             clear_claude_permission_recent(context_file);
             return Ok(Some(ClaudeWorkspaceTrustResolution::SelectionFailed));
         }
-        if matches!(input.as_slice(), b"\r" | b"\x1b[B" | b"\x1b[A") {
-            workspace_trust::validate_selected_workspace(
-                self.app,
-                provider_run_id,
-                context_file,
-                &interaction_id,
-            )?;
-        }
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
         if input == b"\x1b[B" || input == b"\x1b[A" {
@@ -2214,10 +2320,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .providers
                 .output_ready_signal()
                 .record_after(provider_run_id, CLAUDE_SUBMIT_DELAY_MS);
-            // Retain the target until Enter can revalidate this same consent.
-            if !workspace_trust::reuses_workspace_consent(&interaction_id) {
-                clear_claude_permission_recent(context_file);
-            }
+            clear_claude_permission_recent(context_file);
             Ok(None)
         } else if input == b"\r" {
             write_claude_headless_startup_wait_marker(context_file);
@@ -2247,18 +2350,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(());
         };
-        let prefix = if workspace_trust::selected_startup_workspace(
-            self.app,
-            session_id,
-            provider_run,
-            context_file,
-            rendered,
-        ) {
-            "claude-selected-workspace-trust"
-        } else {
-            "claude-workspace-review"
-        };
-        let interaction_id = format!("{prefix}-{provider_run_id}-{}", timestamp_millis());
+        let interaction_id = format!(
+            "claude-workspace-review-{provider_run_id}-{}",
+            timestamp_millis()
+        );
         write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
         // Keep accumulating the displayed frame while the interaction is open.
         // Its selected row may arrive in a later PTY drain.

@@ -17,6 +17,7 @@ use serde_json::Value;
 use super::process::{ClaudeChild, ClaudeOutput, ClaudeRuntimeMessage};
 use super::state::ClaudeRuntimeState;
 use super::tool_transcript::ClaudeToolTranscript;
+use super::watchdog::ClaudeStartState;
 use crate::pty::ReaderGate;
 
 const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -166,6 +167,7 @@ struct ClaudeTurn {
     last_context_window: Option<u64>,
     observed_context_model: Option<String>,
     main_stream_has_context: bool,
+    start: ClaudeStartState,
 }
 
 impl std::fmt::Debug for ClaudeTurn {
@@ -273,6 +275,9 @@ pub(super) fn hand_over(
             last_context_window: state.last_context_window,
             observed_context_model: state.observed_context_model.clone(),
             main_stream_has_context: state.main_stream_has_context,
+            start: state
+                .turn_watchdog
+                .start_state(std::time::Instant::now(), crate::session::unix_epoch_ms()),
         },
         credentials: state.provider_credential_env.clone(),
     };
@@ -369,6 +374,7 @@ impl Adopted {
         AdoptedTurn {
             turn_id: turn.active_turn_id,
             prompt_message: turn.active_prompt_message,
+            start: turn.start,
         }
     }
 }
@@ -379,4 +385,5 @@ impl Adopted {
 pub(super) struct AdoptedTurn {
     pub(super) turn_id: Option<String>,
     pub(super) prompt_message: Option<Value>,
+    pub(super) start: ClaudeStartState,
 }

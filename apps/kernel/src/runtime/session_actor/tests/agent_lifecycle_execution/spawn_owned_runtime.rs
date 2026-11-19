@@ -31,6 +31,8 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,

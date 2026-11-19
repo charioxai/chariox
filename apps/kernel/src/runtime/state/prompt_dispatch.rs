@@ -444,9 +444,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
             })?;
-        let (remote_prompt, required_skills) = self
-            .prepare_remote_prompt_skill_context(&agent, prompt.prompt())
-            .await?;
+        let remote_prompt = prompt.prompt().to_string();
         let prompt_attachments = prompt.attachments().to_vec();
         let attachments = tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&prompt_attachments)
@@ -462,7 +460,6 @@ impl KernelRuntimeState {
             prompt: remote_prompt,
             hidden_system_context: prompt.hidden_system_context().to_string(),
             attachments,
-            required_skills,
         };
         let (mut remote_execution, mut relay_config) = self
             .with_app_side_effect(|app| {
@@ -735,19 +732,43 @@ impl KernelRuntimeState {
                 prepared.prompt.target_agent_id(),
             )
             .await?;
-            self.with_external_command_authority(authority)
+            // A submit that may queue never waits for a person: when the Vault is locked the
+            // prompt waits in the queue on the Room's unlock card.
+            let vault_use = if allow_queue {
+                super::runtime_vault_unlock_state::VAULT_ADMIT_PROMPT
+            } else {
+                "launch provider run"
+            };
+            let refreshed = self
+                .with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,
                     prepared.prompt.target_agent_id(),
+                    vault_use,
                 )
-                .await?;
+                .await;
+            let awaiting_vault = match refreshed {
+                Err(error)
+                    if allow_queue
+                        && super::runtime_vault_unlock_state::is_vault_unlock_card_open(&error) =>
+                {
+                    true
+                }
+                refreshed => {
+                    refreshed?;
+                    false
+                }
+            };
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
             self.owned.admit_goal_prompt(&mut prepared)?;
-            let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
+            let delegated_parent = self.delegated_prompt_parent()?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
                 authorize()?;
+                if awaiting_vault {
+                    return self.queue_prompt_for_vault_unlock(&prepared).await;
+                }
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
@@ -822,22 +843,37 @@ impl KernelRuntimeState {
                         }
                     } else {
                         // A cold launch (first prompt after a restart) may need the
-                        // locked Vault, e.g. for a Claude token: ask the owner to unlock.
-                        self.with_project_prompt_environment(
-                            &session_id,
-                            &target_agent_id,
-                            |app| {
-                                // The app mutex can outlive the grant. Reauthorize only
-                                // after acquiring it, before launching a cold provider.
+                        // locked Vault, e.g. for a Claude token: the card opens in the
+                        // Room and the prompt waits for it in the queue (`vault_use`).
+                        let launched = self
+                            .with_project_prompt_environment(
+                                &session_id,
+                                &target_agent_id,
+                                vault_use,
+                                |app| {
+                                    // The app mutex can outlive the grant. Reauthorize only
+                                    // after acquiring it, before launching a cold provider.
+                                    authorize()?;
+                                    app.ensure_prompt_provider_run_for_agent(
+                                        &session_id,
+                                        &target_agent_id,
+                                    )
+                                    .map(|_| ())
+                                },
+                            )
+                            .await;
+                        match launched {
+                            Err(error)
+                                if allow_queue
+                                    && super::runtime_vault_unlock_state::is_vault_unlock_card_open(
+                                        &error,
+                                    ) =>
+                            {
                                 authorize()?;
-                                app.ensure_prompt_provider_run_for_agent(
-                                    &session_id,
-                                    &target_agent_id,
-                                )
-                                .map(|_| ())
-                            },
-                        )
-                        .await?;
+                                return self.queue_prompt_for_vault_unlock(&prepared).await;
+                            }
+                            launched => launched?,
+                        }
                     };
                     authorize()?;
                     if let Some(mut submission) = owned
@@ -874,6 +910,31 @@ impl KernelRuntimeState {
             }
             submission
         }
+    }
+
+    /// A prompt whose start needs the locked Vault: the unlock card is open in the Room, the
+    /// prompt waits in its agent's queue, and the queue starts it once the Vault is unlocked.
+    async fn queue_prompt_for_vault_unlock(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        let mut submission = self.owned.queue_local_prepared_prompt_for_vault(prepared)?;
+        self.finish_owned_prompt_submission(&mut submission, false)
+            .await?;
+        let session_id = prepared.session_id.as_str();
+        self.owned.record_notice(
+            session_id,
+            None,
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            "This prompt waits for the Vault: unlock it in the card in this Room and it starts by itself.",
+        );
+        self.spawn_idle_local_prompt_queue_promotion(
+            session_id,
+            prepared.prompt.target_agent_id(),
+        )?;
+        Ok(submission)
     }
 
     pub(super) async fn finish_owned_prompt_submission(
@@ -1192,9 +1253,7 @@ impl KernelRuntimeState {
                 operation: "steer remote queued prompt",
                 message: format!("agent `{target_agent_id}` is no longer remote"),
             })?;
-        let (remote_prompt, required_skills) = self
-            .prepare_remote_prompt_skill_context(&prepared.agent, prepared.prompt.prompt())
-            .await?;
+        let remote_prompt = prepared.prompt.prompt().to_string();
         let prompt_attachments = prepared.prompt.attachments().to_vec();
         let attachments = tokio::task::spawn_blocking(move || {
             crate::app::serialize_remote_prompt_attachments(&prompt_attachments)
@@ -1210,7 +1269,6 @@ impl KernelRuntimeState {
             prompt: remote_prompt,
             hidden_system_context: prepared.prompt.hidden_system_context().to_string(),
             attachments,
-            required_skills,
         };
         let session_id = session_id.to_string();
         let target_agent_id = target_agent_id.to_string();
@@ -1978,7 +2036,6 @@ struct RemoteQueuedPromptSteerPayload {
     prompt: String,
     hidden_system_context: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
 }
 
 fn remote_queued_steer_failure_is_definitely_unaccepted(error: &DaemonError) -> bool {
@@ -2042,7 +2099,6 @@ async fn send_remote_queued_prompt_steer(
             prompt: payload.prompt.clone(),
             hidden_system_context: payload.hidden_system_context.clone(),
             attachments: payload.attachments.clone(),
-            required_skills: payload.required_skills.clone(),
         },
         crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
         || state.authorize_prompt_command(authority),

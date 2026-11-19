@@ -70,7 +70,11 @@ pub(super) fn display_name_in(
     tx: &Transaction<'_>,
     source: &WorkflowNotificationSource,
 ) -> rusqlite::Result<String> {
-    if source.kind == crate::local::NotificationSourceKind::AppEvent {
+    if matches!(
+        source.kind,
+        crate::local::NotificationSourceKind::AppEvent
+            | crate::local::NotificationSourceKind::Watcher
+    ) {
         return Ok(source.display_name.clone());
     }
     let workflow: Option<String> = tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind='workflow' AND entity_id=?3",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0)).optional()?;

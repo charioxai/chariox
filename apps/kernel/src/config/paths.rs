@@ -108,6 +108,14 @@ impl DaemonConfig {
             })
     }
 
+    /// Where workflow node instruction files live: in the kernel home, outside
+    /// the state agents cannot read, because each node's agent rereads its own.
+    pub fn workflow_instruction_root(&self) -> PathBuf {
+        default_config_dir()
+            .join("workflow-instructions")
+            .join(&self.daemon_id)
+    }
+
     pub fn workflow_code_artifact_root(&self) -> PathBuf {
         self.durable_state_path()
             .parent()
@@ -219,7 +227,7 @@ pub(crate) fn default_state_dir() -> PathBuf {
     env::temp_dir().join("chariox")
 }
 
-pub(super) fn default_config_dir() -> PathBuf {
+pub(crate) fn default_config_dir() -> PathBuf {
     if let Some(home_dir) = chariox_home_dir() {
         return home_dir;
     }

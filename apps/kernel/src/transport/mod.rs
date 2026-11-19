@@ -10,6 +10,7 @@ pub(crate) mod kernel_resource_feed;
 pub(crate) mod listener_admission;
 pub(crate) mod mcp_server;
 pub(crate) mod passkey_prompt_feed;
+pub(crate) mod perf_budget;
 pub(crate) mod relay_client;
 pub(crate) mod relay_crypto;
 pub(crate) mod relay_discovery;

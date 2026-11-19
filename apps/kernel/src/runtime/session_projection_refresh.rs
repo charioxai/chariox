@@ -251,7 +251,6 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
-        | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::PromptSubmitted { session, .. }
         | LocalDaemonResponse::QueuedPromptSteered { session, .. }
         | LocalDaemonResponse::QueuedPromptCancelled { session, .. }
@@ -367,6 +366,7 @@ mod tests {
         use crate::agent::{AgentInstance, GridPosition};
         let mut session = RuntimeSession::new(
             "private-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "tree",
@@ -559,6 +559,8 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -578,6 +580,14 @@ mod tests {
     }
 
     fn runtime_session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "kernel")
+        RuntimeSession::new(
+            id,
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        )
     }
 }
