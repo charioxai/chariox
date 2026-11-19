@@ -14,13 +14,14 @@ impl FaultStore {
             rand::random::<u64>()
         ));
         std::fs::create_dir_all(root.join("faults")).unwrap();
-        for fault in faults {
-            std::fs::write(root.join("faults").join(fault), "").unwrap();
-        }
         let store = {
             let _faults = faults::TestFaultDir::set(&root.join("faults"));
             DurableKernelStateStore::open_owned(root.join("state.sqlite")).unwrap()
         };
+        // Opening writes too (it resumes agent deadlines), so a fault starts once the store is open.
+        for fault in faults {
+            std::fs::write(root.join("faults").join(fault), "").unwrap();
+        }
         Self { store, root }
     }
     fn begin(&self, prompt: &str) -> Result<Outcome, crate::error::DaemonError> {
