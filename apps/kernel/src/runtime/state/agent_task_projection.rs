@@ -300,6 +300,9 @@ pub(super) fn prompt_turn_entries<'a>(
     let mut turn = Vec::new();
     for entry in entries {
         if entry.kind == Kind::UserPrompt {
+            if entry.is_external_recovery_envelope() {
+                continue;
+            }
             let key = entry.merge_key.as_deref();
             if key == Some(own.as_str())
                 || key == Some(steered.as_str())

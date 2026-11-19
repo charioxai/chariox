@@ -34,7 +34,16 @@ async fn started_workers(world: &World, names: &[&str]) -> Vec<(String, String)>
             .iter()
             .filter_map(|name| {
                 let agent = agents.iter().find(|a| a.alias() == Some(*name))?;
-                session.active_prompt_for_agent(agent.id())?;
+                let prompt = session.active_prompt_for_agent(agent.id())?;
+                // Admission is visible before the durable history anchor is written.
+                // A provider cannot answer its brief until the dispatch after that write.
+                if !world.router.runtime_state.worker_brief_recorded_for_test(
+                    &world.room,
+                    agent.id(),
+                    prompt.id(),
+                ) {
+                    return None;
+                }
                 Some((name.to_string(), agent.id().to_string()))
             })
             .collect::<Vec<_>>();
@@ -119,6 +128,10 @@ async fn answers_in_place() {
     assert!(
         inbox.iter().all(|event| event.kind != "child_finished"),
         "{inbox:?}"
+    );
+    assert!(
+        store.agent_undelivered_delegate_ends().unwrap().is_empty(),
+        "a worker returned in place must not be announced on the next start"
     );
     let task = store
         .agent_tasks(Some(&world.room), Some(&caller))
@@ -445,4 +458,123 @@ async fn dropped_during_claim() {
         finished, 1,
         "the in-flight end is announced once: {inbox:?}"
     );
+}
+
+#[test]
+fn cold_restart_recovers_a_worker_end_committed_before_the_call_received_it() {
+    run_large_stack_async_test("agents-run-restart", recovers_committed_worker_end);
+}
+
+async fn recovers_committed_worker_end() {
+    let world = world("agents-run-restart").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let mut call = Box::pin(world.router.dispatch_agents_run(
+        &world.tokens["a"],
+        serde_json::json!({
+            "workers": [{"name": "only", "brief": "answer now"}],
+            "origin_prompt_id": prompt,
+        }),
+    ));
+    let workers = tokio::select! {
+        outcome = &mut call => panic!("the call returned before its worker ended: {outcome:?}"),
+        workers = started_workers(&world, &["only"]) => workers,
+    };
+    let worker = &workers[0].1;
+    let worker_prompt = running_turn_of(&world, worker).await;
+    let runtime = &world.router.runtime_state;
+    let reached = runtime.pause_next_worker_claim();
+    let mut ending =
+        Box::pin(runtime.end_agent_turn_for_test(&world.room, worker, "original answer"));
+    tokio::select! {
+        outcome = &mut ending => panic!("handoff was not paused: {outcome:?}"),
+        reached = reached => reached.unwrap(),
+    }
+    drop(ending);
+    runtime.discard_paused_worker_claim();
+    drop(call);
+
+    let config = {
+        let app = world.app.lock().await;
+        let store = app.durable_state_store();
+        let task = store.agent_task(&worker_prompt).unwrap().unwrap();
+        assert!(store.agent_task_terminal_recorded(&task).unwrap());
+        assert!(store
+            .agent_inbox(&world.room, &caller, 0)
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != "child_finished"));
+        app.config().clone()
+    };
+    let World {
+        room,
+        app,
+        router,
+        _env,
+        ..
+    } = world;
+    drop(router);
+    drop(app);
+    let app = Arc::new(Mutex::new(
+        crate::test_support::bootstrap_after_test_owner_exit(config).await,
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let runtime = &router.runtime_state;
+    runtime.recover_durable_runtime_after_restart().await;
+    runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+
+    let store = app.lock().await.durable_state_store();
+    let inbox = store.agent_inbox(&room, &caller, 0).unwrap();
+    let ends = inbox
+        .iter()
+        .filter(|event| {
+            event.kind == "child_finished" && event.payload["child_task_id"] == worker_prompt
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ends.len(), 1, "{inbox:?}");
+    assert_eq!(
+        ends[0].payload["public_answer"]["excerpt"],
+        "original answer"
+    );
+    assert_eq!(ends[0].payload["success"], true);
+}
+
+#[test]
+fn cold_restart_envelope_keeps_the_workers_answer_in_its_task() {
+    run_large_stack_async_test(
+        "agents-run-recovery-envelope",
+        answers_after_recovery_envelope,
+    );
+}
+
+async fn answers_after_recovery_envelope() {
+    let world = world("agents-run-recovery-envelope").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let call = world.router.dispatch_agents_run(
+        &world.tokens["a"],
+        serde_json::json!({
+            "workers": [{"name": "only", "brief": "answer now"}],
+            "origin_prompt_id": prompt,
+        }),
+    );
+    let drive = async {
+        let workers = started_workers(&world, &["only"]).await;
+        let worker = &workers[0].1;
+        let prompt = running_turn_of(&world, worker).await;
+        let runtime = &world.router.runtime_state;
+        runtime.record_observed_recovery_envelope_for_test(&world.room, worker, &prompt);
+        runtime
+            .end_agent_turn_for_test(&world.room, worker, "resumed answer")
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(call, drive)
+    })
+    .await
+    .expect("the worker's answer should return");
+    let result = result.unwrap();
+    assert_eq!(result.payload["workers"][0]["answer"], "resumed answer");
 }

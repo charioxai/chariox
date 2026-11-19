@@ -399,6 +399,18 @@ impl SessionHistoryEntry {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
     }
 
+    /// An official transcript can echo a recovery command as a user prompt.
+    /// It continues an existing turn and does not define a new answer boundary.
+    pub(crate) fn is_external_recovery_envelope(&self) -> bool {
+        self.kind == SessionHistoryEntryKind::UserPrompt
+            && self.is_external_provider_observed()
+            && {
+                let text = self.text.trim_start();
+                text.starts_with("[Chariox recovery operation chariox-recovery:")
+                    || text.starts_with("<turn_aborted>")
+            }
+    }
+
     pub fn is_external_provider_observed_state_signal(&self) -> bool {
         if !self.is_external_provider_observed() {
             return false;

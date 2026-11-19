@@ -623,6 +623,11 @@ pub(crate) enum Operation {
         room: String,
         source: String,
     },
+    WorkerResultReturned {
+        room: String,
+        parent: String,
+        task: String,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,
@@ -859,4 +864,10 @@ impl DelegateGoneReason {
         })
         .expect("reply outcome is serializable")
     }
+}
+
+pub(crate) struct UndeliveredDelegateEnd {
+    pub(crate) task: String,
+    pub(crate) parent: String,
+    pub(crate) answer: Option<serde_json::Value>,
 }

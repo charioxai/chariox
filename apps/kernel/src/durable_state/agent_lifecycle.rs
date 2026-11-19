@@ -95,7 +95,7 @@ pub use types::{
 mod wake_receipts;
 pub(crate) use types::{
     unresolved_source_outcome, CancelInitiator, InboxEvent, Operation, Outcome, Registration,
-    WakeEnd,
+    UndeliveredDelegateEnd, WakeEnd,
 };
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
@@ -244,6 +244,74 @@ impl DurableKernelStateStore {
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
     }
+    /// A blocking waiter took the result. Its receipt is independent of whether the parent's
+    /// delegate source was bound before the worker finished.
+    pub(crate) fn record_agent_worker_result_returned(
+        &self,
+        room: &str,
+        parent: &str,
+        task: &str,
+    ) -> Result<(), DaemonError> {
+        self.agent_lifecycle(Operation::WorkerResultReturned {
+            room: room.into(),
+            parent: parent.into(),
+            task: task.into(),
+        })?;
+        Ok(())
+    }
+
+    /// The child finished durably, but neither the blocking wait nor the inbox delivered it.
+    /// The brief ties the result to the exact delegate task even if its delivery receipt was lost.
+    pub(crate) fn agent_undelivered_delegate_ends(
+        &self,
+    ) -> Result<Vec<UndeliveredDelegateEnd>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.undelivered_delegate_ends")?;
+        let mut query = db.prepare(
+            "SELECT DISTINCT child.task_id, parent.agent_id, result.public_answer
+             FROM agent_tasks parent
+             JOIN agent_delegation_messages sent ON sent.task_id=parent.task_id
+             JOIN agent_inbox brief ON brief.sequence=sent.sequence AND brief.room_id=parent.room_id
+             JOIN agent_tasks child ON child.task_id='agent-event-' || brief.agent_id || '-' || brief.sequence
+                 AND child.room_id=parent.room_id AND child.agent_id=brief.agent_id
+             JOIN agent_source_occurrences result ON result.room_id=child.room_id
+                 AND result.source_id=child.task_id
+                 AND result.occurrence_id='task-terminal-' || child.task_id
+             WHERE parent.obligated=1 AND parent.state IS NOT 'cancelled'
+                 AND child.state IN ('done','cancelled')
+                 AND NOT EXISTS (
+                     SELECT 1 FROM agent_source_occurrences returned
+                     WHERE returned.room_id=child.room_id
+                       AND returned.source_id='worker-result-returned:' || child.task_id
+                       AND returned.occurrence_id=parent.agent_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM agent_inbox delivered
+                     WHERE delivered.room_id=parent.room_id AND delivered.agent_id=parent.agent_id
+                       AND (delivered.occurrence_id='child-finished-' || child.task_id
+                         OR (delivered.occurrence_id=result.occurrence_id
+                             AND json_extract(delivered.payload,'$.state')='handled'))
+                 )",
+        ).map_err(sql)?;
+        let rows = query
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (task, parent, answer) = row.map_err(sql)?;
+            Ok(UndeliveredDelegateEnd {
+                task,
+                parent,
+                answer: answer.as_deref().map(decode).transpose()?,
+            })
+        })
+        .collect()
+    }
+
     pub(crate) fn agent_unpublished_done_tasks(
         &self,
         room: &str,

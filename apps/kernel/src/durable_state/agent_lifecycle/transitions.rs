@@ -806,6 +806,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
+        | Operation::WorkerResultReturned { .. }
         | Operation::SourceOutcome { .. }
         | Operation::DelegateUnavailable { .. }
         | Operation::ReleaseSpawn { .. }
