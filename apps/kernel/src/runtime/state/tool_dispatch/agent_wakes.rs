@@ -73,10 +73,7 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         Ok(match name {
             "chariox.events.wakes" => {
-                let wakes = super::agent_wake_scheduler::visible_wakes(
-                    store.agent_wakes(Some(&task.room_id), Some(&task.agent_id))?,
-                    now,
-                );
+                let wakes = store.agent_visible_wakes(&task.room_id, Some(&task.agent_id), now)?;
                 let receipts =
                     store.agent_wake_receipts(Some(&task.room_id), Some(&task.agent_id))?;
                 serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes,"receipts":receipts})

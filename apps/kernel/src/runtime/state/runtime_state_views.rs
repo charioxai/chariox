@@ -148,6 +148,8 @@ impl KernelRuntimeState {
                     .latest_projection_for_agent(session.id(), agent_id)
             },
         );
+        // Durable liveness reads must not hold up provider output or settlement.
+        drop(prompt_activity);
         self.owned
             .session_projection
             .project_external_observed_activity(session.id(), &mut activity);

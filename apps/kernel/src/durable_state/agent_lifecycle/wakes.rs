@@ -26,11 +26,22 @@ const LEDGER_KINDS: &[&str] = &[
 const SUMMARY_LIMIT: usize = 512;
 const DETAIL_LIMIT: usize = 8_192;
 
+#[cfg(test)]
+thread_local! {
+    static WAITING_WAKE_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    static WAKE_READ_SORTS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     super::wake_receipts::initialize(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);
-    CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));")
+    CREATE INDEX IF NOT EXISTS agent_wakes_room ON agent_wakes(room_id);
+    CREATE INDEX IF NOT EXISTS agent_wakes_room_armed ON agent_wakes(room_id)
+        WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling');
+    CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));
+    CREATE INDEX IF NOT EXISTS agent_wakes_live_task ON agent_wakes(task_id)
+        WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running');")
         .map_err(sql)
 }
 
@@ -54,30 +65,123 @@ fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), 
 }
 
 impl DurableKernelStateStore {
+    /// Liveness needs only live sources of waiting tasks. Finished commands can
+    /// carry large arguments and stay retained after their agents have left.
+    pub(crate) fn agent_waiting_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.waiting_wakes")?;
+            // Choosing the room index scans retained payloads before the task join.
+            let mut q = db.prepare_cached(
+                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_live_task \
+                 WHERE task_id IN (SELECT task_id FROM agent_tasks WHERE room_id=?1 AND state='waiting') \
+                 AND room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running') \
+                 ORDER BY rowid",
+            ).map_err(sql)?;
+            let rows = q
+                .query_map([room], |row| row.get::<_, String>(0))
+                .map_err(sql)?;
+            let payloads = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
+            #[cfg(test)]
+            WAITING_WAKE_STEPS
+                .with(|steps| steps.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+            payloads
+        };
+        // Parsing belongs to this reader, outside the shared connection lock.
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_waiting_wake_read_steps_for_test() -> i32 {
+        WAITING_WAKE_STEPS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_wake_read_sorts_for_test() -> i32 {
+        WAKE_READ_SORTS.with(std::cell::Cell::get)
+    }
+
+    /// Select the existing visible history window before copying or decoding commands.
+    pub(crate) fn agent_visible_wakes(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+        now: u64,
+    ) -> Result<Vec<AgentWake>, DaemonError> {
+        let filter = if agent.is_some() {
+            "room_id=?1 AND agent_id=?2"
+        } else {
+            "room_id=?1"
+        };
+        let time = if agent.is_some() { "?3" } else { "?2" };
+        let now = sql_integer(now)?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&room];
+        if agent.is_some() {
+            values.push(&agent);
+        }
+        values.push(&now);
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.visible_wakes")?;
+            let mut query = db.prepare_cached(&format!(
+                "WITH finished AS (
+                    SELECT rowid FROM agent_wakes WHERE {filter}
+                    AND json_extract(payload,'$.state') NOT IN ('scheduled','starting','running','cancelling')
+                    AND coalesce(json_extract(payload,'$.last_fired_at_ms'),json_extract(payload,'$.created_at_ms')) > {time}-86400000
+                    ORDER BY rowid DESC LIMIT 64
+                ), visible AS (
+                    SELECT rowid FROM agent_wakes INDEXED BY agent_wakes_room_armed WHERE {filter}
+                    AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')
+                    UNION ALL SELECT rowid FROM finished
+                ) SELECT payload FROM agent_wakes WHERE rowid IN (SELECT rowid FROM visible) ORDER BY rowid"
+            )).map_err(sql)?;
+            let rows = query
+                .query_map(rusqlite::params_from_iter(values), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(sql)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+        };
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
+    }
+
     pub(crate) fn agent_wakes(
         &self,
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
-        // Literal filters, as for tasks, so the (room, agent) index serves a Room's read.
+        // Literal filters keep each scope on its ordered index.
         let (filter, values) = match (room, agent) {
             (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
             (Some(room), None) => ("room_id=?1", vec![room]),
             (None, Some(agent)) => ("agent_id=?1", vec![agent]),
             (None, None) => ("1", vec![]),
         };
-        let db = self.lock_connection("agent.lifecycle.wakes")?;
-        let mut q = db
-            .prepare_cached(&format!(
-                "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
-            ))
-            .map_err(sql)?;
-        let rows = q
-            .query_map(rusqlite::params_from_iter(values), |r| {
-                r.get::<_, String>(0)
-            })
-            .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.wakes")?;
+            let mut q = db
+                .prepare_cached(&format!(
+                    "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
+                ))
+                .map_err(sql)?;
+            let rows = q
+                .query_map(rusqlite::params_from_iter(values), |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(sql)?;
+            let payloads = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
+            #[cfg(test)]
+            WAKE_READ_SORTS.with(|sorts| sorts.set(q.get_status(rusqlite::StatementStatus::Sort)));
+            payloads
+        };
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
     }
     pub(crate) fn agent_wake(&self, id: &str) -> Result<Option<AgentWake>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.wake")?;
