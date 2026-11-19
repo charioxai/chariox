@@ -1228,10 +1228,15 @@ mod tests {
                     })
                 } else {
                     admitted
-                        .with_project_prompt_environment(&session, &agent, |_| {
-                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                            Ok(())
-                        })
+                        .with_project_prompt_environment(
+                            &session,
+                            &agent,
+                            super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                            |_| {
+                                operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                                Ok(())
+                            },
+                        )
                         .await
                 }
             }
@@ -1326,17 +1331,22 @@ mod tests {
             let launches = launches.clone();
             async move {
                 runtime
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
-                            Ok(())
-                        } else {
-                            Err(DaemonError::LocalTransport {
-                                operation: "credential_vault_locked",
-                                message: "Chariox vault is locked".into(),
-                            })
-                        }
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
+                                Ok(())
+                            } else {
+                                Err(DaemonError::LocalTransport {
+                                    operation: "credential_vault_locked",
+                                    message: "Chariox vault is locked".into(),
+                                })
+                            }
+                        },
+                    )
                     .await
             }
         });
@@ -1922,39 +1932,6 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
-    // The popup lives 60 s: an owner who never answers ends the waiting check Blocked with the
-    // reason and Resume, not with a timeout that has nothing to do with the check.
-    #[tokio::test]
-    async fn timed_out_vault_popup_blocks_the_waiting_completion_check_with_its_reason() {
-        use crate::durable_state::agent_lifecycle::ExecutionState;
-        let (runtime, session, _agent, vault, unlock, _check) =
-            vault_wait_fixture("vault-timeout").await;
-        let card = vault_popup(&runtime, &session).await;
-        runtime
-            .timeout_runtime_interaction(&session, &card)
-            .await
-            .unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
-        let task = runtime
-            .owned
-            .durable_state_store
-            .agent_tasks(None, None)
-            .unwrap()
-            .remove(0);
-        assert_eq!(task.state, ExecutionState::Blocked);
-        assert_eq!(
-            task.reason,
-            "The Vault unlock timed out; unlock the Vault and Resume"
-        );
-        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
-    }
-
     #[tokio::test]
     async fn mp11_completion_receipt_cannot_settle_successor_or_rebound_prompt() {
         let (runtime, session, agent, attachment, binding) =
@@ -2372,10 +2349,15 @@ mod tests {
             let session = session.clone();
             async move {
                 admitted
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                        Ok(())
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
                     .await
             }
         });

@@ -129,16 +129,23 @@ impl KernelRuntimeState {
                         return Ok(None);
                     };
                     let provider_run_id = match self
-                        .with_project_prompt_environment(session_id, agent_id, |app| {
-                            crate::app::KernelAgentService::new(app)
-                                .prepare_queued_prompt_provider_run(session_id, agent_id, &queued)
-                        })
+                        .with_project_prompt_environment(
+                            session_id,
+                            agent_id,
+                            super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                            |app| {
+                                crate::app::KernelAgentService::new(app)
+                                    .prepare_queued_prompt_provider_run(
+                                        session_id, agent_id, &queued,
+                                    )
+                            },
+                        )
                         .await
                     {
                         Ok(provider_run_id) => provider_run_id,
                         Err(
                             refusal @ DaemonError::VaultUnlock {
-                                code: "vault_unlock_timed_out" | "vault_unlock_declined",
+                                code: "vault_unlock_declined",
                                 ..
                             },
                         ) => {

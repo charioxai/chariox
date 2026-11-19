@@ -169,6 +169,7 @@ pub fn create_vault_from_key_seed(
                 key,
                 expires_at_ms,
                 single_use: lease == VaultUnlockLease::SingleUse,
+                held_by: None,
             },
         );
     Ok(CharioxVaultUnlockStatus {

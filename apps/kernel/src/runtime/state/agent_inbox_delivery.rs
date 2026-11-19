@@ -419,7 +419,7 @@ impl KernelRuntimeState {
                 }
                 Err(e) => {
                     if let DaemonError::VaultUnlock {
-                        code: "vault_unlock_declined" | "vault_unlock_timed_out",
+                        code: "vault_unlock_declined",
                         retryable: false,
                         ..
                     } = &e

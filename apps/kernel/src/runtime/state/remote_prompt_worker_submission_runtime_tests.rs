@@ -1285,7 +1285,7 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
             .expect_err("rejected vault unlock must stop before relay transport");
         assert!(
             crate::secret::is_chariox_vault_locked_error(&error)
-                || error.to_string().contains("vault unlock was cancelled")
+                || error.to_string().contains("Vault unlock was cancelled")
                 || error.to_string().contains("remote Claude launch requires"),
             "missing or locked vault should reject before sending: {error}"
         );

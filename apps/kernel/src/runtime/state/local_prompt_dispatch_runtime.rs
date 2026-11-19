@@ -2520,69 +2520,70 @@ pub(in crate::runtime::state) mod tests {
             "hello after the restart",
             crate::session::PromptStatus::Queued,
         );
-        let submit = tokio::spawn({
-            let runtime = runtime.clone();
-            let session_id = session.id().to_string();
-            async move {
-                runtime
-                    .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-                        session_id,
-                        prompt,
-                        force_queue: false,
-                        refresh_projection: true,
-                    })
-                    .await
+        // The submit never waits for the person: the prompt waits in the queue on the card.
+        let submission = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            }),
+        )
+        .await
+        .expect("a submit never waits for the Vault unlock")
+        .expect("the first prompt is accepted while the Vault is locked");
+        assert!(matches!(
+            submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        let card = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(interaction) = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("session should remain available")
+                    .active_interaction_for_agent(agent.id())
+                {
+                    break interaction.id().to_string();
+                }
+                tokio::task::yield_now().await;
             }
-        });
-
-        let wait_for_choice = |choice: &'static str| {
-            let runtime = runtime.clone();
-            let (session, agent) = (session.id().to_string(), agent.id().to_string());
-            async move {
-                tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    loop {
-                        if let Some(interaction) = runtime
-                            .owned
-                            .session_store
-                            .get_session(&session)
-                            .expect("session should remain available")
-                            .active_interaction_for_agent(&agent)
-                            .filter(|interaction| {
-                                choice == "passphrase"
-                                    || interaction.choices().iter().any(|c| c.id() == choice)
-                            })
-                        {
-                            break interaction.id().to_string();
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .expect("the locked Vault must raise the unlock popup for the first prompt")
-            }
-        };
-        let passphrase = wait_for_choice("passphrase").await;
+        })
+        .await
+        .expect("the locked Vault must raise the unlock popup for the first prompt");
         runtime
             .resolve_terminal_runtime_interaction(
                 session.id(),
-                &passphrase,
+                &card,
                 "unlock_kernel",
                 Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        let submission = tokio::time::timeout(std::time::Duration::from_secs(60), submit)
-            .await
-            .expect("the prompt must finish after the unlock")
-            .unwrap()
-            .expect("the first prompt must start once the Vault is unlocked");
-        assert!(submission.dispatch.is_some());
-        assert!(runtime
-            .owned
-            .provider_store
-            .get_run_for_agent(session.id(), agent.id())
-            .is_some());
+        // The unlock closes the card and opens the Vault for the queue, which then launches the
+        // provider with the Vaulted token (the start itself is proven by the live drill).
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .active_interactions()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the unlock closes the card");
+        assert!(
+            crate::secret::chariox_encrypted_vault_status(&vault_path)
+                .unwrap()
+                .unlocked
+        );
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();
