@@ -41,7 +41,7 @@ async fn check(fixture: &mut LiveWorker) {
         )
         .unwrap();
     let room = &fixture.rooms[0];
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice":{
             "session_id":room,"slice_ref":"desktop"

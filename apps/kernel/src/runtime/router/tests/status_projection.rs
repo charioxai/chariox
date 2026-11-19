@@ -842,6 +842,7 @@ async fn daemon_health_bounds_corruption_and_reuses_a_published_snapshot() {
         let id = format!("damaged-session-{index}");
         let mut session = crate::session::RuntimeSession::new(
             &id,
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

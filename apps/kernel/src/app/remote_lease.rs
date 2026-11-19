@@ -16,6 +16,7 @@ mod agent_move_capabilities;
 mod caller_binding;
 mod file_copy;
 mod git_observation;
+mod held_run_stop;
 mod leased_process;
 mod mcp_availability;
 mod native_provider;
@@ -366,6 +367,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .entry((leased_agent_id.to_string(), caller))
             .or_default() += 1;
         Ok(())
+    }
+
+    pub(crate) fn execution_lease_owner(&self, lease_id: &str) -> Result<String, DaemonError> {
+        self.app
+            .execution_leases
+            .get(lease_id)
+            .map(|lease| lease.owner_user_id.clone())
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
     }
 
     pub(crate) fn consume_execution_lease_authorization(
@@ -805,10 +816,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session.workspace_id() == workspace_id
                     && session.worktree_id() == worktree
                     && session.owner_user_id() == lease.owner_user_id
-                    && session.project_id()
-                        == source_project
-                            .map(|project| project.id())
-                            .unwrap_or_default()
+                    && match source_project {
+                        Some(project) => session.project_id() == project.id(),
+                        None => session.project().is_hidden_scope(),
+                    }
             });
         let session = match existing_session {
             Some(session) => {
@@ -922,6 +933,36 @@ impl<'a> RemoteLeaseRuntime<'a> {
         // the backing agent against the session projection.
         crate::app::KernelSessionReadService::new(&*self.app).session_snapshot(session.id())?;
         Ok(agent)
+    }
+
+    /// The agent the worker runs a leased agent as; `None` once the lease is gone.
+    pub(crate) fn backing_agent_id(&self, leased_agent_id: &str) -> Option<String> {
+        self.app
+            .leased_agents
+            .get(leased_agent_id)
+            .map(|leased| leased.backing_agent_id.clone())
+    }
+
+    /// The backing agent's id while its turn runs.
+    pub(crate) fn backing_agent_running_turn(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let leased = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        Ok(self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )?
+            .map(|_| leased.backing_agent_id))
     }
 
     pub(crate) fn destroy_leased_agent(
@@ -1299,21 +1340,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if self
+        let active_turn = self
             .app
             .prompt_owner_active_prompt_for_agent(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
             )?
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update leased agent config",
-                message: format!(
-                    "leased agent `{leased_agent_id}` has an active turn; update the config after it finishes"
-                ),
-            });
-        }
+            .is_some();
 
         let config_changed = leased_agent.execution_mode != Some(execution_mode)
             || leased_agent.permission_level != Some(permission_level);
@@ -1323,6 +1356,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_agent_id,
             ) {
                 match run.state() {
+                    // A running turn keeps its process: the limit moves in place, or the
+                    // step-boundary swap or the next dispatch replaces the process.
+                    ProviderRunState::Starting
+                    | ProviderRunState::Running
+                    | ProviderRunState::Parked
+                        if active_turn =>
+                    {
+                        if self
+                            .app
+                            .providers
+                            .adapter_supports_turn_scoped_execution_config(run.adapter_key())
+                        {
+                            let updated = self.app.providers.update_run_execution_config(
+                                run.id(),
+                                execution_mode,
+                                permission_level,
+                            )?;
+                            self.app.update_provider_run_projection(updated);
+                        }
+                    }
                     ProviderRunState::Starting
                     | ProviderRunState::Running
                     | ProviderRunState::Parked => {
@@ -1648,6 +1701,7 @@ mod tests {
                 account.clone(),
                 Some("gpt-6-luna".into()),
                 Some("low".into()),
+                false,
             )
             .unwrap();
         let first = create(&mut app).expect("first endpoint slot should be available");
@@ -1968,19 +2022,34 @@ mod tests {
     }
 
     #[test]
-    fn leased_agent_config_update_still_blocks_active_prompt_owner() {
+    fn leased_agent_config_update_is_taken_while_a_turn_runs() {
         let (mut app, leased_agent) = leased_agent_fixture(false);
         sync_active_prompt(&mut app, &leased_agent);
 
-        let error = RemoteLeaseRuntime::new(&mut app)
+        let updated = RemoteLeaseRuntime::new(&mut app)
             .update_leased_agent_config(
                 &leased_agent.id,
                 crate::provider::AgentExecutionMode::Plan,
                 crate::provider::AgentPermissionLevel::Required,
             )
-            .expect_err("active prompt ownership should block leased config update");
+            .expect("a running turn takes a config update");
 
-        assert_active_turn_error(error, "update leased agent config");
+        assert_eq!(
+            updated.execution_mode,
+            Some(crate::provider::AgentExecutionMode::Plan)
+        );
+    }
+
+    #[test]
+    fn leased_agent_meta_mode_update_still_waits_for_the_turn() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        sync_active_prompt(&mut app, &leased_agent);
+
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_meta_mode(&leased_agent.id, true)
+            .expect_err("active prompt ownership should block a meta-mode update");
+
+        assert_active_turn_error(error, "update leased agent meta mode");
     }
 
     fn leased_agent_fixture(home_agent_metaagent: bool) -> (DaemonApp, LeasedAgent) {

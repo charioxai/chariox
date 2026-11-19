@@ -595,7 +595,7 @@ impl CommandRouter {
         Ok(result)
     }
 
-    async fn dispatch_meta_agent_spawn_command(
+    pub(super) async fn dispatch_meta_agent_spawn_command(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
         session: &crate::session::RuntimeSession,
@@ -948,7 +948,11 @@ impl CommandRouter {
                     crate::local::CreateAgentTriggerRequest {
                         session_id: session.id().to_string(),
                         agent_id: actor.id().to_string(),
-                        source: crate::local::AgentTriggerSourceRequest::Notification { source },
+                        source: crate::local::AgentTriggerSourceRequest::Notification {
+                            source,
+                            options: Vec::new(),
+                            once: false,
+                        },
                         busy_policy: None,
                         prompt,
                     },

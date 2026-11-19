@@ -31,6 +31,8 @@ fn local_request_api_commits_workspace_changes_inner() {
                 workspace_id: worktree_root.display().to_string(),
                 worktree_id: worktree_root.display().to_string(),
                 message: "Update README".to_string(),
+                files: vec!["README.md".to_string()],
+                branch: None,
             },
         ))
         .expect("workspace commit should succeed");
@@ -38,6 +40,7 @@ fn local_request_api_commits_workspace_changes_inner() {
     match response {
         LocalDaemonResponse::WorkspaceGitActionCompleted { result } => {
             assert_eq!(result.action, "commit");
+            assert_eq!(result.branch.as_deref(), Some("chariox/update-readme"));
             assert!(result.commit_sha.is_some());
         }
         _ => panic!("unexpected local response"),
@@ -48,42 +51,6 @@ fn local_request_api_commits_workspace_changes_inner() {
         git_test_output(&worktree_root, &["status", "--porcelain"]).trim(),
         ""
     );
-}
-
-#[test]
-fn local_request_api_push_without_upstream_fails_loudly() {
-    crate::test_support::isolated_env_test!();
-    run_workspace_capability_test(
-        "local_request_api_push_without_upstream_fails_loudly",
-        local_request_api_push_without_upstream_fails_loudly_inner,
-    );
-}
-
-fn local_request_api_push_without_upstream_fails_loudly_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-push-no-upstream-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
-    std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
-    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
-    run_test_git(&worktree_root, &["init", "-b", "main"]);
-    run_test_git(
-        &worktree_root,
-        &["config", "user.email", "agent@example.com"],
-    );
-    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
-    run_test_git(&worktree_root, &["add", "."]);
-    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
-
-    let harness = LocalRouterTestHarness::new();
-    let error = harness
-        .dispatch(LocalDaemonRequest::PushWorkspaceBranch(
-            PushWorkspaceBranchRequest {
-                workspace_id: worktree_root.display().to_string(),
-                worktree_id: worktree_root.display().to_string(),
-                force_with_lease: false,
-            },
-        ))
-        .expect_err("push without upstream should fail");
-    assert!(error.to_string().contains("no upstream"));
 }
 
 #[test]

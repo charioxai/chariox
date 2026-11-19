@@ -159,6 +159,7 @@ fn restart_failure_retirement_keeps_owned_work_and_requires_current_revision() {
         f.apply(Operation::RetireRestartFailure {
             task: "p".into(),
             revision: before.blocked_revision + u64::from(retained_work == "stale"),
+            later_prompt: "later".into(),
             now: 3,
         });
         let after = f.task();
@@ -205,6 +206,7 @@ fn restart_failure_retirement_keeps_pending_deliveries() {
     f.apply(Operation::RetireRestartFailure {
         task: "p".into(),
         revision: before.blocked_revision,
+        later_prompt: "later".into(),
         now: 3,
     });
     assert_eq!(f.task(), before);

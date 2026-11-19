@@ -24,7 +24,9 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
+        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+            self.session_store.get_session(id).ok()
+        })?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -293,6 +295,7 @@ mod tests {
         let room = |id: &str, owner: &str, prompt_at_ms: u64| {
             let mut room = crate::session::RuntimeSession::new(
                 id,
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -326,6 +329,7 @@ mod tests {
         let state = fixture();
         let mut room = crate::session::RuntimeSession::new(
             "unrelated-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

@@ -282,3 +282,59 @@ fn catalog_handoff_cannot_replace_a_wait_or_another_pending_intent() {
         assert_eq!(f.task(), before);
     }
 }
+
+#[test]
+fn a_turn_its_task_was_resumed_past_settles_to_the_task_it_left() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "need the owner to choose".into(),
+    });
+    // The owner answers the card while the blocking turn is still ending.
+    f.apply(Operation::OwnerResponse {
+        task: "p".into(),
+        revision: f.task().blocked_revision,
+        resume: true,
+        now: 3,
+    });
+    let resume = f
+        .task()
+        .pending_prompt_id
+        .expect("the Resume continuation is pending");
+    f.apply(Operation::BeginContinuation {
+        task: "p".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: resume.clone(),
+        run: Some("run".into()),
+        now: 4,
+    });
+    // Both what the output pump does while the turn ends and its settlement leave the task on the continuation.
+    let Outcome::Task(begun) = f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: Some("run".into()),
+        now: 5,
+    }) else {
+        panic!("the ended turn begins nothing")
+    };
+    assert_eq!(begun.prompt_id, resume);
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!("the ended turn settles")
+    };
+    assert!(!correction);
+    assert_eq!(task.prompt_id, resume, "the task stays on its continuation");
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .len(),
+        1,
+        "no second task is made for the old turn"
+    );
+}

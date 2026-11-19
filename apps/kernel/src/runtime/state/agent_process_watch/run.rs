@@ -4,7 +4,7 @@
 //! shutdown) but its raw output goes back to the kernel caller only, which
 //! decides what the model may see.
 use super::*;
-use std::io::Write;
+use std::io::{Read, Write};
 use zeroize::Zeroizing;
 
 /// Raw output kept per stream; a Vault tool never needs more.

@@ -13,11 +13,11 @@ pub(super) const STILL_RUNNING_NOTE: &str =
     "A background command was still running when this agent was released; its result is not part of this answer.";
 
 #[derive(Clone)]
-struct HeldTask {
+pub(super) struct HeldTask {
     room: String,
     agent: String,
     run: String,
-    prompt: String,
+    pub(super) prompt: String,
     /// The provider's notification turn has produced output: it is executing, not waiting.
     notification_started: bool,
 }
@@ -69,7 +69,17 @@ impl BackgroundHolds {
         self.lock().values().any(|held| held.run == run)
     }
 
-    fn of_run(&self, room: &str, agent: &str, run: &str) -> Vec<(String, HeldTask)> {
+    /// The projected worker run that holds a task of a leased `agent`, if one does.
+    pub(super) fn leased_run_of_agent(&self, room: &str, agent: &str) -> Option<String> {
+        self.lock()
+            .values()
+            .find(|held| {
+                held.room == room && held.agent == agent && held.run.starts_with("leased:")
+            })
+            .map(|held| held.run.clone())
+    }
+
+    pub(super) fn of_run(&self, room: &str, agent: &str, run: &str) -> Vec<(String, HeldTask)> {
         self.lock()
             .iter()
             .filter(|(_, held)| held.room == room && held.agent == agent && held.run == run)

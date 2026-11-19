@@ -18,7 +18,7 @@ test("waiting room choice projects selected session, remote inventory, terminal,
   ]
   const remote = remoteState()
   const choice = waitingRoomChoice(
-    waitingRoomState({
+    startState({
       sessionIndex: 1,
       machineIndex: 0,
       remoteKernelIndex: 0,
@@ -41,7 +41,7 @@ test("waiting room choice projects selected session, remote inventory, terminal,
 test("waiting room model and effort helpers project provider model variants", () => {
   const catalog = fallbackProviderCatalog()
   const modelOption = catalogModelOptions(catalog, "opencode")[0]
-  const model = waitingRoomModel(waitingRoomState({ modelId: modelOption?.id ?? "" }), catalog)
+  const model = waitingRoomModel(startState({ modelId: modelOption?.id ?? "" }), catalog)
 
   assert.equal(model?.label, "gpt-5.4")
   assert.equal(waitingRoomEfforts(model).includes("high"), true)
@@ -51,7 +51,7 @@ test("waiting room model and effort helpers project provider model variants", ()
 test("waiting room choice selects unattached agents in shared projected order", () => {
   const catalog = fallbackProviderCatalog()
   const choice = waitingRoomChoice(
-    waitingRoomState({ externalSessionIndex: 0 }),
+    startState({ externalSessionIndex: 0 }),
     [],
     catalog,
     {
@@ -75,13 +75,13 @@ test("waiting room choice clamps stale unattached agent indexes", () => {
   }
 
   assert.equal(waitingRoomChoice(
-    waitingRoomState({ externalSessionIndex: 99 }),
+    startState({ externalSessionIndex: 99 }),
     [],
     catalog,
     remote,
   ).externalProviderSession?.external_session_id, "codex:old")
   assert.equal(waitingRoomChoice(
-    waitingRoomState({ externalSessionIndex: -4 }),
+    startState({ externalSessionIndex: -4 }),
     [],
     catalog,
     remote,
@@ -129,7 +129,7 @@ function externalSession(
   }
 }
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

@@ -22,12 +22,12 @@ use crate::runtime::event_log::{EventLog, EventRetentionPolicy, ReplayOutcome};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::command_cache::CommandResultCache;
 use crate::runtime_transport::{
-    WatchResult, RECENT_EVENT_LIMIT, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
-    WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
+    WatchResult, RECENT_EVENT_LIMIT, ROOM_LIST_ROW_COALESCE_MS,
+    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
     event_is_relevant_to_attachment, subscription_event_stream_id, terminal_output_event_batches,
-    KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    KernelEvent, ROOM_LIST_SENTINEL_ID, ROOM_LIST_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -42,6 +42,8 @@ mod connection_state;
 mod connector;
 pub(crate) use connector::relay_refusal;
 mod daemon_requests;
+#[cfg(test)]
+pub(crate) use daemon_requests::MAX_REPLY_BYTES;
 mod display_admission;
 mod display_delivery;
 mod display_ingress;
@@ -79,7 +81,7 @@ use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
     send_outgoing_event_envelope,
 };
-use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
+use events::{emit_relay_event, replay_recent_relay_events, HeartbeatLane, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 use local_browser::LocalBrowserDirect;
 pub(crate) use metadata_client::MainConnection;
@@ -111,8 +113,8 @@ use peer_requests::handle_daemon_peer_request;
 pub(crate) use peer_requests::send_authenticated_peer_request_for_test;
 pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
-    abort_inventory_refresh_task, clear_remote_inventory_projection, remote_inventory_refresh_due,
-    spawn_remote_inventory_projection_refresh,
+    abort_inventory_refresh_task, clear_remote_inventory_projection, inventory_refresh_wanted,
+    remote_inventory_refresh_due, spawn_remote_inventory_projection_refresh,
 };
 use subscriptions::{
     abort_subscription_tasks, handle_relay_subscribe, handle_relay_unsubscribe,
@@ -170,8 +172,11 @@ pub(crate) async fn resolve_pending_peer_error_for_test(
 }
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
+/// The heartbeat tick runs local work; the relay pings every 30 s on its own, so a heartbeat that
+/// carries no registration goes out only on every sixth tick.
+const RELAY_BARE_HEARTBEAT_TICKS: u64 = 6;
 const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;
-const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
+const RELAY_ROOM_LIST_INTERVAL_TICKS: u64 = 100;
 const RELAY_OUTGOING_QUEUE_LIMIT: usize = 1024;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);

@@ -403,11 +403,16 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
     let Some(Ok(target)) = launch_result else {
         panic!("worker should retain the completed launch target: {launch_result:?}");
     };
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
         target.development
     else {
         panic!("selected Project should produce source repositories");
     };
+    let repositories = projects
+        .into_iter()
+        .next()
+        .expect("one Project")
+        .repositories;
     assert_eq!(repositories.len(), 2);
     for repository in repositories {
         let path = std::path::PathBuf::from(repository.workspace_path);
@@ -442,7 +447,6 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
         !seed_session_id.is_empty(),
         "the public Project selection must have created a home session"
     );
-    fixture.cleanup();
 }
 
 struct TestCloudApi {
@@ -594,13 +598,13 @@ fn isolated_worker_test_config(
     config.runtime_mcp_host = "127.0.0.1".to_string();
     config.runtime_mcp_port = websocket_port.saturating_add(1);
     config.user_config.history.operational.path =
-        Some(root.join("history.db").display().to_string());
+        Some(root.join("history/history.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
         Some(root.join("artifacts.db").display().to_string());
     config.user_config.state.path = Some(root.join("state/state.db").display().to_string());
-    config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+    config.user_config.credential_vault.path = root.join("vault/vault.json").display().to_string();
     config
 }
 

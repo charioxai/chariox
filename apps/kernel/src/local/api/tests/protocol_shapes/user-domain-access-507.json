@@ -76,7 +76,6 @@
                         ],
                         "session_id": "s",
                         "since_ms": 1,
-                        "prompt_id": "p",
                         "expires_at_ms": 28800001
                     },
                     {

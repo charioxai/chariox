@@ -259,6 +259,9 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
     };
     let session_id = session.id().to_string();
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "codex", &["gpt-5.2"])
+    });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             max_context_tokens: None,

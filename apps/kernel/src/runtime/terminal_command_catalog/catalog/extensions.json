@@ -6,7 +6,7 @@
     "value": "/mcp ",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -16,7 +16,7 @@
         "value": "/mcp list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -26,7 +26,7 @@
         "value": "/mcp install ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -36,7 +36,7 @@
         "value": "/mcp import ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -64,7 +64,7 @@
         "value": "/mcp show ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       }
     ]
@@ -216,7 +216,7 @@
     "value": "/env ",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -226,7 +226,7 @@
         "value": "/env list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -236,7 +236,7 @@
         "value": "/env register ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -246,7 +246,7 @@
         "value": "/env remove ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -256,7 +256,7 @@
         "value": "/env show ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       }
     ]
@@ -305,7 +305,7 @@
     "value": "/script ",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -315,7 +315,7 @@
         "value": "/script list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -325,7 +325,7 @@
         "value": "/script validate ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -335,7 +335,7 @@
         "value": "/script register ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -363,7 +363,7 @@
         "value": "/script show ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       }
     ]
@@ -375,7 +375,7 @@
     "value": "/credential ",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -385,7 +385,7 @@
         "value": "/credential list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -395,7 +395,7 @@
         "value": "/credential set ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -405,7 +405,7 @@
         "value": "/credential register ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -415,7 +415,7 @@
         "value": "/credential remove ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -425,7 +425,7 @@
         "value": "/credential show ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       }
     ]
@@ -437,7 +437,7 @@
     "value": "/connector ",
     "surfaces": [
       "session",
-      "waiting_room"
+      "room_list"
     ],
     "children": [
       {
@@ -447,7 +447,7 @@
         "value": "/connector list",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -457,7 +457,7 @@
         "value": "/connector register ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -467,7 +467,7 @@
         "value": "/connector doctor ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -477,7 +477,7 @@
         "value": "/connector test ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       },
       {
@@ -505,7 +505,7 @@
         "value": "/connector show ",
         "surfaces": [
           "session",
-          "waiting_room"
+          "room_list"
         ]
       }
     ]

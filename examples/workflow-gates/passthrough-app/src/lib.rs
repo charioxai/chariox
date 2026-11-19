@@ -9,11 +9,11 @@ wit_bindgen::generate!({
         }"#,
     world: "passthrough", generate_all,
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, Invocation, InvocationContext, Occurrence, Wake},
     events, registry,
 };
-use exports::chariox::app::handlers::Guest;
+use exports::chariox::app1_0_0::handlers::Guest;
 use serde_json::Value;
 use wit_bindgen::FutureReader;
 struct App;

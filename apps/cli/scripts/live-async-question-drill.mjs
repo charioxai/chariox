@@ -138,7 +138,7 @@ async function setup(name,relayUrl,relaySecret) {
   k.client=new LocalIpcClient(k.url,{localAuthEnvironment:env});clients.push(k.client)
   await until(name+' ready',()=>k.client.send({GetDaemonHealth:null}).catch(()=>null))
   k.passkeys=[];k.client.onKernelEvent(e=>{if(e.event==='passkey_prompts_changed')k.passkeys=e.prompts})
-  await k.client.subscribeToWaitingRoomInventory()
+  await k.client.subscribeToRoomList()
   const linked=variant(await k.client.send({LinkProviderAccountProfile:{provider:'codex',label:'amask-'+name,path:profilePath}}),'ProviderAccountProfile').profile
   k.profile=linked.profile_id
   await k.client.send({RefreshProviderAccountProfile:{provider:"codex",account_profile:k.profile}})

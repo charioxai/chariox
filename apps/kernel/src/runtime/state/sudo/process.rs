@@ -11,7 +11,12 @@ impl KernelRuntimeState {
         self.sudo_for_chain(&chain)
     }
 
-    fn sudo_for_chain(&self, chain: &[ProcessIdentity]) -> Result<KernelSudoTurn, DaemonError> {
+    /// The run of the nearest tracked provider process of `chain`, and where that process sits in
+    /// the chain. The nearest launched provider is the boundary; shared servers fail closed.
+    fn tracked_provider_run(
+        &self,
+        chain: &[ProcessIdentity],
+    ) -> Result<(usize, String), DaemonError> {
         let mut roots = self
             .owned
             .provider_process_tracking
@@ -45,7 +50,6 @@ impl KernelRuntimeState {
                 .into_iter()
                 .map(|(run_id, identity)| (identity, vec![run_id])),
         );
-        // The nearest launched provider is the boundary. Shared servers fail closed.
         let (root_index, owners) = chain
             .iter()
             .enumerate()
@@ -64,7 +68,26 @@ impl KernelRuntimeState {
         let [run_id] = owners.as_slice() else {
             return Err(error("sudo requires one dedicated provider process"));
         };
-        let turn = self.sudo_for_provider_run(run_id)?;
+        Ok((root_index, run_id.clone()))
+    }
+
+    /// The agent whose provider process tree holds `peer`, when the kernel launched one for it.
+    pub(in crate::runtime::state) fn agent_of_peer(
+        &self,
+        peer: &ProcessIdentity,
+    ) -> Option<crate::agent::AgentInstance> {
+        let chain = ancestry(peer).ok()?;
+        let (_, run_id) = self.tracked_provider_run(&chain).ok()?;
+        let run = self.owned.provider_store.get_run(&run_id).ok()?;
+        self.owned
+            .agent_store
+            .get_agent(run.agent_instance_id()?)
+            .ok()
+    }
+
+    fn sudo_for_chain(&self, chain: &[ProcessIdentity]) -> Result<KernelSudoTurn, DaemonError> {
+        let (root_index, run_id) = self.tracked_provider_run(chain)?;
+        let turn = self.sudo_for_provider_run(&run_id)?;
         let session = self.owned.session_store.get_session(&turn.session_id)?;
         let born_after_cutoff = self
             .owned

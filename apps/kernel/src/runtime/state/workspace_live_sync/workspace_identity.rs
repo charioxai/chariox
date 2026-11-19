@@ -152,6 +152,7 @@ mod tests {
     fn workspace_link_attachment_overrides_workspace_live_sync_coordination_identity() {
         let mut session = crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "/tmp/worktree-a",
@@ -207,6 +208,7 @@ mod tests {
     fn workspace_link_identities_match_across_different_physical_worktrees() {
         let mut session = crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "/tmp/home-worktree",
@@ -264,6 +266,7 @@ mod tests {
     fn workspace_link_identity_rewrites_worker_context_path_before_matching() {
         let mut session = crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "/tmp/home-worktree",

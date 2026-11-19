@@ -28,7 +28,7 @@ Achieved:
   `--strict-mcp-config`, keeping MCP wiring inside the provider adapter.
 - Verified local workflow parity with a Claude workflow node using a granted
   provider MCP tool plus Chariox runtime MCP workflow output submission.
-- Added Claude Code to CLI waiting-room/backend selection, command-center
+- Added Claude Code to CLI Room list/backend selection, command-center
   provider selection, provider preference persistence, and backend model
   filtering.
 - Normalized OpenCode's upstream provider catalog into the single Chariox
@@ -38,7 +38,7 @@ Achieved:
   explicit `CHARIOX_RELAY_URL` / `CHARIOX_RELAY_TOKEN` now take precedence and do
   not get replaced by automatic Cloud relay token refresh during daemon startup.
 - Verified the remote machine Claude path through a local relay: home and worker
-  daemons registered in the same scoped relay realm, the waiting room surfaced
+  daemons registered in the same scoped relay realm, the Room list surfaced
   the worker kernel with Claude/Codex/OpenCode, a remote Claude agent spawned on
   the worker machine, completed one prompt, and accepted cancellation of a second
   prompt.
@@ -62,7 +62,7 @@ Verified:
 - `cargo test --manifest-path apps/kernel/Cargo.toml opencode_backend_catalog --lib`
 - `pnpm --filter @chariox/cli run lint`
 - `pnpm --filter @chariox/cli run build`
-- `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/waiting-room.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
+- `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/Room list.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
 - Live kernel catalog probe returned connected providers
   `["claude","codex","opencode"]`, Claude models
   `["claude-opus-4-7","claude-sonnet-4-6","haiku","opus","sonnet"]`,
@@ -363,7 +363,7 @@ Work:
 - Ensure remote clients can launch and interact with a Claude provider run hosted
   by a kernel exactly as they do with Codex/OpenCode.
 - Ensure remote worker kernels can advertise Claude availability through existing
-  waiting-room/provider catalog projection.
+  Room list/provider catalog projection.
 - Keep provider process and provider auth local to the worker kernel.
 - Ensure relay target selection uses heartbeat freshness and never treats stale
   Claude-capable machines as online.

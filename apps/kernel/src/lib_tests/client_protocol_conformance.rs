@@ -440,7 +440,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "permissions",
                     vec![evidence(
-                        "apps/kernel/src/local/api/tests/waiting_room_projection.rs",
+                        "apps/kernel/src/local/api/tests/room_list_projection.rs",
                         &["permission_level", "TerminalType::Web"],
                     )],
                 ),

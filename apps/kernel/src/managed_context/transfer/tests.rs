@@ -52,11 +52,12 @@ fn plain_workspace_launch_target_survives_transfer_store_restart() {
     use crate::managed_context::development::DevelopmentWorkspaceKind;
     let root = test_root("plain-launch-target");
     let mut target = large_launch_target("plain-context");
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
         &mut target.development
     else {
         unreachable!()
     };
+    let repositories = &mut projects[0].repositories;
     // Mixed Projects must retain the kind of each Workspace across restart.
     repositories[0].workspace_kind = DevelopmentWorkspaceKind::Directory;
     repositories[0].head_sha.clear();
@@ -88,12 +89,12 @@ fn plain_workspace_launch_target_rejects_inconsistent_head_metadata() {
         (DevelopmentWorkspaceKind::Git, "z".repeat(40)),
     ] {
         let mut target = large_launch_target("invalid-head-context");
-        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-            repositories, ..
-        } = &mut target.development
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+            &mut target.development
         else {
             unreachable!()
         };
+        let repositories = &mut projects[0].repositories;
         repositories[0].workspace_kind = kind;
         repositories[0].head_sha = head;
         let mut state = PersistedTransferState::default();
@@ -415,14 +416,13 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
     let target = store
         .launch_target("context-1", &plan_digest)
         .expect("launch target");
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-        primary_repository_id,
-        repositories,
-        ..
-    } = &target.development
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+        &target.development
     else {
         panic!("expected imported development launch target")
     };
+    let primary_repository_id = &projects[0].primary_repository_id;
+    let repositories = &projects[0].repositories;
     assert_eq!(primary_repository_id, "repository-1");
     assert_eq!(
         repositories[0].workspace_path,
@@ -682,20 +682,13 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
     assert_eq!(target.environment_id, "environment-1");
     assert!(matches!(
         &target.development,
-        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-            primary_repository_id,
-            repositories,
-            ..
-        } if primary_repository_id == "repository-1"
-            && repositories[0].workspace_path == repository_path.display().to_string()
-            && repositories[0].head_sha == head_sha
+        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } if projects[0].primary_repository_id == "repository-1"
+            && projects[0].repositories[0].workspace_path == repository_path.display().to_string()
+            && projects[0].repositories[0].head_sha == head_sha
     ));
     assert!(!matches!(
         &target.development,
-        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-            primary_repository_id,
-            ..
-        } if primary_repository_id == "stale-repository"
+        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } if projects[0].primary_repository_id == "stale-repository"
     ));
     drop(recovered);
 
@@ -1945,6 +1938,17 @@ fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
     }
 }
 
+thread_local! {
+    // Each test runs on a thread of its own, so this directory ends with the test.
+    static DESTINATION_OWNER: crate::test_support::TestTempDir =
+        crate::test_support::TestTempDir::new("managed-context-transfer");
+}
+
+fn destination_parent() -> PathBuf {
+    // The transfer creates this directory itself, as a private one.
+    DESTINATION_OWNER.with(|directory| directory.join("managed-projects"))
+}
+
 fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer {
     ArmManagedContextTransfer {
         plan: crate::managed_context::package::ManagedContextPlanBinding {
@@ -1954,7 +1958,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
             kernel_context:
                 crate::managed_context::package::ManagedContextKernelSelection::Empty,
             development:
-                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProjects { projects: vec![crate::managed_context::package::ManagedContextSourceProject {
                     project_id: "project-1".to_string(),
                     repositories: vec![
                         crate::managed_context::development::DevelopmentSourceRepositoryBinding {
@@ -1963,7 +1967,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
                             worktree_id: None,
                         },
                     ],
-                },
+                }] },
             provider_accounts:
                 crate::managed_context::package::ManagedContextProviderAccountSelection::None,
             git_credentials:
@@ -1980,7 +1984,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
         capability: "c".repeat(43),
         archive_sha256: sha256_bytes(archive),
         archive_size_bytes: archive.len() as u64,
-        destination_parent: std::env::temp_dir().join("managed-projects"),
+        destination_parent: destination_parent(),
         expires_at_ms,
     }
 }
@@ -1997,7 +2001,7 @@ fn managed_package_receipt(
         package_sha256: sha256_bytes(archive),
         plan_digest: format!("sha256:{}", "1".repeat(64)),
         development:
-            crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+            crate::managed_context::package::ManagedContextImportedDevelopment::FromSource { projects: vec![crate::managed_context::package::ManagedContextImportedProject {
                 project_id: "project-1".to_string(),
                 receipt: crate::managed_context::development::DevelopmentContextPublicationReceipt {
                     schema_version: 2,
@@ -2024,7 +2028,7 @@ fn managed_package_receipt(
                         },
                     ],
                 },
-            },
+            }] },
         kernel_context: crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
         provider_accounts:
             crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
@@ -2045,22 +2049,24 @@ fn large_launch_target(context_id: &str) -> crate::local::ManagedContextLaunchTa
         context_id: context_id.to_string(),
         plan_digest: format!("sha256:{}", sha256_bytes(context_id.as_bytes())),
         development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-            project_id: "project-1".to_string(),
-            destination_root: destination_root.display().to_string(),
-            primary_repository_id: repositories[0].repository_id.clone(),
-            repositories: repositories
-                .into_iter()
-                .map(
-                    |repository| crate::local::ManagedContextRepositoryLaunchTarget {
-                        workspace_kind: repository.workspace_kind,
-                        repository_id: repository.repository_id,
-                        role: repository.role,
-                        target_directory: repository.target_directory,
-                        workspace_path: repository.destination_path.display().to_string(),
-                        head_sha: repository.head_sha,
-                    },
-                )
-                .collect(),
+            projects: vec![crate::local::ManagedContextProjectLaunchTarget {
+                project_id: "project-1".to_string(),
+                destination_root: destination_root.display().to_string(),
+                primary_repository_id: repositories[0].repository_id.clone(),
+                repositories: repositories
+                    .into_iter()
+                    .map(
+                        |repository| crate::local::ManagedContextRepositoryLaunchTarget {
+                            workspace_kind: repository.workspace_kind,
+                            repository_id: repository.repository_id,
+                            role: repository.role,
+                            target_directory: repository.target_directory,
+                            workspace_path: repository.destination_path.display().to_string(),
+                            head_sha: repository.head_sha,
+                        },
+                    )
+                    .collect(),
+            }],
         },
     }
 }
@@ -2081,6 +2087,7 @@ fn large_managed_package_receipt(
             plan_digest: plan_digest.to_string(),
             development:
                 crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+                    projects: vec![crate::managed_context::package::ManagedContextImportedProject {
                     project_id: "project-1".to_string(),
                     receipt:
                         crate::managed_context::development::DevelopmentContextPublicationReceipt {
@@ -2095,6 +2102,7 @@ fn large_managed_package_receipt(
                                 .collect(),
                             repositories,
                         },
+                }],
                 },
             kernel_context:
                 crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
@@ -2459,12 +2467,12 @@ fn commit_owner_copy_with_history_padding(
     }
     if padding > 0 {
         let crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
-            receipt: development,
-            ..
+            projects,
         } = &mut receipt.development
         else {
             panic!("Project receipt required")
         };
+        let development = &mut projects[0].receipt;
         let repository = development.repositories[0].clone();
         for index in 1..32 {
             let mut extra = repository.clone();
@@ -2509,15 +2517,115 @@ fn repeated_owner_copies_of_one_project_register_distinct_target_projects() {
                 .ensure_managed_context_project(target, "user-1")
                 .expect("a repeated owner copy registers its target Project");
         });
-        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { project_id, .. } =
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
             target.development
         else {
             panic!("expected an imported Project")
         };
-        project_ids.push(project_id);
+        project_ids.push(projects[0].project_id.clone());
     }
     assert_ne!(project_ids[0], project_ids[1]);
     fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn a_copy_of_two_projects_registers_and_removes_both_target_projects() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    let runtime = harness.runtime_state();
+    let project =
+        |project_id: &str, folder: &str| crate::local::ManagedContextProjectLaunchTarget {
+            project_id: project_id.to_string(),
+            destination_root: format!("/managed/{folder}"),
+            primary_repository_id: format!("repository-{folder}"),
+            repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                repository_id: format!("repository-{folder}"),
+                role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                target_directory: "primary".to_string(),
+                workspace_path: format!("/managed/{folder}/primary"),
+                head_sha: "c".repeat(40),
+            }],
+        };
+    let target = crate::local::ManagedContextLaunchTarget {
+        destination: None,
+        environment_id: String::new(),
+        kernel_id: "kernel-target".to_string(),
+        context_id: "context-two".to_string(),
+        plan_digest: format!("sha256:{}", "2".repeat(64)),
+        development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            projects: vec![
+                project("copy-context-two-0", "one"),
+                project("copy-context-two-1", "two"),
+            ],
+        },
+    };
+    runtime
+        .ensure_managed_context_project(&target, "user-1")
+        .expect("both Projects register");
+    let mut registered = runtime
+        .list_room_list_projects("user-1")
+        .into_iter()
+        .map(|project| project.id().to_string())
+        .collect::<Vec<_>>();
+    registered.sort();
+    assert_eq!(registered, ["copy-context-two-0", "copy-context-two-1"]);
+    assert!(runtime
+        .remove_managed_context_project(&target, "user-1")
+        .expect("rolling back removes both"));
+    assert!(runtime.list_room_list_projects("user-1").is_empty());
+}
+
+#[test]
+fn a_copy_of_two_projects_registers_none_when_the_second_conflicts() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    let runtime = harness.runtime_state();
+    let project =
+        |project_id: &str, folder: &str| crate::local::ManagedContextProjectLaunchTarget {
+            project_id: project_id.to_string(),
+            destination_root: format!("/managed/{folder}"),
+            primary_repository_id: format!("repository-{folder}"),
+            repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                repository_id: format!("repository-{folder}"),
+                role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                target_directory: "primary".to_string(),
+                workspace_path: format!("/managed/{folder}/primary"),
+                head_sha: "c".repeat(40),
+            }],
+        };
+    let target = |projects: Vec<crate::local::ManagedContextProjectLaunchTarget>| {
+        crate::local::ManagedContextLaunchTarget {
+            destination: None,
+            environment_id: String::new(),
+            kernel_id: "kernel-target".to_string(),
+            context_id: "context-two".to_string(),
+            plan_digest: format!("sha256:{}", "2".repeat(64)),
+            development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                projects,
+            },
+        }
+    };
+    runtime
+        .ensure_managed_context_project(
+            &target(vec![project("copy-context-two-1", "elsewhere")]),
+            "user-1",
+        )
+        .expect("the second Project's id is already taken by another folder");
+    runtime
+        .ensure_managed_context_project(
+            &target(vec![
+                project("copy-context-two-0", "one"),
+                project("copy-context-two-1", "two"),
+            ]),
+            "user-1",
+        )
+        .expect_err("a conflicting second Project refuses the whole selection");
+    let registered = runtime
+        .list_room_list_projects("user-1")
+        .into_iter()
+        .map(|project| project.id().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(registered, ["copy-context-two-1"]);
 }
 
 #[test]

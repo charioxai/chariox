@@ -57,8 +57,10 @@ impl KernelRuntimeState {
                 Some(project.id().to_string()),
                 serde_json::json!({"project":project}),
             )?;
+            let execution_project = crate::session::ProjectId::new(&receipt.target_project_id)
+                .map_err(|source| move_error(source.to_string()))?;
             self.owned.session_store.write().restore_ephemeral_session(
-                bound.for_execution_project(&receipt.target_project_id, &primary, &primary),
+                bound.for_execution_project(execution_project, &primary, &primary),
             )?;
         }
         if !leased {
@@ -162,7 +164,7 @@ impl KernelRuntimeState {
         self.finish_agent_move_native_probe(&account_owner, &account_profile, imported)?;
         self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
-        self.record_waiting_room_change();
+        self.record_room_list_change();
         Ok(())
     }
 

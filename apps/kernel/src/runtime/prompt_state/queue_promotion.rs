@@ -66,8 +66,15 @@ mod tests {
     #[test]
     fn local_steer_hold_excludes_idle_queue_promotion() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let mut prompt = PromptQueueItem::new(
             "held",
             "client",
@@ -93,8 +100,15 @@ mod tests {
         let owner = PromptStateOwner::default();
         let setup = crate::session::RoomSetupStore::default();
         owner.set_room_setup(setup.clone());
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         setup.begin(
             "room",
             "agent",
@@ -133,8 +147,15 @@ mod tests {
     #[test]
     fn idle_promotion_claim_deduplicates_preparation_and_releases_for_retry() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         assert!(owner
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_none());

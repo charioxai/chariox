@@ -63,6 +63,35 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        self.resolve_home_credential_secret(context, credential_id, injection)
+            .await
+            .map(Some)
+    }
+
+    /// A Vault value for a file or command in the worker's workspace, resolved by the home
+    /// kernel for the home agent this leased run stands for.
+    pub(in crate::runtime::state) async fn resolve_remote_home_workspace_secret(
+        &self,
+        home: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        credential_id: &str,
+        target: &crate::config::VaultUseTarget,
+    ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+        self.resolve_home_credential_secret(
+            home,
+            credential_id,
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace {
+                target: target.clone(),
+            },
+        )
+        .await
+    }
+
+    async fn resolve_home_credential_secret(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        credential_id: &str,
+        injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
+    ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
         let home_kernel_id = context.home_kernel_id.clone();
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         let response = self
@@ -79,7 +108,7 @@ impl KernelRuntimeState {
             .await?;
         match response {
             RelayPeerResponse::HomeCredentialSecretResolved { secret_input, .. } => {
-                Ok(Some(secret_input.into_zeroizing()))
+                Ok(secret_input.into_zeroizing())
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "remote credential secret",
@@ -128,7 +157,7 @@ impl KernelRuntimeState {
         }))
     }
 
-    async fn remote_credential_context_for_provider_run(
+    pub(in crate::runtime::state) async fn remote_credential_context_for_provider_run(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
     ) -> Option<crate::transport::relay_peer::RemoteExtensionInvocationContext> {

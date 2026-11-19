@@ -19,6 +19,15 @@ pub(crate) fn build(world: &str, forbidden_import: bool) -> Vec<u8> {
             let package = resolve.push_str("probe.wit", &source).unwrap();
             resolve.select_world(&[package], Some("probe")).unwrap()
         }
+        chariox_app_wit::APP_WORLD_1_1 => {
+            let package = resolve
+                .packages
+                .iter()
+                .find(|(_, package)| package.name.to_string() == "chariox:app@1.1.0")
+                .map(|(id, _)| id)
+                .unwrap();
+            resolve.select_world(&[package], Some("app")).unwrap()
+        }
         chariox_app_wit::MIGRATION_WORLD => {
             resolve.select_world(&[package], Some("migration")).unwrap()
         }

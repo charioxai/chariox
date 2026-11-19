@@ -844,7 +844,7 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
             first_workspace
                 .session_request()
                 .with_agent_defaults(SessionAgentDefaults {
-                    provider: "codex".to_string(),
+                    provider: "dev-stub".to_string(),
                     model: Some("gpt-5.1".to_string()),
                     effort: Some("high".to_string()),
                     account_profile: None,
@@ -857,7 +857,7 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
         LocalDaemonResponse::SessionCreated { agent, .. } => agent,
         other => panic!("unexpected response: {other:?}"),
     };
-    assert_eq!(first_agent.provider(), "codex");
+    assert_eq!(first_agent.provider(), "dev-stub");
     assert_eq!(first_agent.model(), Some("gpt-5.1"));
 
     match client
@@ -865,7 +865,7 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
         .expect("get user config should succeed")
     {
         LocalDaemonResponse::UserConfig { config, .. } => {
-            assert_eq!(config.providers.default.as_deref(), Some("codex"));
+            assert_eq!(config.providers.default.as_deref(), Some("dev-stub"));
             assert_eq!(config.providers.model.as_deref(), Some("gpt-5.1"));
             assert_eq!(config.providers.effort.as_deref(), Some("high"));
         }
@@ -882,7 +882,7 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
         other => panic!("unexpected response: {other:?}"),
     };
     assert_eq!(
-        second_agent.provider(), "codex",
+        second_agent.provider(), "dev-stub",
         "a session created without an explicit selection should inherit the persisted config.toml default"
     );
     assert_eq!(second_agent.model(), Some("gpt-5.1"));

@@ -10,6 +10,7 @@ use super::workflow_canvas::{
 use super::workflow_graph::{
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
 };
+use super::workflow_responsible::{ResponsibleNotice, WorkflowResponsible};
 
 fn default_workflow_flush_agent_context_before_run() -> bool {
     true
@@ -183,6 +184,14 @@ pub struct WorkflowDefinition {
     controlled_by_metaagent_id: Option<String>,
     #[serde(default)]
     created_by_agent_id: Option<String>,
+    /// Who answers for the workflow: the creating agent, else the person.
+    #[serde(default)]
+    responsible: WorkflowResponsible,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    responsible_notice: Option<ResponsibleNotice>,
+    /// The number of the latest run; the next run is `run_counter + 1`.
+    #[serde(default)]
+    run_counter: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<WorkflowOrigin>,
     #[serde(default = "unix_epoch_ms")]
@@ -215,6 +224,9 @@ impl WorkflowDefinition {
             prompt: None,
             controlled_by_metaagent_id: None,
             created_by_agent_id: None,
+            responsible: WorkflowResponsible::Person,
+            responsible_notice: None,
+            run_counter: 0,
             origin: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
@@ -265,6 +277,30 @@ impl WorkflowDefinition {
 
     pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
         self.controlled_by_metaagent_id.as_deref()
+    }
+
+    pub fn responsible(&self) -> &WorkflowResponsible {
+        &self.responsible
+    }
+
+    pub fn responsible_notice(&self) -> Option<&ResponsibleNotice> {
+        self.responsible_notice.as_ref()
+    }
+
+    /// A later choice replaces the notice a fallback left; a fallback sets it.
+    pub(crate) fn set_responsible(
+        &mut self,
+        responsible: WorkflowResponsible,
+        notice: Option<ResponsibleNotice>,
+    ) {
+        self.responsible = responsible;
+        self.responsible_notice = notice;
+    }
+
+    /// Hands out the number of the workflow's next run.
+    pub(crate) fn next_run_number(&mut self) -> u32 {
+        self.run_counter += 1;
+        self.run_counter
     }
 
     pub fn created_at_ms(&self) -> u64 {

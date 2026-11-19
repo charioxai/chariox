@@ -113,6 +113,15 @@ pub(crate) enum FileGrantCommand {
         installation: String,
         grant_id: String,
     },
+    /// The App's waiting call went away: ends the pick only while it is still
+    /// unanswered, in the same transaction that reads its state, so an answer
+    /// that lands first stays granted.
+    Cancel {
+        owner: String,
+        installation: String,
+        operation_id: String,
+        now_ms: u64,
+    },
     /// The owner ends the installation's unanswered picks and unimported
     /// grants, or those of one pick. Imported files stay in the App's data.
     Revoke {
@@ -316,6 +325,16 @@ impl DurableKernelStateStore {
             .filter(|pick| pick.owner == owner && pick.installation == installation))
     }
 
+    /// Whether the request is still waiting for the owner's answer.
+    pub(crate) fn app_file_pick_pending(&self, operation_id: &str) -> Result<bool, &'static str> {
+        let connection = self
+            .lock_connection("durable_state.app_file_pick_pending")
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        Ok(load(&connection, operation_id)
+            .map_err(|_| "STORAGE_UNAVAILABLE")?
+            .is_some_and(|pick| pick.state == PickState::Pending))
+    }
+
     /// The oldest pending pick of each installation, oldest first.
     pub(crate) fn pending_app_file_picks(
         &self,
@@ -448,6 +467,26 @@ fn apply(
             transaction
                 .execute(
                     "UPDATE app_file_picks SET state='declined', updated_ms=?2
+                     WHERE operation_id=?1 AND state='pending'",
+                    params![operation_id, now_ms as i64],
+                )
+                .map_err(storage)?;
+            load(&transaction, &operation_id).map_err(storage)?
+        }
+        FileGrantCommand::Cancel {
+            owner,
+            installation,
+            operation_id,
+            now_ms,
+        } => {
+            load(&transaction, &operation_id)
+                .map_err(storage)?
+                .filter(|pick| pick.owner == owner && pick.installation == installation)
+                .ok_or("NOT_FOUND")?;
+            // A pending pick holds no grants yet: nothing else to drop.
+            transaction
+                .execute(
+                    "UPDATE app_file_picks SET state='expired', updated_ms=?2
                      WHERE operation_id=?1 AND state='pending'",
                     params![operation_id, now_ms as i64],
                 )

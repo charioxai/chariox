@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use tokio::time::{sleep, Duration, Instant};
 
-use super::app_inbox_runtime::RouteContract;
+use super::app_inbox_runtime::{RouteContract, RouteOrigin};
 use super::workflow_publication_runtime_lifecycle::DEPLOYMENT_COPY_KEY_PREFIX as COPY_KEY_PREFIX;
 use super::KernelRuntimeState;
 use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
@@ -856,6 +856,7 @@ impl KernelRuntimeState {
                     connection,
                 },
                 contract,
+                RouteOrigin::Owner,
             )
             .await
             .map_err(|code| app_error("an inbox route could not be created for the copy", code))?;

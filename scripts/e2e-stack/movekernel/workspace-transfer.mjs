@@ -26,7 +26,7 @@ try {
     assert.equal(outbound.receipt.kernelContext.kind, 'empty');
     const materialized = await launchTarget(target, outbound);
     assert.equal(materialized.kind, 'from_source');
-    const moved = { primary: materialized.repositories.find(r => r.role === 'primary').workspacePath, notes: materialized.repositories.find(r => r.role === 'supporting').workspacePath };
+    const moved = { primary: materialized.projects[0].repositories.find(r => r.role === 'primary').workspacePath, notes: materialized.projects[0].repositories.find(r => r.role === 'supporting').workspacePath };
     assert.ok((await lstat(moved.primary + '/.git')).isDirectory());
     assert.equal(await realpath(moved.primary + '/' + text(moved.primary, ['rev-parse', '--git-common-dir'])), moved.primary + '/.git');
     assert.deepEqual(gitState(moved.primary), before.git);
@@ -53,7 +53,7 @@ try {
     const targetId = await project(target, moved, materialized.projectId);
     const back = await copy(target, await selection(target, source, targetId, moved), 'return');
     assert.equal(back.phase, 'completed');
-    const home = await launchTarget(source, back), homePrimary = home.repositories.find(r => r.role === 'primary').workspacePath, homeNotes = home.repositories.find(r => r.role === 'supporting').workspacePath;
+    const home = await launchTarget(source, back), homePrimary = home.projects[0].repositories.find(r => r.role === 'primary').workspacePath, homeNotes = home.projects[0].repositories.find(r => r.role === 'supporting').workspacePath;
     assert.deepEqual(gitState(homePrimary), latest.git);
     assert.deepEqual(await tree(homePrimary), latest.primary);
     assert.deepEqual(await tree(homeNotes), latest.notes);

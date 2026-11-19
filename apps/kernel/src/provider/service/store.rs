@@ -463,6 +463,15 @@ impl ProviderProcessServiceStore {
         self.write().terminate_run_provider_only(session_id, run_id)
     }
 
+    pub(crate) fn run_ids_for_session(&self, session_id: &str) -> Vec<String> {
+        self.read()
+            .runs
+            .values()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_owned())
+            .collect()
+    }
+
     pub(crate) fn run_owners_for_session(&self, session_id: &str) -> Vec<(String, String)> {
         self.read()
             .runs
@@ -557,6 +566,18 @@ impl ProviderProcessServiceStore {
     pub(crate) fn adapter_supports_turn_scoped_execution_config(&self, adapter_key: &str) -> bool {
         self.read()
             .adapter_supports_turn_scoped_execution_config(adapter_key)
+    }
+
+    pub(crate) fn adapter_resumes_conversation_in_new_process(&self, adapter_key: &str) -> bool {
+        self.read()
+            .adapter_resumes_conversation_in_new_process(adapter_key)
+    }
+
+    pub(crate) fn mark_run_settings_stale(
+        &self,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().mark_run_settings_stale(run_id)
     }
 
     pub(crate) fn update_run_execution_config(

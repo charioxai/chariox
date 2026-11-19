@@ -64,6 +64,8 @@ fn route(id: &str) -> InboxRoute {
         source_event_type: "dev.chariox.dummy/dummy.test".into(),
         source_event_version: 1,
         active: true,
+        paused: false,
+        app_managed: false,
         source: None,
     }
 }
@@ -198,6 +200,8 @@ fn accepting_dedupes_by_source_occurrence() {
     ));
     let inactive = InboxRoute {
         active: false,
+        paused: false,
+        app_managed: false,
         ..route.clone()
     };
     assert!(matches!(

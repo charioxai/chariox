@@ -1293,7 +1293,10 @@ async fn assert_workflow_output_follow_up(
         .owned
         .session_snapshot(session.id())
         .expect("failed workflow session should resolve");
-    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    // A run that failed stays in the snapshot until the person opens it: it needs them.
+    assert!(session_state
+        .workflow_run(workflow_run.id())
+        .is_none_or(|run| run.attention()));
     assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
     assert_eq!(
         runtime
@@ -1466,7 +1469,7 @@ async fn assert_yield_waits_then_helper_completes(
         .await
         .unwrap();
     let event = store.agent_inbox(session, agent, 0).unwrap().remove(0);
-    assert_eq!(event.state, "accepted");
+    assert_eq!(event.state, "handled");
     store
         .agent_lifecycle(Operation::Ack {
             room: session.into(),
@@ -1706,13 +1709,16 @@ async fn runtime_owned_invalid_handoff_fails_without_automatic_retry() {
         .owned
         .session_snapshot(session.id())
         .expect("failed workflow session should resolve");
-    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    // A run that failed stays in the snapshot until the person opens it: it needs them.
+    assert!(session_state
+        .workflow_run(workflow_run.id())
+        .is_none_or(|run| run.attention()));
     let resolved_run = runtime
         .owned
         .durable_state_store
         .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
         .expect("durable workflow run should load")
-        .expect("failed workflow run should be archived");
+        .expect("failed workflow run should be saved");
     assert_eq!(
         resolved_run.status(),
         crate::session::WorkflowRunStatus::Failed

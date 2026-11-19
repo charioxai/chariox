@@ -70,6 +70,8 @@ mod tests;
 #[cfg(test)]
 mod vault_command_tests;
 #[cfg(test)]
+mod vault_owner_kind_tests;
+#[cfg(test)]
 mod vault_tests;
 #[cfg(test)]
 mod window_tests;
@@ -110,6 +112,8 @@ const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 /// dedicated timer did not fire: the kernel alerts instead of staying silent.
 const SUDO_TIMER_TOLERANCE: Duration = Duration::from_secs(5);
 
+#[cfg(all(test, target_os = "linux"))]
+mod open_work_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod watched_process_grant_tests;
 #[cfg(all(test, target_os = "linux"))]

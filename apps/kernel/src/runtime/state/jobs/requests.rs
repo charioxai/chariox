@@ -18,8 +18,10 @@ impl KernelRuntimeState {
                 .ok_or_else(|| ledger::error("job_id required"))?;
             let mut record = driver.own(id, task)?;
             let mut collection_error = None;
+            // Whatever placement the job ended with, a saved allocation receipt keeps its
+            // cleanup owed until the service confirms the deletion.
             if record.state == "finished"
-                && record.placement == JobPlacement::Remote
+                && record.has_remote_trace()
                 && !record.deleted
                 && self.remote_jobs_enabled()
             {
@@ -83,13 +85,6 @@ impl KernelRuntimeState {
         let run =
             run.ok_or_else(|| ledger::error("jobs require the home agent's active build run"))?;
         let run = self.watched_process_run(run.id())?;
-        if run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-            && !self.sudo_task_authorizes_run(&run).await
-        {
-            return Err(ledger::error(
-                "jobs require an unrestricted build agent with unattended command permission",
-            ));
-        }
         let mut arguments = args.clone();
         let object = arguments
             .as_object_mut()

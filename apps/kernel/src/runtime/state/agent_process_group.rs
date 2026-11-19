@@ -2,6 +2,85 @@
 use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::io;
 
+/// The session leader a kernel reaps: its own child, or the one the previous
+/// program started and handed over across a hot reload (the exec keeps the
+/// PID, so it is still this process's child, but `Child` cannot be rebuilt).
+pub(super) enum Leader {
+    Spawned(std::process::Child),
+    Adopted(u32),
+}
+
+impl Leader {
+    pub(super) fn id(&self) -> u32 {
+        match self {
+            Self::Spawned(child) => child.id(),
+            Self::Adopted(pid) => *pid,
+        }
+    }
+
+    pub(super) fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        use std::os::unix::process::ExitStatusExt as _;
+        match self {
+            Self::Spawned(child) => child.try_wait(),
+            Self::Adopted(pid) => {
+                let mut status = 0;
+                // SAFETY: waitpid writes one c_int through a valid pointer.
+                match unsafe { libc::waitpid(*pid as libc::pid_t, &mut status, libc::WNOHANG) } {
+                    0 => Ok(None),
+                    -1 => Err(io::Error::last_os_error()),
+                    _ => Ok(Some(std::process::ExitStatus::from_raw(status))),
+                }
+            }
+        }
+    }
+
+    /// Tests end their own children, which are never adopted ones.
+    #[cfg(test)]
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Spawned(child) => child.kill(),
+            Self::Adopted(_) => Err(io::Error::other("an adopted child is not killed by handle")),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn stdout(&mut self) -> Option<std::process::ChildStdout> {
+        match self {
+            Self::Spawned(child) => child.stdout.take(),
+            Self::Adopted(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Spawned(child) => child.wait(),
+            Self::Adopted(_) => self.bounded_wait(),
+        }
+    }
+
+    pub(super) fn bounded_wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Spawned(child) => child.bounded_wait(),
+            Self::Adopted(_) => {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    if let Some(status) = self.try_wait()? {
+                        return Ok(status);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "adopted child did not exit before its reap deadline",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 struct Member {
     pid: u32,
@@ -165,7 +244,7 @@ pub(super) fn signal_session(pid: u32, birth: u64, signal: libc::c_int) -> bool 
 /// Keep the leader unreaped until every executing session member settles.
 #[cfg(target_os = "linux")]
 pub(super) fn poll_exit(
-    child: &mut std::process::Child,
+    child: &mut Leader,
     birth: u64,
 ) -> io::Result<Option<std::process::ExitStatus>> {
     // Only the leader is read while it runs; the session scan starts at its exit.
@@ -184,7 +263,7 @@ pub(super) fn poll_exit(
 
 #[cfg(not(target_os = "linux"))]
 pub(super) fn poll_exit(
-    _child: &mut std::process::Child,
+    _child: &mut Leader,
     _birth: u64,
 ) -> io::Result<Option<std::process::ExitStatus>> {
     Err(io::Error::other(

@@ -1,4 +1,4 @@
-//! MP-11 F10: explicit one-command approval when provider policy is mutable.
+//! MP-11 F10: a watched command below Full access asks the person first.
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, AgentWake};
 use crate::session::{
@@ -50,16 +50,16 @@ impl KernelRuntimeState {
         prompt: &str,
         grantable: bool,
     ) -> Result<(), DaemonError> {
-        // Claude's Bash sandbox applies even to print-mode bypass runs. Native
-        // TUIs can change their permission mode after launch. Neither seam
-        // supplies a current sandbox grant for a kernel-owned executable, so
-        // require kernel process consent there, including initial Yolo.
-        if run.provider() != "claude" && run.client_interface().is_chariox() {
+        // Full access is the person's consent: an agent they chose to run that way never asks. A
+        // native TUI can change its mode after launch, so it asks at any level. Below Full access
+        // the provider's own sandbox and permission settings do not cover a kernel-run command.
+        let full_access = run.permission_level() == crate::provider::AgentPermissionLevel::Yolo
+            && run.client_interface().is_chariox();
+        if full_access || grantable && self.watched_process_grants.is_allowed(&wake.agent_id) {
             return Ok(());
         }
-        if !(grantable && self.watched_process_grants.is_allowed(&wake.agent_id)) {
-            self.ask_process_consent(run, wake, cwd, grantable).await?;
-        }
+        self.ask_process_consent(run, wake, cwd, grantable).await?;
+        // The person may answer after the turn that asked has ended.
         self.authorize_room_provider_epoch(Some(&wake.agent_id), Some(run.id()))?;
         let session = self.owned.session_store.get_session(run.session_id())?;
         let current = self
@@ -113,7 +113,7 @@ impl KernelRuntimeState {
             RuntimeInteractionKind::Permission, RuntimeInteractionLevel::Warning,
             Some("Run watched command outside the provider sandbox?".into()),
             format!("Command: {}\nDirectory: {}\nThe kernel runs this command with its own process policy. Provider-native permission and Bash sandbox settings do not apply. {scope}", serde_json::to_string(&wake.command).map_err(|e| ledger::error(e.to_string()))?, super::super::agent_process_output::sanitize(cwd.to_string_lossy().as_bytes())),
-            choices, None, Some(300), Some("deny".into()),
+            choices, None, None, None,
         ).with_native_origin(self.owned.capture_native_interaction_origin(run.session_id(), &wake.agent_id, run.id()));
         let answer =
             crate::runtime::native_interaction_bridge::request_provider_native_interaction(

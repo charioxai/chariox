@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/branches?per_page=100&page=1",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"13972d33e9df5de6181ea7513b5e5895b1f7ddc7791a4e0679f1d5853f455e57\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4888",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"name\": \"drill/gha1-43651411973\",\n  \"commit\": {\n   \"sha\": \"5d15bbfc422d843b8fe9517ad70773dc01f36c54\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"drill/gha1-read\",\n  \"commit\": {\n   \"sha\": \"a4b9d7c753c23a4c4adf99985ea23d9fb13ac41a\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"drill/gha4-closed\",\n  \"commit\": {\n   \"sha\": \"772e5c93de05282a92b07cb3540e94bac9bddcf2\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"drill/gha4-draft\",\n  \"commit\": {\n   \"sha\": \"2d2e31463ac4948636c17f6732c8faed45734389\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"drill/gha4-merged\",\n  \"commit\": {\n   \"sha\": \"a57ad569f40a97078e32626b70fd348eaae1f2ef\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"drill/gha4-rich\",\n  \"commit\": {\n   \"sha\": \"271de153c2b8c196681165cc32ff2688634e1238\"\n  },\n  \"protected\": false\n },\n {\n  \"name\": \"main\",\n  \"commit\": {\n   \"sha\": \"f0f340d288fc5d8f6f10bff2f6fd80c7712df20b\"\n  },\n  \"protected\": false\n }\n]"
+}

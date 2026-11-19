@@ -95,18 +95,8 @@ impl KernelRuntimeOwnedState {
                         agent_id: parent_id.to_owned(),
                     });
                 }
-                let session = self.session_store.get_session(&request.session_id)?;
-                let unfinished_work = self
-                    .durable_state_store
-                    .agents_with_unfinished_work(&request.session_id)?;
-                crate::agent::authority_limit::check_placement(
-                    agent,
-                    parent,
-                    &agents,
-                    &session,
-                    &unfinished_work,
-                )
-                .map_err(crate::runtime::room_tool_admission::denied)?;
+                crate::agent::authority_limit::check_placement(agent, parent, &agents)
+                    .map_err(crate::runtime::room_tool_admission::denied)?;
             }
             // A sub-agent made a room agent counts toward the room's limit, as a new one does.
             None if agent.is_sub_agent() => {

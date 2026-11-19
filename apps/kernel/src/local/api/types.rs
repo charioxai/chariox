@@ -40,8 +40,10 @@ mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
+mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
@@ -52,6 +54,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_list;
 mod room_terminal;
 mod runtime_identity;
 mod screenshot;
@@ -62,7 +65,7 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
-mod waiting_room;
+mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -97,8 +100,10 @@ pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -109,6 +114,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_list::*;
 pub use room_terminal::*;
 pub use runtime_identity::*;
 pub use screenshot::*;
@@ -119,7 +125,7 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
-pub use waiting_room::*;
+pub use watcher::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -241,7 +247,7 @@ pub use workspace::*;
 /// Version 371 adds native process identity to authenticated product status and
 /// the value-free Project environment layer and inputs (MP-08).
 /// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
-/// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
+/// Version 373 adds worker Environment queries and room-list pending review visibility (MP-08).
 /// Version 374 binds Computer credential approval to a native display target (MP-08).
 /// Version 375 normalizes primitive MCP script results to object structured content (MP-08/MP-10).
 /// Version 376 adds receiving-kernel provider login interaction projection and
@@ -539,5 +545,56 @@ pub use workspace::*;
 /// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
-/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`;
+/// 1011 adds `queued_agent_messages` to a session: the messages other agents queued for an agent's next turn,
+/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their
+/// `agent-message-<n>` id; a viewer's subscriptions on one lane share one `heartbeat` per interval, a
+/// subscription whose kernel task ended alone says so (`subscription_ended`), and a Browser reply carries a
+/// mirror packet's deflated body, whole resources and a screenshot's picture as raw bytes (`CXT1`) instead of
+/// base64 text; a `mirror_next` credit lists the fonts the viewer already holds (`known_fonts`); a directory
+/// entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`); a card's browser region
+/// carries an optional `done_text`: the text whose appearance in the watched element closes the card; the
+/// owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the
+/// credentialed network destinations a signed manifest declares; the App-managed event routes
+/// (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`,
+/// `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing
+/// permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`,
+/// `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the
+/// backend-supplied `AppConfirmationFrame.preview` rows; the owner's machine capability lists the service's
+/// `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`; a waiting agent lists
+/// every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the
+/// no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a
+/// reply-box decision); a running agent's profile and config change takes effect mid-turn (`applies` on
+/// `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit`
+/// on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key
+/// `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage
+/// limit"); the Room list has its own wire names (`GetRoomListSnapshot` → `RoomListSnapshot`,
+/// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
+/// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
+/// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
+/// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
+/// snoozed and muted by the kernel (`SetInboxCardState`, `SetInboxMute`), with a card for a failed or waiting run
+/// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
+/// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
+/// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`; a
+/// watcher is a notification source (docs/PROTOCOL.md, "A watcher as a notification source"); every agent has
+/// the kernel browser with no card (task `owner_action` is only `"question"`, grants carry no `prompt_id`); each
+/// Browser Tab names its icon by `favicon_hash`: a `state` read carries no icon PNG, and a `state_wait` carries
+/// one only when its `known_favicons` lacks the hash; `SendProviderLoginVaultEntry` →
+/// `ProviderLoginVaultEntrySent`: a running API-key provider login takes a Vault entry by handle and the kernel
+/// types its value into the login; an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions` lists the
+/// person's open cards with why the person keeps one (`person_only`); `OwnerVault` `update` changes an
+/// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
+/// managed context copy carries several source Projects (`source_projects`); an App confirmation card carries
+/// the exact input the kernel will run (`AppConfirmationFrame.input`); a queued agent message in a session
+/// carries a `preview` (its first 200 characters) and `truncated` instead of the whole `prompt`, and a session
+/// lists at most the next ten per agent; a provider catalog's model lists `aliases`, the other names the
+/// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
+/// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
+/// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
+/// agent's inbox while its prompt carries one line.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

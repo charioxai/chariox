@@ -143,6 +143,28 @@ async fn dispatch_json(router: &CommandRouter, request: Value) -> Result<Value, 
         .map(|response| serde_json::to_value(response).expect("public response"))
 }
 
+/// A Room binds a slice while it is stopped: its worker takes the Room from the environment it
+/// starts with. Fixture slices stay up, so this stops the slice for the bind and starts it again.
+async fn dispatch_bind_room(router: &CommandRouter, request: Value) -> Result<Value, DaemonError> {
+    let slice_ref = request["BindRoomEnvironmentSlice"]["slice_ref"]
+        .as_str()
+        .expect("bind request names its slice")
+        .to_string();
+    let slices = router.app.lock().await.slices().clone();
+    // A name that is missing or ambiguous has no slice to stop; the bind itself refuses it.
+    let Ok(slice) = slices.resolve(&slice_ref) else {
+        return dispatch_json(router, request).await;
+    };
+    slices
+        .set_status(&slice.id, crate::slice::SliceStatus::Stopped, 1)
+        .expect("stop the slice for the bind");
+    let bound = dispatch_json(router, request).await;
+    slices
+        .set_status(&slice.id, slice.status, crate::session::unix_epoch_ms())
+        .expect("start the slice again");
+    bound
+}
+
 async fn wait_for_durable_owner_release(path: &std::path::Path) {
     let mut lock_path = path.as_os_str().to_os_string();
     lock_path.push(".owner.lock");
@@ -212,7 +234,7 @@ async fn survives_restart_for_two_separate_rooms() {
                 serde_json::from_value(legacy_wire.clone()).unwrap();
             assert_eq!(legacy.environment_session_id, None);
             assert_eq!(serde_json::to_value(legacy).unwrap(), legacy_wire);
-            let binding = dispatch_json(
+            let binding = dispatch_bind_room(
                 &router,
                 json!({"BindRoomEnvironmentSlice": {
                     "session_id": room, "slice_ref": name
@@ -229,7 +251,7 @@ async fn survives_restart_for_two_separate_rooms() {
                 *room
             );
             assert_eq!(
-                dispatch_json(
+                dispatch_bind_room(
                     &router,
                     json!({"BindRoomEnvironmentSlice": {
                         "session_id": room, "slice_ref": slice_id
@@ -308,7 +330,7 @@ async fn rejects_ambiguous_slice_names() {
     create_desktop(&router, "slice-2").await;
     create_desktop(&router, "second").await;
     assert!(
-        dispatch_json(&router, bind(&rooms[0], "slice-2"))
+        dispatch_bind_room(&router, bind(&rooms[0], "slice-2"))
             .await
             .is_err(),
         "a name that also identifies another slice must not select either profile"
@@ -355,7 +377,7 @@ async fn allows_colocated_containers_with_distinct_worker_identities() {
         second["Slice"]["slice"]["owner_machine_id"]
     );
     for (index, name) in ["first", "second"].into_iter().enumerate() {
-        dispatch_json(&router, bind(&rooms[index], name))
+        dispatch_bind_room(&router, bind(&rooms[index], name))
             .await
             .expect("separate containers on one Docker host can belong to different Rooms");
     }
@@ -395,7 +417,7 @@ async fn rejects_shared_worker_references() {
                 .unwrap();
         }
         assert!(
-            dispatch_json(&router, bind(&rooms[0], "first"))
+            dispatch_bind_room(&router, bind(&rooms[0], "first"))
                 .await
                 .is_err(),
             "duplicate {identity} targets cannot establish separate physical profiles"
@@ -425,7 +447,7 @@ async fn rejects_active_operations_and_other_room_agents() {
     create_desktop(&router, "busy").await;
     let slices = router.app.lock().await.slices().clone();
     let operation = slices.try_begin_operation("busy", "state.save").unwrap();
-    assert!(dispatch_json(&router, bind(&rooms[0], "busy"))
+    assert!(dispatch_bind_room(&router, bind(&rooms[0], "busy"))
         .await
         .is_err());
     drop(operation);
@@ -433,13 +455,13 @@ async fn rejects_active_operations_and_other_room_agents() {
     slices
         .attach_agent("busy", &rooms[1], "existing-agent", 1)
         .unwrap();
-    let denied = dispatch_json(&router, bind(&rooms[0], "busy"))
+    let denied = dispatch_bind_room(&router, bind(&rooms[0], "busy"))
         .await
         .unwrap_err();
     assert!(denied
         .to_string()
         .contains("environment_slice_binding_rejected"));
-    dispatch_json(&router, bind(&rooms[1], "busy"))
+    dispatch_bind_room(&router, bind(&rooms[1], "busy"))
         .await
         .unwrap();
 }
@@ -456,8 +478,8 @@ async fn rejects_competing_claims_and_reassignment() {
     create_desktop(&router, "shared").await;
     create_desktop(&router, "other").await;
     let (first, second) = tokio::join!(
-        dispatch_json(&router, bind(&rooms[0], "shared")),
-        dispatch_json(&router, bind(&rooms[1], "shared")),
+        dispatch_bind_room(&router, bind(&rooms[0], "shared")),
+        dispatch_bind_room(&router, bind(&rooms[1], "shared")),
     );
     assert_ne!(
         first.is_ok(),
@@ -474,9 +496,11 @@ async fn rejects_competing_claims_and_reassignment() {
         dispatch_json(&router, get(loser)).await.unwrap(),
         json!({"RoomEnvironmentSlice":{"binding":null}})
     );
-    assert!(dispatch_json(&router, bind(owner, "other")).await.is_err());
+    assert!(dispatch_bind_room(&router, bind(owner, "other"))
+        .await
+        .is_err());
     assert_eq!(dispatch_json(&router, get(owner)).await.unwrap(), original);
-    dispatch_json(&router, bind(loser, "other"))
+    dispatch_bind_room(&router, bind(loser, "other"))
         .await
         .expect("different Room can use its own physical profile");
 }
@@ -497,7 +521,7 @@ async fn rejects_headless_and_missing_targets() {
     .await
     .unwrap();
     for target in ["headless", "missing", ""] {
-        assert!(dispatch_json(&router, bind(&rooms[0], target))
+        assert!(dispatch_bind_room(&router, bind(&rooms[0], target))
             .await
             .is_err());
     }
@@ -558,7 +582,7 @@ async fn requires_room_ownership_but_members_can_read() {
         .await
         .unwrap_err();
     assert!(matches!(denial, DaemonError::OwnershipAccessDenied { .. }));
-    let bound = dispatch_json(&router, bind(&rooms[0], "private"))
+    let bound = dispatch_bind_room(&router, bind(&rooms[0], "private"))
         .await
         .unwrap();
     assert_eq!(
@@ -583,7 +607,7 @@ async fn does_not_publish_a_failed_durable_write() {
         rusqlite::Connection::open(state.config.user_config.state.path.as_ref().unwrap()).unwrap();
     database.execute_batch("CREATE TRIGGER reject_placement BEFORE INSERT ON durable_state_events
         WHEN NEW.kind = 'slice.updated' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
-    assert!(dispatch_json(&router, bind(&rooms[0], "durable"))
+    assert!(dispatch_bind_room(&router, bind(&rooms[0], "durable"))
         .await
         .is_err());
     assert_eq!(
@@ -593,7 +617,7 @@ async fn does_not_publish_a_failed_durable_write() {
     database
         .execute_batch("DROP TRIGGER reject_placement;")
         .unwrap();
-    dispatch_json(&router, bind(&rooms[1], "durable"))
+    dispatch_bind_room(&router, bind(&rooms[1], "durable"))
         .await
         .expect("failed commit did not reserve the profile");
 }
@@ -712,7 +736,7 @@ async fn slice_down_is_reported_and_stop_completes() {
             1,
         )
         .unwrap();
-    dispatch_json(&router, bind(&rooms[0], "paused"))
+    dispatch_bind_room(&router, bind(&rooms[0], "paused"))
         .await
         .unwrap();
     let start = json!({"StartRoomEnvironment": {
@@ -787,7 +811,7 @@ async fn relay_failure_keeps_stop_failed() {
                 1,
             )
             .unwrap();
-        dispatch_json(&router, bind(&rooms[0], "live"))
+        dispatch_bind_room(&router, bind(&rooms[0], "live"))
             .await
             .unwrap();
         let start_error = dispatch_json(
@@ -851,7 +875,7 @@ async fn controller_does_not_block_start_on_stopped_or_starting_slice() {
     let state = TestState::new();
     let (router, rooms) = state.router();
     create_desktop(&router, "desktop").await;
-    dispatch_json(&router, bind(&rooms[0], "desktop"))
+    dispatch_bind_room(&router, bind(&rooms[0], "desktop"))
         .await
         .unwrap();
     router.shutdown_cleanup().await.unwrap();

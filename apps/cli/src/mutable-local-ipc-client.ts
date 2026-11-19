@@ -114,8 +114,8 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
       return currentClient.subscribeToKernelEvents(sessionId, attachmentId)
     },
-    subscribeToWaitingRoomInventory(): Promise<void> {
-      return currentClient.subscribeToWaitingRoomInventory()
+    subscribeToRoomList(): Promise<void> {
+      return currentClient.subscribeToRoomList()
     },
     unsubscribeFromKernelEvents(): Promise<void> {
       return currentClient.unsubscribeFromKernelEvents()

@@ -43,7 +43,7 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
     return `ws://127.0.0.1:${address.port}`
   }
   const endpoint = await server(true)
-  const agent = { id: "agent", session_id: "session", alias: "fixture", extension_grants: [{ kind: "mcp", name: "echo" }] }
+  const agent = { id: "agent", session_id: "session", alias: "fixture", model: "fixture", extension_grants: [{ kind: "mcp", name: "echo" }] }
   const run = { id: "run", session_id: "session", agent_instance_id: "agent", state: "Running", provider: "codex", model: "fixture", structured_endpoint: endpoint, provider_session_id: null, endpoint_mode: "Managed" }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, Record<string, unknown>>) => {
     const [kind, payload] = Object.entries(request)[0]!

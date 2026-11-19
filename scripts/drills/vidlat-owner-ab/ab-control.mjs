@@ -49,7 +49,7 @@ async function run(){try{
      if(state.relay&&online.relay_url!==state.relay)throw Error('MP-11: Cloud relay differs from the explicit expected URL');
      if(online.connected){
       await writeFile(root+'/selection.json',JSON.stringify({machineId:online.machine_id,daemonId:online.daemon_id,origin:state.origin,relay:online.relay_url}),{mode:0o600});
-      await prepareSession();console.log('MP-08/MP-10: hosted WSS connected; select vidlat-owner-ab and owner-ab in the waiting room.');return;
+      await prepareSession();console.log('MP-08/MP-10: hosted WSS connected; select vidlat-owner-ab and owner-ab in the Room list.');return;
      }await delay(500);
     }throw Error('MP-10: matching hosted WSS did not connect');
    }

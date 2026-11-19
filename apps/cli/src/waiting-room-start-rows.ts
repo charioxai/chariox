@@ -9,13 +9,13 @@ import { type ProviderAccountProfile } from "@chariox/kernel-client"
 import { providerAccountAdmissionBlocked, providerAccountDisplayLabel } from "./waiting-room-provider-accounts.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
-  formatWaitingRoomLaunchKernelValue,
-  formatWaitingRoomLaunchMachineValue,
-  waitingRoomLaunchKernelOptions,
-  waitingRoomLaunchMachineOptions,
-  waitingRoomSelectedLaunchKernelRef,
-  waitingRoomSelectedLaunchMachineRef,
-} from "@chariox/kernel-client/waiting-room-runtime-placement"
+  formatRoomListLaunchKernelValue,
+  formatRoomListLaunchMachineValue,
+  roomListLaunchKernelOptions,
+  roomListLaunchMachineOptions,
+  roomListSelectedLaunchKernelRef,
+  roomListSelectedLaunchMachineRef,
+} from "@chariox/kernel-client/room-list-runtime-placement"
 import { describeWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
@@ -109,7 +109,7 @@ export function waitingRoomStartRows(
     {
       id: "launch-machine",
       title: "Machine",
-      value: formatWaitingRoomLaunchMachineValue(state, remote),
+      value: formatRoomListLaunchMachineValue(state, remote),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "launch-machine",
@@ -119,7 +119,7 @@ export function waitingRoomStartRows(
     {
       id: "launch-kernel",
       title: "Kernel",
-      value: formatWaitingRoomLaunchKernelValue(state, remote),
+      value: formatRoomListLaunchKernelValue(state, remote),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "launch-kernel",

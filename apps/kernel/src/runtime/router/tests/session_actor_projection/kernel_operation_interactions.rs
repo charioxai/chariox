@@ -9,6 +9,7 @@ fn setup_with(prepare: impl FnOnce(&mut RuntimeSession)) -> (CommandRouter, Stri
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let mut session = RuntimeSession::new(
         format!("kernel-decision-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

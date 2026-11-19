@@ -17,11 +17,11 @@ wit_bindgen::generate!({
     world: "drill",
     generate_all,
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext, Wake},
     events, host, http, log, registry, state,
 };
-use exports::chariox::app::handlers::Guest;
+use exports::chariox::app1_0_0::handlers::Guest;
 use futures::future::{select, Either};
 use serde_json::{json, Value};
 use wit_bindgen::{FutureReader, StreamResult};
@@ -156,6 +156,19 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
         "echo" if input["portable"] == "pick" => {
             let grants = host::pick_file(host::Pick { multiple: false, accept: vec![] }).await?;
             Ok(json!(grants).to_string())
+        }
+        "echo" if input["portable"] == "ask" => {
+            let host::Picked::Pending(id) =
+                host::request_file(host::Pick { multiple: false, accept: vec![] }).await?
+            else {
+                return Err(fail("NOT_PENDING"));
+            };
+            let wait_ms = input["waitMs"].as_u64().unwrap_or(60_000) as u32;
+            match host::await_file(id, wait_ms).await? {
+                host::Picked::Pending(id) => Ok(json!({"pending": id}).to_string()),
+                host::Picked::Granted(grants) => Ok(json!(grants).to_string()),
+                _ => Err(fail("ENDED")),
+            }
         }
         "echo" => Ok(input.to_string()),
         "shared" => {

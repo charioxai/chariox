@@ -10,6 +10,8 @@ mod metaagent_task;
 mod owner;
 mod prompt_queue;
 mod prompt_runtime;
+mod queued_agent_message;
+pub use queued_agent_message::QueuedAgentMessage;
 mod queued_metaagent_task;
 mod room_environment;
 mod room_setup;
@@ -21,6 +23,7 @@ pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
 };
+mod project_id;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -37,6 +40,7 @@ mod workflow_graph;
 mod workflow_instances;
 mod workflow_outputs;
 mod workflow_publication;
+mod workflow_responsible;
 mod workflow_run_records;
 mod workflow_runs;
 mod workflow_scheduling;
@@ -51,6 +55,7 @@ pub use agent_config::{
     SESSION_AGENT_PERMISSION_CONFIG_KEY,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_id::{EmptyProjectId, ProjectId};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
@@ -89,7 +94,8 @@ pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, HandoffChangeLine,
     HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
     PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
-    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask, RuntimeHandoff,
+    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask,
+    ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
@@ -108,10 +114,11 @@ pub use types::{
     WorkflowOriginReason, WorkflowOriginSurface, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
-    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
-    WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
+    WorkflowQueuedPromptStatus, WorkflowResponsible, WorkflowRun, WorkflowRunOutcome,
+    WorkflowRunOutputSubmission, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
+    WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWaitingOn,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
     DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
@@ -121,7 +128,7 @@ pub use types::{
     DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
     DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{
@@ -156,7 +163,7 @@ pub use agent_trigger_http_options::{
 pub use agent_triggers::{
     AgentSchedule, AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch,
     AgentTriggerNotificationSource, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
-    TriggerDelivery, TriggerDeliveryState, TriggerInputKind,
+    ReplacedListener, TriggerDelivery, TriggerDeliveryState, TriggerInputKind,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

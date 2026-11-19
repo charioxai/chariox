@@ -330,7 +330,7 @@ async fn a_forwarded_request_the_handle_refuses_does_not_ask_the_locked_home_vau
     let _environment = crate::env_lock::lock();
     let private = crate::test_support::TestWorktree::new("forwarded-vault-refusal");
     std::env::set_var("CHARIOX_HOME", private.path().join("home"));
-    let vault = private.path().join("vault.json");
+    let vault = private.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, "refusal passphrase").unwrap();
     crate::credential::CharioxCredentialRegistry::user()
         .unwrap()

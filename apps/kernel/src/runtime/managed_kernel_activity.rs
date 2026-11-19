@@ -894,7 +894,7 @@ mod tests {
             "provider-run-1",
             "trace-1",
         );
-        runtime.record_waiting_room_change();
+        runtime.record_room_list_change();
         runtime.record_managed_activity_transition_for_test();
         release_first_tx
             .send(())
@@ -969,7 +969,7 @@ mod tests {
             "provider-run-1",
             "trace-1",
         );
-        runtime.record_waiting_room_change();
+        runtime.record_room_list_change();
         runtime.record_managed_activity_transition_for_test();
 
         let mut activity_binding = binding();
@@ -1096,7 +1096,7 @@ mod tests {
         );
         runtime.record_managed_activity_transition_for_test();
         let transition_recorded_by = crate::session::unix_epoch_ms();
-        runtime.record_waiting_room_change();
+        runtime.record_room_list_change();
 
         let retry_delay = tokio::time::timeout(Duration::from_secs(2), retry_started_rx.recv())
             .await
@@ -1256,7 +1256,6 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        std::fs::remove_dir(journal).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1512,7 +1511,7 @@ mod tests {
             "provider-run-1",
             "trace-1",
         );
-        runtime.record_waiting_room_change();
+        runtime.record_room_list_change();
         runtime.record_managed_activity_transition_for_test();
 
         let confirmation = tokio::time::timeout(Duration::from_secs(1), transition_confirmation_rx)

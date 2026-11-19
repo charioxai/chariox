@@ -7,6 +7,7 @@ use crate::runtime::cloud_relay_control::cloud_relay_token_unusable;
 
 mod binary_request;
 mod managed_slice_activation;
+mod socket_thread;
 mod writer;
 #[cfg(test)]
 use managed_slice_activation::{
@@ -851,13 +852,20 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(
-            RELAY_CONNECT_TIMEOUT,
-            crate::transport::relay_socket_connect::connect_binary_events(&relay_url),
-        )
-        .await
-        {
-            Err(_) => {
+        let connecting = relay_url.clone();
+        let connected = socket_thread::spawn(async move {
+            timeout(
+                RELAY_CONNECT_TIMEOUT,
+                crate::transport::relay_socket_connect::connect_binary_events(&connecting),
+            )
+            .await
+            .ok()
+        })
+        .await;
+        // The socket runtime lives as long as the process, so its connect task
+        // ends only with a result or the deadline.
+        match connected.ok().flatten() {
+            None => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
                     "relay socket connect timed out",
@@ -877,7 +885,7 @@ async fn run_daemon_relay_connector_inner(
                 }
                 continue;
             }
-            Ok(Ok((socket, handshake))) => {
+            Some(Ok((socket, handshake))) => {
                 let binary_events =
                     crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
                 let binary_requests =
@@ -897,11 +905,13 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 let registration_started = Instant::now();
-                let (writer, mut reader) = socket.split();
+                let (writer, reader) = socket.split();
                 let (outgoing_tx, priority_outgoing_rx, event_outgoing_rx) =
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (mut inbound, _reader_task) =
+                    socket_thread::spawn_reader(reader, pong_tx, RELAY_READ_IDLE_TIMEOUT);
                 let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
@@ -910,7 +920,7 @@ async fn run_daemon_relay_connector_inner(
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_notes = Arc::clone(&outgoing_tx.notes);
-                let writer_task = tokio::spawn(async move {
+                let writer_task = socket_thread::spawn(async move {
                     writer::run_relay_writer(
                         writer,
                         priority_outgoing_rx,
@@ -934,18 +944,23 @@ async fn run_daemon_relay_connector_inner(
                 if static_relay.is_some() {
                     registration.auth_token = active_relay_token.clone();
                 }
-                let register = RelayEnvelope::DaemonRegister { registration };
-                if send_outgoing_envelope(&outgoing_tx, register).is_err() {
+                let register = crate::transport::relay_socket_connect::daemon_register(
+                    &relay_url,
+                    &handshake,
+                    registration,
+                    &router.relay_private_key(),
+                )
+                .map_err(|error| error.to_string());
+                let sent = register.and_then(|register| {
+                    send_outgoing_envelope(&outgoing_tx, register)
+                        .map_err(|_| "failed to send relay registration".to_string())
+                });
+                if let Err(reason) = sent {
                     writer_task.abort();
                     clear_remote_inventory_projection(&router);
-                    disconnect_relay(&state, "failed to send relay registration", presence).await;
+                    disconnect_relay(&state, &reason, presence).await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
-                    record_relay_reconnect(
-                        &router,
-                        &relay_url,
-                        "failed to send relay registration",
-                        delay,
-                    );
+                    record_relay_reconnect(&router, &relay_url, &reason, delay);
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if wait_for_reconnect_delay(shutdown, delay).await {
                         break 'connector;
@@ -1028,14 +1043,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut token_refresh_task = None;
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
-                let mut last_relay_read_at = Instant::now();
-
-                let mut last_read_at = tokio::time::Instant::now();
-                let reader_progress = crate::runtime::stall_watchdog::progress_watch(
-                    "daemon.relay_client",
-                    "socket_read",
-                    RELAY_READ_IDLE_LIMIT,
-                );
+                let mut clients_were_attached = false;
                 let reconnect_reason = loop {
                     tokio::select! {
                         changed = shutdown.changed() => {
@@ -1056,20 +1064,7 @@ async fn run_daemon_relay_connector_inner(
                                 break 'connector;
                             }
                         }
-                        _ = tokio::time::sleep_until(last_read_at + RELAY_READ_IDLE_LIMIT) => {
-                            crate::logging::warn_with_fields("daemon.relay_client", "relay reader stalled; reconnecting", serde_json::json!({"operation": "socket_read", "duration_ms": last_read_at.elapsed().as_millis()}));
-                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
-                            abort_inventory_refresh_task(&mut inventory_refresh_task);
-                            writer_task.abort();
-                            abort_subscription_tasks(&router, &subscription_tasks).await;
-                            clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, "relay read deadline exceeded", presence).await;
-                            break "relay read deadline exceeded";
-                        }
-                        incoming = reader.next() => {
-                            last_relay_read_at = Instant::now();
-                            last_read_at = tokio::time::Instant::now();
-                            reader_progress.progress();
+                        incoming = inbound.recv() => {
                             match incoming {
                                 Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
                                     let (payload, receipt) = match message {
@@ -1162,12 +1157,12 @@ async fn run_daemon_relay_connector_inner(
                                     disconnect_relay(&state, "relay close frame received", presence).await;
                                     break "relay close frame received";
                                 }
-                                Some(Ok(Message::Ping(payload))) => {
-                                    let _ = pong_tx.try_send(payload.to_vec());
-                                }
-                                Some(Ok(Message::Pong(_))) => {}
                                 Some(Ok(_)) => {}
-                                Some(Err(_)) | None => {
+                                ended => {
+                                    let reason = match ended {
+                                        Some(Err(reason)) => reason,
+                                        _ => "relay read failed or ended",
+                                    };
                                     abort_leased_projection_pump_task(
                                         &mut leased_projection_pump_task,
                                     );
@@ -1175,8 +1170,8 @@ async fn run_daemon_relay_connector_inner(
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&state, "relay read failed or ended", presence).await;
-                                    break "relay read failed or ended";
+                                    disconnect_relay(&state, reason, presence).await;
+                                    break reason;
                                 }
                             }
                         }
@@ -1189,15 +1184,6 @@ async fn run_daemon_relay_connector_inner(
                             clear_remote_inventory_projection(&router);
                             disconnect_relay(&state, "relay writer ended", presence).await;
                             break "relay writer ended";
-                        }
-                        _ = tokio::time::sleep_until((last_relay_read_at + RELAY_READ_IDLE_TIMEOUT).into()) => {
-                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
-                            abort_inventory_refresh_task(&mut inventory_refresh_task);
-                            abort_subscription_tasks(&router, &subscription_tasks).await;
-                            writer_task.abort();
-                            clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, "relay stopped sending frames", presence).await;
-                            break "relay stopped sending frames";
                         }
                         _ = token_refresh_interval.tick() => {
                             if static_relay.is_some() {
@@ -1335,23 +1321,36 @@ async fn run_daemon_relay_connector_inner(
                             if heartbeat_registration.is_some() {
                                 published_accounts = accounts;
                             }
-                            if refresh_remote_inventory
-                                && remote_inventory_refresh_due(
+                            if refresh_remote_inventory {
+                                let attached = !subscription_tasks.lock().await.is_empty();
+                                let due = remote_inventory_refresh_due(
                                     heartbeat_tick,
                                     &mut inventory_refresh_task,
-                                )
-                            {
-                                inventory_refresh_task = Some(
-                                    spawn_remote_inventory_projection_refresh(
-                                        Arc::clone(&router),
-                                    )
                                 );
+                                if inventory_refresh_wanted(
+                                    attached,
+                                    clients_were_attached,
+                                    due,
+                                    inventory_refresh_task.is_none(),
+                                ) {
+                                    inventory_refresh_task = Some(
+                                        spawn_remote_inventory_projection_refresh(
+                                            Arc::clone(&router),
+                                        )
+                                    );
+                                }
+                                clients_were_attached = attached;
                             }
-                            let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
+                            // The first tick follows the connect at once, then every sixth.
+                            let heartbeat_frame = (heartbeat_registration.is_some()
+                                || heartbeat_tick % RELAY_BARE_HEARTBEAT_TICKS == 1)
+                            .then(|| RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
                                 registration: heartbeat_registration,
-                            };
-                            if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
+                            });
+                            if heartbeat_frame.is_some_and(|frame| {
+                                send_outgoing_envelope(&outgoing_tx, frame).is_err()
+                            }) {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
@@ -1391,6 +1390,14 @@ async fn run_daemon_relay_connector_inner(
                         }
                     }
                 };
+                let cancelled_reads = reconnect_gate.cancel_reads();
+                if cancelled_reads > 0 {
+                    crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "reads of clients that left with the relay connection cancelled",
+                        serde_json::json!({ "reads": cancelled_reads, "reason": reconnect_reason }),
+                    );
+                }
                 drop_backoff.after_connection(connected_at.elapsed());
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt)
                     .max(drop_backoff.delay(&daemon_id));
@@ -1400,7 +1407,7 @@ async fn run_daemon_relay_connector_inner(
                     break 'connector;
                 }
             }
-            Ok(Err(error)) => {
+            Some(Err(error)) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
                     "relay socket connect failed",

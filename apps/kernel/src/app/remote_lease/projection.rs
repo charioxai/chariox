@@ -35,6 +35,10 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
     /// The completed turn's worker still holds git observations; the caller
     /// collects them once the app lock is released.
     pub(crate) completion_harvest: Option<RemoteCompletionHarvest>,
+    /// The provider's own turn about an ended background call finished on the worker.
+    pub(crate) notification_ended: bool,
+    /// A held run ended on the worker.
+    pub(crate) held_run_ended: bool,
 }
 
 pub(crate) struct RemoteCompletionHarvest {
@@ -1085,6 +1089,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
         let _ = self.app.sessions.get_session(session_id)?;
         let mut outcome = RemoteRuntimeProjectionOutcome::default();
+        // A held task's run speaks with no prompt active: it only reports output and the end
+        // of the provider's own follow-up turn.
+        let held_projection = authority.held_provider_run_id.as_deref() == Some(provider_run_id)
+            && self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+                .is_none();
         let agent = self.app.agents.get_agent(agent_id)?;
         let Some(remote) = agent.remote_execution() else {
             return Ok(outcome);
@@ -1128,9 +1139,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 // Native TUI prompts originate on the worker. Managed prompts
                 // instead acquire their run binding through dispatch ACK/recovery;
                 // old snapshots cannot recreate it after a profile switch.
-                None => provider_run
-                    .as_ref()
-                    .is_some_and(|run| !run.client_interface().is_chariox()),
+                None => {
+                    held_projection
+                        || provider_run
+                            .as_ref()
+                            .is_some_and(|run| !run.client_interface().is_chariox())
+                }
             };
             if !admitted {
                 return Ok(outcome);
@@ -1152,12 +1166,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let projected_run = self
                 .app
                 .update_remote_provider_run_projection(projected_run);
-            let _ = self
-                .app
-                .sessions
-                .set_active_provider_run(session_id, Some(projected_run.id().to_string()));
+            outcome.held_run_ended = held_projection
+                && projected_run.state() == crate::provider::ProviderRunState::Ended;
+            if !held_projection {
+                let _ = self
+                    .app
+                    .sessions
+                    .set_active_provider_run(session_id, Some(projected_run.id().to_string()));
+            }
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
-                if agent.remote_execution().is_some() {
+                if agent.remote_execution().is_some() && !held_projection {
                     let _ = self
                         .app
                         .agents
@@ -1210,6 +1228,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 notice.clone(),
             );
         }
+        outcome.notification_ended = completions
+            .iter()
+            .any(RelayProjectedCompletion::is_notification_end);
         let active_prompt = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
@@ -1218,6 +1239,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|active_prompt| {
                 completions
                     .into_iter()
+                    .filter(|completion| !completion.is_notification_end())
                     .filter(|completion| match completion.home_prompt_id.as_deref() {
                         Some(prompt_id) => prompt_id == active_prompt.id(),
                         None => unscoped_completion_matches_prompt(active_prompt),

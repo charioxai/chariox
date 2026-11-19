@@ -251,6 +251,7 @@ impl KernelRuntimeState {
                 continue;
             }
             self.owned.record_wait_cancelled(&task);
+            self.owe_held_run_a_stop(&task)?;
             let session = self.owned.session_store.get_session(&task.room_id)?;
             let active = self
                 .owned
@@ -354,18 +355,17 @@ impl KernelRuntimeState {
                                 .into_iter()
                                 .find(|t| &t.task_id == id)
                             {
-                                if child_task.state != ExecutionState::Done {
-                                    if let Outcome::Task(cancelled) = self
-                                        .owned
-                                        .durable_state_store
-                                        .agent_lifecycle(Operation::CancelTask {
-                                            task: id.clone(),
-                                            owner: session.owner_user_id().into(),
-                                            revision: child_task.revision,
-                                        })?
-                                    {
-                                        pending.push(cancelled);
-                                    }
+                                // A Done child that retains work is ended too; with none, this changes nothing.
+                                if let Outcome::Task(cancelled) = self
+                                    .owned
+                                    .durable_state_store
+                                    .agent_lifecycle(Operation::CancelTask {
+                                        task: id.clone(),
+                                        owner: session.owner_user_id().into(),
+                                        revision: child_task.revision,
+                                    })?
+                                {
+                                    pending.push(cancelled);
                                 }
                             }
                         } else if self
@@ -524,7 +524,12 @@ impl KernelRuntimeState {
                     first_error.get_or_insert(error);
                 }
             }
-            if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {
+            // A Done task ended its turn long ago: its completion is published by the sweep once the
+            // work Stop just ended has settled, not announced here as a cancellation.
+            if task.state != ExecutionState::Done
+                && !physical_pending
+                && !self.owned.agent_task_resources_unsettled(&task)?
+            {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {

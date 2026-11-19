@@ -165,7 +165,14 @@ impl KernelRuntimeOwnedState {
                 Some(provider_run_id),
                 message,
             ) {
-                Ok(released_claim) => released_claim,
+                Ok(released_claim) => {
+                    if let Err(error) =
+                        self.end_blocked_task_of_failed_step(session_id, agent_id, prompt_id)
+                    {
+                        tracing::warn!(%error, "blocked task of a failed workflow step was not ended");
+                    }
+                    released_claim
+                }
                 Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.prompt_delivery",

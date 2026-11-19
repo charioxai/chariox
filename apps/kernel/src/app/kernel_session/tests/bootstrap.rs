@@ -1,6 +1,7 @@
 use super::*;
 use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+use crate::test_support::TestTempDir;
 
 #[test]
 fn bootstrap_restores_created_session_and_agents_from_durable_state() {
@@ -153,17 +154,8 @@ fn bootstrap_rejects_prompt_work_for_a_deleted_agent() {
 fn lease_worker_bootstrap_rejects_every_restored_durable_session() {
     for hidden in [false, true] {
         let mut config = DaemonConfig::for_tests();
-        config.user_config.state.path = Some(
-            std::env::temp_dir()
-                .join(format!(
-                    "chariox-lease-worker-restored-session-{}-{}-{hidden}",
-                    std::process::id(),
-                    rand::random::<u64>()
-                ))
-                .join("state.db")
-                .display()
-                .to_string(),
-        );
+        let owner = TestTempDir::new(&format!("lease-worker-restored-session-{hidden}"));
+        config.user_config.state.path = Some(owner.path().join("state.db").display().to_string());
         {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("general kernel should boot");
             crate::app::KernelSessionService::new(&mut app)
@@ -191,11 +183,8 @@ fn lease_worker_bootstrap_rejects_every_restored_durable_session() {
 
 #[test]
 fn lease_worker_bootstrap_rejects_incomplete_managed_context_import() {
-    let root = std::env::temp_dir().join(format!(
-        "chariox-lease-worker-managed-context-{}-{}",
-        std::process::id(),
-        rand::random::<u64>()
-    ));
+    let owner = TestTempDir::new("lease-worker-managed-context");
+    let root = owner.path();
     let mut config = DaemonConfig::for_tests();
     config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
     let transfer_root = config
@@ -252,7 +241,6 @@ fn lease_worker_bootstrap_rejects_incomplete_managed_context_import() {
             ..
         }
     ));
-    std::fs::remove_dir_all(root).expect("remove managed context startup fixture");
 }
 
 #[test]

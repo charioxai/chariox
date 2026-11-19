@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process"
 import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
 import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { digestPinnedHomeArchive } from "./managed-home-archive-digest.mjs"
 import {
   chmodSync,
@@ -201,6 +201,10 @@ const ALLOWED_ENVIRONMENT = new Set([
 function fail(message) {
   throw new Error(message)
 }
+
+// A saved archive whose bytes or metadata no longer match what was captured; quarantine moves it
+// aside, any other failure (missing, unreadable, obstructed) leaves it where it is.
+class HomeArchiveCorruption extends Error {}
 
 function exactKeys(value, expected, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} must be an object`)
@@ -737,18 +741,27 @@ function validateRequest(request) {
   }
   if (request?.kind === "home_archive_verify") {
     exactKeys(request, ["kind", "scope", "id", "path"], "home archive verify request")
-    validateArtifactIdentity(request.scope, request.id)
-    if (typeof request.path !== "string" || request.path.length > 4096) {
-      fail("home archive verification path is invalid")
-    }
-    const { relative } = managedHomeArchiveCoordinates(request.path)
-    const expectedScope = request.scope === "state" ? "states" : "backups"
-    if (relative[0] !== expectedScope || relative[1] !== request.id) {
-      fail("home archive verification path does not match its identity")
-    }
+    validateArchiveRequestPath(request, "verification")
+    return
+  }
+  if (request?.kind === "home_archive_quarantine") {
+    exactKeys(request, ["kind", "scope", "id", "path"], "home archive quarantine request")
+    validateArchiveRequestPath(request, "quarantine")
     return
   }
   fail("broker request kind is not allowed")
+}
+
+function validateArchiveRequestPath(request, label) {
+  validateArtifactIdentity(request.scope, request.id)
+  if (typeof request.path !== "string" || request.path.length > 4096) {
+    fail(`home archive ${label} path is invalid`)
+  }
+  const { relative } = managedHomeArchiveCoordinates(request.path)
+  const expectedScope = request.scope === "state" ? "states" : "backups"
+  if (relative[0] !== expectedScope || relative[1] !== request.id) {
+    fail(`home archive ${label} path does not match its identity`)
+  }
 }
 
 function validateArtifactIdentity(scope, id) {
@@ -863,6 +876,18 @@ function managedHomeArchiveCoordinates(path) {
   return { candidate, relative }
 }
 
+// Unreadable metadata files stay ordinary failures (the caller reads them first); text that is not
+// the captured shape is corruption.
+function parseManagedHomeArchiveMetadata(text) {
+  try {
+    const metadata = JSON.parse(text)
+    exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
+    return metadata
+  } catch (error) {
+    throw new HomeArchiveCorruption(`managed saved home archive metadata is invalid: ${error.message}`)
+  }
+}
+
 async function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
@@ -871,21 +896,20 @@ async function inspectManagedHomeArchive(path) {
     directory = pinnedSharedPath(dirname(candidate), "managed saved home archive generation", "directory")
     const entries = readdirSync(directory.path).sort()
     if (entries.length !== 2 || entries[0] !== "home.tar.zst" || entries[1] !== "metadata.json") {
-      fail("managed saved home archive generation contains unexpected files")
+      throw new HomeArchiveCorruption("managed saved home archive generation contains unexpected files")
     }
     const metadataPath = join(dirname(candidate), "metadata.json")
     const metadataFile = pinnedSharedPath(metadataPath, "managed saved home archive metadata", "file")
     try {
-      const metadata = JSON.parse(readFileSync(metadataFile.path, "utf8"))
-      exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
+      const metadata = parseManagedHomeArchiveMetadata(readFileSync(metadataFile.path, "utf8"))
       const expectedScope = relative[0] === "states" ? "state" : "backup"
       const archiveMetadata = fstatSync(archive.fd)
       if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
-        fail("managed saved home archive metadata is invalid")
+        throw new HomeArchiveCorruption("managed saved home archive metadata is invalid")
       }
       const digest = await digestPinnedHomeArchive(archive.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, brokerLifetime.signal)
       if (digest !== metadata.sha256) {
-        fail("managed saved home archive digest does not match")
+        throw new HomeArchiveCorruption("managed saved home archive digest does not match")
       }
       return { archive, directory, metadata }
     } finally {
@@ -911,6 +935,28 @@ async function verifyHomeArchive(request) {
     sizeBytes: metadata.sizeBytes,
     sha256: metadata.sha256,
   }
+}
+
+// Moves a generation that fails its integrity check aside so it is no longer listed or restorable.
+// The broker proves the corruption itself; an intact or merely unreadable archive is never moved.
+async function quarantineHomeArchive(request) {
+  try {
+    const { archive, directory } = await inspectManagedHomeArchive(request.path)
+    closeSync(archive.fd)
+    closeSync(directory.fd)
+  } catch (error) {
+    if (!(error instanceof HomeArchiveCorruption)) throw error
+    const generation = dirname(managedHomeArchiveCoordinates(request.path).candidate)
+    const generationMetadata = lstatSync(generation)
+    if (generationMetadata.isSymbolicLink() || !generationMetadata.isDirectory()) {
+      fail("home archive generation is obstructed")
+    }
+    const quarantined = `${generation}.corrupt-${randomBytes(8).toString("hex")}`
+    renameSync(generation, quarantined)
+    fsyncDirectory(dirname(generation))
+    return { path: quarantined }
+  }
+  fail("managed saved home archive is intact; it was not quarantined")
 }
 
 function removeHomeArchive(request) {
@@ -1808,6 +1854,10 @@ async function execute(request) {
     removeHomeArchive(request)
     return { status: 0, stdoutBase64: "", stderrBase64: "" }
   }
+  if (request.kind === "home_archive_quarantine") {
+    const quarantined = await quarantineHomeArchive(request)
+    return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(quarantined)).toString("base64"), stderrBase64: "" }
+  }
   if (request.kind === "home_archive_verify") {
     const verified = await verifyHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(verified)).toString("base64"), stderrBase64: "" }
@@ -1903,7 +1953,7 @@ async function execute(request) {
           ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
             CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
             CHARIOX_SLICE_BUILD_IMAGE: "never",
-            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
+            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {CHARIOX_SLICE_BROKER_PREPARED_PUBLICATION_ACCESS: "1"}),
           ...(VERIFIED_BUILD_CONTEXT_DIGEST
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST,
               ...(protectedLayouts.trusted ? {CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot} : {}) }

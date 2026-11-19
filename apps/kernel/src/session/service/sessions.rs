@@ -153,7 +153,7 @@ impl SessionService {
             .sessions_in_project(&project_id)?
             .into_iter()
             .any(|session| !session.is_hidden() && session.id() != session_id);
-        let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
+        let removed_project = (!project_has_visible_sessions)
             .then(|| self.projects.remove(&project_id))
             .flatten();
         Ok((deleted, removed_project))

@@ -26,13 +26,15 @@ pub use package::{
     VerifiedPackageV2, MAX_REVIEWS, MAX_REVIEW_BYTES, REVIEW_DIR, REVIEW_SCHEMA,
 };
 pub use ui_actions::{
-    check_agreement, check_registration, UiActionDeclaration, UiActionEffect, UiActionField,
-    UiActionMismatch,
+    check_agreement, check_registration, StandingClass, StandingDeclaration, StandingUse,
+    UiActionDeclaration, UiActionEffect, UiActionField, UiActionMismatch,
 };
 pub use view_agent::{
     check_input, check_registered, find_declared, plan_batch, BatchPlan, ViewActionError,
 };
-pub use world::{check_world, SupportedWorld, WorldId, WorldRefusal, APP_WORLD, MIGRATION_WORLD};
+pub use world::{
+    check_world, SupportedWorld, WorldId, WorldRefusal, APP_WORLD, APP_WORLD_1_1, MIGRATION_WORLD,
+};
 
 pub const APP_SCHEMA_V2: &str = "chariox.app.v2";
 pub const APP_CONTRACT_VERSION_V2: u32 = 2;

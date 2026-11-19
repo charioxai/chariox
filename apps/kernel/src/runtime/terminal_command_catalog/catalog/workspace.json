@@ -4,21 +4,21 @@
     "label": "/slice",
     "description": "Inspect slices and provider auth",
     "value": "/slice ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "slice-list",
         "label": "list",
         "description": "List slices owned by this kernel",
         "value": "/slice list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-create",
         "label": "create",
         "description": "Create a slice for the selected worktree",
         "value": "/slice create ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "children": [
           {
             "id": "slice-create-headless",
@@ -63,14 +63,14 @@
         "label": "status",
         "description": "Show a slice",
         "value": "/slice status ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-doctor",
         "label": "doctor",
         "description": "Check slice worker, display, scope, operation, and provider account health",
         "value": "/slice doctor ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "searchAliases": [
           "slice readiness",
           "slice provider auth",
@@ -87,21 +87,21 @@
         "label": "logs",
         "description": "Show slice worker and lifecycle logs",
         "value": "/slice logs ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-audit",
         "label": "audit",
         "description": "Show recent slice audit events",
         "value": "/slice audit ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "children": [
           {
             "id": "slice-audit-limit",
             "label": "--limit",
             "description": "Show a bounded slice audit history; append count and slice ref",
             "value": "/slice audit --limit ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           }
         ]
       },
@@ -110,7 +110,7 @@
         "label": "state",
         "description": "Show saved slice state and restart requirements",
         "value": "/slice state ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "searchAliases": [
           "slice state",
           "slice snapshot",
@@ -123,35 +123,35 @@
         "label": "save-state",
         "description": "Save reusable slice state and choose what happens to attached agents",
         "value": "/slice save-state ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "children": [
           {
             "id": "slice-save-state-restart-agents",
             "label": "--restart-agents",
             "description": "Save state, then restart attached agents from the saved state; append a slice ref",
             "value": "/slice save-state --restart-agents ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           },
           {
             "id": "slice-save-state-shutdown",
             "label": "--shutdown",
             "description": "Save state, then shut the slice down; append a slice ref",
             "value": "/slice save-state --shutdown ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           },
           {
             "id": "slice-save-state-this-slice",
             "label": "--this-slice",
             "description": "Save state for this slice only; combine with restart or shutdown and append a slice ref",
             "value": "/slice save-state --this-slice ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           },
           {
             "id": "slice-save-state-future-slices",
             "label": "--future-slices",
             "description": "Save state as the default for future new slices; combine with restart or shutdown and append a slice ref",
             "value": "/slice save-state --future-slices ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           }
         ],
         "searchAliases": [
@@ -165,21 +165,21 @@
         "label": "backup",
         "description": "Create a backup copy of saved slice state",
         "value": "/slice backup ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "children": [
           {
             "id": "slice-backup-name",
             "label": "--name",
             "description": "Create a named backup; append backup name and slice ref",
             "value": "/slice backup --name ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           },
           {
             "id": "slice-backup-restore",
             "label": "restore",
             "description": "Restore a stopped slice from a verified backup; append slice and backup refs",
             "value": "/slice backup restore ",
-            "surfaces": ["session", "waiting_room"]
+            "surfaces": ["session", "room_list"]
           }
         ],
         "searchAliases": [
@@ -193,7 +193,7 @@
         "label": "reset-state",
         "description": "Reset saved slice state after agents are detached",
         "value": "/slice reset-state ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "searchAliases": [
           "reset slice state",
           "clear slice state",
@@ -206,28 +206,28 @@
         "label": "start",
         "description": "Start a slice",
         "value": "/slice start ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-stop",
         "label": "stop",
         "description": "Stop a slice",
         "value": "/slice stop ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-delete",
         "label": "delete",
         "description": "Delete a slice",
         "value": "/slice delete ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-screen",
         "label": "screen",
         "description": "Open or show the slice screen URL",
         "value": "/slice screen ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "searchAliases": [
           "headed slice",
           "slice display",
@@ -241,28 +241,28 @@
         "label": "ls",
         "description": "Alias for /slice list",
         "value": "/slice ls",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-show",
         "label": "show",
         "description": "Alias for /slice status",
         "value": "/slice show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "slice-auth",
         "label": "auth",
         "description": "Manage provider accounts inside a slice",
         "value": "/slice auth ",
-        "surfaces": ["session", "waiting_room"],
+        "surfaces": ["session", "room_list"],
         "children": [
           {
             "id": "slice-auth-login",
             "label": "login",
             "description": "Start provider login inside the slice for a different account",
             "value": "/slice auth login ",
-            "surfaces": ["session", "waiting_room"],
+            "surfaces": ["session", "room_list"],
             "searchAliases": [
               "slice account login",
               "provider account login",
@@ -277,7 +277,7 @@
             "label": "import",
             "description": "Copy this machine's provider credentials into the slice; credentials stay slice-scoped",
             "value": "/slice auth import ",
-            "surfaces": ["session", "waiting_room"],
+            "surfaces": ["session", "room_list"],
             "searchAliases": [
               "slice account import",
               "copy credentials",
@@ -289,7 +289,7 @@
             "label": "remove",
             "description": "Remove slice-local provider credentials and account summary",
             "value": "/slice auth remove ",
-            "surfaces": ["session", "waiting_room"],
+            "surfaces": ["session", "room_list"],
             "searchAliases": [
               "slice account remove",
               "remove credentials",
@@ -310,14 +310,14 @@
     "label": "/workspace",
     "description": "Manage workspace state for the current session",
     "value": "/workspace ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "workspace-set",
         "label": "set",
         "description": "Set the next-session workspace path",
         "value": "/workspace ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "workspace-link-create",
@@ -484,7 +484,7 @@
             "label": "sync default",
             "description": "Set default live sync for new sessions without changing the current session",
             "value": "/workspace sync default ",
-            "surfaces": ["session", "waiting_room"],
+            "surfaces": ["session", "room_list"],
             "searchAliases": [
               "default live sync",
               "new session live sync",
@@ -497,21 +497,21 @@
                 "label": "off",
                 "description": "Default new sessions to Workspace Live Sync off; other repositories stay unrestricted",
                 "value": "/workspace sync default off",
-                "surfaces": ["session", "waiting_room"]
+                "surfaces": ["session", "room_list"]
               },
               {
                 "id": "workspace-sync-default-managed",
                 "label": "managed",
                 "description": "Default new sessions to managed sync for the selected workspace/worktree; other repositories stay unrestricted",
                 "value": "/workspace sync default managed",
-                "surfaces": ["session", "waiting_room"]
+                "surfaces": ["session", "room_list"]
               },
               {
                 "id": "workspace-sync-default-tracked",
                 "label": "tracked",
                 "description": "Default new sessions to tracked turn-end sync for the selected workspace/worktree; other repositories stay unrestricted",
                 "value": "/workspace sync default tracked",
-                "surfaces": ["session", "waiting_room"]
+                "surfaces": ["session", "room_list"]
               }
             ]
           },
@@ -546,28 +546,28 @@
     "label": "/worktree",
     "description": "Set, create, or name the next-session worktree",
     "value": "/worktree ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": ["session", "room_list"],
     "children": [
       {
         "id": "worktree-set",
         "label": "set",
         "description": "Set the next-session worktree path",
         "value": "/worktree ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "worktree-create",
         "label": "create",
         "description": "Create a new git worktree for a branch",
         "value": "/worktree create ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       },
       {
         "id": "worktree-name",
         "label": "name",
         "description": "Assign a user-facing alias to the selected worktree",
         "value": "/worktree name ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": ["session", "room_list"]
       }
     ]
   }

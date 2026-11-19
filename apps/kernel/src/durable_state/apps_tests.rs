@@ -570,6 +570,8 @@ fn inbox_accepts_only_for_the_active_generation_and_settles_failed_occurrences_w
                 source_event_type: "slack.message".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
+                app_managed: false,
                 source: None,
             },
             now_ms: 10,

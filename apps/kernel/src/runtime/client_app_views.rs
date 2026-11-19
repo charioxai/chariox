@@ -106,8 +106,7 @@ impl ClientAppViews {
         id: &str,
         view: &Delivery,
     ) -> Result<(), Error> {
-        let current =
-            store.check_app_binding_in_room(owner, &view.descriptor.installation_id, None);
+        let current = store.check_owned_app_binding(owner, &view.descriptor.installation_id);
         let present = self
             .0
             .lock()

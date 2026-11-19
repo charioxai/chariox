@@ -34,6 +34,9 @@ pub enum KernelBrowserCommand {
         #[serde(default)]
         after: String,
         wait_ms: u32,
+        /// Protocol 1012: the `favicon_hash` values whose PNG the viewer holds (<= 128); such an icon is named, not sent.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_favicons: Vec<String>,
     },
     SubscribeGrants {
         after: u64,
@@ -86,6 +89,10 @@ pub enum KernelBrowserCommand {
         /// the viewer retains for this subscription (<= 128, each 24 hex chars).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_sheets: Vec<String>,
+        /// Protocol 1011: font digests (<= 128, each the first 24 hex chars of the
+        /// resource id) the viewer keeps across documents; such a font is named, not sent.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_fonts: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_ms: Option<u32>,
         /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply

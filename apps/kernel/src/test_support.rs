@@ -6,7 +6,9 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod account_models;
 pub(crate) mod allocation;
+pub(crate) use account_models::{seed_account_models, seed_default_account_models};
 #[cfg(unix)]
 mod claude_executable;
 #[cfg(unix)]
@@ -27,6 +29,7 @@ mod task_subscription;
 #[cfg(target_os = "linux")]
 mod thread_stack;
 pub(crate) mod working_agent_ages;
+pub(crate) use crate::test_temp_dir::{TestTempDir, TestTempFile, TestTempPath};
 #[cfg(unix)]
 pub(crate) use environment::end_claimed_descendants;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
@@ -114,14 +117,33 @@ impl Drop for TestSocketDirectory {
 /// shared worktree state behind.
 pub(crate) struct TestWorktree {
     path: PathBuf,
+    // Dropped after the directory goes: it ends with the worktree.
+    runtime_mcp: Option<TestRuntimeMcp>,
 }
 
 pub(crate) fn test_workspace_root() -> PathBuf {
     let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .unwrap_or_else(session_workspace_temp_dir);
     assert!(root.is_absolute(), "test workspace parent must be absolute");
     root
+}
+
+/// A test started as a Chariox job gets a TMPDIR inside the lane's `~/.chariox` state. A session
+/// workspace there is refused at launch ("inside protected Chariox service state"), so every
+/// fixture that runs a command would end with no exit status. Those tests take a workspace
+/// parent that is not service state, which `CHARIOX_TEST_WORKTREE_ROOT` still overrides.
+fn session_workspace_temp_dir() -> PathBuf {
+    let temp = std::env::temp_dir();
+    match crate::git_worktree_placement::preflight_working_directory(
+        &temp,
+        "test workspace",
+        false,
+        &[],
+    ) {
+        Ok(_) => temp,
+        Err(_) => PathBuf::from("/var/tmp"),
+    }
 }
 
 impl TestWorktree {
@@ -140,7 +162,19 @@ impl TestWorktree {
         // Disk-backed test TMPDIRs may use an alias outside protected service
         // state. Provider discovery binds to its canonical working directory.
         let path = path.canonicalize().expect("test worktree should resolve");
-        Self { path }
+        Self {
+            path,
+            runtime_mcp: None,
+        }
+    }
+
+    /// Serves the kernel's runtime MCP endpoint on an ephemeral port until the
+    /// worktree ends, and points `config` at it. A real OpenCode launch waits
+    /// until its `chariox` MCP server reports connected; without a listener on
+    /// the configured port, those tests only pass when another test happens to
+    /// serve the fixed default port.
+    pub(crate) fn serve_runtime_mcp(&mut self, config: &mut DaemonConfig) {
+        self.runtime_mcp = Some(TestRuntimeMcp::serve(config));
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -155,55 +189,8 @@ impl TestWorktree {
 
 impl Drop for TestWorktree {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        crate::test_temp_dir::remove_or_keep(&self.path);
     }
-}
-
-/// Serves the kernel's runtime MCP endpoint on an ephemeral port for the rest
-/// of the test process and points `config` at it.
-///
-/// A real OpenCode launch waits until its `chariox` MCP server reports
-/// connected. Without a listener on the configured port, those tests only pass
-/// when another test happens to serve the fixed default port. The server runs
-/// on its own thread and throwaway kernel, because provider launches block the
-/// caller's runtime while it holds the app lock.
-pub(crate) fn serve_runtime_mcp(config: &mut DaemonConfig) {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
-    listener
-        .set_nonblocking(true)
-        .expect("runtime MCP listener should be non-blocking");
-    config.runtime_mcp_port = listener
-        .local_addr()
-        .expect("runtime MCP listener should expose an address")
-        .port();
-    std::thread::Builder::new()
-        .name("test-runtime-mcp".to_string())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(move || {
-            // Boot before entering the runtime: bootstrap may drive its own.
-            let app = DaemonApp::bootstrap(DaemonConfig::for_tests())
-                .expect("runtime MCP kernel should boot");
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime MCP test runtime should start")
-                .block_on(async move {
-                    let router = std::sync::Arc::new(
-                        crate::runtime::router::CommandRouter::with_interactive_capacity(
-                            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-                            16,
-                        ),
-                    );
-                    let listener = tokio::net::TcpListener::from_std(listener)
-                        .expect("runtime MCP listener should register");
-                    let _ = crate::transport::mcp_server::run_mcp_http_server_on_listener(
-                        router, listener,
-                    )
-                    .await;
-                });
-        })
-        .expect("runtime MCP test server thread should spawn");
 }
 
 /// Synthetic runtime fixtures must not discover the developer's real provider credentials.

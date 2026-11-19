@@ -511,7 +511,29 @@ impl DaemonApp {
         workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
-        crate::provider::prepare_claude_onboarding_state(&request)?;
+        let session = self.sessions.get_session(&request.session_id)?;
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| self.agents.get_agent(agent_id).ok());
+        if let Some(trusted) = crate::provider::prepare_claude_launch_state(
+            &request,
+            &crate::app::chosen_workspace(
+                session.worktree_id(),
+                agent.as_ref().and_then(|agent| agent.worktree_id()),
+            ),
+        )? {
+            let recipients = self
+                .attachments
+                .list_session_attachment_ids(&request.session_id);
+            self.record_notice_for_agent(
+                &request.session_id,
+                None,
+                request.agent_id.as_deref(),
+                recipients,
+                crate::provider::trusted_workspace_notice(&trusted),
+            );
+        }
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let initial_run = self.providers.start_run_provider_only(request)?.into_run();
         let run_id = initial_run.id().to_string();

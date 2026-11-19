@@ -1,0 +1,69 @@
+/* What Primer CSS does not ship: the diff, the avatar disc and the page frame. Colours are Primer's own tokens. */
+html, body { background: var(--bgColor-default, #fff); color: var(--fgColor-default, #1f2328); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; }
+#github { height: 100%; display: flex; flex-direction: column; }
+#github > div { min-height: 0; }
+main { min-height: 0; }
+.container-page { max-width: 1280px; margin: 0 auto; }
+
+.avatar-initial { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-weight: 600; flex-shrink: 0; vertical-align: middle; }
+.IssueLabel { display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; border: 1px solid transparent; border-radius: 2em; }
+.diff-sidebar { width: 256px; }
+.SelectMenu--right { right: 0; left: auto; }
+.SelectMenu-item[aria-checked="false"] .SelectMenu-icon--check { visibility: hidden; }
+.SelectMenu-footer { padding: 0; }
+.details-overlay > summary { list-style: none; }
+.details-overlay > summary::-webkit-details-marker { display: none; }
+summary.btn { display: inline-flex; align-items: center; }
+.text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-hunk-context { background: var(--bgColor-muted, #f6f8fa); overflow: auto; white-space: pre; }
+
+/* The diff: two number gutters and a marker column, one row per line; tinted as GitHub tints it. */
+.diff-table { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/20px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+.diff-unified .diff-col-num { width: 52px; }
+.diff-split .diff-col-num { width: 44px; }
+.diff-num { padding: 0 8px; text-align: right; color: var(--fgColor-muted, #656d76); user-select: none; vertical-align: top; box-sizing: border-box; }
+.diff-code { padding: 0 8px 0 0; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; vertical-align: top; }
+.diff-marker { display: inline-block; width: 18px; padding-left: 6px; color: var(--fgColor-muted, #656d76); user-select: none; }
+.diff-text { white-space: pre-wrap; }
+.diff-add.diff-code { background: var(--diffBlob-additionLine-bgColor, #dafbe1); }
+.diff-add.diff-num { background: var(--diffBlob-additionNum-bgColor, #aceebb); color: var(--diffBlob-additionNum-fgColor, #1f2328); }
+.diff-del.diff-code { background: var(--diffBlob-deletionLine-bgColor, #ffebe9); }
+.diff-del.diff-num { background: var(--diffBlob-deletionNum-bgColor, #ffcecb); color: var(--diffBlob-deletionNum-fgColor, #1f2328); }
+.diff-empty { background: var(--diffBlob-emptyLine-bgColor, #f6f8fa); }
+td.diff-hunk { background: var(--diffBlob-hunkLine-bgColor, #ddf4ff); color: var(--diffBlob-hunkLine-fgColor, #0969da); padding-top: 4px; padding-bottom: 4px; }
+td.diff-num.diff-hunk { background: var(--diffBlob-hunkNum-bgColor-rest, #b6e3ff); color: var(--diffBlob-expander-iconColor, #656d76); text-align: center; }
+.diff-note { color: var(--fgColor-muted, #656d76); padding: 0 16px; font-style: italic; }
+.diff-comments > td { background: var(--bgColor-default, #fff); border-top: 1px solid var(--borderColor-muted, #d0d7de); border-bottom: 1px solid var(--borderColor-muted, #d0d7de); white-space: normal; font-family: inherit; font-size: 14px; line-height: 1.5; }
+.diff-body { overflow-x: auto; }
+.diffstat-blocks { display: inline-flex; gap: 1px; }
+.diffstat-block { width: 8px; height: 8px; display: inline-block; }
+.diffstat-add { background: var(--bgColor-success-emphasis, #1f883d); }
+.diffstat-del { background: var(--bgColor-danger-emphasis, #cf222e); }
+.diffstat-neutral { background: var(--bgColor-neutral-muted, #d0d7de); }
+
+.markdown-body { font-size: 14px; word-wrap: break-word; }
+.markdown-body pre { padding: 16px; overflow: auto; background: var(--bgColor-muted, #f6f8fa); border-radius: 6px; }
+.markdown-body code { padding: .2em .4em; background: var(--bgColor-neutral-muted, rgba(175,184,193,.2)); border-radius: 6px; font-size: 85%; }
+.markdown-body pre code { padding: 0; background: transparent; }
+.markdown-body table { border-collapse: collapse; }
+.markdown-body th, .markdown-body td { padding: 6px 13px; border: 1px solid var(--borderColor-default, #d0d7de); }
+.markdown-body a { color: var(--fgColor-accent, #0969da); }
+.user-mention { font-weight: 600; }
+.issue-link { color: var(--fgColor-accent, #0969da); }
+.blankslate { padding: 32px; text-align: center; }
+.blankslate-icon { margin-bottom: 8px; }
+.TimelineItem { display: flex; padding: 16px 0 16px 16px; margin-left: 16px; border-left: 2px solid var(--borderColor-muted, #d0d7de); }
+.TimelineItem-badge { margin-left: -32px; margin-right: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--bgColor-default, #fff); border-radius: 50%; background: var(--bgColor-muted, #f6f8fa); flex-shrink: 0; }
+.TimelineItem-body { flex: auto; min-width: 0; }
+.paginate-container { display: flex; justify-content: center; }
+
+/* Writing: the blue "+" of a diff line, a review's popover, the merge method list. */
+.diff-num { position: relative; }
+.diff-line-comment { position: absolute; left: 4px; top: 2px; width: 20px; height: 20px; padding: 0; line-height: 0; border: 0; border-radius: 6px; color: #fff; background: var(--bgColor-accent-emphasis, #0969da); visibility: hidden; cursor: pointer; }
+tr:hover > .diff-num > .diff-line-comment, .diff-line-comment:focus-visible { visibility: visible; }
+.diff-composer > td { background: var(--bgColor-default, #fff); white-space: normal; font-family: inherit; font-size: 14px; line-height: 1.5; }
+.Popover.right-0 { right: 0; left: auto; width: 420px; max-width: 90vw; }
+.SelectMenu-item.flex-column { align-items: flex-start; }
+.SelectMenu-item[aria-checked="false"] .SelectMenu-icon--check { visibility: hidden; }
+.btn-octicon { cursor: pointer; }
+.diff-composer textarea, .diff-composer input { font: inherit; }

@@ -6,6 +6,7 @@
 //! only after known secret values are scrubbed.
 
 use super::*;
+use crate::durable_state::app_standing::StandingCommand;
 use crate::runtime::{
     app_view_authority::{self, AppViewAuthority},
     app_views::AppViewBinding,
@@ -19,7 +20,9 @@ use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionKind, RuntimeInteractionLevel,
 };
-use chariox_app_package::v2::{self as declared_actions, UiActionDeclaration, UiActionEffect};
+use chariox_app_package::v2::{
+    self as declared_actions, StandingUse, UiActionDeclaration, UiActionEffect,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -77,6 +80,15 @@ struct BatchStep {
     input: Value,
 }
 
+/// Whether a call of an action with this effect that has passed its gates was decided by a person:
+/// the card, the standing permission and the confirmation each are that decision, a plain write is not.
+fn person_decided(effect: &UiActionEffect) -> bool {
+    matches!(
+        effect,
+        UiActionEffect::Approval | UiActionEffect::PersonConfirmed
+    )
+}
+
 fn empty_input() -> Value {
     json!({})
 }
@@ -107,11 +119,19 @@ struct ViewContext {
     binding: AppViewBinding,
     authority: AppViewAuthority,
     declared: Vec<UiActionDeclaration>,
+    /// A person approved the action this context runs: set only once the approval,
+    /// the standing permission or the confirmation has been given.
+    approved: bool,
 }
 
 #[derive(Clone)]
 enum ViewHost {
     Room,
+    /// The App's backend serves its actions and state: no page, Tab or browser. `changes` when it
+    /// also keeps the revisioned change feed.
+    Backend {
+        changes: bool,
+    },
     User {
         owner: String,
         view_id: String,
@@ -133,7 +153,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: INVOKE.into(),
-            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card, and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
+            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card (unless /sudo or a standing permission covers it), and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
             input_schema: json!({"type": "object", "properties": {"view": view, "action": {"type": "string"}, "input": input}, "required": ["view", "action"], "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -343,17 +363,123 @@ impl KernelRuntimeState {
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
         self.check_view_claimed(agent, context)?;
-        if action.effect == UiActionEffect::Approval {
+        let input = self.pin_standing_account(context, action, input).await;
+        let standing = self.standing_covers(context, action, &input).await?;
+        if action.effect == UiActionEffect::Approval && !standing {
             self.approve_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
         // The preview shares the page with the action, so the turn is held from the card to the run.
-        if action.effect == UiActionEffect::PersonConfirmed {
+        // A sudo task the owner started for this work is the person's consent to it; the action
+        // itself still checks the pull request's state and head.
+        if action.effect == UiActionEffect::PersonConfirmed
+            && !standing
+            && !self
+                .sudo_task_authorizes_agent(agent.session_id(), agent.id())
+                .await
+        {
             self.confirm_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
-        self.run_in_view(context, name, input).await
+        // Past the card, the standing permission or the confirmation, the person has decided.
+        let approved = ViewContext {
+            approved: person_decided(&action.effect),
+            ..context.clone()
+        };
+        self.run_in_view(&approved, name, input).await
+    }
+
+    /// A call that names no account runs as the one its App picks (the repository's, the default,
+    /// else the first known). A backend-served App says which, and the input then names it, so the
+    /// permission is judged for, and the call runs as, the same account. An App that cannot say
+    /// leaves the input as it was: the account it names, else the only one bound, decides.
+    async fn pin_standing_account(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        mut input: Value,
+    ) -> Value {
+        let (Some(declared), ViewHost::Backend { .. }) = (&action.standing, &context.host) else {
+            return input;
+        };
+        let Some(StandingUse {
+            repo,
+            account: None,
+            ..
+        }) = action.standing_use(&input)
+        else {
+            return input;
+        };
+        // Not `view_call`: the run itself checks the release, and a label that is not a bound
+        // account covers nothing, so only the secret scrub applies here.
+        let answer = self
+            .backend_view_call(
+                context,
+                ViewAgentCallKind::Invoke,
+                Some((backend::ACCOUNT_TOOL, json!({ "repo": repo }))),
+                None,
+            )
+            .await;
+        let answer = self.scrub_answer(context, answer);
+        match answer {
+            Ok(answer) => match answer["account"].as_str().filter(|label| !label.is_empty()) {
+                Some(label) => input[&declared.account] = json!(label),
+                None => tracing::debug!("the App answered no account for a standing call"),
+            },
+            Err(error) => {
+                tracing::debug!(message = %error.message, "the App could not say which account runs a standing call")
+            }
+        }
+        input
+    }
+
+    /// Whether the owner's standing permission for this repository, account and action class
+    /// covers the call, so its card is not raised. Only what the signed declaration names can be covered,
+    /// read from the validated input; the use is counted for the owner to see.
+    async fn standing_covers(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        input: &Value,
+    ) -> Result<bool, ViewError> {
+        let Some(StandingUse {
+            class,
+            repo,
+            account,
+        }) = action.standing_use(input)
+        else {
+            return Ok(false);
+        };
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (
+            context.binding.owner.clone(),
+            context.binding.installation.clone(),
+        );
+        let covering = tokio::task::spawn_blocking(move || {
+            store.app_standing_command(StandingCommand::Use {
+                owner,
+                installation,
+                repo,
+                class,
+                account,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+        })
+        .await
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?;
+        Ok(covering.is_some())
     }
 
     /// An owner's App Tab is driven only by an agent that claimed it. Checked
@@ -429,6 +555,9 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         target: &str,
     ) -> Result<ViewContext, ViewError> {
+        if let Some(context) = self.backend_view(agent, target).await? {
+            return Ok(context);
+        }
         // Installation IDs are stable handles in the agent's own Room. After
         // idle retirement they open a fresh Tab from the current verified release.
         // Physical targets from the earlier catalog remain accepted while live.
@@ -674,6 +803,7 @@ impl KernelRuntimeState {
                     binding: context_binding,
                     authority,
                     declared,
+                    approved: false,
                 }));
             }
         }
@@ -739,6 +869,7 @@ impl KernelRuntimeState {
             binding,
             authority,
             declared: Vec::new(),
+            approved: false,
         })
     }
 
@@ -746,7 +877,12 @@ impl KernelRuntimeState {
     async fn view_turn(
         &self,
         context: &ViewContext,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, ViewError> {
+    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, ViewError> {
+        // A backend serves its own calls in order; there is no page to take turns on.
+        if matches!(context.host, ViewHost::Backend { .. }) {
+            context.authority.check()?;
+            return Ok(None);
+        }
         let queue = self
             .app_control()
             .views()
@@ -757,13 +893,14 @@ impl KernelRuntimeState {
             () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
         };
         self.view_still_bound(context)?;
-        Ok(turn)
+        Ok(Some(turn))
     }
 
     /// The view is still the one the call began on, at the same generation.
     fn view_still_bound(&self, context: &ViewContext) -> Result<(), ViewError> {
         context.authority.check()?;
         match &context.host {
+            ViewHost::Backend { .. } => Ok(()),
             ViewHost::Room => match self
                 .app_control()
                 .views()
@@ -862,7 +999,7 @@ impl KernelRuntimeState {
         answer: Result<Value, ViewError>,
     ) -> Result<Value, ViewError> {
         let (protection, scope) = match &context.host {
-            ViewHost::Room => (
+            ViewHost::Room | ViewHost::Backend { .. } => (
                 &self.owned.room_secret_observations,
                 context.session.clone(),
             ),
@@ -889,7 +1026,10 @@ impl KernelRuntimeState {
 
     async fn ensure_context_current(&self, context: &ViewContext) -> Result<(), ViewError> {
         self.view_still_bound(context)?;
-        if matches!(&context.host, ViewHost::User { .. }) {
+        if matches!(
+            &context.host,
+            ViewHost::User { .. } | ViewHost::Backend { .. }
+        ) {
             let (_, signed_actions) = self
                 .check_inspected_release(None, &context.binding)
                 .await
@@ -918,6 +1058,9 @@ impl KernelRuntimeState {
         changes: Option<(u64, u64)>,
     ) -> Result<Value, ViewError> {
         self.ensure_context_current(context).await?;
+        if matches!(context.host, ViewHost::Backend { .. }) {
+            return self.backend_view_call(context, kind, invoke, changes).await;
+        }
         let (name, input) = invoke.map_or((None, None), |(name, input)| {
             (Some(name.to_owned()), Some(input))
         });
@@ -925,6 +1068,9 @@ impl KernelRuntimeState {
             target_id: match &context.host {
                 ViewHost::Room => context.target.clone(),
                 ViewHost::User { browser_target, .. } => browser_target.clone(),
+                ViewHost::Backend { .. } => {
+                    unreachable!("a backend view answers before the controller")
+                }
             },
             agent: context.agent_id.clone(),
             call: kind,
@@ -937,6 +1083,7 @@ impl KernelRuntimeState {
         let reply = tokio::select! {
             reply = async {
                 match &context.host {
+                    ViewHost::Backend { .. } => unreachable!("a backend view answers before the controller"),
                     ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
                     ViewHost::User { owner, browser_generation, .. } => {
                         use crate::runtime::state::app_view_host::{
@@ -1055,6 +1202,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod backend;
 mod confirmation;
 mod remote;
 

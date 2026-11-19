@@ -10,19 +10,17 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let source = self.resolve_slice(source_ref)?;
         let config = self.owned.config_projection.snapshot();
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = development
+        let Some((project_id, repositories)) =
+            development.and_then(|development| development.single_source_project())
         else {
             return Err(environment_failure(
                 "source slice requires a selected Project",
             ));
         };
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id: source_project,
-            repositories: source_repositories,
-        }) = &source.development
+        let Some((source_project, source_repositories)) = source
+            .development
+            .as_ref()
+            .and_then(|development| development.single_source_project())
         else {
             return Err(environment_failure("source slice has no Project snapshot"));
         };
@@ -43,8 +41,10 @@ impl KernelRuntimeState {
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<Vec<DevelopmentRepositorySelection>, DaemonError> {
-        let Some(ManagedContextDevelopmentSelection::SourceProject { repositories, .. }) =
-            &slice.development
+        let Some((_, repositories)) = slice
+            .development
+            .as_ref()
+            .and_then(|development| development.single_source_project())
         else {
             return Ok(vec![]);
         };
@@ -164,13 +164,17 @@ mod tests {
             1,
         )
         .runtime_state();
-        let development = ManagedContextDevelopmentSelection::SourceProject {
-            project_id: session.project_id().into(),
-            repositories: vec![DevelopmentSourceRepositoryBinding {
-                workspace_id: session.workspace_id().into(),
-                worktree_id: Some(worktree.display().to_string()),
-                role: DevelopmentRepositoryRole::Primary,
-            }],
+        let development = ManagedContextDevelopmentSelection::SourceProjects {
+            projects: vec![
+                crate::managed_context::package::ManagedContextSourceProject {
+                    project_id: session.project_id().into(),
+                    repositories: vec![DevelopmentSourceRepositoryBinding {
+                        workspace_id: session.workspace_id().into(),
+                        worktree_id: Some(worktree.display().to_string()),
+                        role: DevelopmentRepositoryRole::Primary,
+                    }],
+                },
+            ],
         };
         let request = |name: &str, source: Option<String>| crate::local::CreateSliceRequest {
             source_slice_ref: source,

@@ -10,6 +10,8 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 pub(super) const REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
+/// How long a drain waits after a failure before it asks for the run a held task waits on again.
+const HELD_RUN_DRAIN_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Bounds how much retained output a completed receipt may put ahead of its completion.
 const COMPLETED_RECEIPT_PROJECTION_DRAIN_LIMIT: usize = 64;
 
@@ -85,6 +87,7 @@ impl KernelRuntimeState {
                 peer,
                 expected_binding: Some(binding.clone()),
                 expected_prompt_id: Some(dispatch.prompt_id.clone()),
+                held_provider_run_id: None,
             };
             let (event, projection_sequence) = match response {
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
@@ -250,6 +253,13 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
+                        state
+                            .end_held_tasks_after_drain_error(&session_id, &agent_id, &error)
+                            .await;
+                        if state.awaits_held_run(&session_id, &agent_id) {
+                            tokio::time::sleep(HELD_RUN_DRAIN_RETRY).await;
+                            continue;
+                        }
                         if claim.release_or_restart() {
                             continue;
                         }
@@ -280,9 +290,12 @@ impl KernelRuntimeState {
             return None;
         }
         let session = owned.session_store.get_session(session_id).ok()?;
-        let active_prompt = owned
+        let Some(active_prompt) = owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)?;
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return self.held_projection_drain_target(session_id, agent_id);
+        };
         if matches!(
             active_prompt.durable_delivery_phase(),
             Some(
@@ -504,7 +517,12 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
             .map(|prompt| prompt.id().to_string());
-        let recover_missing_run_binding = remote_execution.active_worker_provider_run_id.is_none();
+        // A held task has no prompt to bind a run to: its worker run is the one it was held on.
+        let held_run = expected_prompt_id
+            .is_none()
+            .then(|| provider_run_id.clone());
+        let recover_missing_run_binding =
+            held_run.is_none() && remote_execution.active_worker_provider_run_id.is_none();
         let relay_config = self
             .with_app_side_effect(|app| app.relay_config_for_remote_execution(&remote_execution))
             .await;
@@ -543,10 +561,11 @@ impl KernelRuntimeState {
         let response = match response {
             Ok(response) => response,
             Err(error)
-                if remote_prompt_projection_error_should_refresh_binding(
-                    recover_missing_run_binding,
-                    &error,
-                ) =>
+                if held_run.is_none()
+                    && remote_prompt_projection_error_should_refresh_binding(
+                        recover_missing_run_binding,
+                        &error,
+                    ) =>
             {
                 self.spawn_stale_remote_prompt_recovery(
                     session_id.to_string(),
@@ -564,6 +583,7 @@ impl KernelRuntimeState {
             peer,
             expected_binding: Some(remote_execution.clone()),
             expected_prompt_id,
+            held_provider_run_id: held_run,
         };
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained {

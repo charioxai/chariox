@@ -23,6 +23,7 @@ mod paired;
 mod requester_watch;
 mod self_hosted;
 mod subscription;
+mod update_needed;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +40,7 @@ use crate::runtime::projection::{
 use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
-pub(crate) use error::{is_public_code, GatewayError};
+pub(crate) use error::GatewayError;
 #[cfg(test)]
 pub(crate) use events::Added;
 pub(crate) use forward::{forward_audited, forward_with_retry};
@@ -285,9 +286,13 @@ impl KernelGateway {
         }
         let gateway_ready = is_gateway_ready(&kernel);
         if let Some(detail) = directory::incompatibility(&kernel, request) {
-            return Err(GatewayError::Incompatible {
+            let refusal = GatewayError::Incompatible {
                 name: target.into(),
                 detail,
+            };
+            return Err(match self.link_for(target, &kernel).await {
+                Ok(link) => update_needed::after_refusal(target, &link, refusal).await,
+                Err(_) => refusal,
             });
         }
         let mut envelope = serde_json::json!({"command_id": command_id, "request": request});
@@ -338,7 +343,7 @@ impl KernelGateway {
                         return Err(revoked);
                     }
                 }
-                Err(error)
+                Err(update_needed::after_refusal(target, &link, error).await)
             }
         }
     }

@@ -260,7 +260,7 @@ export type SessionAgentDefaults = {
   permission_level?: "required" | "yolo" | null
 }
 
-export type WaitingRoomPublicSessionSummary = {
+export type RoomListSessionSummary = {
   pinned?: boolean
   pinned_at_ms?: number | null
   id: string
@@ -285,19 +285,19 @@ export type WaitingRoomPublicSessionSummary = {
   connected_cli_count: number
   joined_collaborator_count?: number
   pending_collaboration_invite_count?: number
-  activity?: WaitingRoomSessionActivitySummary
-  agents?: WaitingRoomPublicAgentSummary[]
-  workflows?: WaitingRoomPublicWorkflowSummary[]
+  activity?: RoomListSessionActivitySummary
+  agents?: RoomListAgentSummary[]
+  workflows?: RoomListWorkflowSummary[]
 }
 
-export type WaitingRoomPublicProjectSummary = RuntimeProject & {
+export type RoomListProjectSummary = RuntimeProject & {
   session_count: number
   last_session_activity_at_ms?: number | null
   joined_collaborator_count: number
   pending_collaboration_invite_count: number
 }
 
-export type WaitingRoomSessionActivitySummary = {
+export type RoomListSessionActivitySummary = {
   pending_interaction_count?: number
   agent_count: number
   working_agent_count: number
@@ -312,7 +312,7 @@ export type WaitingRoomSessionActivitySummary = {
   unread_idle_agent_count?: number
 }
 
-export type WaitingRoomPublicItemActivitySummary = {
+export type RoomListItemActivitySummary = {
   working: boolean
   active_prompt_count: number
   queued_prompt_count: number
@@ -320,7 +320,7 @@ export type WaitingRoomPublicItemActivitySummary = {
   unread_idle_output?: boolean
 }
 
-export type WaitingRoomPublicAgentSummary = {
+export type RoomListAgentSummary = {
   id: string
   agent_ref: string
   alias?: string | null
@@ -337,12 +337,12 @@ export type WaitingRoomPublicAgentSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
-  runtime_placement: WaitingRoomAgentRuntimePlacement
+  runtime_placement: RoomListAgentRuntimePlacement
   extension_grants?: ExtensionGrant[]
-  activity?: WaitingRoomPublicItemActivitySummary
+  activity?: RoomListItemActivitySummary
 }
 
-export type WaitingRoomAgentRuntimePlacement = {
+export type RoomListAgentRuntimePlacement = {
   kernel_id: string
   machine_id: string
   slice_id?: string | null
@@ -350,30 +350,30 @@ export type WaitingRoomAgentRuntimePlacement = {
   slice_display_endpoint?: import("./kernel-types-cloud.js").SliceDisplayEndpoint | null
 }
 
-export type WaitingRoomPublicWorkflowSummary = {
+export type RoomListWorkflowSummary = {
   id: string
   alias?: string | null
   created_at_ms: number
-  activity?: WaitingRoomPublicItemActivitySummary
-  nodes?: WaitingRoomPublicWorkflowNodeSummary[]
-  edges?: WaitingRoomPublicWorkflowEdgeSummary[]
-  endpoints?: WaitingRoomPublicWorkflowEndpointSummary[]
+  activity?: RoomListItemActivitySummary
+  nodes?: RoomListWorkflowNodeSummary[]
+  edges?: RoomListWorkflowEdgeSummary[]
+  endpoints?: RoomListWorkflowEndpointSummary[]
 }
 
-export type WaitingRoomPublicWorkflowNodeSummary = {
+export type RoomListWorkflowNodeSummary = {
   id: string
   agent_id: string
   label: string
   wait_for_all_inputs?: boolean
 }
 
-export type WaitingRoomPublicWorkflowEdgeSummary = {
+export type RoomListWorkflowEdgeSummary = {
   id: string
   from_node_id: string
   to_node_id: string
 }
 
-export type WaitingRoomPublicWorkflowEndpointSummary = {
+export type RoomListWorkflowEndpointSummary = {
   id: string
   alias?: string | null
   entry_node_id: string
@@ -464,7 +464,7 @@ export type AgentGoal = {
   final_answer: string | null; evidence: string[]
 }
 export type AgentTaskExecution = {
-  owner_action?: "browser_access"
+  owner_action?: "question"
   goal?: AgentGoal | null
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
   provider_run_id: string | null; revision: number; blocked_revision: number

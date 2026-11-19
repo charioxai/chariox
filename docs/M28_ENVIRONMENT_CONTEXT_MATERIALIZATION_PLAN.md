@@ -187,7 +187,7 @@ restart.
 
 ## 8. Client behavior
 
-The TUI and web Waiting Room use the ordinary Machine field. Selecting
+The TUI and web Room list use the ordinary Machine field. Selecting
 `+ New Chariox-managed machine...` opens a dedicated managed-machine dialog for
 compute class, region, kernel-context source, development setup, repository
 selection, provider accounts, Git credentials, and auto-stop policy. Those fields

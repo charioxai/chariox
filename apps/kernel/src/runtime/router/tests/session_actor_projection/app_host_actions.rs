@@ -14,6 +14,7 @@ fn setup() -> (
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let mut session = RuntimeSession::new(
         format!("host-offer-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

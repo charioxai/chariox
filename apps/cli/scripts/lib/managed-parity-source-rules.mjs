@@ -558,15 +558,15 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "anchors": [
       [
         "client_projection",
-        "waitingRoomLaunchMachineOptions"
+        "roomListLaunchMachineOptions"
       ],
       [
         "client_projection",
-        "waitingRoomLaunchKernelOptions"
+        "roomListLaunchKernelOptions"
       ],
       [
         "client_projection",
-        "waitingRoomLaunchPlacement"
+        "roomListLaunchPlacement"
       ]
     ],
     "openFindings": [

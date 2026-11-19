@@ -315,7 +315,7 @@ test("command center controller runs every typed /app subcommand the TUI impleme
     "/app operation", "/app cancel", "/app publisher enroll", "/app publisher status", "/app publisher cancel",
     "/app automation list", "/app automation add", "/app automation disable", "/app inbox list",
     "/app inbox add", "/app inbox remove", "/app inbox test", "/app connection list", "/app connection grant",
-    "/app connection revoke", "/app file grant", "/app file save",
+    "/app connection revoke", "/app account list", "/app account grant", "/app account revoke", "/app standing list", "/app standing grant", "/app standing revoke", "/app file grant", "/app file save",
   ]) {
     const harness = createHarness(command)
     harness.controller.sync()

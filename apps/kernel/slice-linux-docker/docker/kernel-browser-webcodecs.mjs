@@ -69,6 +69,8 @@ export class BrowserEncoder {
   if(!frame?.loaderId)throw Error('MD-DISPLAY: encoder source unavailable');
   if(this.context?.document===frame.loaderId)return this.context;
   await this.closeContext();
+  // Chrome's error page cannot start a worker: it would stay in the target list, never answer, and time out every state read.
+  if(frame.unreachableUrl!==undefined)return null;
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:frame.id,worldName:this.worldName,grantUniveralAccess:false},sessionId);
   this.context={connection,sessionId,id:executionContextId,document:frame.loaderId};
   const result=await connection.send('Runtime.evaluate',{expression:install,contextId:executionContextId,returnByValue:true},sessionId);
@@ -85,6 +87,7 @@ export class BrowserEncoder {
   try{
    const c=await this.contextFor();
    if(this.closed)throw Error('MD-DISPLAY: browser encoder closed');
+   if(!c)return await this.fallback.encode(image,bitrate,true,codec);
    const reply=await c.connection.send('Runtime.callFunctionOn',{executionContextId:c.id,functionDeclaration:'function(value){return globalThis.charioxDisplayCodec.encode(value)}',arguments:[{value:{image,bitrate,codec,reset}}],awaitPromise:true,returnByValue:true},c.sessionId);
    const result=reply.result?.value;
    if(this.closed||reply.exceptionDetails||typeof result?.data_base64!=='string'||result.data_base64.length>4*1024*1024||typeof result.key!=='boolean')throw Error('MD-DISPLAY: browser codec failed');

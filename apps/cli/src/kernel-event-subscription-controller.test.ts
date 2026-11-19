@@ -11,7 +11,7 @@ test("sync subscribes to waiting-room inventory once while detached", async () =
     supportsKernelEventStream: () => true,
     getAttachment: () => null,
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: async () => {
+    subscribeToRoomList: async () => {
       waitingRoomSubscriptions += 1
     },
     subscribeToKernelEvents: async () => {
@@ -47,7 +47,7 @@ test("sync subscribes to session events and skips duplicate bindings", async () 
     supportsKernelEventStream: () => true,
     getAttachment: () => currentAttachment,
     getSessionId: () => currentSessionId,
-    subscribeToWaitingRoomInventory: async () => {
+    subscribeToRoomList: async () => {
       throw new Error("unexpected waiting-room subscription")
     },
     subscribeToKernelEvents: async (sessionId, attachmentId) => {
@@ -83,7 +83,7 @@ test("reset clears the remembered subscription so the same binding resubscribes"
     supportsKernelEventStream: () => true,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToRoomList: async () => {},
     subscribeToKernelEvents: async () => {
       subscriptions += 1
     },
@@ -108,7 +108,7 @@ test("sync reports subscription failures without updating remembered scope", asy
     supportsKernelEventStream: () => true,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToRoomList: async () => {},
     subscribeToKernelEvents: async () => {
       throw new Error("subscribe failed")
     },
@@ -138,7 +138,7 @@ test("sync is idle when kernel event streams are unavailable", async () => {
     supportsKernelEventStream: () => false,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToRoomList: async () => {},
     subscribeToKernelEvents: async () => {},
     onEvaluate: () => {
       evaluated = true
@@ -167,7 +167,7 @@ test("MP-08 overlapping syncs share one waiting-room subscription", async () => 
     supportsKernelEventStream: () => true,
     getAttachment: () => null,
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: () => {
+    subscribeToRoomList: () => {
       waitingRoomSubscriptions += 1
       return new Promise<void>((resolve) => { releases.push(resolve) })
     },
@@ -199,7 +199,7 @@ test("MP-08 a sync requested as the single-flight loop exits still re-evaluates"
     supportsKernelEventStream: () => true,
     getAttachment: () => null,
     getSessionId: () => "session-1",
-    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToRoomList: async () => {},
     subscribeToKernelEvents: async () => {
       throw new Error("unexpected session subscription")
     },
@@ -228,7 +228,7 @@ test("MP-08 / MP-10 detached Cloud discovery never opens a kernel subscription b
     supportsKernelEventStream: () => true,
     getAttachment: () => null,
     getSessionId: () => "unused",
-    subscribeToWaitingRoomInventory: async () => { calls.push("inventory") },
+    subscribeToRoomList: async () => { calls.push("inventory") },
     subscribeToKernelEvents: async () => { calls.push("session") },
     onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
     onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},

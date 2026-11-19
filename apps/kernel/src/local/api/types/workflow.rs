@@ -296,6 +296,33 @@ pub struct AliasWorkflowRequest {
     pub expected_workflow_revision: Option<u64>,
 }
 
+/// Who a client or agent names as a workflow's responsible. The kernel fills in the agent's
+/// label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowResponsibleTarget {
+    Person,
+    Agent {
+        kernel_id: String,
+        room_id: String,
+        agent_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowResponsibleRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub responsible: WorkflowResponsibleTarget,
+}
+
+/// The person opened the run that needed them: its stripe leaves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClearWorkflowRunAttentionRequest {
+    pub session_id: String,
+    pub run_ref: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkflowsRequest {
     pub session_id: String,

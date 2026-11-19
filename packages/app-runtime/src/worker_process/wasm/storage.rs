@@ -11,16 +11,19 @@ pub fn root(database: &Path) -> Result<PathBuf, WorkerError> {
         .ok_or(WorkerError::Preparation)?;
     Ok(release.with_file_name(name.replace("app-releases-", "app-wasm-state-")))
 }
-pub(super) fn installation(owner: &str, installation: &str) -> String {
+/// The directory name follows the installation alone: its id is unique in the
+/// kernel, and enrollment moves an installation to another owner without
+/// moving its saved files.
+pub fn installation(installation: &str) -> String {
     format!(
         "{:x}",
-        Sha256::digest(serde_json::to_vec(&(owner, installation)).expect("string pair serializes"))
+        Sha256::digest(serde_json::to_vec(installation).expect("string serializes"))
     )
 }
 
 /// Called under the kernel's installation lifecycle gate after native reap.
 /// Missing storage is already deleted, including after a partial prior erase.
-pub fn delete(database: &Path, owner: &str, installation_id: &str) -> Result<(), WorkerError> {
+pub fn delete(database: &Path, installation_id: &str) -> Result<(), WorkerError> {
     let path = root(database)?;
     let Some(root) = Dir::open_private_child_if_present(
         path.parent().ok_or(WorkerError::Preparation)?,
@@ -30,7 +33,7 @@ pub fn delete(database: &Path, owner: &str, installation_id: &str) -> Result<(),
     else {
         return Ok(());
     };
-    let name = installation(owner, installation_id);
+    let name = installation(installation_id);
     let dir = match root.child(OsStr::new(&name)) {
         Ok(dir) => dir,
         Err(crate::private_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -58,6 +61,12 @@ pub fn delete(database: &Path, owner: &str, installation_id: &str) -> Result<(),
 mod tests {
     use super::*;
     #[test]
+    fn data_directory_is_the_installations_not_its_owners() {
+        // Enrollment hands an installation to another owner: its saved files
+        // must stay where the next start opens them.
+        assert_ne!(installation("app"), installation("other"));
+    }
+    #[test]
     fn delete_erases_data_tmp_and_metadata_only_after_the_data_lock_releases() {
         let scratch = std::env::temp_dir().join(format!(
             "wasm-delete-{}-{}",
@@ -68,7 +77,7 @@ mod tests {
         let database = scratch.join("kernel.db");
         let path = root(&database).unwrap();
         let root = Dir::open_or_create_private_child(&scratch, path.file_name().unwrap()).unwrap();
-        let name = installation("owner", "app");
+        let name = installation("app");
         let dir = root.create_child(OsStr::new(&name)).unwrap();
         let data = dir.create_child(OsStr::new("data")).unwrap();
         let tmp = dir.create_child(OsStr::new("tmp")).unwrap();
@@ -76,14 +85,14 @@ mod tests {
         tmp.write_new(OsStr::new("scratch"), b"temporary").unwrap();
         assert!(data.try_lock().unwrap());
         assert!(matches!(
-            delete(&database, "owner", "app"),
+            delete(&database, "app"),
             Err(WorkerError::Storage("app_storage_busy"))
         ));
         assert!(path.join(&name).join("data/kept").exists());
         drop(data);
-        delete(&database, "owner", "app").unwrap();
+        delete(&database, "app").unwrap();
         assert!(!path.join(&name).exists());
-        delete(&database, "owner", "app").unwrap();
+        delete(&database, "app").unwrap();
         let new = root.create_child(OsStr::new(&name)).unwrap();
         assert!(new.entries(10).unwrap().is_empty());
         drop((new, tmp, dir, root));

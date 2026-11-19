@@ -8,8 +8,8 @@ Protocol remains 418/70; this client uses the existing 417/418 wire shapes.
 
 ## Opening and reading
 
-From the waiting room, `/app open INSTALLATION` opens a **user-domain** view.
-`/app view open INSTALLATION` does so explicitly from either the waiting room
+From the Room list, `/app open INSTALLATION` opens a **user-domain** view.
+`/app view open INSTALLATION` does so explicitly from either the Room list
 or an attached session. Attached `/app open INSTALLATION` and explicit
 `--session` commands keep the existing Room behavior. `/app views` lists the
 owner's instances; `/app view show VIEW` selects an existing text-capable view;
@@ -115,12 +115,12 @@ Room accessibility formatter remains a small pure module.
 
 ## Live full CLI follow-up
 
-`/` in the waiting room focuses the existing command
-input; it does not activate a session. The shortcut is listed in waiting-room
+`/` in the Room list focuses the existing command
+input; it does not activate a session. The shortcut is listed in Room list
 hotkey help. `/app view open INSTALLATION`, `/app views`, and `/app view show VIEW`
 are then available without a Room. Once projected, Tab/type/Enter sends real
 keyboard actions; Ctrl+W closes the view, Escape returns to the command input.
-The flag-off waiting room retains its existing navigation.
+The flag-off Room list retains its existing navigation.
 
 The Cloud `user-app-view-browser-drill.mjs` that drove this TUI beside the web
 native App host is retired with that host; the old terminal component drill

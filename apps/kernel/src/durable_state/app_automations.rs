@@ -245,6 +245,20 @@ fn apply(
             tx.execute("UPDATE app_outbox SET queued_agent_id=?1 WHERE receipt_id=?2 AND owner_id=?3 AND installation_id=?4",
                 rusqlite::params![config.target.endpoint_id,receipt.receipt_id,owner,catalog.installation_id()])?;
             super::app_event_maintenance::agent::reconcile_prompt_in(&tx, &receipt.receipt_id)?;
+            super::workflow_notifications::subscription_settings::app_delivered_in(
+                &tx,
+                &receipt.automation_id,
+                &receipt.occurrence_id,
+                &super::workflow_notifications::subscription_settings::app_event_title(
+                    receipt.invocation.as_deref(),
+                    &config.event_name,
+                ),
+                &crate::local::NotificationTraceTurn {
+                    agent_id: config.target.endpoint_id.clone(),
+                    prompt_id,
+                },
+                crate::session::unix_epoch_ms(),
+            )?;
             AppAutomationOutcome::Queued
         }
         AppAutomationMutation::List => {

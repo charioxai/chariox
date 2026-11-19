@@ -17,6 +17,16 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 /// A child never has more authority than its parent: a level or mode the spawn does not ask
 /// for is the parent's current limit, and one it asks for cannot be above it. A spawn from a
 /// person (no parent) keeps the requested values, filled from the room defaults.
+/// A model the request names must be one the account offers; one the Room default supplies is
+/// already in use.
+fn requested_model_source(named: bool) -> crate::runtime::state::ModelSource {
+    if named {
+        crate::runtime::state::ModelSource::Named
+    } else {
+        crate::runtime::state::ModelSource::Kept
+    }
+}
+
 fn child_authority(
     parent: Option<crate::session::EffectiveAgentExecutionConfig>,
     mode: Option<AgentExecutionMode>,
@@ -53,6 +63,17 @@ fn parent_limit(
     })
 }
 
+/// An agent that calls is the origin of the change; a client's call is the person's.
+fn settings_context(
+    caller_agent_id: Option<&str>,
+    reason: Option<String>,
+) -> crate::runtime::state::SettingsContext {
+    match caller_agent_id {
+        Some(agent_id) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
+        None => crate::runtime::state::SettingsContext::person(),
+    }
+}
+
 impl SessionRuntimeStore {
     const MAX_BATCH_SPAWN_AGENTS: usize = 500;
 
@@ -60,11 +81,37 @@ impl SessionRuntimeStore {
         &self,
         request: UpdateAgentConfigRequest,
         caller_user_id: String,
+        caller_agent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let session_id = request.session_id.clone();
+        if let Some(action) = request.usage_limit.clone() {
+            let result = match self
+                .state
+                .resolve_usage_limit_stop(
+                    &request.session_id,
+                    &request.agent_id,
+                    &caller_user_id,
+                    caller_agent_id.as_deref(),
+                    action,
+                )
+                .await
+            {
+                Ok(agent) => self
+                    .state
+                    .session_snapshot(&session_id)
+                    .await
+                    .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                        agent,
+                        session,
+                        applies: Default::default(),
+                    }),
+                Err(error) => Err(error),
+            };
+            return self.with_session_projection_action_result(result).await;
+        }
         let execution_mode_override = if request.clear_execution_mode {
             Some(None)
         } else {
@@ -90,9 +137,10 @@ impl SessionRuntimeStore {
         } else {
             request.max_context_tokens.map(Some)
         };
-        let updated = self
+        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let result = match self
             .state
-            .update_agent_config(
+            .update_agent_config_as(
                 &request.session_id,
                 &request.agent_id,
                 &caller_user_id,
@@ -101,14 +149,20 @@ impl SessionRuntimeStore {
                 workspace_id,
                 worktree_id,
                 max_context_tokens,
+                request.self_settings,
+                context,
             )
-            .await;
-        let result = match updated {
-            Ok(agent) => self
+            .await
+        {
+            Ok((agent, applies)) => self
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                    agent,
+                    session,
+                    applies,
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -118,6 +172,7 @@ impl SessionRuntimeStore {
         &self,
         request: UpdateAgentProfileRequest,
         caller_user_id: String,
+        caller_agent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -128,9 +183,10 @@ impl SessionRuntimeStore {
         } else {
             request.effort.map(Some)
         };
+        let context = settings_context(caller_agent_id.as_deref(), request.reason);
         let result = match self
             .state
-            .update_agent_profile(
+            .update_agent_profile_as(
                 &request.session_id,
                 &request.agent_id,
                 &caller_user_id,
@@ -138,14 +194,19 @@ impl SessionRuntimeStore {
                 request.account_profile,
                 request.model,
                 effort,
+                context,
             )
             .await
         {
-            Ok(agent) => self
+            Ok((agent, applies)) => self
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentProfileUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentProfileUpdated {
+                    agent,
+                    session,
+                    applies,
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -212,7 +273,11 @@ impl SessionRuntimeStore {
                 .state
                 .session_snapshot(&session_id)
                 .await
-                .map(|session| LocalDaemonResponse::AgentConfigUpdated { agent, session }),
+                .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                    agent,
+                    session,
+                    applies: Default::default(),
+                }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -257,6 +322,8 @@ impl SessionRuntimeStore {
             .provider
             .as_deref()
             .is_none_or(|provider| provider == defaults.provider);
+        // A model the Room default supplies is already in use; one the request names must be offered.
+        let model_source = requested_model_source(request.model.is_some());
         let model = request
             .model
             .or_else(|| same_provider.then(|| defaults.model.clone()).flatten());
@@ -343,6 +410,7 @@ impl SessionRuntimeStore {
                     &spawn_provider,
                     account_profile.as_deref(),
                     model,
+                    model_source,
                     effort,
                 )
                 .await
@@ -607,6 +675,7 @@ impl SessionRuntimeStore {
                 .provider
                 .as_deref()
                 .is_none_or(|provider| provider == default_provider);
+            let model_source = requested_model_source(item.model.is_some());
             let model = item
                 .model
                 .or_else(|| same_provider.then(|| default_model.clone()).flatten());
@@ -677,6 +746,7 @@ impl SessionRuntimeStore {
                         &item_provider,
                         item_account_profile.as_deref(),
                         model,
+                        model_source,
                         effort,
                     )
                     .await

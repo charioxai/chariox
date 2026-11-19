@@ -34,7 +34,9 @@ export async function navigateBrowser({
   );
   // An attachment keeps the current document; Chrome reports ERR_ABORTED with isDownload.
   if (result?.isDownload === true) return { target_id: targetId, document_id: documentId, url: normalizedUrl, download_started: true };
-  if (typeof result?.errorText === "string" && result.errorText) {
+  // Chrome shows an error page for a failed load (an HTTP error without a body, an unknown host): that is the page now.
+  // An aborted load keeps the current document and stays a failure.
+  if (typeof result?.errorText === "string" && result.errorText && !await committedErrorPage(connection, sessionId, result.loaderId)) {
     throw new BrowserCompatibilityError(
       "browser_navigation_failed",
       `browser navigation failed: ${result.errorText}`,
@@ -51,6 +53,11 @@ export async function navigateBrowser({
     document_id: result.loaderId,
     url: normalizedUrl,
   };
+}
+
+async function committedErrorPage(connection, sessionId, loaderId) {
+  const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+  return typeof loaderId === "string" && frameTree?.frame?.loaderId === loaderId && frameTree.frame.unreachableUrl !== undefined;
 }
 
 export async function waitForBrowserState({

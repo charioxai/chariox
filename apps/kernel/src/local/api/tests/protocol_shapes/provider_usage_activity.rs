@@ -965,58 +965,29 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         "d3df9ce72d0e27572f5ce66e5e29ba809d6e00d73c5508deda2aa810969f40e8"
     );
 
-    let create_pr_request = serde_json::to_value(LocalDaemonRequest::CreateWorkspacePullRequest(
-        CreateWorkspacePullRequestRequest {
+    let commit_request = serde_json::to_value(LocalDaemonRequest::CommitWorkspaceChanges(
+        CommitWorkspaceChangesRequest {
             workspace_id: "workspace-1".to_string(),
             worktree_id: "worktree-1".to_string(),
-            title: Some("Ship feature".to_string()),
-            body: Some("Body".to_string()),
-            base_ref: Some("main".to_string()),
-            draft: true,
+            message: "Ship feature".to_string(),
+            files: vec!["src/lib.rs".to_string()],
+            branch: Some("feature".to_string()),
         },
     ))
-    .expect("create pull request request should serialize");
-    let create_pr_payload = create_pr_request
-        .pointer("/CreateWorkspacePullRequest")
-        .expect("create pull request payload should serialize");
+    .expect("commit request should serialize");
+    let commit_payload = commit_request
+        .pointer("/CommitWorkspaceChanges")
+        .expect("commit payload should serialize");
     assert_eq!(
-        create_pr_payload.pointer("/base_ref"),
-        Some(&serde_json::json!("main"))
+        commit_payload.pointer("/files"),
+        Some(&serde_json::json!(["src/lib.rs"]))
     );
-    let serialized = serde_json::to_string(create_pr_payload)
-        .expect("create pull request request snapshot should encode");
+    let serialized =
+        serde_json::to_string(commit_payload).expect("commit request snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "318e776a7f78bd7b0a8543028eea8d1acd44865c3f49a7bd22a7596c77b22471"
-    );
-
-    let pull_request = WorkspacePullRequestRecord {
-        workspace_id: "workspace-1".to_string(),
-        worktree_id: "worktree-1".to_string(),
-        branch: "feature".to_string(),
-        base_ref: "main".to_string(),
-        url: "https://github.com/example/repo/pull/1".to_string(),
-        title: Some("Ship feature".to_string()),
-        draft: true,
-        generated_at_ms: 1237,
-    };
-    let pr_response =
-        serde_json::to_value(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-            .expect("pull request response should serialize");
-    let pr_response_payload = pr_response
-        .pointer("/WorkspacePullRequestCreated/pull_request")
-        .expect("pull request response payload should serialize");
-    assert_eq!(
-        pr_response_payload.pointer("/url"),
-        Some(&serde_json::json!("https://github.com/example/repo/pull/1"))
-    );
-    let serialized = serde_json::to_string(pr_response_payload)
-        .expect("pull request response snapshot should encode");
-    let hash = Sha256::digest(serialized.as_bytes());
-    assert_eq!(
-        format!("{hash:x}"),
-        "4354e2b9a67c08033d5306739f223f09af4ca44c747a01c30499526766bca00f"
+        "40744b6ef906cf885b7df37fb18b33ac9e5784c0edb974d06f5abe8629eb03e3"
     );
 }
 

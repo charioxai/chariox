@@ -21,6 +21,11 @@ release a response whose import is still pending. Raw interfaces are re-exported
 for advanced use and require explicit ownership. Use `ctx.resources.own(promise,
 dispose)` for another resource-valued import.
 
+`displayName` and `icon` in `app.json` (the template's `bundle/ui/icon.svg`) give the App the name
+and logo every client shows, such as the Desktop tile: an original SVG of at most 32 KiB, or a PNG
+up to 512 by 512, listed in the bundle. `pack` refuses scripts and outside references in an SVG.
+An App without them is shown under its app id with a letter tile.
+
 See [builds, polyfill limits and integration gates](../app-sdk-tools/README.md).
 
 

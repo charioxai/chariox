@@ -8,13 +8,6 @@ use chariox_relay::auth::RelaySubjectKind;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-struct Scratch(std::path::PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
-    }
-}
-
 struct ImportClient {
     router: CommandRouter,
     sequence: AtomicU64,
@@ -22,18 +15,11 @@ struct ImportClient {
     identity: RelayCallerIdentity,
     private_key: String,
     selection: Value,
-    _scratch: Scratch,
 }
 
 impl ImportClient {
     fn new() -> Self {
         let config = DaemonConfig::for_tests();
-        let scratch = Scratch(
-            std::path::PathBuf::from(config.user_config.state.path.as_ref().unwrap())
-                .parent()
-                .unwrap()
-                .to_path_buf(),
-        );
         let mut app = DaemonApp::bootstrap(config).unwrap();
         let session = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("import-relay", "worktree"))
@@ -91,7 +77,6 @@ impl ImportClient {
                 "environment_id": environment.environment_id, "runtime_generation": environment.runtime_generation,
                 "tab_id": environment.tabs[0].tab_id, "document_revision": environment.tabs[0].document_revision,
                 "source_store_id": "0", "domains": ["example.com"], "partition_sites": [], "overwrite": false}),
-            _scratch: scratch,
         }
     }
 

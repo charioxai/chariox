@@ -65,7 +65,7 @@ async fn same_named_slices_on_two_machines_keep_distinct_signed_routes() {
         let parent = case["ownerKernelId"].as_str().unwrap();
         let worker = case["workerKernelRef"].as_str().unwrap();
         for (id, is_worker) in [(parent, false), (worker, true)] {
-            let (mut socket, _) = connect_async_with_retry(&url).await.unwrap();
+            let (mut socket, socket_handshake) = connect_async_with_retry(&url).await.unwrap();
             let mut registration = test_registration(id, machine, "Linux", 1);
             if is_worker {
                 registration.daemon_alias =
@@ -92,7 +92,11 @@ async fn same_named_slices_on_two_machines_keep_distinct_signed_routes() {
                 ));
             }
             registration.auth_token = hosted_kernel_jwt(&claims, secret);
-            send(&mut socket, RelayEnvelope::DaemonRegister { registration }).await;
+            send(
+                &mut socket,
+                signed_register(&url, &socket_handshake, registration),
+            )
+            .await;
             if is_worker {
                 workers.push(socket);
             } else {

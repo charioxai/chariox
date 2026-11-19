@@ -35,7 +35,7 @@ export type CliAutomationProcessCompositionDeps = {
   streamingAgentId: AnyFn
   agentBusyLatch: AnyFn
   isAttached: AnyFn
-  waitingRoomState: AnyFn
+  startState: AnyFn
   setWaitingRoomState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
@@ -107,7 +107,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
     isAttached: deps.isAttached,
-    waitingRoomState: deps.waitingRoomState,
+    startState: deps.startState,
     availableSessions: deps.availableSessions,
     waitingRoomProjects: deps.waitingRoomProjects,
     providerCatalogState: deps.providerCatalogState,
@@ -159,7 +159,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     submitPrompt: deps.submitPrompt,
     activateWaitingRoom: deps.activateWaitingRoom,
     requestWaitingRoom: deps.requestWaitingRoom,
-    waitingRoomState: deps.waitingRoomState,
+    startState: deps.startState,
     setWaitingRoomState: deps.setWaitingRoomState,
     externalProviderSessionsState: deps.externalProviderSessionsState,
     waitingRoomProjects: deps.waitingRoomProjects,

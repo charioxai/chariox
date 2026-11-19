@@ -306,7 +306,23 @@ impl RuntimeSession {
             .retain(|_, receipt| receipt.expires_at_ms > now_ms);
     }
 
-    pub fn create_workflow_run(&mut self, workflow_run: WorkflowRun) -> WorkflowRun {
+    /// Registers a run. A new run takes the workflow's next number and closes the attention of
+    /// the workflow's older runs: the person has moved on to a newer one. A run restored from
+    /// durable state keeps its number.
+    pub fn create_workflow_run(&mut self, mut workflow_run: WorkflowRun) -> WorkflowRun {
+        if workflow_run.number() == 0 {
+            let number = self
+                .workflow_mut(workflow_run.workflow_id())
+                .map(WorkflowDefinition::next_run_number);
+            workflow_run.set_number(number.unwrap_or(1));
+            for older in self
+                .workflow_runs
+                .iter_mut()
+                .filter(|older| older.workflow_id() == workflow_run.workflow_id())
+            {
+                older.clear_attention();
+            }
+        }
         self.workflow_runs.push(workflow_run.clone());
         workflow_run
     }
@@ -604,6 +620,8 @@ impl RuntimeSession {
         snapshot
     }
 
+    /// A terminal run leaves the hot snapshot once settled, except one that still needs
+    /// someone: it stays until the person opens it or a newer run of its workflow starts.
     pub(crate) fn archive_terminal_workflow_runs(&mut self) -> Vec<WorkflowRun> {
         let pending_settlement = self.workflow_run_ids_pending_prompt_settlement();
         let mut active = Vec::with_capacity(self.workflow_runs.len());
@@ -611,6 +629,7 @@ impl RuntimeSession {
         for workflow_run in self.workflow_runs.drain(..) {
             if workflow_run.status().is_terminal()
                 && !pending_settlement.contains(workflow_run.id())
+                && !workflow_run.attention()
             {
                 archived.push(workflow_run);
             } else {
@@ -625,7 +644,7 @@ impl RuntimeSession {
         self.workflow_runs
             .retain(|workflow_run| workflow_run.status().is_terminal());
         for workflow_run in workflow_runs {
-            if workflow_run.status().is_terminal() {
+            if workflow_run.status().is_terminal() && !workflow_run.attention() {
                 continue;
             }
             match self

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ErrorCode, PackageError, Result};
 
-pub use chariox_app_wit::{APP_WORLD, MIGRATION_WORLD};
+pub use chariox_app_wit::{APP_WORLD, APP_WORLD_1_1, MIGRATION_WORLD};
 
 /// `<namespace>:<package>/<world>@<major>.<minor>.<patch>`, the exact world a
 /// manifest names. Pre-release and build metadata are not part of the contract.

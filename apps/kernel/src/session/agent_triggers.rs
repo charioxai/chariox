@@ -180,6 +180,28 @@ impl TriggerDelivery {
     }
 }
 
+/// How an agent's own notification listener was set: what a responsible trigger replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedListener {
+    prompt: String,
+    enabled: bool,
+    busy_policy: AgentTriggerBusyPolicy,
+}
+
+impl ReplacedListener {
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn busy_policy(&self) -> AgentTriggerBusyPolicy {
+        self.busy_policy
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTrigger {
     id: String,
@@ -202,6 +224,14 @@ pub struct AgentTrigger {
     last_outcome: Option<AgentTriggerOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    /// Set on the trigger the kernel keeps for a workflow's responsible agent. A person never
+    /// creates, lists or edits it; setting the responsible does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    responsible_for: Option<super::workflow_responsible::ResponsibleForWorkflow>,
+    /// The agent's own listener on the same source, which this responsible trigger replaced: the
+    /// agent hears each run once, and the listener comes back when the responsible changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replaced_listener: Option<ReplacedListener>,
     #[serde(skip)]
     dispatch_in_flight: bool,
     #[serde(skip)]
@@ -241,6 +271,8 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
+            replaced_listener: None,
         })
     }
 
@@ -279,6 +311,8 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
+            replaced_listener: None,
         }
     }
 
@@ -295,6 +329,7 @@ impl AgentTrigger {
         subscription_id: String,
         display_name: String,
         prompt: String,
+        busy_policy: AgentTriggerBusyPolicy,
         now_ms: u64,
     ) -> Self {
         Self {
@@ -307,7 +342,7 @@ impl AgentTrigger {
                 display_name,
                 source_available: true,
             },
-            busy_policy: AgentTriggerBusyPolicy::Queue,
+            busy_policy,
             prompt,
             enabled: true,
             created_at_ms: now_ms,
@@ -318,6 +353,8 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
+            replaced_listener: None,
         }
     }
 
@@ -343,6 +380,32 @@ impl AgentTrigger {
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub fn responsible_for(&self) -> Option<&super::workflow_responsible::ResponsibleForWorkflow> {
+        self.responsible_for.as_ref()
+    }
+
+    pub(crate) fn set_responsible_for(
+        &mut self,
+        workflow: super::workflow_responsible::ResponsibleForWorkflow,
+        replaced: Option<ReplacedListener>,
+    ) {
+        self.responsible_for = Some(workflow);
+        self.replaced_listener = replaced;
+    }
+
+    pub fn replaced_listener(&self) -> Option<&ReplacedListener> {
+        self.replaced_listener.as_ref()
+    }
+
+    /// What the agent's own listener on this trigger's source was.
+    pub(crate) fn listener(&self) -> ReplacedListener {
+        ReplacedListener {
+            prompt: self.prompt.clone(),
+            enabled: self.enabled,
+            busy_policy: self.busy_policy,
+        }
     }
 
     pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
@@ -630,4 +693,7 @@ pub struct AgentTriggerDispatch {
     pub agent_id: String,
     pub prompt: String,
     pub busy_policy: AgentTriggerBusyPolicy,
+    /// The firing is a workflow's responsible agent's: its prompt is the kernel's own text, and
+    /// the occurrence's output is not quoted into it.
+    pub(crate) responsible: bool,
 }

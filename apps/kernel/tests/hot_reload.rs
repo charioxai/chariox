@@ -580,7 +580,7 @@ fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
     runtime.spawn(async move {
         while let Ok((stream, _)) = relay.accept().await {
             tokio::spawn(async move {
-                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                if let Ok(mut socket) = accept_as_relay(stream).await {
                     while let Some(Ok(_)) = socket.next().await {}
                 }
             });
@@ -660,7 +660,7 @@ fn a_hot_reload_tells_the_relay_it_is_a_reload() {
         while let Ok((stream, _)) = relay.accept().await {
             let recorded = recorded.clone();
             tokio::spawn(async move {
-                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                let Ok(mut socket) = accept_as_relay(stream).await else {
                     return;
                 };
                 let index = {
@@ -1609,7 +1609,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1748,7 +1748,7 @@ fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllab
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "builder",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1973,7 +1973,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             let spawned = request(
                 &mut socket,
                 json!({"SpawnAgent": {"session_id": session_id, "alias": "counter",
-                    "provider": "claude", "model": "haiku", "effort": null,
+                    "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                     "worktree_id": null, "no_subscribe": true}}),
             )
             .await;
@@ -2340,6 +2340,171 @@ fn logged_after(scratch: &Path, message: &str, after_ms: u64) -> u64 {
 
 /// Notes when the session shows more parts of the streaming item.
 /// Calls the kernel's tools as the fake Codex agent (see fake_codex.py).
+/// A process an agent watches when the kernel hot-reloads still ends its wake:
+/// the new program supervises it again under the same wake id, so the owner
+/// hears the real exit code rather than `process_lost`.
+#[test]
+fn a_watched_process_still_wakes_its_agent_after_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-watched-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(scratch.join("fake_codex.py"), FAKE_CODEX).unwrap();
+    let codex = scratch.join("codex");
+    {
+        let _files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::write(
+            &codex,
+            format!(
+                "#!/bin/sh\nexec python3 {} \"$@\"\n",
+                scratch.join("fake_codex.py").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    std::fs::create_dir_all(scratch.join("codex-home")).unwrap();
+    let env = vec![
+        ("CHARIOX_CODEX_BIN", codex.clone()),
+        ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
+        ("CODEX_HOME", scratch.join("codex-home")),
+        ("CHARIOX_MCP_PORT", free_port().to_string().into()),
+    ];
+    let kernel = start_laptop_kernel(&scratch, &env);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let spawned = request(
+            &mut socket,
+            json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
+                "provider": "codex", "model": "gpt-6-luna", "effort": "low",
+                "worktree_id": null, "no_subscribe": true}}),
+        )
+        .await;
+        let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{spawned}"))
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        request(
+            &mut socket,
+            json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                "target_agent_id": agent_id, "prompt": "write four hundred parts", "attachments": []}}),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 100 {
+            assert!(Instant::now() < deadline, "the turn did not start streaming");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // The agent names its running turn in every Chariox tool call.
+        let state = request(
+            &mut socket,
+            json!({"GetSessionState": {"session_id": session_id}}),
+        )
+        .await;
+        let turn = state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+            ["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{state}"))
+            .to_string();
+        // The agent watches a process that outlives the swap and exits with 7.
+        let started = codex_tools(
+            &record,
+            "watch",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "chariox.events.process", "arguments": {
+                    "task_id": turn, "origin_prompt_id": turn,
+                    "label": "build", "argv": ["sh", "-c", "echo before; sleep 20; echo after; exit 7"]}}}),
+        )
+        .await;
+        let text = started["result"]["content"][0]["text"].as_str().unwrap_or_default();
+        let watched: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{started}"));
+        let wake_id = watched["wake_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the process was not watched: {started}"))
+            .to_string();
+
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        std::fs::write(record.join("swap"), "").unwrap();
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+
+        // The new program has adopted the agent's turn, which stays open until
+        // the watch has ended.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+            std::fs::read_to_string(file.unwrap().path())
+                .unwrap()
+                .contains("continuing a handed-over Codex turn")
+        }) {
+            assert!(Instant::now() < deadline, "the Codex turn was not adopted");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // The same wake ends with the process's own exit code.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut round = 0;
+        let wake = loop {
+            round += 1;
+            let listed = codex_tools(
+                &record,
+                &format!("wakes-{round}"),
+                json!({"jsonrpc": "2.0", "id": 100 + round, "method": "tools/call",
+                    "params": {"name": "chariox.events.wakes",
+                        "arguments": {"task_id": turn, "origin_prompt_id": turn}}}),
+            )
+            .await;
+            let text = listed["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            let listed: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{listed}"));
+            let wake = listed["wakes"]
+                .as_array()
+                .and_then(|wakes| wakes.iter().find(|w| w["id"] == wake_id.as_str()))
+                .cloned()
+                .unwrap_or_else(|| panic!("the watch is gone: {listed}"));
+            if wake["state"] != "running" && wake["state"] != "starting" {
+                break wake;
+            }
+            assert!(Instant::now() < deadline, "the watch never ended: {wake}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert_eq!(wake["state"], "exited", "{wake}");
+        assert_eq!(wake["exit_code"], 7, "{wake}");
+        std::fs::write(record.join("go"), "").unwrap();
+    });
+}
+
 async fn codex_tools(record: &Path, name: &str, body: Value) -> Value {
     std::fs::write(record.join(format!("mcp-{name}")), body.to_string()).unwrap();
     let out = record.join(format!("mcp-{name}.out"));
@@ -2373,4 +2538,27 @@ async fn note_shown_parts(
     if parts > 0 && shown.last().is_none_or(|(_, last)| parts > *last) {
         shown.push((started.elapsed(), parts));
     }
+}
+
+/// A stand-in relay's handshake: it offers a registration challenge as the relay does.
+// tungstenite's upgrade callback fixes the large `ErrorResponse` error type.
+#[allow(clippy::result_large_err)]
+async fn accept_as_relay(
+    stream: tokio::net::TcpStream,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    tokio_tungstenite::accept_hdr_async(
+        stream,
+        |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            response.headers_mut().insert(
+                chariox_relay::registration_proof::CHALLENGE_HEADER,
+                "stand-in-relay-challenge".parse().unwrap(),
+            );
+            Ok(response)
+        },
+    )
+    .await
 }

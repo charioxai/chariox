@@ -8,19 +8,16 @@ Owner decision, 2026-10-05. Local protocol **432**, relay peer **78**. This
 contract supersedes the focus-revocation text in earlier multidomain receipts.
 The kernel owns it equally on ordinary and managed placements.
 
-MP-11: focus from an authenticated human terminal grants access. Agent-originated
-focus (including Metaagent orchestration), attach, cycle and alias-routed prompts
-may change session focus but cannot create, restore or refresh browser
-authority. Changing human focus keeps the previous agent's grant and gives
-the new agent its own grant.
-Each grant retains stable resources the agent touched. A retained agent has the
-same operations as a focused agent on its granted resources: text entry, keys,
-Tab, clicks, activations, navigation, and closure. Loading another
-capability or claiming an unrelated existing tab still requires focus.
-The 16:35 owner decision permits explicit start/open while retained; an explicit
-open grants only the newly created tab. Generation, document, owner and
-provider-run checks still apply. Listing metadata does not claim resources;
-retained browser inventories show only granted resources.
+Owner decision, 2026-11-18: every local agent has the kernel browser and the
+Computer, like Apps. `chariox.load_kernel_browser` grants and loads them at
+once, for any agent at any depth and in any turn (owner prompt, wake, message
+or workflow), with no card, no focus and no owner approval. Each grant holds
+the resources the agent touched; claiming the owner's existing tabs, opening,
+starting and stopping need nothing more, and every agent lists every tab.
+Focus from a human terminal still grants the focused agent at once. A grant
+ends by idle, lifetime, revoke or session end; the agent then loads the
+browser again itself. Generation, document, owner and provider-run checks
+still apply. Leased and remote agents keep their Room Browser/Computer route.
 
 The kernel reads its existing active turns, prompt ownership/backlog, scheduled
 agent prompts, interactions and pending MCP/provider continuations. A provider
@@ -73,10 +70,9 @@ human stop, controller loss and Chromium loss with a live controller. Explicit
 start/open uses the same grant authority while focused or retained, with no
 grant mutex held across startup I/O. Profiles do not restore expired grants.
 
-MP-08 / MP-11: #882 refusal mapping stays `not_focused_agent` for capability
-loading/unrelated new-resource claims, `sensitive_requires_focus` for Vault or
-other focus-required protected operations, and `not_granted` for absent,
-expired or revoked grants. Browser unavailability is a lifecycle error, not a
+MP-08 / MP-11: #882 refusal mapping: `not_granted` for absent, expired or
+revoked grants (load the browser again); `sensitive_requires_focus` stays for
+native input the person's own input owner refuses. Browser unavailability is a lifecycle error, not a
 focus refusal. String/MCP errors keep the existing transport envelopes.
 Protocol remains 432/78; this correction changes no public serialized shape.
 

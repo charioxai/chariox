@@ -95,6 +95,20 @@ impl Services {
                             assert_eq!(body["owner_id"], super::FIXTURE_EVENT_OWNER);
                             json!({"connections":[{"generator_id":GENERATOR,"connection_id":"fixture-connection","status":"ready","metadata":{},"updated_at_ms":1}],"next_cursor":null})
                         }
+                        "/v1/resources/query" => {
+                            assert_eq!(body["owner_id"], super::FIXTURE_EVENT_OWNER);
+                            json!({"resources":[
+                                {"id":"repo-1","name":"alpha","kind":"repository","connection_scope":"default"},
+                                {"id":"repo-2","name":"beta","kind":"repository","connection_scope":"second"}
+                            ],"next_cursor":null})
+                        }
+                        "/v1/authorizations" => json!({
+                            "generator_id": GENERATOR,
+                            "status": "pending",
+                            "connection_id": "fixture-connection",
+                            "authorization_url": "https://provider.example/consent?state=fixture",
+                            "expires_at_ms": 4_102_444_800_000u64
+                        }),
                         _ => panic!("unexpected fixture management operation"),
                     };
                     let body = serde_json::to_vec(&response).unwrap();

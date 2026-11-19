@@ -259,7 +259,7 @@ pub fn public_key_from_private_key_base64(private_key_base64: &str) -> Result<St
     Ok(encode_public_key(&private_key.public_key()))
 }
 
-fn decode_private_key(private_key_base64: &str) -> Result<SecretKey, DaemonError> {
+pub(crate) fn decode_private_key(private_key_base64: &str) -> Result<SecretKey, DaemonError> {
     let bytes = decode_bytes(private_key_base64, "decode relay private key")?;
     SecretKey::from_slice(&bytes)
         .map_err(|error| relay_crypto_error("decode relay private key", &error.to_string()))

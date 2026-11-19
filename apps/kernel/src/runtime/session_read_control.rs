@@ -38,41 +38,31 @@ pub(crate) fn projected_session_state_response(
     session_projection: &SessionStateProjectionStore,
     request: &GetSessionStateRequest,
     caller_user_id: &str,
-) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+) -> Result<LocalDaemonResponse, DaemonError> {
     // The label is read before the session, so a state is never older than its revision.
     let agent_activity_revision = session_projection.change_sequence();
     let (session, processes, disk_usage) =
-        match runtime_state.session_with_resources(&request.session_id) {
-            Ok(state) => state,
-            Err(error) => return Some(Err(error)),
-        };
+        runtime_state.session_with_resources(&request.session_id)?;
     let caller_user_id =
         &runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
     if !session.has_member(caller_user_id) {
-        return Some(Err(DaemonError::SessionAccessDenied {
+        return Err(DaemonError::SessionAccessDenied {
             session_id: session.id().to_string(),
             user_id: caller_user_id.to_string(),
-        }));
+        });
     }
     let agent_activity =
         runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
-    let room_workflows =
-        match crate::runtime::projection::RoomWorkflowInventory::project_with_history(
-            &session,
-            caller_user_id,
-            Some(runtime_state.durable_state_store()),
-        ) {
-            Ok(inventory) => inventory,
-            Err(error) => return Some(Err(error)),
-        };
-    let redacted_session = match session.redacted_for_user_with_workflow_history(
+    let room_workflows = crate::runtime::projection::RoomWorkflowInventory::project_with_history(
+        &session,
+        caller_user_id,
+        Some(runtime_state.durable_state_store()),
+    )?;
+    let redacted_session = session.redacted_for_user_with_workflow_history(
         caller_user_id,
         runtime_state.durable_state_store(),
-    ) {
-        Ok(session) => session,
-        Err(error) => return Some(Err(error)),
-    };
-    Some(Ok(LocalDaemonResponse::SessionState {
+    )?;
+    Ok(LocalDaemonResponse::SessionState {
         room_workflows,
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision,
@@ -89,7 +79,7 @@ pub(crate) fn projected_session_state_response(
             .collect(),
         disk_usage,
         session: redacted_session,
-    }))
+    })
 }
 
 pub(crate) fn projected_resolve_session_response(
@@ -188,14 +178,44 @@ pub(crate) async fn projected_session_read_response(
             )
             .await
         {
-            if let Some(response) = projected_session_state_response(
-                runtime_state,
-                session_projection,
-                request,
-                caller_user_id,
-            ) {
-                return Some(response);
-            }
+            // A state read while the Room has not changed since an identical one
+            // started answers with that one.
+            let key = format!(
+                "session state {} {caller_user_id} {}",
+                session_projection.change_sequence(),
+                request.session_id
+            );
+            return Some(
+                runtime_state
+                    .read_once(key, || {
+                        // The build reads the durable store and the process table: it
+                        // runs off the async workers that carry the relay link.
+                        let (runtime_state, session_projection, request, caller_user_id) = (
+                            runtime_state.clone(),
+                            session_projection.clone(),
+                            request.clone(),
+                            caller_user_id.to_string(),
+                        );
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                projected_session_state_response(
+                                    &runtime_state,
+                                    &session_projection,
+                                    &request,
+                                    &caller_user_id,
+                                )
+                            })
+                            .await
+                            .map_err(|error| {
+                                DaemonError::LocalTransport {
+                                    operation: "read session state",
+                                    message: error.to_string(),
+                                }
+                            })?
+                        }
+                    })
+                    .await,
+            );
         }
     }
     if let LocalDaemonRequest::ResolveSession(request) = request {

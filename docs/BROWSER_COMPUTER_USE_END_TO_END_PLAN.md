@@ -28,7 +28,7 @@ The two main repositories are:
 - `chariox`: kernel, relay, slice runtime, browser controller, computer tools,
   local and remote TUI clients, provider adapters, protocol, CLI drills, and
   self-hosted behavior.
-- `chariox-cloud`: hosted control plane, waiting room, managed-machine
+- `chariox-cloud`: hosted control plane, Room list, managed-machine
   provisioning, web terminal, View UI, hosted relay bootstrap, OpenShip-based
   staging and deployment, and browser acceptance drills.
 
@@ -1709,7 +1709,7 @@ them without an explicitly approved tradeoff.
 | Human takeover during reconnect | ownership does not revert silently to the agent |
 | Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
 | Web relay or inventory reconnect | terminal shell stays mounted and visible; no document reload, full-grey frame, empty route outlet, lost focus, or stale status timer |
-| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the waiting-room cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
+| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the Room list cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
 | TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
 | DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
 | Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
@@ -1798,7 +1798,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Slice lifecycle | streamer/controller leave orphan state | create, start, stop, save, restart, reset, backup, delete |
 | Multi-user collaboration | shared browser leaks across tenants | two-user same Room and cross-Room isolation |
 | Relay identity and transport | display load starves terminal traffic | terminal prompt under full display load and stalled viewer |
-| Cloud waiting room | new display states break machine selection | local, hosted, stale, headless, and protocol-incompatible targets |
+| Cloud Room list | new display states break machine selection | local, hosted, stale, headless, and protocol-incompatible targets |
 | Notifications | browser and lifecycle events produce duplicates or secrets | reconnect deduplication, redaction, and actor attribution |
 | Agent apps and deployments | controller packages alter deployment images | build, deploy, rollback, and image-size comparison |
 | CLI and TUI rendering | new events break old terminals | minimum protocol, unknown event, resize, trace, and reconnect |

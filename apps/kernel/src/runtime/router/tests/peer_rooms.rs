@@ -7,6 +7,7 @@ mod control;
 mod kernels;
 mod kernels_sender;
 mod messages;
+mod queued;
 
 /// Room `home` holds the sender; room `peer_room` holds an ordinary agent and its hidden
 /// sub-agent; `foreign_room` belongs to another owner.
@@ -125,6 +126,22 @@ impl Rooms {
             .await?;
         assert!(result.ok, "{}", result.payload);
         Ok(result.payload)
+    }
+
+    /// The sender promotes a message it queued.
+    async fn promote(&self, message_id: &str) -> serde_json::Value {
+        let result = self
+            .router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &self.sender_token,
+                crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL,
+                serde_json::json!({ "message_id": message_id }),
+            )
+            .await
+            .expect("promotion answers");
+        assert!(result.ok, "{}", result.payload);
+        result.payload
     }
 
     async fn room_command(

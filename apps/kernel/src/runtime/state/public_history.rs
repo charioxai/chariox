@@ -598,11 +598,9 @@ mod tests {
     #[test]
     fn public_history_projection_preserves_whitespace_deltas() {
         // MP-08 / MP-10 / MP-11: provider chunks can contain only a word separator.
+        let root = crate::test_support::TestTempDir::new("am9-whitespace");
         let protection = room_secret_observation::RoomSecretObservations::new(
-            std::env::temp_dir().join(format!(
-                "chariox-am9-whitespace-{:016x}",
-                rand::random::<u64>()
-            )),
+            root.to_path_buf(),
             Default::default(),
         );
         let event = HistoryEvent::operational(
@@ -630,7 +628,8 @@ mod tests {
     fn public_history_excludes_mcp_and_unknown_tools_by_default() {
         // MP-08 / MP-10 / MP-11 A09: tools are private unless proven provider
         // native. Server names deliberately avoid every private keyword.
-        let root = std::env::temp_dir().join(format!(
+        let _tmp = crate::test_support::TestTempDir::new("am9-default-private-tool");
+        let root = _tmp.join(format!(
             "chariox-am9-default-private-tool-{:016x}",
             rand::random::<u64>()
         ));
@@ -754,7 +753,8 @@ mod tests {
 
     #[test]
     fn public_history_projection_excludes_private_content_and_scrubs_echoes() {
-        let root = std::env::temp_dir().join(format!(
+        let _tmp = crate::test_support::TestTempDir::new("am9-protection");
+        let root = _tmp.join(format!(
             "chariox-am9-protection-{:016x}",
             rand::random::<u64>()
         ));
@@ -886,8 +886,9 @@ mod admission_tests {
                     .build()
                     .unwrap()
                     .block_on(async {
-                        let root = std::env::temp_dir()
-                            .join(format!("chariox-am9-turn-{:016x}", rand::random::<u64>()));
+                        let _tmp = crate::test_support::TestTempDir::new("am9-turn");
+                        let root =
+                            _tmp.join(format!("chariox-am9-turn-{:016x}", rand::random::<u64>()));
                         std::fs::create_dir(&root).unwrap();
                         let mut config = crate::config::DaemonConfig::for_tests()
                             .with_session_history_root(root.join("history"));
@@ -1010,7 +1011,8 @@ mod admission_tests {
                     .build()
                     .unwrap()
                     .block_on(async {
-                        let root = std::env::temp_dir().join(format!(
+                        let _tmp = crate::test_support::TestTempDir::new("a09-peer-turn");
+                        let root = _tmp.join(format!(
                             "chariox-a09-peer-turn-{:016x}",
                             rand::random::<u64>()
                         ));
@@ -1089,7 +1091,8 @@ mod admission_tests {
     fn public_history_runtime_denies_foreign_scope_refs_and_stale_runs() {
         std::thread::Builder::new().stack_size(64*1024*1024).spawn(|| {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-                let root=std::env::temp_dir().join(format!("chariox-am9-admission-{:016x}",rand::random::<u64>()));
+                let _tmp = crate::test_support::TestTempDir::new("am9-admission");
+                let root = _tmp.join(format!("chariox-am9-admission-{:016x}",rand::random::<u64>()));
                 std::fs::create_dir(&root).unwrap();
                 let mut config=crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
                 config.room_agent_tools=true;
@@ -1136,7 +1139,8 @@ mod admission_tests {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let root = std::env::temp_dir().join(format!(
+                let _tmp = crate::test_support::TestTempDir::new("am9-revision");
+                let root = _tmp.join(format!(
                     "chariox-am9-revision-{:016x}",
                     rand::random::<u64>()
                 ));

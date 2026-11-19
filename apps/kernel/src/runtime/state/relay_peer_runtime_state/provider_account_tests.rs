@@ -51,7 +51,7 @@ exit 2
     std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
-    config.user_config.state.path = Some(root.join("state.db").display().to_string());
+    config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
     let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease(

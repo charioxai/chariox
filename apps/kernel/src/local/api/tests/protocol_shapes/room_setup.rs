@@ -65,7 +65,15 @@ fn room_setup_projection_wire_shape() {
             {"id": "publish", "state": "failed", "message": "not logged in; run `gh auth login`"}
         ]})
     );
-    let mut session = crate::session::RuntimeSession::new("room", None, "/w", "/w", "m", "k");
+    let mut session = crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "/w",
+        "/w",
+        "m",
+        "k",
+    );
     assert!(json(&session).get("room_setup").is_none());
     session.set_room_setup(Some(state.clone()));
     assert_eq!(json(&session)["room_setup"], json(&state));
@@ -104,7 +112,15 @@ fn room_setup_requests_and_responses_wire_shape() {
         }),
         serde_json::json!({"SessionAliasSuggested": {"workspace_id": "/work/app", "alias": "app-2"}})
     );
-    let session = crate::session::RuntimeSession::new("s-1", None, "/w", "/w", "m", "k");
+    let session = crate::session::RuntimeSession::new(
+        "s-1",
+        crate::session::ProjectId::test(),
+        None,
+        "/w",
+        "/w",
+        "m",
+        "k",
+    );
     let updated = json(LocalDaemonResponse::RoomSetupUpdated {
         session: session.clone(),
     });

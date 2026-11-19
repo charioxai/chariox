@@ -85,7 +85,7 @@ try {
     if (value.request_id) responses.set(value.request_id, value)
     if (value.event?.event === "passkey_prompts_changed") accessPrompts = value.event.prompts || []
   })
-  socket.send(JSON.stringify({ type: "subscribe", request_id: "kit-popups", session_id: "", attachment_id: "", subscription_scope: "waiting_room_inventory" }))
+  socket.send(JSON.stringify({ type: "subscribe", request_id: "kit-popups", session_id: "", attachment_id: "", subscription_scope: "room_list" }))
   assert.ok(!(await until(() => responses.get("kit-popups"))).error)
   const base = [join(source, "scripts/sudo-kit.mjs")]
   const publicOptions = ["--checkout", source, "--socket", join(root, "run/k.sock"), "--session", "access-session"]

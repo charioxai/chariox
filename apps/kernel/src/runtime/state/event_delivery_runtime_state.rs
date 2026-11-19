@@ -128,10 +128,13 @@ impl KernelRuntimeState {
                         .as_ref()
                         .is_some_and(|source| source.connection_id == connection_id)
             })
-            .map(|route| crate::local::EventConnectionDependency {
-                installation_id: route.installation_id,
-                route_id: Some(route.route_id),
-                active: route.active,
+            .map(|route| {
+                let active = route.admits();
+                crate::local::EventConnectionDependency {
+                    installation_id: route.installation_id,
+                    route_id: Some(route.route_id),
+                    active,
+                }
             })
             .collect::<Vec<_>>();
         let grantees = self
@@ -323,7 +326,7 @@ fn app_route_subscription(
         event_type_version: route.source_event_version,
         filter,
         revision: 1,
-        active: route.active,
+        active: route.admits(),
     })
 }
 
@@ -372,7 +375,7 @@ fn app_route_claim(
         endpoint_id: route.route_id.clone(),
         queue_ref: None,
         binding_revision: 1,
-        active: route.active,
+        active: route.admits(),
     })
 }
 
@@ -411,6 +414,8 @@ mod tests {
             source_event_type: "dummy.test".into(),
             source_event_version: 1,
             active: true,
+            paused: false,
+            app_managed: false,
             source: Some(chariox_app_runtime::app_inbox::InboxSource {
                 generator_id: "dev.chariox.dummy".into(),
                 connection_id: "shared-connection".into(),
@@ -451,6 +456,8 @@ mod tests {
             source_event_type: "app.mentioned".into(),
             source_event_version: 1,
             active: true,
+            paused: false,
+            app_managed: false,
             source: Some(chariox_app_runtime::app_inbox::InboxSource {
                 generator_id: "dev.chariox.slack".into(),
                 connection_id: "connection-1".into(),
@@ -724,6 +731,8 @@ mod owner_mapping_tests {
                         source_event_type: "thing.happened".into(),
                         source_event_version: 1,
                         active: true,
+                        paused: false,
+                        app_managed: false,
                         source: Some(chariox_app_runtime::app_inbox::InboxSource {
                             generator_id: "dev.chariox.up".into(),
                             connection_id: "connection-1".into(),

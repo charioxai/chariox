@@ -61,17 +61,14 @@ pub(super) fn own_schedule(
 }
 
 fn interval_seconds(every: &str) -> Result<u64, DaemonError> {
-    let unit = match every.chars().last() {
-        Some('s') => 1,
-        Some('m') => 60,
-        Some('h') => 3_600,
-        _ => 0,
-    };
-    let count = every[..every.len().saturating_sub(1)]
+    let (digits, unit) = [("s", 1), ("m", 60), ("h", 3_600)]
+        .into_iter()
+        .find_map(|(suffix, unit)| every.strip_suffix(suffix).map(|digits| (digits, unit)))
+        .unwrap_or(("", 0));
+    digits
         .parse::<u64>()
         .ok()
-        .filter(|count| *count > 0 && unit > 0);
-    count
+        .filter(|count| *count > 0 && unit > 0)
         .map(|count| count.saturating_mul(unit))
         .ok_or_else(|| {
             meta_command_error(format!(

@@ -164,7 +164,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
 
     let check = std::panic::AssertUnwindSafe(async {
         let room = fixture.rooms[0].clone();
-        let binding = dispatch_json(
+        let binding = dispatch_bind_room(
             &fixture.home,
             json!({"BindRoomEnvironmentSlice": {
                 "session_id":room,

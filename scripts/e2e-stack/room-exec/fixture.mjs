@@ -120,7 +120,7 @@ export class Fixture {
     this.A.onKernelEvent(event => {
       if (event.event === 'passkey_prompts_changed') this.prompts = event.prompts
     })
-    await this.A.subscribeToWaitingRoomInventory()
+    await this.A.subscribeToRoomList()
   }
 
   async unlock() {

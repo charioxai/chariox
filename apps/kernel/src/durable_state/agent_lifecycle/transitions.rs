@@ -1,11 +1,67 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
+/// Whether the only work left on `task` is finished sources whose outcome nobody acknowledged.
+fn only_unacknowledged_outcomes(task: &AgentTaskExecution) -> bool {
+    task.goal.is_none()
+        && task.wait.is_none()
+        && task.obligations.iter().any(|o| o.status == "settling")
+        && task
+            .obligations
+            .iter()
+            .filter(|o| o.requires_resolution() && !o.outlives_turn())
+            .all(|o| o.status == "settling")
+}
+
 /// Why a task is Blocked when its turn ended twice without finishing its obligations or yielding on them.
 pub(super) const INVALID_TURN_END_REASON: &str =
     "Repeated invalid turn end; owner must resume or cancel";
 
+fn registration_by_id(tx: &Transaction<'_>, id: &str) -> Result<Option<Registration>, DaemonError> {
+    tx.query_row(
+        "SELECT payload FROM agent_registrations WHERE id=?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(sql)?
+    .map(|payload| decode(&payload))
+    .transpose()
+}
+
+/// A registration the task no longer follows. A wait that held it must wake, rather than sleep on a dead registration.
+fn end_registration(
+    tx: &Transaction<'_>,
+    holder: &AgentTaskExecution,
+    mut reg: Registration,
+) -> Result<(), DaemonError> {
+    reg.live = false;
+    tx.execute(
+        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+        params![reg.id, encode(&reg)?],
+    )
+    .map_err(sql)?;
+    if holder
+        .wait
+        .as_ref()
+        .is_some_and(|w| w.registration_ids.contains(&reg.id))
+    {
+        event(
+            tx,
+            occurrence(
+                &holder.room_id,
+                &holder.agent_id,
+                &reg.source_id,
+                &format!("unsubscribe-{}-{}", reg.id, holder.revision),
+                "source_lost",
+                serde_json::json!({"task_id":holder.task_id,"registration_id":reg.id}),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
-    let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
+    let question = matches!(&op, Operation::BlockForQuestion { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
@@ -145,6 +201,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.provider_run_id = None;
                     t.revision += 1;
                     t
+                } else if let Some(task) = continued_past(tx, &room, &agent, &prompt)? {
+                    // The owner resumed the task while this turn was still ending: the
+                    // continuation owns the task now, and this turn begins nothing.
+                    return Ok(Outcome::Task(task));
                 } else {
                     new_admitted_task(tx, room, agent, prompt, run.clone(), now)?
                 }
@@ -260,7 +320,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
             }
-            migration::audit(
+            audit::audit(
                 tx,
                 "room.obligation.registered",
                 &id,
@@ -292,7 +352,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     {
                         return Ok(Outcome::Task(task));
                     }
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "room.obligation.dispatch_receipt",
                         &id,
@@ -387,7 +447,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let t = load(tx, &task)?;
             current(&t, &prompt)?;
             // A follow outlives the turn that made it, so the agent ends it from a later turn.
-            let mut reg = match registrations(tx, &task)?
+            let reg = match registrations(tx, &task)?
                 .into_iter()
                 .find(|r| r.id == registration)
             {
@@ -402,31 +462,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             } else {
                 load(tx, &reg.task_id)?
             };
-            reg.live = false;
-            tx.execute(
-                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                params![reg.id, encode(&reg)?],
-            )
-            .map_err(sql)?;
-            // An invalidated wait must wake, rather than sleep on a dead registration.
-            if holder
-                .wait
-                .as_ref()
-                .is_some_and(|w| w.registration_ids.contains(&reg.id))
-            {
-                event(
-                    tx,
-                    occurrence(
-                        &holder.room_id,
-                        &holder.agent_id,
-                        &reg.source_id,
-                        &format!("unsubscribe-{}-{}", reg.id, holder.revision),
-                        "source_lost",
-                        serde_json::json!({"task_id":holder.task_id,"registration_id":reg.id}),
-                    ),
-                )?;
-            }
+            end_registration(tx, &holder, reg)?;
             Ok(Outcome::Saved)
+        }
+        Operation::EndOwnerFollow {
+            registration,
+            room,
+            owner,
+        } => {
+            let reg = registration_by_id(tx, &registration)?
+                .ok_or_else(|| error("follow unavailable; reload its current state"))?;
+            let holder = load(tx, &reg.task_id)?;
+            if holder.room_id != room || holder.owner_user_id != owner || owner.is_empty() {
+                return Err(error("stale or foreign owner follow cancellation"));
+            }
+            // A completion source covers an open obligation: only a follow of a peer is the owner's to end.
+            if !reg.peer || reg.obligation_id.is_some() {
+                return Err(error("only a follow of another agent can be ended alone"));
+            }
+            if reg.live {
+                end_registration(tx, &holder, reg)?;
+            }
+            Ok(Outcome::Task(holder))
         }
         Operation::Yield {
             task,
@@ -448,18 +505,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let deadline = deadline.unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS));
-            if ids.is_empty()
-                || deadline <= now
-                || deadline > i64::MAX as u64
-                || reason.trim().is_empty()
-            {
-                return Err(error(
-                    "yield requires named live sources and, when given, a future deadline",
-                ));
+            if ids.is_empty() {
+                return Err(error("registration_ids is empty: name the registrations to wait on; chariox.events.subscriptions lists the registrations of this task"));
+            }
+            if deadline <= now || deadline > i64::MAX as u64 {
+                return Err(error(format!("deadline_ms {deadline} is not a future Unix time in milliseconds; now_ms is {now}")));
+            }
+            if reason.trim().is_empty() {
+                return Err(error("reason required: say in a few words what this wait is for; it is shown with the waiting task"));
             }
             let regs = registrations(tx, &task)?;
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
-                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
+                return Err(error(unknown_registrations(tx, &t, &ids, &regs)?));
             }
             // A source that already ended is not something to wait on: its outcome is in the
             // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
@@ -469,19 +526,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if r.live || pending > 0 {
                     selected.push(r);
                 }
-            }
-            // Only work still running needs a source; the settlement of the turn applies the
-            // same rule.
-            if t.obligations
-                .iter()
-                .filter(|o| o.needs_live_source())
-                .any(|o| {
-                    !selected
-                        .iter()
-                        .any(|r| r.obligation_id.as_deref() == Some(&o.id))
-                })
-            {
-                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
             if selected.is_empty() {
                 return Err(error(
@@ -496,7 +540,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 deadline_ms: Some(deadline),
                 started_at_ms: now,
                 inbox_cursor: cursor,
-                long_wait_notified: false,
                 last_checked_at_ms: now,
             });
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
@@ -510,7 +553,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             prompt,
             reason,
         }
-        | Operation::BlockForBrowserAccess {
+        | Operation::BlockForQuestion {
             task,
             prompt,
             reason,
@@ -528,8 +571,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            let owner_action = if browser_access {
-                Some(TaskOwnerAction::BrowserAccess)
+            let owner_action = if question {
+                Some(TaskOwnerAction::Question)
             } else if t.state == ExecutionState::Blocked {
                 t.owner_action.clone()
             } else {
@@ -551,7 +594,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
-                migration::audit(
+                audit::audit(
                     tx,
                     "goal.blocked",
                     &t.task_id,
@@ -601,7 +644,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = match for_turn(tx, &room, &agent, &prompt)? {
                 Some(task) => task,
-                None => new_admitted_task(tx, room, agent, prompt.clone(), Some(run.clone()), now)?,
+                None => {
+                    // The owner continued the task while this turn was still ending: the task
+                    // moved on to its continuation, so this turn has nothing left to settle.
+                    // Refusing it would keep the ended turn "settling" and the continuation
+                    // queued behind it for good.
+                    if let Some(task) = continued_past(tx, &room, &agent, &prompt)? {
+                        return Ok(Outcome::Settled {
+                            task,
+                            correction: false,
+                        });
+                    }
+                    new_admitted_task(tx, room, agent, prompt.clone(), Some(run.clone()), now)?
+                }
             };
             if t.provider_run_id.as_deref().is_some_and(|r| r != run) {
                 return Err(error("stale provider settlement"));
@@ -631,15 +686,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     && w.registration_ids
                         .iter()
                         .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
-                    && t.obligations
-                        .iter()
-                        .filter(|o| o.needs_live_source())
-                        .all(|o| {
-                            regs.iter().any(|r| {
-                                w.registration_ids.contains(&r.id)
-                                    && r.obligation_id.as_deref() == Some(&o.id)
-                            })
-                        })
             } else {
                 false
             };
@@ -667,10 +713,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
                 super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
+                if !valid_wait && super::wakes::drop_unwaited_timers(tx, &t, now)? {
+                    t = load(tx, &t.task_id)?;
+                }
                 let open = t
                     .obligations
                     .iter()
-                    .any(AgentObligation::requires_resolution);
+                    .any(|o| o.requires_resolution() && !o.outlives_turn());
                 if retain_question_wait(tx, &mut t, now)? {
                     t.provider_run_id = Some(run);
                     t.revision += 1;
@@ -694,6 +743,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         t.task_id
                     ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
+                } else if only_unacknowledged_outcomes(&t) {
+                    // Every source finished and its outcome was shown to two turns. Nothing is
+                    // left that a person could decide: the outcomes stay in the inbox.
+                    for o in &mut t.obligations {
+                        if o.status == "settling" {
+                            o.status = "satisfied".into();
+                        }
+                    }
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
                 } else {
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
@@ -704,6 +763,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.provider_run_id = Some(run);
             t.revision += 1;
             save(tx, &t)?;
+            super::settled_waits::finish_agent_waits(tx, &t.room_id, &t.agent_id)?;
             Ok(Outcome::Settled {
                 task: t,
                 correction,
@@ -715,6 +775,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Expire { .. }
         | Operation::MarkShown { .. }
         | Operation::Defer { .. }
+        | Operation::ReleaseQueuedMessage { .. }
+        | Operation::CancelQueuedMessage { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
@@ -738,7 +800,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
-        | Operation::CancelOwnerTimer { .. }
+        | Operation::CancelOwnerWake { .. }
         | Operation::CancelOwnerWait { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
@@ -871,7 +933,7 @@ pub(super) fn recover_source(
 /// A02-S02: a message wakes a yielded agent in a new turn. Waiting again on
 /// the registrations of its earlier task is not this turn's wait: that task
 /// still waits, so the turn only has to end.
-fn yield_refusal(
+fn unknown_registrations(
     tx: &Transaction<'_>,
     t: &AgentTaskExecution,
     ids: &[String],
@@ -901,43 +963,7 @@ fn yield_refusal(
             }
         }
     }
-    let mut uncovered = Vec::new();
-    for obligation in t.obligations.iter().filter(|o| o.needs_live_source()) {
-        let bindings: Vec<_> = own
-            .iter()
-            .filter(|r| r.obligation_id.as_deref() == Some(&obligation.id) && r.live)
-            .collect();
-        if bindings.iter().any(|r| ids.contains(&r.id)) {
-            continue;
-        }
-        let wake: Option<String> = tx
-            .query_row(
-                "SELECT payload FROM agent_wakes WHERE id=?1 AND task_id=?2",
-                params![obligation.resource_id, t.task_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        let mut item = serde_json::json!({"obligation_id":obligation.id,"kind":obligation.kind,
-            "resource_id":obligation.resource_id,"registration_ids":bindings.iter().map(|r| &r.id).collect::<Vec<_>>()});
-        if let Some(wake) = wake {
-            let wake: types::AgentWake = decode(&wake)?;
-            item["label"] = wake.label.into();
-            item["cancel_call"] = serde_json::json!({"tool":"chariox.events.cancel_wake","arguments":{
-                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"wake_id":wake.id}});
-        } else {
-            item["subscribe_call"] = serde_json::json!({"tool":"chariox.events.subscribe","arguments":{
-                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"source_id":obligation.completion_source(),"obligation_id":obligation.id}});
-        }
-        if obligation.kind == "delegate" {
-            if let Some(agent) = obligation.resource_id.as_deref() {
-                item["cancel_call"] = serde_json::json!({"tool":"chariox.room.run_command","arguments":{
-                    "command":format!("agent cancel {agent}")}});
-            }
-        }
-        uncovered.push(item);
-    }
-    Ok(format!("yield sources must cover every unresolved obligation. Uncovered: {}. Add the listed registration_ids to chariox.events.yield; if a binding is missing, use subscribe_call first. To stop a source instead, use its cancel_call, then handle its completion receipt with chariox.events.inbox and chariox.events.ack (handled:true). Unknown registration_ids: {}. chariox.events.subscriptions lists admitted registrations.", encode(&uncovered)?, encode(&foreign)?))
+    Ok(format!("unknown registration_ids: {}. chariox.events.subscriptions lists the registrations of this task; use subscribe first to follow a source.", encode(&foreign)?))
 }
 
 /// Questions are the only source allowed to outlive a normal turn without an
@@ -976,7 +1002,6 @@ fn retain_question_wait(
             deadline_ms: Some(deadline_ms),
             started_at_ms: now,
             inbox_cursor: 0,
-            long_wait_notified: false,
             last_checked_at_ms: now,
         });
         t.state = ExecutionState::Waiting;

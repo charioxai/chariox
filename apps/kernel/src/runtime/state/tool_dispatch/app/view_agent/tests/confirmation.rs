@@ -3,6 +3,7 @@
 use super::*;
 use crate::local::AppConfirmationFrame;
 use crate::runtime::state::room_cards::AgentInteractionAnswer;
+use crate::runtime::state::tool_dispatch::app::view_agent::confirmation::checked_preview;
 
 const TAB: &str = "host-tab-native-test";
 
@@ -14,6 +15,8 @@ fn frame() -> AppConfirmationFrame {
         publisher_id: "com.chariox".into(),
         publisher_name: "Chariox".into(),
         action_name: "pay".into(),
+        input: String::new(),
+        preview: None,
     }
 }
 
@@ -102,7 +105,17 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
             .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
-        assert_eq!(card.app_confirmation(), Some(&frame()));
+        let shown = card
+            .app_confirmation()
+            .expect("the card has the kernel's frame");
+        assert_eq!(
+            AppConfirmationFrame {
+                input: String::new(),
+                ..shown.clone()
+            },
+            frame()
+        );
+        assert_eq!(shown.input, "{\n  \"amount\": 1200\n}");
         let region = &card
             .view()
             .expect("the preview is the card's protected region")
@@ -119,7 +132,7 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
         );
         assert_eq!(card.default_on_timeout(), Some("cancel"));
         assert!(
-            card.message().contains(r#"Input: {"amount":1200}"#),
+            card.message().ends_with("Input:\n{\n  \"amount\": 1200\n}"),
             "{}",
             card.message()
         );
@@ -280,4 +293,312 @@ async fn an_action_that_needs_a_person_never_runs_in_a_view_without_a_tab() {
         .active_interactions()
         .iter()
         .all(|i| !i.id().starts_with("app-confirm-")));
+}
+
+fn rows() -> Vec<crate::local::AppConfirmationPreviewRow> {
+    [
+        "Repository|charioxai/drill",
+        "Pull request|#7 Add a README",
+        "Method|squash",
+    ]
+    .iter()
+    .map(|row| {
+        let (label, value) = row.split_once('|').unwrap();
+        crate::local::AppConfirmationPreviewRow {
+            label: label.into(),
+            value: value.into(),
+        }
+    })
+    .collect()
+}
+
+fn backend_context(rig: &Rig) -> ViewContext {
+    let mut context = rig.context(declared());
+    context.host = ViewHost::Backend { changes: false };
+    context
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backend_served_view_asks_on_a_card_with_the_apps_rows_and_no_app_tab() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let input = json!({"repo": "charioxai/drill", "number": 7});
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let ask = rig.runtime.ask_person_to_confirm(
+        rig.run.id(),
+        &rig.agent,
+        &context,
+        with_rows.clone(),
+        &input,
+    );
+    let (outcome, ()) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        let shown = card.app_confirmation().unwrap();
+        assert_eq!(shown.preview, with_rows.preview);
+        assert_eq!(
+            serde_json::from_str::<Value>(&shown.input).unwrap(),
+            input,
+            "the card states the input the call carries"
+        );
+        assert!(card.view().is_none(), "no App Tab, no protected region");
+        assert_eq!(
+            card.choices().iter().map(|c| c.id()).collect::<Vec<_>>(),
+            ["confirm", "cancel"]
+        );
+        assert!(card.message().contains("Input:\n"), "{}", card.message());
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "confirm", None)
+            .await
+            .unwrap();
+    });
+    outcome.expect("the person's Confirm lets the action on, with no App Tab open");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backend_card_is_cancelled_like_any_other_and_an_agent_cannot_answer_it() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let input = json!({});
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, with_rows, &input);
+    let (outcome, ()) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        let refused = rig.runtime.owned.resolve_runtime_interaction_routed(
+            &rig.session,
+            card.id(),
+            "confirm",
+            None,
+            Some("alice"),
+            false,
+            None,
+            false,
+            false,
+            None,
+            Some(AgentInteractionAnswer::Holder(rig.agent.id())),
+        );
+        assert!(refused.is_err(), "an agent confirmed a person's card");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+            .await
+            .unwrap();
+    });
+    assert_eq!(outcome.unwrap_err().code, "confirmation_declined");
+}
+
+#[tokio::test]
+async fn a_backend_served_view_that_cannot_show_its_rows_never_raises_a_card() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut declared = declared();
+    declared.push(action("pay", UiActionEffect::PersonConfirmed));
+    let mut context = rig.context(declared);
+    context.host = ViewHost::Backend { changes: false };
+    let refused = rig
+        .runtime
+        .invoke_declared(
+            rig.run.id(),
+            &rig.agent,
+            &context,
+            "pay",
+            json!({"text": "1"}),
+        )
+        .await;
+    assert!(refused.is_err(), "no running backend answers the preview");
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session)
+        .unwrap();
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|i| !i.id().starts_with("app-confirm-")));
+}
+
+/// A live `/sudo` task for the rig agent's current turn, as the owner's `/sudo` prompt opens it.
+fn sudo_task(rig: &Rig) {
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session)
+        .unwrap();
+    let prompt = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, rig.agent.id())
+        .expect("the agent is mid-turn");
+    let turn = crate::local::KernelSudoTurn {
+        entry_id: "sudo:view-agent".into(),
+        session_id: rig.session.clone(),
+        agent_id: rig.agent.id().into(),
+        owner_user_id: "alice".into(),
+        terminal_id: "sudo-terminal".into(),
+        requester: None,
+        prompt_id: Some(prompt.id().into()),
+        provider_run_id: Some(rig.run.id().into()),
+        task_id: None,
+        duration_minutes: 60,
+        expires_at_ms: None,
+        revision: 1,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(3600)),
+        placement: None,
+    };
+    assert!(rig.runtime.owned.prompt_state_owner.bind_sudo_turn(
+        &session,
+        rig.agent.id(),
+        prompt.id(),
+        &turn.entry_id
+    ));
+    rig.runtime
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn);
+}
+
+/// What `invoke_declared` ends with for a person-confirmed action in a backend-served view,
+/// and whether the person was asked on the way.
+async fn confirmed_call_ends_with(rig: &Rig, context: &ViewContext) -> (String, bool) {
+    let input = json!({"text": "1"});
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, context, "pay", input);
+    let (outcome, asked) = tokio::join!(invoke, async {
+        let asked = tokio::time::timeout(
+            std::time::Duration::from_millis(600),
+            pending_confirmation(rig),
+        )
+        .await
+        .is_ok();
+        if asked {
+            let card = pending_confirmation(rig).await;
+            rig.runtime
+                .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+                .await
+                .unwrap();
+        }
+        asked
+    });
+    (outcome.unwrap_err().code, asked)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sudo_task_that_authorizes_the_work_needs_no_confirmation_card() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut declared = declared();
+    declared.push(action("pay", UiActionEffect::PersonConfirmed));
+    let mut context = rig.context(declared);
+    context.host = ViewHost::Backend { changes: false };
+    let (without, _) = confirmed_call_ends_with(&rig, &context).await;
+    sudo_task(&rig);
+    let (with, asked) = confirmed_call_ends_with(&rig, &context).await;
+    assert!(!asked, "the task already authorizes the action: no card");
+    // It reaches the backend, which this rig does not run; without the task it stops earlier.
+    assert_ne!(with, without, "the call went past the confirmation step");
+}
+
+#[test]
+fn a_backend_preview_is_bounded_plain_rows_and_nothing_else() {
+    let ok = json!({"rows": [{"label": "Repository", "value": "o/r"}]});
+    assert_eq!(checked_preview(ok).unwrap().len(), 1);
+    let long = "x".repeat(401);
+    let many: Vec<Value> = (0..13)
+        .map(|n| json!({"label": format!("l{n}"), "value": "v"}))
+        .collect();
+    for bad in [
+        json!(["rows"]),
+        json!({}),
+        json!({"rows": []}),
+        json!({"rows": many}),
+        json!({"rows": [{"label": "a", "value": "b"}], "html": "<b>"}),
+        json!({"rows": [{"label": "a"}]}),
+        json!({"rows": [{"label": "a", "value": "b", "style": "x"}]}),
+        json!({"rows": [{"label": "", "value": "b"}]}),
+        json!({"rows": [{"label": "a", "value": long}]}),
+        json!({"rows": [{"label": "a", "value": "b\u{0}c"}]}),
+        json!({"rows": [{"label": "a\nb", "value": "c"}]}),
+        json!({"rows": [{"label": 1, "value": "c"}]}),
+    ] {
+        assert_eq!(
+            checked_preview(bad.clone()).unwrap_err().code,
+            "view_error",
+            "{bad}"
+        );
+    }
+}
+
+/// The input the card states for `input`, asked in a backend-served view, then cancelled.
+async fn card_input_for(input: Value) -> (String, String) {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, with_rows, &input);
+    let (_declined, shown) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+            .await
+            .unwrap();
+        (
+            card.app_confirmation().unwrap().input.clone(),
+            card.message().to_owned(),
+        )
+    });
+    shown
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_card_states_the_exact_input_in_stable_pretty_json() {
+    let input = json!({"b": [1, {"z": true, "a": null}], "a": "é", "amount": 1200});
+    let (shown, message) = card_input_for(input.clone()).await;
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap(), input);
+    assert!(
+        shown.starts_with("{\n  \"a\": \"é\",\n  \"amount\": 1200,\n  \"b\": ["),
+        "sorted keys, two-space indent: {shown}"
+    );
+    assert!(message.ends_with(&format!("Input:\n{shown}")), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_card_preserves_agent_supplied_input_under_secret_shaped_keys_and_values() {
+    let secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let input = json!({"note": "pay the invoice", "password": "hunter2", "header": format!("Bearer {secret}")});
+    let (shown, message) = card_input_for(input.clone()).await;
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap(), input);
+    for text in [&shown, &message] {
+        assert!(
+            text.contains("hunter2") && text.contains(secret) && !text.contains("[redacted"),
+            "{text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversize_input_is_cut_with_the_count_of_what_is_left_out() {
+    let input = json!({"text": "é".repeat(5000)});
+    let whole = serde_json::to_string_pretty(&input).unwrap();
+    let (shown, _) = card_input_for(input).await;
+    let (kept, note) = shown.rsplit_once("\n… ").expect("a note ends the cut text");
+    assert!(
+        whole.starts_with(kept) && kept.len() <= 4096,
+        "{}",
+        kept.len()
+    );
+    assert_eq!(note, format!("{} more bytes", whole.len() - kept.len()));
 }

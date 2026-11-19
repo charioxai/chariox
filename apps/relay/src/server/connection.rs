@@ -130,6 +130,8 @@ pub(crate) async fn handle_connection(
     let mut upload_chunks = false;
     let mut initial_resume_negotiated = false;
     let mut hello = token_refusal::ConnectionHello::default();
+    let challenge = crate::registration_proof::new_challenge()?;
+    let mut dialed_address = None;
     let handshake = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -145,6 +147,15 @@ pub(crate) async fn handle_connection(
                         && part != crate::frame_transport::TRANSPORT_QUERY
                 })
             });
+            dialed_address = request
+                .headers()
+                .get("host")
+                .and_then(|host| host.to_str().ok())
+                .map(str::to_owned);
+            response.headers_mut().insert(
+                crate::registration_proof::CHALLENGE_HEADER,
+                challenge.parse().unwrap(),
+            );
             hello.user_agent = request
                 .headers()
                 .get("user-agent")
@@ -264,6 +275,7 @@ pub(crate) async fn handle_connection(
         ),
     )));
     let mut uploads = crate::frame_transport::FrameReceiver::default();
+    let mut registration_challenge = Some(challenge);
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
@@ -481,7 +493,7 @@ pub(crate) async fn handle_connection(
                         );
                     }
                     match envelope {
-                        RelayEnvelope::DaemonRegister { registration } => {
+                        RelayEnvelope::DaemonRegister { registration, proof } => {
                             let identity = verify_relay_token(
                                 &auth_verifier,
                                 &registration.auth_token,
@@ -493,6 +505,27 @@ pub(crate) async fn handle_connection(
                                 &registration,
                             ) {
                                 send_close(&outgoing_tx, reason.to_string());
+                                break;
+                            }
+                            // Before the registration can take or displace anything: the
+                            // challenge admits one registration, so a proof is never replayed.
+                            if let Err(reason) = verify_registration_proof(
+                                registration_challenge.take(),
+                                dialed_address.as_deref(),
+                                &registration,
+                                &proof,
+                            ) {
+                                relay_log(
+                                    "warn",
+                                    "relay_registration_proof_refused",
+                                    json!({
+                                        "peer_addr": peer_addr.to_string(),
+                                        "daemon_id": registration.daemon_id,
+                                        "reason": reason,
+                                    }),
+                                );
+                                send_close(&outgoing_tx, reason.to_string());
+                                end_reason = "registration_proof_refused";
                                 break;
                             }
                             // Before any authority or registry state changes: this
@@ -513,16 +546,6 @@ pub(crate) async fn handle_connection(
                             let allowed_actions = identity.allowed_actions.clone();
                             let allowed_targets = identity.allowed_targets.clone();
                             verified_identity = Some(identity.clone());
-                            if registered_daemon_key
-                                .as_ref()
-                                .is_some_and(|current_key| current_key != &daemon_key)
-                            {
-                                send_close(
-                                    &outgoing_tx,
-                                    "daemon connection already registered".to_string(),
-                                );
-                                break;
-                            }
                             registered_daemon_key = Some(daemon_key.clone());
                             let mut replaced_senders = Vec::new();
                             let mut guard = registry.write().await;
@@ -611,6 +634,18 @@ pub(crate) async fn handle_connection(
                                 if guard.daemon_peers.get(&current_daemon_key) != Some(&peer_addr) {
                                     drop(guard);
                                     send_close(&outgoing_tx, "daemon reconnected".to_string());
+                                    break;
+                                }
+                                // Only a registration proves its key; a heartbeat renews the token.
+                                if guard.daemons.get(&current_daemon_key).is_some_and(|current| {
+                                    current.public_key != registration.public_key
+                                }) {
+                                    drop(guard);
+                                    send_close(
+                                        &outgoing_tx,
+                                        "daemon identity key changed; reconnect to register it"
+                                            .to_string(),
+                                    );
                                     break;
                                 }
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {

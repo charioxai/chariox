@@ -1,0 +1,12 @@
+{
+  "local": 1012,
+  "relayPeer": 449,
+  "requests": [
+    { "GetRoomListSnapshot": null },
+    { "ListRoomListSessions": { "inventory_version": "inventory-1", "cursor": null, "limit": 100 } }
+  ],
+  "subscription_scope": "room_list",
+  "events": [
+    { "event": "room_list_changed", "inventory_version": "inventory-1" }
+  ]
+}

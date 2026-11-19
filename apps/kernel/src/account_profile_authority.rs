@@ -23,6 +23,30 @@ pub(crate) fn provider_account_authority_owner_for_profile(
     Ok(authority)
 }
 
+/// The account namespace a lease's selected profile lives in. A login a
+/// transfer or an account copy installed sits under the account authority
+/// (`local` for the configured Cloud user), never under the lease owner; every
+/// other worker account is a replica under the exact lease owner. The lease
+/// owner stays the runtime principal for context authorization.
+pub(crate) fn provider_account_authority_owner_for_lease(
+    config: &DaemonConfig,
+    profiles: &ProviderAccountProfileRegistry,
+    lease_owner: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<String, DaemonError> {
+    let authority = provider_account_authority_owner_user_id(config, lease_owner);
+    if authority != lease_owner
+        && profiles
+            .find(lease_owner, provider, account_profile)?
+            .is_none()
+        && profiles.is_transferred_profile(&authority, provider, account_profile)?
+    {
+        return Ok(authority);
+    }
+    Ok(lease_owner.to_string())
+}
+
 /// MP-08 / MP-10 / MP-11: kernel-local resolution provenance, never a client grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedProviderAccount {

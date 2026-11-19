@@ -108,7 +108,7 @@ impl KernelRuntimeState {
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         if !self.owned.kernel_browser_host.has_grant(&owner, agent.id()) {
             return Err(host_error(
-                "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
+                "MP-08: not_granted: user-domain access expired or revoked; call chariox.load_kernel_browser again"
                     .into(),
             ));
         }
@@ -157,7 +157,7 @@ impl KernelRuntimeState {
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
-                "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
+                "MP-08: not_granted: user-domain access expired or revoked; call chariox.load_kernel_browser again"
                     .into(),
             ));
         }

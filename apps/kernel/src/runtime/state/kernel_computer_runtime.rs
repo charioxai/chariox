@@ -68,11 +68,16 @@ impl KernelRuntimeState {
         let [run] = runs else {
             return Vec::new();
         };
+        let loader=RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel-owned Linux desktop. Every agent has it; loading needs no approval and no focus. The grant ends on idle lapse or revocation; load again when the tools are gone. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})};
         let Some(agent) = self.kernel_computer_agent(run) else {
+            // Every local Room agent may load the Computer; leased and remote runs may not.
+            if self.room_agent_tools_enabled() && self.user_domain_agent_placement(run).is_ok() {
+                return vec![loader];
+            }
             return Vec::new();
         };
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let mut tools=vec![RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel-owned Linux desktop. Focus grants new resources; existing tasks retain their explicit desktop until idle expiry or revoke. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})}];
+        let mut tools = vec![loader];
         if self.owned.kernel_browser_host.is_loaded_for(
             &user,
             agent.id(),
@@ -133,6 +138,10 @@ impl KernelRuntimeState {
         let agent = if leased_grant.is_some() {
             self.kernel_computer_agent(run)
                 .ok_or_else(|| host_error("MP-11: not_granted: Computer grant revoked".into()))?
+        } else if name == LOADER {
+            self.refuse_leased_user_domain_run(run).await?;
+            self.refresh_user_domain_grants();
+            self.user_domain_agent_placement(run)?
         } else {
             self.user_domain_tool_agent(run).await?
         };
@@ -145,6 +154,10 @@ impl KernelRuntimeState {
                 ));
             }
             if leased_grant.is_none() {
+                let lifetime =
+                    crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(None)
+                        .map_err(host_error)?;
+                self.grant_kernel_browser(run, &agent, lifetime)?;
                 host.load_for(&user, agent.id(), KernelBrowserCapability::Computer)
                     .map_err(host_error)?;
             }

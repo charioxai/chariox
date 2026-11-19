@@ -366,7 +366,6 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
 
     restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[test]
@@ -427,7 +426,6 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
         Some(value) => std::env::set_var("CHARIOX_HOME", value),
         None => std::env::remove_var("CHARIOX_HOME"),
     }
-    fixture.cleanup();
 }
 
 #[test]
@@ -505,7 +503,6 @@ fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_
     );
 
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[test]
@@ -523,8 +520,6 @@ fn schema_three_generation_two_exchange_rejects_a_stale_repository_root() {
     response.cloud_relay.machine_id = identity.machine_id.clone();
 
     assert!(super::validate_exchange_response(&envelope, &identity, &response).is_err());
-
-    fixture.cleanup();
 }
 
 #[test]
@@ -552,7 +547,6 @@ fn path1_exchange_requires_cloud_generation_while_legacy_envelopes_keep_generati
             .expect("legacy schema two exchange retains generation-one compatibility"),
         1
     );
-    fixture.cleanup();
 }
 
 #[test]
@@ -606,8 +600,6 @@ fn exchanged_receipt_completes_pending_binding_after_restart_without_reexchange(
 
     fs::remove_file(&config.receipt_path).expect("simulate missing receipt");
     assert!(super::persist_or_validate_grant_binding(&config, &envelope, &identity).is_err());
-
-    fixture.cleanup();
 }
 
 #[cfg(unix)]
@@ -672,7 +664,6 @@ fn path1_confirmed_generation_two_recovers_after_ack_with_cleared_freshness() {
         .lock()
         .expect("confirm calls")
         .is_empty());
-    fixture.cleanup();
 }
 
 #[cfg(unix)]
@@ -720,7 +711,6 @@ fn path1_grant_binding_survives_an_in_place_release_update() {
         super::validate_envelope_receipt_compatibility(&envelope, &exchanged).is_err(),
         "before confirmation the receipt must still name the provisioned release"
     );
-    fixture.cleanup();
 }
 
 #[cfg(unix)]
@@ -776,8 +766,6 @@ fn path1_grant_binding_rejects_distinct_token_and_claim_substitution() {
             "grant binding must reject substituted {label}"
         );
     }
-
-    fixture.cleanup();
 }
 
 #[cfg(unix)]
@@ -838,8 +826,6 @@ fn confirmed_path1_receipt_does_not_delete_a_same_claims_different_token_envelop
         original.grant_binding_digest(),
         "the rejected substituted token must not replace or remove the original envelope"
     );
-
-    fixture.cleanup();
 }
 
 /// Root blanks the bearer token once the control plane confirmed the enrollment (MP-08/MP-11).
@@ -938,7 +924,6 @@ fn confirmed_machine_restores_with_a_redeemed_bootstrap_grant() {
         .lock()
         .expect("exchange calls")
         .is_empty());
-    fixture.cleanup();
 }
 
 #[cfg(unix)]
@@ -1046,7 +1031,6 @@ fn root_blanks_the_token_only_of_the_grant_bound_to_the_confirmed_receipt() {
         redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("second run"),
         Redemption::Redeemed
     );
-    fixture.cleanup();
 }
 
 #[test]
@@ -1080,7 +1064,6 @@ fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
         Some(value) => std::env::set_var("CHARIOX_HOME", value),
         None => std::env::remove_var("CHARIOX_HOME"),
     }
-    fixture.cleanup();
 }
 
 #[test]
@@ -1122,7 +1105,6 @@ fn exchanged_registration_can_confirm_after_the_one_time_token_expires() {
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 2);
 
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[test]
@@ -1150,7 +1132,6 @@ fn bootstrap_rejects_a_tampered_kernel_before_contacting_cloud() {
         .is_empty());
 
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[test]
@@ -1178,8 +1159,6 @@ fn release_verifier_accepts_v2_identity_and_legacy_v1() {
         &fixture.config.kernel_binary,
     )
     .expect("legacy schema v1 release should remain restart-compatible");
-
-    fixture.cleanup();
 }
 
 #[test]
@@ -1198,7 +1177,6 @@ fn release_verifier_rejects_retired_update_policy_metadata() {
         &fixture.config.kernel_binary
     )
     .is_err());
-    fixture.cleanup();
 }
 
 #[test]
@@ -1342,8 +1320,6 @@ fn release_verifier_pins_installer_owned_release_symlinks() {
         fs::read(&kernel_facade).expect("read pivoted kernel facade"),
         b"different kernel\n"
     );
-
-    fixture.cleanup();
 }
 
 #[test]
@@ -1386,8 +1362,6 @@ fn release_verifier_rejects_missing_or_invalid_v2_source_identity() {
         .expect_err("invalid schema v2 source identity must fail");
         assert!(error.to_string().contains("source identity is invalid"));
     }
-
-    fixture.cleanup();
 }
 
 #[test]
@@ -1422,8 +1396,6 @@ fn release_verifier_checks_digest_and_signature_before_manifest_identity() {
     assert!(signature_error
         .to_string()
         .contains("release manifest signature is invalid"));
-
-    fixture.cleanup();
 }
 
 #[test]
@@ -1451,7 +1423,6 @@ fn bootstrap_rejects_a_context_source_in_another_relay_realm() {
     assert!(!fixture.config.receipt_path.exists());
 
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[test]
@@ -1486,12 +1457,10 @@ fn legacy_confirmed_receipt_remains_readable_without_context_authorization() {
         .expect("legacy receipt exists");
     assert_eq!(receipt.status, BootstrapReceiptStatus::Confirmed);
     assert!(receipt.context_plan.is_none());
-
-    fixture.cleanup();
 }
 
 pub(super) struct Fixture {
-    root: PathBuf,
+    root: crate::test_support::TestTempDir,
     pub(super) config: BootstrapConfig,
     now: chrono::DateTime<Utc>,
     pub(super) release_digest: String,
@@ -1501,11 +1470,8 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-managed-bootstrap-{label}-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let owner = crate::test_support::TestTempDir::new(&format!("managed-bootstrap-{label}"));
+        let root = owner.to_path_buf();
         let process_home = root.join("home");
         let chariox_home = process_home.join(".chariox");
         fs::create_dir_all(&process_home).expect("create process HOME");
@@ -1579,7 +1545,7 @@ impl Fixture {
                 kernel_host: "127.0.0.1".to_string(),
                 kernel_port: 43118,
             },
-            root,
+            root: owner,
             now,
             release_digest,
             token,
@@ -1633,10 +1599,6 @@ impl Fixture {
         .expect("write release signature");
         format!("sha256:{:x}", Sha256::digest(&manifest))
     }
-
-    pub(super) fn cleanup(self) {
-        let _ = fs::remove_dir_all(self.root);
-    }
 }
 
 fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
@@ -1677,7 +1639,7 @@ impl Drop for EnvironmentRestoreGuard {
 
 #[cfg(unix)]
 struct AttestedReleaseFixture {
-    root: PathBuf,
+    root: crate::test_support::TestTempDir,
     config: BootstrapConfig,
     release_digest: String,
     release_root: PathBuf,
@@ -1809,11 +1771,8 @@ impl AttestedReleaseFixture {
     ) -> Self {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "chariox-release-evidence-{label}-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let owner = crate::test_support::TestTempDir::new(&format!("release-evidence-{label}"));
+        let root = owner.to_path_buf();
         let install_root = root.join("installed");
         let chariox_root = install_root.join("usr/lib/chariox");
         let kernel_facade = install_root.join("usr/local/bin/chariox-kernel");
@@ -2046,17 +2005,13 @@ impl AttestedReleaseFixture {
                 kernel_host: "127.0.0.1".to_string(),
                 kernel_port: 43118,
             },
-            root,
+            root: owner,
             release_digest,
             release_root,
             attestation_path: release_chariox_root.join("build-attestation.json"),
             attestation_signature_path: release_chariox_root.join("build-attestation.sig"),
             receipt_path,
         }
-    }
-
-    fn cleanup(self) {
-        let _ = fs::remove_dir_all(self.root);
     }
 }
 
@@ -2139,8 +2094,6 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
     assert!(evidence.manifest_digest_verified);
     assert!(evidence.kernel_artifact_verified);
     assert!(evidence.bootstrap_receipt_verified);
-
-    fixture.cleanup();
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2197,8 +2150,6 @@ fn path1_release_evidence_requires_the_external_builder_key() {
     assert!(image_key
         .to_string()
         .contains("outside the managed release image"));
-
-    fixture.cleanup();
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2238,7 +2189,6 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         let error = super::authoritative_managed_release_evidence_from_env()
             .expect_err("attestation identity mismatch must fail closed");
         assert!(error.to_string().contains(expected));
-        fixture.cleanup();
     }
 
     let receipt_fixture = AttestedReleaseFixture::new(
@@ -2270,7 +2220,6 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         receipt_error.to_string().contains("release path")
             || receipt_error.to_string().contains("digest")
     );
-    receipt_fixture.cleanup();
 
     let fixture = AttestedReleaseFixture::new(
         "tamper",
@@ -2289,7 +2238,6 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
     let artifact_error = super::authoritative_managed_release_evidence_from_env()
         .expect_err("pinned attestation mismatch must fail closed");
     assert!(artifact_error.to_string().contains("artifact digest"));
-    fixture.cleanup();
 
     let legacy = Fixture::new("unversioned-evidence");
     let layout_error = super::release::verify_release_evidence(
@@ -2302,7 +2250,6 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
     )
     .expect_err("unversioned release layout must not produce authoritative evidence");
     assert!(layout_error.to_string().contains("active versioned layout"));
-    legacy.cleanup();
 }
 
 #[test]
@@ -2411,7 +2358,6 @@ fn local_disk_exchange_confirm_and_restore_bind_the_protected_grant() {
         "restart must not confirm again"
     );
     restore_env("CHARIOX_HOME", previous_home);
-    fixture.cleanup();
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2465,7 +2411,6 @@ fn managed_release_evidence_accepts_current_app_attestation() {
         } else {
             assert!(result.is_err(), "invalid App attestation must fail: {case}");
         }
-        fixture.cleanup();
     }
 }
 
@@ -2500,5 +2445,4 @@ fn bootstrap_forwards_authority_evidence_without_interpreting_its_policy() {
             .as_ref(),
         Some(&evidence)
     );
-    fixture.cleanup();
 }

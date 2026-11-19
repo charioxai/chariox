@@ -4,7 +4,7 @@ One Cloud account is one user. My kernels lists that account's independently enr
 
 Use `/cloud link` on each kernel to enroll it. The kernel keeps its own durable credential in private 0600 state. Attached terminals can pivot through this enrolled kernel without a terminal login. Short, exact-target, key-bound grants renew silently from the issuing kernel's durable credential. Unlinking that issuer retires its delegated grants; sibling kernels remain independent.
 
-`chariox cloud login` and detached waiting-room Login enroll only the terminal profile, without starting a kernel. The profile keeps one stable client identity and a rotating refresh family in a private 0600 store. Active access and relay grants renew without reconnection or fixed-lifetime prompts. Revocation or detected refresh reuse stops the terminal. `chariox cloud logout` revokes that terminal only. Use separate absolute CHARIOX_HOME roots for separate accounts; conflicting accounts or Cloud origins fail clearly. Public preferences/status contain no credentials. Browser My kernels → Signed-in terminals offers Revoke.
+`chariox cloud login` and detached Room list Login enroll only the terminal profile, without starting a kernel. The profile keeps one stable client identity and a rotating refresh family in a private 0600 store. Active access and relay grants renew without reconnection or fixed-lifetime prompts. Revocation or detected refresh reuse stops the terminal. `chariox cloud logout` revokes that terminal only. Use separate absolute CHARIOX_HOME roots for separate accounts; conflicting accounts or Cloud origins fail clearly. Public preferences/status contain no credentials. Browser My kernels → Signed-in terminals offers Revoke.
 
 ## Self-hosted operator realm
 
@@ -13,7 +13,7 @@ Run the kernel as a normal user. If you run it as root, Chariox passes
 See the [root YOLO compatibility drill](RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root)
 for the check to run after each Claude version bump.
 
-Cloud is optional. Configure an operator-controlled relay and each kernel's relay connection. Live relay registration/heartbeats provide discovery. Open the terminal-pairing dialog in the attached kernel's waiting room, then use the issued link with `chariox --terminal-pairing-link <link>`. The link is private; do not log it or commit it. The terminal keeps its existing private profile key. Pairing records a durable key-bound grant at that exact kernel; operator transport access alone cannot read runtime inventory or subscribe. Revoke the paired terminal at the kernel to stop requests and existing event streams. Grants have no fixed lifetime; restarting with the same CLI profile key preserves admission.
+Cloud is optional. Configure an operator-controlled relay and each kernel's relay connection. Live relay registration/heartbeats provide discovery. Open the terminal-pairing dialog in the attached kernel's Room list, then use the issued link with `chariox --terminal-pairing-link <link>`. The link is private; do not log it or commit it. The terminal keeps its existing private profile key. Pairing records a durable key-bound grant at that exact kernel; operator transport access alone cannot read runtime inventory or subscribe. Revoke the paired terminal at the kernel to stop requests and existing event streams. Grants have no fixed lifetime; restarting with the same CLI profile key preserves admission.
 
 The simplest realm uses a shared transport token. Operators rotate that shared token to revoke relay-level realm access; per-terminal relay credential revocation is not promised for a shared token. Kernel pairing revocation remains independent.
 
@@ -60,7 +60,7 @@ Exit codes and the error codes behind them:
 | 1 | request failed: the kernel answered with an error code of its own; read `code` and `message` | any code not listed below, for example `session_not_found`, `file_not_found`, `ledger_unavailable`, `kernel_response_too_large` |
 | 2 | usage | `usage`, `file_path_invalid` |
 | 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_sub_agent`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
-| 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
+| 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed`, `kernel_not_available` |
 | 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |
 | 7 | event cursor expired: resync followed targets | `cursor_expired` |

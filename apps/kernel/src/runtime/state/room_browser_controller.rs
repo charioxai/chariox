@@ -420,7 +420,9 @@ impl KernelRuntimeState {
             .map_err(|error| room_slice_unreachable(&slice.name, private_slice_relay, error));
         let response = match first {
             Ok(response) => response,
-            Err(first_error) if recovery.is_some() => {
+            Err(first_error)
+                if recovery.is_some() && !first_error.is_browser_controller_failure() =>
+            {
                 self.authorize_current_external_command()?;
                 send(target, recovery.expect("action recovery command"))
                 .await.map_err(|retry_error| controller_route_error(&format!(

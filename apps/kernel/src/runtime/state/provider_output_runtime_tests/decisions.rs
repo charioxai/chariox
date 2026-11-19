@@ -657,7 +657,10 @@ async fn the_last_holder_ending_hands_the_same_interaction_to_the_user() {
         1,
         "p is Required, so g holds it"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     assert!(t.all_closed(&t.g));
     let session = t.session();
     assert_eq!(session.interactions_listed_for(&t.g)[0].id(), "perm-9");
@@ -957,6 +960,8 @@ fn every_user_only_kind_is_the_users() {
                 publisher_id: "com.chariox".into(),
                 publisher_name: "Chariox".into(),
                 action_name: "pay".into(),
+                input: "{\n  \"amount\": 1200\n}".into(),
+                preview: None,
             }),
             Some(UserOnly::AppConfirmation),
         ),
@@ -997,8 +1002,7 @@ fn every_user_only_kind_is_the_users() {
             permission("ok-1", "agent-1"),
             None,
         ),
-        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold;
-        // allowing the user's browser again stays the user's.
+        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold.
         (
             "blocked task resume or cancel",
             pending(),
@@ -1014,22 +1018,6 @@ fn every_user_only_kind_is_the_users() {
             )
             .with_related_agent_id("agent-1".to_owned()),
             None,
-        ),
-        (
-            "blocked task browser access",
-            pending(),
-            RuntimeInteraction::for_kernel_operation(
-                "task-blocked-t1-4",
-                "task-blocked-t1-4",
-                "Allow browser access",
-                "c: Browser access ended",
-                vec![
-                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                    RuntimeInteractionChoice::new("allow_browser", "Allow browser", "resume", None),
-                ],
-            )
-            .with_related_agent_id("agent-1".to_owned()),
-            Some(UserOnly::UserDomain),
         ),
     ];
     for (name, pending, interaction, expected) in table {
@@ -1125,12 +1113,18 @@ async fn a_decision_an_ancestor_holds_is_not_listed_to_the_user_until_it_reaches
         Follower::follow(&t).told(&t).is_empty(),
         "nor replayed to a later follower"
     );
-    t.runtime.move_decisions_up(&t.room, &t.p).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.p, None)
+        .await
+        .unwrap();
     assert!(
         before.told(&t).is_empty(),
         "g holds it now: still not the user's"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     assert_eq!(
         before.told(&t),
         [(
@@ -1296,7 +1290,10 @@ async fn a_decision_that_moves_up_to_the_user_makes_the_node_need_the_user() {
         t.needs().0.contains(&("c".into(), Waiting, false)),
         "g holds it"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     let (nodes, users) = t.needs();
     assert!(nodes.contains(&("c".into(), Waiting, true)), "{nodes:?}");
     assert_eq!(users, 1);
@@ -1568,35 +1565,64 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
     );
 }
 
-/// A holder that yields before its turn read the decision is woken for it: it keeps the decision.
-#[tokio::test]
-async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
-    let t = tree(
-        "decision-yield-unread",
-        AgentPermissionLevel::Yolo,
-        AgentPermissionLevel::Yolo,
-    )
-    .await;
-    let _answer = t.raise(permission("perm-unread", &t.c)).await;
-    t.end_turn_yielded(&t.p).await;
-    let events = t.decision_events(&t.p);
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].state, "pending", "the next wake delivers it");
-    assert!(t.decision_events(&t.g).is_empty());
-    assert_eq!(
-        t.runtime
-            .answer_child_decision(&t.room, &t.p, "perm-unread", "allow")
-            .await
-            .unwrap(),
-        ChildDecisionStatus::Answered
-    );
-}
-
 mod answer_audit;
 mod asked_without_waiting;
 mod blocked_card;
 mod detail;
 mod holder_inbox_reads;
+mod other_turns;
 mod reparent;
 mod restored;
 mod tenure;
+// An owner-only card a sub-agent raises at any depth (here: approve acquiring a machine) is
+// one card of the Room: no agent above holds it, and the Room state every client reads
+// lists it with its asker and the top parent whose pane shows it.
+#[tokio::test]
+async fn a_sub_agents_owner_card_is_listed_for_the_person_in_its_top_parents_pane() {
+    let t = tree(
+        "decision-owner-card",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let card = RuntimeInteraction::for_kernel_operation(
+        "machine-acquisition-sub",
+        "machine-acquisition-sub",
+        "",
+        "Acquire a machine at the connected service's quoted rate?",
+        vec![
+            RuntimeInteractionChoice::new("approve", "Approve", "approve", None),
+            RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+        ],
+    )
+    .with_related_agent_id(t.c.clone());
+    let owner = t.session().owner_user_id().to_owned();
+    let _answer = t
+        .runtime
+        .create_kernel_operation_interaction(&t.room, &owner, card)
+        .await
+        .unwrap();
+    assert!(
+        t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty(),
+        "acquiring a machine stays the person's decision"
+    );
+    let response = t
+        .runtime
+        .session_state_response(crate::local::GetSessionStateRequest {
+            session_id: t.room.clone(),
+        })
+        .unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    let card = wire["SessionState"]["session"]["active_interactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == "machine-acquisition-sub")
+        .cloned()
+        .expect("the Room lists the card");
+    assert_eq!(card["related_agent_id"], t.c.as_str(), "{card}");
+    assert_eq!(card["shown_in_agent_id"], t.g.as_str(), "{card}");
+    assert!(card["agent_id"].is_null(), "{card}");
+}
+
+mod wake_text;

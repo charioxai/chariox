@@ -12,7 +12,7 @@ impl SessionService {
         let workspace_ids = normalize_project_workspace_ids(workspace_ids)?;
         if !session.is_hidden()
             || project_id.is_empty()
-            || (!session.project_id().is_empty() && session.project_id() != project_id)
+            || (!session.project().is_hidden_scope() && session.project_id() != project_id)
             || !workspace_ids
                 .iter()
                 .any(|id| id == session.workspace_id() || id == session.worktree_id())
@@ -66,7 +66,10 @@ impl SessionService {
             .store
             .get_mut(session_id)
             .expect("validated hidden session");
-        session.assign_project_id(project.id());
+        session.join_leased_project(
+            ProjectId::new(project.id())
+                .map_err(|error| project_error("leased project", error.to_string()))?,
+        );
         Ok(session.clone())
     }
 }
@@ -82,7 +85,7 @@ mod tests {
                 CreateSessionRequest::new("primary", "primary").with_hidden(true),
             )
             .unwrap();
-        assert!(hidden.project_id().is_empty());
+        assert!(hidden.project().is_hidden_scope());
         let project = service
             .prepare_leased_project(
                 hidden.id(),

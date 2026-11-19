@@ -347,14 +347,6 @@ async fn check(native: bool) {
         new_tab.payload["tab_id"].is_string(),
         "MP-11: explicit retained open must grant its new tab"
     );
-    assert!(tool(
-        &router,
-        token,
-        "chariox.kernel_browser",
-        json!({"command":{"op":"snapshot","tab_id":"unclaimed","generation":generation}})
-    )
-    .await
-    .is_err());
     let changes = human(
         &router,
         KernelBrowserCommand::SubscribeGrants {

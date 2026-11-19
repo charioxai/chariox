@@ -844,13 +844,17 @@ mod tests {
     async fn rejects_peer_without_directory_receipt_protocol_before_upload() {
         let mut fixture = outbound_fixture(10);
         let fixture_root = fixture.root.clone();
-        fixture.plan.development = ManagedContextDevelopmentSelection::SourceProject {
-            project_id: "plain-project".to_string(),
-            repositories: vec![
+        fixture.plan.development = ManagedContextDevelopmentSelection::SourceProjects {
+            projects: vec![
+                crate::managed_context::package::ManagedContextSourceProject {
+                    project_id: "plain-project".to_string(),
+                    repositories: vec![
                 crate::managed_context::development::DevelopmentSourceRepositoryBinding {
                     role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                     workspace_id: "plain-workspace".to_string(),
                     worktree_id: None,
+                },
+            ],
                 },
             ],
         };
@@ -1122,7 +1126,7 @@ mod tests {
                 package_path,
                 package_sha256: sha256_hex(&bytes),
                 package_size_bytes: size as u64,
-                development_archive_sha256: None,
+                development_archive_sha256s: Vec::new(),
                 kernel_context_snapshot_sha256: None,
                 provider_accounts_sha256: None,
                 git_credentials_sha256: None,

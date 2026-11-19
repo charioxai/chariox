@@ -1,5 +1,7 @@
-import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
+import { Mirror2FontCache } from './browser-mirror2-font-cache.js'
+import { Mirror2Retention } from './browser-mirror2-retention.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
@@ -7,15 +9,23 @@ import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-sel
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import { Mirror2Navigation } from './browser-mirror2-navigation.js'
+import { isTileInk, paddingOrigin, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
+export { Mirror2Retention } from './browser-mirror2-retention.js'
 /** MP-08/MP-10/MP-11: protocol 550 versions the v2 wire (preview, fonts, sheets, flush, completion). */
 export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
-const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
+// One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to
+// window / round trip packets a second: 4 credits over a 74 ms round trip were 54 a second (the drill's DOM mirror
+// animated at 49 against Selkies' 60). Eight cover 60 a second up to 130 ms. The window shrinks to the old four
+// while packets are big (a typical packet above CREDIT_BYTES / 8), so an input echo never queues behind many of them.
+const CREDIT_WINDOW = 8 // credits in flight at most (attachBrowserMirror2)
+const CREDIT_FLOOR = 4 // ...and at least, once packets are big
+const CREDIT_BYTES = 96 * 1024 // wire bytes one window of typical packets may hold
 const IMAGE_HOLD_MS = 3000 // resource-quiet time after which a missing visible image stops holding the handover
 const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
 const DELETIONS: Record<string, string[]> = {
@@ -32,6 +42,12 @@ const PICKED = new Set('date time datetime-local month week color range'.split('
 const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[]; fontStyle?: Mirror2FontStyle } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
+/** What a reply put on the wire: its deflated body and the base64 of the resources and tiles beside it. */
+function wireBytes(packet: Mirror2WirePacket): number {
+  let bytes = packet.packet?.byteLength ?? packet.packet_base64?.length ?? 0
+  for (const media of [...packet.resources ?? [], ...packet.tiles ?? []]) bytes += media.data_base64.length
+  return bytes
+}
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
 async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)), b => b.toString(16).padStart(2, '0')).join('')
@@ -67,7 +83,7 @@ export class BrowserMirror2Renderer {
   private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
   private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
-  private empty: string
+  private placeholders = new Map<string, string>() // per document, an empty Blob URL for each resource whose bytes have not arrived
   private absentFont: string
   sequence = 0
   documentId = ''
@@ -100,8 +116,8 @@ export class BrowserMirror2Renderer {
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   // MP-08/MP-10/MP-11: a completed empty page can paint without another packet.
   onEmptyPaint: (() => void) | undefined
-  constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
-    this.empty = URL.createObjectURL(new Blob([]))
+  constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void, private retention?: Mirror2Retention) {
+    this.sheetCache = retention?.sheets ?? new Mirror2SheetCache(); this.fontCache = retention?.fonts ?? new Mirror2FontCache()
     this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
@@ -391,21 +407,36 @@ export class BrowserMirror2Renderer {
     })
   }
   // ---- resources
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string, offset: number) => {
-    const resource = this.resources.get(key)
-    if (resource) return `url("${resource}")${suffix ?? ''}`
-    const pending = mirror2PendingFontSource(raw, offset, this.empty)
-    return pending ?? `url("${this.empty}")${suffix ?? ''}`
-  }) }
+  // A face whose bytes have not arrived points at an empty Blob: Chromium fetches a face only for text in its unicode-range,
+  // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
+  // Each resource has its own Blob: Chromium shares a font fetch by URL, so one failed face would fail every face naming the same URL.
+  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
+  private placeholder(key: string): string {
+    let url = this.placeholders.get(key)
+    if (!url) { url = URL.createObjectURL(new Blob([])); this.placeholders.set(key, url) }
+    return url
+  }
+  private clearPlaceholders(): void { for (const url of this.placeholders.values()) URL.revokeObjectURL(url); this.placeholders.clear() }
   private keysOf(raw: string): string[] { return [...raw.matchAll(resourcePattern)].map(m => m[1]!) }
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
     if (await digest(bytes) !== resource.resource_id) throw Error('MP-11: mirror resource digest')
+    const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })
+    if (resource.mime_type.startsWith('font/')) this.fontCache.remember(resource.resource_id, blob)
+    this.setResource(resource, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(blob))
+  }
+  // A font named by digest: the bytes this subscription already holds, under this document's key.
+  private addRetained(resource: Mirror2Resource): void {
+    const blob = this.fontCache.take(resource.resource_id)
+    if (!blob || blob.type !== resource.mime_type) throw Error('MP-11: mirror retained font unknown')
+    this.setResource(resource, URL.createObjectURL(blob))
+  }
+  private setResource(resource: Mirror2Resource, url: string): void {
     const old = this.resources.get(resource.key); if (old?.startsWith('blob:')) URL.revokeObjectURL(old)
     const sprite = this.sprites.get(resource.key); if (sprite) URL.revokeObjectURL(sprite); this.sprites.delete(resource.key)
     // SVG stays an image: data: URLs have an opaque origin if ever opened top-level.
     this.resourceAt = performance.now()
-    this.resources.set(resource.key, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })))
+    this.resources.set(resource.key, url)
   }
   // Slices of one resource arrive in order; the digest covers the whole.
   private assemble(resource: Mirror2Resource): Mirror2Resource | null {
@@ -654,7 +685,9 @@ export class BrowserMirror2Renderer {
     const meta = doc.createElement('meta'); meta.httpEquiv = 'Content-Security-Policy'; meta.content = mirror2SandboxCsp; head.prepend(meta)
   }
   private sheets = new Map<string, string>()
-  private sheetCache = new Mirror2SheetCache()
+  // A view hands its caches to every renderer of its navigations; a renderer without one keeps and clears its own.
+  private sheetCache: Mirror2SheetCache
+  private fontCache: Mirror2FontCache
   // MP-08/MP-10/MP-11: hidden preparation never steals focus or emits input.
   setInteractive(enabled: boolean, focus = false): void {
     this.interactive = enabled; this.frame.inert = !enabled
@@ -706,7 +739,7 @@ export class BrowserMirror2Renderer {
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = element.ownerDocument.defaultView?.getComputedStyle(element)
       if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
-      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
+      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>[...value.matchAll(/blob:[^")\s]+/g)].some(url=>[...this.placeholders.values()].includes(url[0])))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
     if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
     await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
@@ -715,6 +748,7 @@ export class BrowserMirror2Renderer {
     return ready
   }
   knownSheets(): string[] { return this.sheetCache.digests() }
+  knownFonts(): string[] { return this.fontCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
     // MP-08/MP-10/MP-11: attribute reset long tasks before slicing the work.
@@ -731,7 +765,7 @@ export class BrowserMirror2Renderer {
     this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
-    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
+    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear(); this.clearPlaceholders() }
     if (packet.reset && this.documentId && packet.document_id !== this.documentId) {
       this.wheel.cancel(); this.scrollTargets.clear()
       if (this.scrollFrame) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = 0 }
@@ -746,7 +780,10 @@ export class BrowserMirror2Renderer {
     }
     if (packet.reset) this.slices.clear()
     const complete: Mirror2Resource[] = []
-    for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
+    for (const slice of packet.resources) {
+      if (slice.retained) { this.addRetained(slice); complete.push(slice); continue }
+      const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) }
+    }
     if (this.disposed || !this.doc) throw Error('MP-08: mirror closed during validation')
     // A bounded loading-document resnapshot changes node ids, not the user's
     // root wheel intent. Preserve it and submit only under the new epoch.
@@ -891,7 +928,7 @@ export class BrowserMirror2Renderer {
         }
         const keep = new Set(desired)
         // Forgotten before removal: a detached iframe no longer exposes its document.
-        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
+        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && !isTileInk(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
@@ -939,12 +976,15 @@ export class BrowserMirror2Renderer {
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
-    const style = element.style
+    const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
+    paintTileInk(element, tile, outside ? url : null); if (outside) return
+    const style = element.style, [left, top] = paddingOrigin(element)
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
-    style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
+    style.setProperty('background-origin', 'padding-box', 'important'); style.setProperty('background-clip', 'border-box', 'important')
+    style.setProperty('background-position', `${tile.x - left}px ${tile.y - top}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; if (!this.retention) { this.sheetCache.clear(); this.fontCache.clear() } this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
     const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
@@ -953,7 +993,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.absentFont); URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); this.clearPlaceholders(); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 
@@ -965,9 +1005,9 @@ export class Mirror2Inflater {
   private writer: WritableStreamDefaultWriter<BufferSource>
   private reader: ReadableStreamDefaultReader<Uint8Array>
   constructor() { const stream = new DecompressionStream('deflate-raw'); this.writer = stream.writable.getWriter(); this.reader = stream.readable.getReader() }
-  async inflate(base64: unknown, size: unknown): Promise<string> {
-    if (typeof base64 !== 'string' || !Number.isSafeInteger(size) || (size as number) < 2 || (size as number) > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
-    void this.writer.write(bytesOf(base64) as Uint8Array<ArrayBuffer>).catch(() => {})
+  async inflate(packet: unknown, size: unknown): Promise<string> {
+    if (!(typeof packet === 'string' || packet instanceof Uint8Array) || !Number.isSafeInteger(size) || (size as number) < 2 || (size as number) > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
+    void this.writer.write((typeof packet === 'string' ? bytesOf(packet) : packet) as Uint8Array<ArrayBuffer>).catch(() => {})
     const body = new Uint8Array(size as number); let at = 0
     while (at < body.length) { const { done, value } = await this.reader.read(); if (done || value.length > body.length - at) throw Error('MP-11: mirror packet bounds'); body.set(value, at); at += value.length }
     return new TextDecoder('utf-8', { fatal: true }).decode(body)
@@ -980,11 +1020,11 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'acceptsInput' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'acceptsInput' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'knownFonts' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, retention = undefined as Mirror2Retention | undefined, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1], retained?: Mirror2Retention): Renderer => new BrowserMirror2Renderer(container, send, undefined, retained) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 550')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const releaseHold = transport.prioritize?.() ?? (() => {})
@@ -992,9 +1032,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
   const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(transport.protocolVersion >= 567 ? {font_absent:true} : {}), ...(handlers.preparing ? {navigation_preview:true} : {}) }
   const subscribed = await request(subscribe).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
-  // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
+  // Up to eight credits while the page or the viewer is active (four once packets are big), one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
+  // The credits in flight follow the size of recent replies: all `credits` while they are small, the floor once they are big.
+  let typical = 0
+  const window = (): number => Math.min(credits, Math.max(Math.min(CREDIT_FLOOR, credits), Math.floor(CREDIT_BYTES / Math.max(typical, 1))))
   const outstanding: Array<{ reset: boolean, oldestAt: number }> = [] // credits in flight, oldest first
   // In sequence order: inflate in the context, then restore what a compact delta implies.
   let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
@@ -1003,7 +1046,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     let body: Mirror2WirePacket = wire
     if (wire.encoding !== undefined) {
       if (wire.encoding !== 'deflate') throw Error('MP-11: mirror packet bounds')
-      const text = await (inflater ??= new Mirror2Inflater()).inflate(wire.packet_base64, wire.packet_bytes)
+      const text = await (inflater ??= new Mirror2Inflater()).inflate(wire.packet ?? wire.packet_base64, wire.packet_bytes)
       body = JSON.parse(text) as Mirror2WirePacket
       if (body.sequence !== wire.sequence || Boolean(body.reset) !== Boolean(wire.reset)) throw Error('MP-11: foreign mirror packet')
     }
@@ -1019,9 +1062,10 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
-  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)
   renderer.requireNativeFonts?.(subscribed.font_requirements === true)
   renderer.onTiming = sample => { if (sample.stage === 'mirror_navigation_paint') releasePriority(); handlers.timing?.(sample) }
+  retention?.begin()
   try { await renderer.ready() } catch (error) { releasePriority(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   // Notify consumers when the empty-page timer presents the last applied
   // frame. A silent/stalled credit must not keep the previous View attached.
@@ -1051,7 +1095,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       if (next.reset) { wantReset = false; wantResend = false }
       if (next.fallback !== 'navigation_preview' || !handlers.preparing) handlers.packet?.(next)
     }
-    if (buffered.size > 8) { buffered.clear(); wantReset = true }
+    if (buffered.size > CREDIT_WINDOW) { buffered.clear(); wantReset = true }
     // A gap is a reply lost with a dropped socket (or one overtaken by milliseconds: its duplicate is ignored):
     // the missing packet is asked for at once (protocol 501 resend). A gap that outlives its resend resets.
     if (buffered.size && transport.receiving?.()) setTimeout(() => { if (!closed) void drain().catch(() => { wantReset = true; fill() }) }, GAP_MS)
@@ -1081,11 +1125,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     const entry = { reset, oldestAt: outstanding.length ? 0 : performance.now() }; outstanding.push(entry)
     const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset || transport.receiving?.()) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
     setTimeout(overdue, waitMs + LOST_MS)
-    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], ...(renderer.knownSheets?.().length ? { known_sheets: renderer.knownSheets() } : {}), wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
+    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], ...(renderer.knownSheets?.().length ? { known_sheets: renderer.knownSheets() } : {}), ...(renderer.knownFonts?.().length ? { known_fonts: renderer.knownFonts() } : {}), wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
         answered = true
         if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
+        typical += (wireBytes(packet) - typical) / 4
         // A replayed or late copy of an applied packet is not a gap.
         if (packet.sequence > applied) buffered.set(packet.sequence, packet)
         await drain()
@@ -1113,7 +1158,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     else if (!closed && applied && wantResend && !resendOutstanding) credit()
     // A packet received before its base (a small one overtaking a large one) still holds its credit: the kernel
     // never runs further ahead of the applied base than the window.
-    while (!closed && inflight + buffered.size < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
+    while (!closed && inflight + buffered.size < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : window())) credit()
   }
   fill()
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)

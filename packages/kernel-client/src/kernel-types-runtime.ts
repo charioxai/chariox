@@ -207,6 +207,10 @@ export type AppConfirmationFrame = {
   publisher_id: string
   publisher_name: string
   action_name: string
+  /** The exact input the kernel runs on Confirm, formatted by the kernel (pretty JSON as the agent supplied it, cut with a byte count). */
+  input: string
+  /** The App's own rows for this exact input, when no App Tab shows the preview. Plain text. */
+  preview?: { label: string; value: string }[]
 }
 
 /** One card payment the owner approves. `origin` is the page the kernel observed;
@@ -575,6 +579,10 @@ export type AgentInstance = {
   /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
   substitution_timeout_ms?: number | null
+  /** What the person lets this agent change about itself without asking; `"*"` allows any value. */
+  self_settings?: AgentSelfSettings
+  /** Set while a provider usage limit has stopped this agent's turn. */
+  usage_limit_stop?: UsageLimitStop | null
   archived?: boolean
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
@@ -586,6 +594,38 @@ export type AgentInstance = {
   grid_col_span: number
   created_at_ms: number
   last_activity_at_ms: number
+}
+
+export type AgentSelfSettings = {
+  models?: string[]
+  efforts?: string[]
+  account_profiles?: string[]
+  directories?: string[]
+}
+
+/** The decision for an agent a usage limit stopped (`UpdateAgentConfig.usage_limit`). */
+export type UsageLimitStopAction =
+  | { action: "resume_when_back" }
+  | { action: "not_now" }
+  | { action: "cancel" }
+  | { action: "continue_on"; account_profile: string }
+
+export type UsageLimitStop = {
+  /** The stopped turn. */
+  prompt_id: string
+  provider: string
+  account_profile: string
+  account_label: string
+  stopped_at_ms: number
+  /** When the provider says usage is back; absent when it named no time. */
+  resumes_at_ms?: number | null
+  /** Resumes the provider refused again. */
+  refused?: number
+  state:
+    | { state: "asking" }
+    | { state: "armed"; at_ms: number }
+    | { state: "resuming"; since_ms: number; sent?: boolean }
+    | { state: "declined" }
 }
 
 export type RemoteExtensionManifestSyncStatus = {
@@ -657,6 +697,18 @@ export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelA
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+/** Protocol 1012: one open card of the owner; `person_only` says why only the person answers it. */
+export type OwnerInteraction = {
+  /** The card's Room; absent for a card outside any Room (answered with AnswerUserDomainInteraction). */
+  session_id?: string
+  interaction_id: string
+  title?: string
+  message: string
+  choices: { id: string; label: string }[]
+  reply_choice_id?: string
+  person_only?: string
+}
+export type OwnerInteractionsListedResponse = { OwnerInteractionsListed: { interactions: OwnerInteraction[] } }
 
 export type KernelSudoTurn = {
   entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string
