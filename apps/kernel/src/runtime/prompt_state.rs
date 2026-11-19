@@ -33,8 +33,32 @@ struct OwnedAgentPromptState {
     // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
     // kernel-correlated prompts may start; others stay queued (causal fence).
     sudo_work: Option<SudoWorkHold>,
+    // Ephemeral: the provider's own turn ends with the provider process.
+    provider_turn: ProviderOwnTurn,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
+}
+
+/// A turn the provider runs on its own, such as Claude reporting a finished background command.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum ProviderOwnTurn {
+    #[default]
+    None,
+    /// It began while an earlier prompt was still settling; it becomes the agent's turn when that
+    /// prompt leaves.
+    Pending { provider_run_id: String },
+    /// It is the agent's running turn, under this prompt.
+    Adopted { prompt_id: String },
+}
+
+/// Where a turn the provider started on its own stands after one adoption attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderTurnAdoption {
+    Adopted,
+    /// Another prompt is active or queued; `newly` is false when it was already waiting.
+    Pending {
+        newly: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +124,7 @@ impl OwnedAgentPromptState {
                 sudo_entry_id: None,
                 sudo_process_cutoff: None,
                 sudo_work: None,
+                provider_turn: ProviderOwnTurn::None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
@@ -1341,24 +1366,92 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
-    /// Makes `prompt` the agent's running turn only while the agent has no prompt at all, active or
-    /// queued: a turn the provider started on its own never displaces or overtakes a kernel prompt.
+    /// Makes `prompt`, the provider's own turn on `provider_run_id`, the agent's running turn
+    /// only while the agent has no prompt at all, active or queued: it never displaces or
+    /// overtakes a kernel prompt. Otherwise the turn is recorded as pending, and adopted once the
+    /// agent's prompts have left (see `provider_turn_pending`).
     pub(crate) fn adopt_provider_turn(
         &self,
         session: &RuntimeSession,
         mut prompt: PromptQueueItem,
-    ) -> bool {
+        provider_run_id: &str,
+    ) -> ProviderTurnAdoption {
         let mut owner = self
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, prompt.target_agent_id());
         if state.active_prompt.is_some() || !state.queued_prompts.is_empty() {
-            return false;
+            let pending = ProviderOwnTurn::Pending {
+                provider_run_id: provider_run_id.to_string(),
+            };
+            let newly = state.provider_turn != pending;
+            state.provider_turn = pending;
+            return ProviderTurnAdoption::Pending { newly };
         }
         prompt.set_status(PromptStatus::Running);
+        state.provider_turn = ProviderOwnTurn::Adopted {
+            prompt_id: prompt.id().to_string(),
+        };
         state.set_active_prompt(Some(prompt));
-        true
+        ProviderTurnAdoption::Adopted
+    }
+
+    /// Whether the provider's own turn is the agent's running turn.
+    pub(crate) fn provider_turn_running(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| match &state.provider_turn {
+                ProviderOwnTurn::Adopted { prompt_id } => state
+                    .active_prompt
+                    .as_ref()
+                    .is_some_and(|active| active.id() == prompt_id),
+                _ => false,
+            })
+    }
+
+    /// Whether a turn the provider started on `provider_run_id` waits for adoption.
+    pub(crate) fn provider_turn_pending(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| {
+                matches!(&state.provider_turn, ProviderOwnTurn::Pending { provider_run_id: run } if run == provider_run_id)
+            })
+    }
+
+    /// The provider is no longer running a turn of its own. Returns the run of a turn that ended
+    /// while it still waited for adoption.
+    pub(crate) fn end_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+    ) -> Option<String> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        match std::mem::take(&mut state.provider_turn) {
+            ProviderOwnTurn::Pending { provider_run_id } => Some(provider_run_id),
+            ProviderOwnTurn::None | ProviderOwnTurn::Adopted { .. } => None,
+        }
     }
 
     #[cfg(test)]
@@ -3050,6 +3143,7 @@ mod tests {
                     sudo_entry_id: None,
                     sudo_process_cutoff: None,
                     sudo_work: None,
+                    provider_turn: ProviderOwnTurn::None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),
                 },

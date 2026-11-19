@@ -44,7 +44,7 @@ fn apply_system_message(
         state.next_turn_number += 1;
         state.turn_watchdog.begin(std::time::Instant::now());
         state.tool_transcript.clear();
-        batch.provider_turn_started = true;
+        state.own_turn = true;
     }
     if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
         // The summary replaces the history that held the run base.
@@ -517,6 +517,7 @@ pub(super) fn complete_claude_turn(
     });
     batch.prompt_completed = true;
     state.active_turn_id = None;
+    state.own_turn = false;
     state.tool_transcript.clear();
 }
 

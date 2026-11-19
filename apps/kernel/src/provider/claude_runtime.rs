@@ -161,6 +161,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
+            own_turn: false,
             turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
@@ -267,6 +268,8 @@ pub(crate) fn submit_claude_prompt(
     state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
+    // Claude folds a prompt written during its own turn into it; the turn now answers the prompt.
+    state.own_turn = false;
     state.turn_watchdog.begin(Instant::now());
     state.active_stream_message_id = None;
     state.emitted_text_by_block.clear();
@@ -309,6 +312,11 @@ pub(crate) fn drain_claude_events(
                 state.turn_watchdog.record_runtime_message(Instant::now());
                 handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
+                // One batch holds at most one turn's end, and nothing of the turn after it, so
+                // the kernel settles each turn before it sees the next one start.
+                if batch.prompt_completed {
+                    break;
+                }
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
                 state.turn_watchdog.record_runtime_message(Instant::now());
@@ -387,6 +395,7 @@ pub(crate) fn drain_claude_events(
     } else {
         apply_claude_turn_stall_policy(run, state, &mut batch)?;
     }
+    batch.provider_own_turn_running = state.own_turn && state.active_turn_id.is_some();
 
     Ok(batch)
 }
@@ -484,6 +493,7 @@ fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
     state.tool_transcript.clear();
     state.active_turn_id = None;
     state.active_prompt_message = None;
+    state.own_turn = false;
     state.turn_watchdog.settle();
 }
 
@@ -669,6 +679,7 @@ fn restart_claude_runtime(
     state.active_stream_message_id = None;
     state.active_turn_id = None;
     state.active_prompt_message = None;
+    state.own_turn = false;
     state.turn_watchdog.settle();
     state.emitted_text_by_block.clear();
     state.completed_text_blocks.clear();
@@ -828,6 +839,7 @@ mod tests {
                 active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
+                own_turn: false,
                 turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,

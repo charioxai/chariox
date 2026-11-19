@@ -441,7 +441,7 @@ pub(super) fn execute_output_poll_command(
             }),
         );
         return Ok(Some(ProviderPromptSignalBatch {
-            provider_turn_started: false,
+            provider_own_turn_running: false,
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             chunks: poll
@@ -529,7 +529,7 @@ pub(super) fn execute_output_poll_command(
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {
-        provider_turn_started: false,
+        provider_own_turn_running: false,
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         chunks: drain

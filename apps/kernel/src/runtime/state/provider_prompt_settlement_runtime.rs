@@ -39,6 +39,21 @@ impl KernelRuntimeState {
             // busy after the writer recovers.
             self.owned.retry_failed_prompt_settlement(provider_run_id);
         }
+        if settled.is_ok() {
+            if let Err(error) = self.adopt_pending_provider_turn(session_id, provider_run_id) {
+                // The prompt is settled; the own turn stays pending and the next batch that
+                // still reports it adopts it.
+                crate::logging::warn_with_fields(
+                    "runtime.agent_lifecycle",
+                    "adopting the provider's own turn after a settlement failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
         settled
     }
 
