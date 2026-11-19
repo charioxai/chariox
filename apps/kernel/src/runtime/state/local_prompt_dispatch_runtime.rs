@@ -1119,7 +1119,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
                     &crate::terminal::user_facing_dispatch_failure(&error),
-                    failure,
+                    failure.clone(),
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -1151,13 +1151,15 @@ impl KernelRuntimeState {
                 .as_ref()
                 .filter(|_| should_advance && failed_prompt_matches)
             {
+                let failure = failure.unwrap_or_else(|| {
+                    crate::provider::TurnOutcome::classify(&adapter_key, &dispatch_failure)
+                });
                 owned.record_failed_request(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
-                    &adapter_key,
                     &dispatch.agent_id,
                     failed_prompt,
-                    &dispatch_failure,
+                    &failure,
                 );
             }
             advance_queued_prompt_after_failure = should_advance;

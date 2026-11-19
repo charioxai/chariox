@@ -33,3 +33,20 @@ for (const width of [32, 36]) test(`AO-UI-03 one panel per sub-agent at ${width}
     assert.equal(harness.captureCharFrame().split("\n").filter(row => row.includes("writer")).length, 1, "moving the focus does not duplicate or lose a panel")
   } finally { harness.renderer.destroy() }
 })
+
+test("an errored child shows the reason from the tree", async () => {
+  const [revision, setRevision] = createSignal(0)
+  const controller = new SubAgentsController({ send: async () => { throw new Error("no read") }, changed: () => setRevision(value => value + 1), sessionId: () => "s" })
+  const reason = "Codex declined this request under its usage policy."
+  controller.apply(live([{ ...node("writer", "room", "error", 1), outcome: "policy_declined", reason }]))
+  controller.openCard()
+  controller.chooseRow("writer")
+  assert.equal(controller.viewOpen, true)
+  const harness = await testRender(() => createComponent(SubAgentsPane, { controller, revision, width: 65, onFocus: () => {} }), { width: 65, height: 10, useThread: false })
+  try {
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /writer\s+error/)
+    assert.ok(frame.includes(reason))
+  } finally { harness.renderer.destroy() }
+})

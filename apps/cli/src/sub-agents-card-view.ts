@@ -9,6 +9,6 @@ export function subAgentsCardRows(lines: readonly SubAgentRow[], selected: numbe
     const left = `${"  ".repeat(row.depth)}${twisty}${row.name}`
     const room = Math.max(1, width - row.word.length - 1)
     const text = `${left.length > room ? `${left.slice(0, room - 1)}…` : left.padEnd(room)} ${row.word}`
-    return { text, tone: row.dimmed ? "muted" : row.word === "needs you" ? "warning" : "text", focused: index === selected, bold: false }
+    return { text, tone: row.dimmed ? "muted" : row.word === "needs you" || row.word === "error" ? "warning" : "text", focused: index === selected, bold: false }
   })
 }

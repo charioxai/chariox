@@ -1,6 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A4: what a client reads of a sub-agent tree.
-//! Data only: enums, ids and numbers. It carries no holder, path, card or
-//! settled-by field, and the kernel adds no error text.
+//! Carries the kernel’s public outcome and failure reason.
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +60,8 @@ pub struct AgentTreeNode {
     pub depth: u32,
     pub state: AgentTreeState,
     pub outcome: Option<crate::provider::TurnOutcomeKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// The user currently holds a pending decision of this node; no holder, path or card.
     pub needs_user: bool,
     pub deadline_ms: Option<u64>,

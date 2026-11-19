@@ -1999,6 +1999,107 @@ fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllab
 /// A Codex app-server shaped like the measured one (codex-cli 0.159.3).
 const FAKE_CODEX: &str = include_str!("hot_reload/fake_codex.py");
 
+#[tokio::test]
+async fn a_failed_codex_completion_keeps_the_provider_reason() {
+    let scratch = std::env::temp_dir().join(format!("codex-rejected-{}", std::process::id()));
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    let fixture = scratch.join("fake_codex.py");
+    std::fs::write(&fixture, FAKE_CODEX).unwrap();
+    let codex = scratch.join("codex");
+    install(
+        |staged| {
+            std::fs::write(
+                staged,
+                format!("#!/bin/sh\nexec python3 {} \"$@\"\n", fixture.display()),
+            )
+            .unwrap();
+        },
+        &codex,
+    );
+    let kernel = start_laptop_kernel(
+        &scratch,
+        &[
+            ("CHARIOX_CODEX_BIN", codex),
+            ("CHARIOX_FAKE_CODEX_RECORD", record),
+            ("CHARIOX_FAKE_CODEX_REJECT_TURN", "1".into()),
+        ],
+    );
+    let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+    let project = scratch.join("project").display().to_string();
+    let created = request(
+        &mut socket,
+        json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+            "alias": null, "slice_ref": null, "no_subscribe": true}}),
+    )
+    .await;
+    let session = &created["SessionCreated"]["session"];
+    let session_id = session["id"].as_str().unwrap();
+    let root = session["agents"][0]["id"].as_str().unwrap();
+    let spawned = request(
+        &mut socket,
+        json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
+            "provider": "codex", "model": "gpt-6-luna", "effort": "low",
+            "worktree_id": null, "no_subscribe": true}}),
+    )
+    .await;
+    let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{spawned}"));
+    request(
+        &mut socket,
+        json!({"SetAgentParent": {"session_id": session_id, "agent_id": agent_id, "parent_agent_id": root}}),
+    )
+    .await;
+    let attached = request(
+        &mut socket,
+        json!({"AttachToSession": {"session_id": session_id,
+            "client_id": "codex-rejected-test", "capability_level": "FullTerminal"}}),
+    )
+    .await;
+    let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{attached}"));
+    request(
+        &mut socket,
+        json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+            "target_agent_id": agent_id, "prompt": "write a short greeting", "attachments": []}}),
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reply = request(
+            &mut socket,
+            json!({"ListDescendants": {"session_id": session_id, "agent_id": root}}),
+        )
+        .await;
+        let child = &reply["AgentTree"]["tree"]["nodes"][0];
+        if child["state"] == "error" && !child["outcome"].is_null() {
+            let reason = "Codex declined this request under its usage policy.";
+            assert_eq!(child["outcome"], "policy_declined");
+            assert_eq!(child["reason"], reason);
+            let history = request(
+                &mut socket,
+                json!({"GetSessionHistoryOutline": {"session_id": session_id,
+                    "agent_ids": [agent_id], "include_prefetched_content": false}}),
+            )
+            .await;
+            let turns = history["SessionHistoryOutline"]["agents"][0]["turns"]
+                .as_array()
+                .unwrap();
+            let outcome = &turns.last().unwrap()["outcome"];
+            assert_eq!(
+                outcome,
+                &json!({"kind": "policy_declined", "reason": reason, "retryable": false})
+            );
+            assert!(!history.to_string().contains("Native fixture diagnostic."));
+            break;
+        }
+        assert!(Instant::now() < deadline, "Codex rejection did not settle");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// The item streaming at the swap keeps streaming: its deltas show up with no
 /// stall longer than the swap itself, each once and in order.
 #[test]

@@ -98,12 +98,15 @@ export class SubAgentsController {
 
   private current(): AgentTree | null { return this.root ? this.trees.get(this.root) ?? null : null }
 
-  /** The view exists only while a sub-agent is live; the card only while the list has rows. When the last one ends,
-   * the view closes like any room view and the room goes back to its agents. */
+  private hasPanelToRead(tree: AgentTree): boolean {
+    return tree.totals.live > 0 || tree.nodes.some(node => node.state === "error" && node.reason)
+  }
+
+  /** Retain the view while a child is live or an error is available to read. */
   private settle(): void {
     const tree = this.current()
     if (!tree || tree.nodes.length === 0) this.card = false
-    if (!tree || tree.totals.live <= 0) { this.view = false; this.focused = null }
+    if (!tree || !this.hasPanelToRead(tree)) { this.view = false; this.focused = null }
     else if (this.view && !this.panels().some(panel => panel.id === this.focused)) this.focused = this.panels()[0]?.id ?? null
     this.cardIndex = Math.max(0, Math.min(this.cardIndex, this.lines().length - 1))
     this.deps.changed()
@@ -154,11 +157,11 @@ export class SubAgentsController {
   }
 
   /** A row of the card: opens the view if it is closed and focuses that panel; if open, moves the focus.
-   * With no live sub-agent there is no view: the card only closes. */
+   * Once only successful completions remain, the card only closes. */
   chooseRow(id: string | undefined = this.lines()[this.cardIndex]?.id): void {
     this.card = false
     const tree = this.current()
-    if (id && tree && tree.totals.live > 0 && this.panels().some(panel => panel.id === id)) { this.view = true; this.focused = id }
+    if (id && tree && this.hasPanelToRead(tree) && this.panels().some(panel => panel.id === id)) { this.view = true; this.focused = id }
     this.deps.changed()
   }
 

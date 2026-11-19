@@ -13,20 +13,20 @@
 //! or not started) is done to a client, which closes its Sub-agents view when none is live.
 use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
-use crate::provider::TurnOutcomeKind;
+use crate::provider::{TurnOutcome, TurnOutcomeKind};
 use crate::session::{
     effective_agent_execution_config_in_tree, CollaborationLevel, RuntimeSession,
 };
 
 /// What the latest task of an agent says about its turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NodeTurn {
     pub(crate) live: bool,
     pub(crate) blocked: bool,
-    pub(crate) outcome: Option<TurnOutcomeKind>,
+    pub(crate) outcome: Option<TurnOutcome>,
 }
 
-fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<NodeTurn>) -> AgentTreeState {
+fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<&NodeTurn>) -> AgentTreeState {
     if agent.archived() {
         AgentTreeState::Ended
     } else if agent.state() == crate::agent::AgentState::Error {
@@ -170,8 +170,18 @@ pub(crate) fn project_agent_tree(
         let state = node_state(
             agent,
             pending(agent.id()) || (!agent.is_processing() && session.agent_is_waiting(agent.id())),
-            turn,
+            turn.as_ref(),
         );
+        let outcome = turn.and_then(|turn| turn.outcome);
+        let reason = (state == AgentTreeState::Error).then(|| {
+            outcome
+                .as_ref()
+                .filter(|outcome| outcome.is_error() && !outcome.reason.is_empty())
+                .map(|outcome| outcome.reason.clone())
+                .unwrap_or_else(|| {
+                    TurnOutcome::provider_failure(TurnOutcomeKind::Other, false).reason
+                })
+        });
         // The value approval gating reads, after the limit of the parent chain.
         let effective = effective_agent_execution_config_in_tree(session, agent, agents);
         nodes.push(AgentTreeNode {
@@ -203,7 +213,8 @@ pub(crate) fn project_agent_tree(
                 .map(|remote| remote.worker_kernel_id.clone()),
             depth,
             state,
-            outcome: turn.and_then(|turn| turn.outcome),
+            outcome: outcome.map(|outcome| outcome.kind),
+            reason,
             needs_user: user_holds(agent.id())
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
             deadline_ms: deadline_ms(agent.id()),
@@ -547,8 +558,8 @@ mod tests {
             &|_| false,
             &|_| None,
             &|id| match id {
-                "done" => Some(finished(TurnOutcomeKind::Completed)),
-                "cancelled" => Some(finished(TurnOutcomeKind::Cancelled)),
+                "done" => Some(finished(TurnOutcome::completed())),
+                "cancelled" => Some(finished(TurnOutcome::cancelled())),
                 _ => Some(NodeTurn {
                     live: true,
                     blocked: false,
@@ -789,9 +800,9 @@ mod tests {
                     live: false,
                     blocked: false,
                     outcome: Some(if id == "done" {
-                        TurnOutcomeKind::Completed
+                        TurnOutcome::completed()
                     } else {
-                        TurnOutcomeKind::Cancelled
+                        TurnOutcome::cancelled()
                     }),
                 })
             },
