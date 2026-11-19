@@ -234,6 +234,8 @@ pub(super) fn prepare_claude_native_tui_files(
         "hooks": {
             "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "UserPromptSubmit": [{ "hooks": prompt_hooks }],
+            // The start of a compaction, so the row shows it running; its end is the summary in the transcript.
+            "PreCompact": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],

@@ -634,4 +634,5 @@ pub use workspace::*;
 /// its identity shortened; mirror hover moves and right clicks reach the kernel page (KernelBrowser input), and the mirror
 /// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
 /// document, html or body), so the viewer sends it every wheel step.
+/// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

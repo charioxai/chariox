@@ -737,6 +737,8 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
         self = .error
       case "provider_status":
         self = .status
+      case "context_compacted":
+        self = .notice
       default:
         self = .output
       }
@@ -754,7 +756,7 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
         self = .error
       case "provider_status":
         self = .status
-      case "notice":
+      case "notice", "context_compacted":
         self = .notice
       default:
         self = .output

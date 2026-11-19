@@ -69,6 +69,7 @@ pub(crate) enum ObservedExternalProviderTurnRole {
     Tool,
     Status,
     Compaction,
+    ContextCompacted,
 }
 
 impl ObservedExternalProviderTurnRole {
@@ -85,6 +86,7 @@ impl ObservedExternalProviderTurnRole {
             Self::Status | Self::Compaction => {
                 crate::history::SessionHistoryEntryKind::ProviderStatus
             }
+            Self::ContextCompacted => crate::history::SessionHistoryEntryKind::ContextCompacted,
         }
     }
 }
@@ -96,6 +98,7 @@ pub(crate) fn observed_role(role: Option<&str>) -> Option<ObservedExternalProvid
         Some("reasoning") => Some(ObservedExternalProviderTurnRole::Reasoning),
         Some("tool") => Some(ObservedExternalProviderTurnRole::Tool),
         Some("status") => Some(ObservedExternalProviderTurnRole::Status),
+        Some("context_compacted") => Some(ObservedExternalProviderTurnRole::ContextCompacted),
         _ => None,
     }
 }
@@ -111,6 +114,10 @@ pub(crate) fn clean_observed_turn_text(role: Option<&str>, text: String) -> Opti
         | ObservedExternalProviderTurnRole::Tool
         | ObservedExternalProviderTurnRole::Status
         | ObservedExternalProviderTurnRole::Compaction => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        ObservedExternalProviderTurnRole::ContextCompacted => {
             let text = text.trim();
             (!text.is_empty()).then(|| text.to_string())
         }
@@ -184,6 +191,7 @@ fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
         ObservedExternalProviderTurnRole::Tool => "tool",
         ObservedExternalProviderTurnRole::Status => "status",
         ObservedExternalProviderTurnRole::Compaction => "compaction",
+        ObservedExternalProviderTurnRole::ContextCompacted => "context_compacted",
     }
 }
 
@@ -387,7 +395,8 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             | ObservedExternalProviderTurnRole::User
             | ObservedExternalProviderTurnRole::Reasoning
             | ObservedExternalProviderTurnRole::Tool
-            | ObservedExternalProviderTurnRole::Compaction => false,
+            | ObservedExternalProviderTurnRole::Compaction
+            | ObservedExternalProviderTurnRole::ContextCompacted => false,
         }
     }
 

@@ -5395,3 +5395,48 @@ fn claude_native_local_typed_redirect_without_loads_consumes_the_pending_handoff
         "the accepted local typed redirect left the pending handoff unconsumed"
     );
 }
+
+#[test]
+fn claude_transcript_compaction_is_one_row_and_not_a_prompt() {
+    let root = crate::test_temp_dir::TestTempDir::new("claude-transcript-compaction");
+    let transcript = root.path().join("session.jsonl");
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let lines = [
+        serde_json::json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": "boundary-1",
+            "compactMetadata": {"trigger": "auto", "preservedSegment": {"anchorUuid": "summary-1"}}
+        }),
+        serde_json::json!({
+            "type": "user", "uuid": "summary-1", "isCompactSummary": true,
+            "message": {"role": "user", "content": "Earlier work, condensed by Claude."}
+        }),
+        serde_json::json!({
+            "type": "assistant", "uuid": "assistant-1",
+            "message": {"id": "msg_1", "model": "claude-sonnet-4-6", "role": "assistant",
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": "Back to work."}]}
+        }),
+    ];
+    fs::write(
+        &transcript,
+        lines.map(|line| line.to_string()).join("\n") + "\n",
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    let compactions = drain
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.kind == TerminalOutputKind::ContextCompacted)
+        .collect::<Vec<_>>();
+    assert_eq!(compactions.len(), 1);
+    assert_eq!(compactions[0].merge_key_suffix, "compaction:0");
+    assert_eq!(
+        compactions[0].text,
+        crate::provider::ContextCompaction::Done {
+            summary: "Earlier work, condensed by Claude.".into()
+        }
+        .to_text()
+    );
+    assert!(drain.enqueued_prompts.is_empty());
+}
