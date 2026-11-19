@@ -64,6 +64,17 @@ test('MP-11: every url() spelling becomes a kernel resource key (custom properti
   assert.ok(seen.some(([href, kind]) => href === 'https://site.example/css/f.woff2' && kind === 'font'));
 });
 
+// Chrome serializes a style attribute's `image-set(url(a) 1x)` as `image-set(url("a") 1x)`: that string was wrapped in a
+// second url(), neutralized as `urlx(`, and the background vanished at every density.
+test('MP-11: an image-set() string inside url() or type() is not a second URL', () => {
+  const { seen, resource } = keys();
+  const out = sanitizeMirrorCss('.f { background-image: image-set(url("q.png") 1x, url( \'r.png\' ) type("image/png") 2x, "s.png" 3x); }', 'https://site.example/', resource);
+  assert.ok(onlyKernelUrls(out), out);
+  assert.ok(!/urlx/.test(out), out);
+  assert.match(out, /^\.f \{ background-image: image-set\(url\("mr:r\d+"\) 1x, url\("mr:r\d+"\) type\("image\/png"\) 2x, url\("mr:r\d+"\) 3x\); \}$/);
+  assert.deepEqual(seen.map(([href]) => href), ['https://site.example/q.png', 'https://site.example/r.png', 'https://site.example/s.png']);
+});
+
 test('MP-11: CSS-escaped fetching function names are decoded before the url() rewrite', () => {
   const { seen, resource } = keys();
   // Custom properties keep raw tokens; `u\\72l(` is a url() token once substituted.

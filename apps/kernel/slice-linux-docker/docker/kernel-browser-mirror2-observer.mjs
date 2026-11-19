@@ -22,9 +22,21 @@ export function sanitizeMirrorCss(text, base, resource) {
     const plain = name.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
     return /^[a-zA-Z_-]+$/.test(plain) ? `${plain}(` : 'x-invalid(';
   });
+  // An image-set() option given as a bare string is a URL; a string inside a function (`url("a")`, `type("image/webp")`)
+  // stays as written (Chrome serializes `url(a)` as `url("a")`).
+  const imageSetUrls = body => {
+    let result = '', depth = 0;
+    for (let i = 0; i < body.length; i++) {
+      const c = body[i];
+      if (c === '"' || c === "'") { let end = i + 1; while (end < body.length && body[end] !== c) end += body[end] === '\\' ? 2 : 1; const string = body.slice(i, end + 1); result += depth ? string : `url(${string})`; i = end; continue; }
+      if (c === '(') depth++; else if (c === ')') depth--;
+      result += c;
+    }
+    return result;
+  };
   // Custom properties and var()-bearing declarations keep their source tokens,
   // so every url() spelling occurs; image-set() strings are URLs too.
-  if (/image-set\(/i.test(out)) out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
+  if (/image-set\(/i.test(out)) out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${imageSetUrls(body)})`);
   const urls = /url\(/i.test(out), fontFaces = !urls ? [] : [...out.matchAll(/@font-face\s*\{[^}]*\}/g)].map(match => [match.index, match.index + match[0].length]);
   const unescape = value => value.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
   if (urls) out = out.replace(/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|((?:[^)\s"'\\]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n])*))\s*\)/gi, (_, double, single, bare, at) => {
@@ -213,7 +225,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
     let hrefValues = false, hrefStale = [];
     const sheetCss = (text, base) => {
-      const out = sanitizeMirrorCss(text, base, resource);
+      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource));
       if (!hrefValues && /\[\s*chariox-href\s*[~|^$*]?=/i.test(out)) {
         hrefValues = true;
         for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute('href')) hrefStale.push(node);
@@ -331,7 +343,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
       return source ? sheetCss(source, base) : text;
     };
-    const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
+    const inlineStyle = (element, base) => { const live = element.style.cssText; return loadViewerOptions(sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource)); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // A fixed closed host with no box of its own (Vimeo's consent manager) sits where the document ends, and the viewer's
     // document ends elsewhere. Its content is fixed too, so its region is anchored at the viewport origin on both sides.
@@ -429,28 +441,27 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return out;
     };
-    // A sizes length as the image's own document resolves it: Blink's CSS parser reads the length (calc(), min(), max(),
-    // clamp()), viewport units are that document's viewport (a frame's, not the top page's), and em/rem the initial 16px.
+    // A sizes length as the image's own document resolves it: its media queries read lengths as sizes does (math
+    // functions, the frame's own viewport, font-relative units at the initial font). `min-width: calc(length - X +
+    // 100vw)` starts to match 1/64 px below X = length and `max-width` stops 1/64 px above it, so the length is the
+    // middle of the two thresholds. Each (document, viewport, length) is bisected once.
+    const lengthCache = new WeakMap();
+    const threshold = (view, feature, text) => {
+      let low = 0, high = 2 ** 24;
+      for (let step = 0; step < 44; step++) { const middle = (low + high) / 2; if (view.matchMedia(`(${feature}: calc(${text} - ${middle}px + 100vw))`).matches === (feature === 'min-width')) high = middle; else low = middle; }
+      return high;
+    };
     const lengthPx = (text, node) => {
       if (text === 'auto') return node.getBoundingClientRect().width || null;
-      const view = node.ownerDocument.defaultView;
       let length; try { length = CSSNumericValue.parse(text); } catch { return null; }
-      const type = length.type();
-      if (length instanceof CSSUnitValue && length.unit === 'number' ? length.value !== 0 : Object.keys(type).join() !== 'length' || type.length !== 1) return null;
-      const vw = view.innerWidth / 100, vh = view.innerHeight / 100;
-      const UNITS = { number: 1, em: 16, rem: 16, vw, svw: vw, lvw: vw, dvw: vw, vh, svh: vh, lvh: vh, dvh: vh, vi: vw, vb: vh, vmin: Math.min(vw, vh), vmax: Math.max(vw, vh) };
-      const px = value => {
-        if (value instanceof CSSUnitValue) { if (value.unit in UNITS) return value.value * UNITS[value.unit]; try { return value.to('px').value; } catch { return NaN; } }
-        if (value instanceof CSSMathSum) return [...value.values].reduce((sum, part) => sum + px(part), 0);
-        if (value instanceof CSSMathProduct) return [...value.values].reduce((product, part) => product * px(part), 1);
-        if (value instanceof CSSMathNegate) return -px(value.value);
-        if (value instanceof CSSMathInvert) return 1 / px(value.value);
-        if (value instanceof CSSMathMin) return Math.min(...[...value.values].map(px));
-        if (value instanceof CSSMathMax) return Math.max(...[...value.values].map(px));
-        if (typeof CSSMathClamp === 'function' && value instanceof CSSMathClamp) return Math.max(px(value.lower), Math.min(px(value.value), px(value.upper)));
-        return NaN;
-      };
-      const value = px(length); return Number.isFinite(value) ? value : null;
+      const type = length.type(), literal = length instanceof CSSUnitValue;
+      if (literal && length.unit === 'number') return length.value === 0 ? 0 : null;
+      if (Object.keys(type).join() !== 'length' || type.length !== 1 || literal && length.value < 0) return null;
+      const view = node.ownerDocument.defaultView, key = `${view.innerWidth}x${view.innerHeight} ${text}`;
+      if (!lengthCache.has(node.ownerDocument)) lengthCache.set(node.ownerDocument, new Map());
+      const known = lengthCache.get(node.ownerDocument);
+      if (!known.has(key)) known.set(key, (threshold(view, 'min-width', text) + threshold(view, 'max-width', text)) / 2);
+      return known.get(key);
     };
     // The source size: the first sizes entry whose media matches and whose length parses; else 100vw (all in the image's document).
     const sourceSize = (sizes, node) => {
@@ -461,7 +472,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (text.endsWith(')')) { let depth = 0; do { at--; if (text[at] === ')') depth++; else if (text[at] === '(') depth--; } while (at > 0 && depth); while (at > 0 && /[\w-]/.test(text[at - 1])) at--; }
         else at = text.search(/\S+$/);
         const media = text.slice(0, at).trim(), size = lengthPx(text.slice(at), node);
-        if (size !== null && size >= 0 && (!media || view.matchMedia(media).matches)) return size;
+        if (size !== null && (!media || view.matchMedia(media).matches)) return size;
       }
       return view.innerWidth;
     };
@@ -494,6 +505,26 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         image.src = url; load = { url, image }; viewerLoads.set(node, load);
       }
       return load.image.complete && load.image.naturalWidth > 0;
+    };
+    // The viewer's engine draws an image-set() from the option its own density picks (Blink: the lowest resolution at
+    // or above it, else the highest), which the page at its density never fetched. That option loads here, as the page
+    // loads its CSS images (its cookies), so the page's loaded resources admit its bytes.
+    const RESOLUTION = { x: 1, dppx: 1, dpi: 1 / 96, dpcm: 2.54 / 96 };
+    const viewerOptions = new Map();
+    const loadViewerOptions = css => {
+      if (!viewerDensity || viewerDensity === window.devicePixelRatio || !/image-set\(/i.test(css)) return css;
+      for (const [, body] of css.matchAll(/image-set\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi)) {
+        const options = topLevel(body).flatMap(option => {
+          const key = /url\("mr:(r\d+)"\)/.exec(option)?.[1], type = /type\(\s*["']([^"']*)["']\s*\)/i.exec(option)?.[1];
+          const resolution = /(?:^|\s)(\d*\.?\d+)(x|dppx|dpi|dpcm)\s*$/i.exec(option.replace(/(?:url|type)\([^)]*\)/gi, ' '));
+          return key && (!type || IMAGE_TYPES.test(type.trim())) ? [{ key, scale: resolution ? resolution[1] * RESOLUTION[resolution[2].toLowerCase()] : 1 }] : [];
+        }).sort((a, b) => a.scale - b.scale);
+        const pick = options.find(option => option.scale >= viewerDensity) ?? options.at(-1);
+        const url = pick && [...urlKeys.values()].find(entry => entry.key === pick.key)?.url;
+        if (!url || url.startsWith('data:') || viewerOptions.has(url)) continue;
+        const image = document.createElement('img'); image.src = url; viewerOptions.set(url, image);
+      }
+      return css;
     };
     // Blink's pick: the lowest density at or above the screen's, or the one below when their geometric mean exceeds it.
     // The page's own candidate (and its density) travels until the viewer's has loaded.

@@ -29,7 +29,7 @@ async function roundtrip(html,child,run,{dpr=1}={}){
   const root=await mkdtemp(path.join(scratch,'source-'));
   const childSource=html.includes('CHILDPORT')?createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(child);}):null;
   if(childSource)await new Promise(r=>childSource.listen(0,'127.0.0.1',r));
-  const source=createServer((req,res)=>{if(req.url.startsWith('/font-')){res.setHeader('Content-Type','font/ttf');res.end(fontBytes);return;}res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
+  const source=createServer((req,res)=>{if(req.url.startsWith('/font-')){res.setHeader('Content-Type','font/ttf');res.end(fontBytes);return;}if(req.url.startsWith('/fill-')){res.setHeader('Content-Type','image/svg+xml');res.end(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><path fill="#${req.url.slice(6,12)}" d="M0 0h100v10H0z"/></svg>`);return;}res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
   await new Promise(r=>source.listen(0,'127.0.0.1',r));
   const apps=await mkdtemp(path.join(scratch,'apps-'));// a managed-policy browser requires a WASM App storage root outside its temporary directory
   const host=new KernelBrowserHost(root,{appStorageRoot:apps});let context,page,sequence=0;
@@ -179,6 +179,21 @@ test('MP-08/MP-10: ordinary typing invokes the native page keyboard contract',()
     assert.equal(await evaluate('document.querySelector("#field").value'),'Chariox');
   }));
 
+// A CSS image-set() is drawn from the candidate the viewer's own density picks (r10: Chrome's `url("a")` serialization
+// had wrapped each candidate in a second url(), and the background vanished at every density).
+for(const dpr of [1,2])test(`MP-10: a density-${dpr} viewer draws an image-set() background from its density's candidate`,()=>roundtrip(
+  '<!doctype html><div id="x" style="width:100px;height:10px;background-image:image-set(url(/fill-ff0000.svg) 1x, url(/fill-0000ff.svg) 2x)"></div>','',async({page,next,apply})=>{
+    const drawn=async()=>{
+      const box=await page.evaluate(()=>{const element=window.r.frame.contentDocument.getElementById('x'),frame=window.r.frame.getBoundingClientRect(),own=element?.getBoundingClientRect();return own?{x:frame.x+own.x+50,y:frame.y+own.y+5}:null;});
+      if(!box)return null;
+      const png=(await page.screenshot({clip:{...box,width:1,height:1},scale:'css'})).toString('base64');
+      return page.evaluate(async png=>{const img=new Image();img.src=`data:image/png;base64,${png}`;await img.decode();const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(0,0,1,1).data.slice(0,3)];},png);
+    };
+    const expected=dpr===2?[0,0,255]:[255,0,0];
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
+
 // MP-08/MP-10/MP-11 M2: real source + unmodified product renderer consume
 // the ordinary wire incrementally. Anonymous fixture; not live acceptance.
 test('MP-10 M2: the renderer paints the prefix and retains it while ordinary children packets finish the document',()=>roundtrip(
@@ -209,6 +224,16 @@ for(const dpr of [1,2])test(`MP-10: a density-${dpr} viewer draws a min() source
     // The page's own drawing (its candidate at its density); a density-2 viewer draws the 2x candidate at the page's size.
     const [width,color]=await evaluate(`${look}(document.getElementById('x'))`),expected=[width,dpr===2?'0000ff':color];
     assert.equal(width,600,"the page sizes the image by its min() source size");
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
+// A font-relative source size (ch, ex) is read at the initial font, as the page's browser reads it, not as the viewport width.
+for(const dpr of [1,2])for(const sizes of ['75ch','80ex'])test(`MP-10: a density-${dpr} viewer draws a ${sizes} source-size image at the page's size`,()=>roundtrip(
+  `<!doctype html><style>html{font:40px monospace}</style><img id="x" srcset="${wideSvg(600,'ff0000')} 600w, ${wideSvg(1200,'0000ff')} 1200w" sizes="${sizes}">`,'',async({page,next,apply,evaluate})=>{
+    const look=`(image=>{const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;})`;
+    const drawn=()=>page.evaluate(`${look}(window.r.frame.contentDocument.getElementById('x'))`);
+    const [width,color]=await evaluate(`${look}(document.getElementById('x'))`),expected=[width,dpr===2?'0000ff':color];
+    assert(width>300&&width<900&&width!==await evaluate('innerWidth'),`the page sizes the image by its ${sizes} source size at the initial font (${width} px)`);
     for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
     assert.deepEqual(await drawn(),expected);
   },{dpr}));
