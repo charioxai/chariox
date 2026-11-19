@@ -109,6 +109,42 @@ fn a_message_from_another_kernel_lands_once_as_a_stamped_message() {
 }
 
 #[test]
+fn a_peer_message_after_deadline_is_refused_before_it_enters_the_inbox() {
+    use crate::durable_state::agent_lifecycle::Operation;
+
+    run_peer_test("peer-kernel-deadline", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Required);
+        let deadline_ms = crate::session::unix_epoch_ms();
+        {
+            let app = rooms.app.lock().await;
+            app.durable_state_store()
+                .agent_lifecycle(Operation::SetDeadline {
+                    room: rooms.peer_room.clone(),
+                    agent: rooms.peer.id().into(),
+                    deadline: Some(deadline_ms),
+                    inherited: vec![],
+                })
+                .unwrap();
+        }
+        for urgent in [false, true] {
+            let sent = rooms
+                .request_from_kernel_a(message(&rooms, "after-deadline", "peer", urgent))
+                .await;
+            assert_eq!(
+                refusal(sent),
+                PeerAgentRefusal::AgentDeadlineReached {
+                    message: crate::error::agent_deadline_refusal(deadline_ms).to_string(),
+                }
+            );
+        }
+        assert!(rooms
+            .inbox(&rooms.peer_room, rooms.peer.id())
+            .await
+            .is_empty());
+    });
+}
+
+#[test]
 fn a_peer_on_another_kernel_addresses_only_ordinary_agents_of_its_owner() {
     run_peer_test("peer-kernel-address", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);

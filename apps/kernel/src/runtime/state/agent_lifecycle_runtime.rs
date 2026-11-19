@@ -600,21 +600,6 @@ impl KernelRuntimeState {
         if args.urgent {
             self.authorize_peer_control(sender, target, super::peer_rooms::PeerControl::Steer)?;
         }
-        // Refuse here, while the sender can still react: a message the peer's account cannot
-        // start would otherwise stay durable and pending behind the sender's goal.
-        if let Err(error) =
-            self.owned
-                .require_agent_account_authenticated(target, None, "send agent message")
-        {
-            // The refusal is definite: a delegate that cannot start never completes, so nothing
-            // may keep the sender's turn waiting on it.
-            self.owned.settle_failed_delegate_start(
-                session.id(),
-                target.id(),
-                &error.to_string(),
-            )?;
-            return Err(error);
-        }
         // Admission precedes resource lookup; another room reveals only its ordinary agents.
         // A key the sender chose names the message across turns, so it can promote the message by
         // sending it again; a key the kernel chose belongs to this turn.
@@ -644,6 +629,23 @@ impl KernelRuntimeState {
                     target.alias().unwrap_or(target.agent_ref()),
                 )
                 .await;
+        }
+        self.owned
+            .ensure_agent_before_deadline(target_room, target.id())?;
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        if let Err(error) =
+            self.owned
+                .require_agent_account_authenticated(target, None, "send agent message")
+        {
+            // The refusal is definite: a delegate that cannot start never completes, so nothing
+            // may keep the sender's turn waiting on it.
+            self.owned.settle_failed_delegate_start(
+                session.id(),
+                target.id(),
+                &error.to_string(),
+            )?;
+            return Err(error);
         }
         let mut event = ledger::occurrence(
             target_room,

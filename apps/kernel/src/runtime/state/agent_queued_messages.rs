@@ -193,6 +193,8 @@ impl KernelRuntimeState {
     /// The sender makes its own queued message urgent: the same row, delivered once, as a steer or as the
     /// start of a turn.
     async fn promote_queued_message(&self, event: &InboxEvent) -> Result<Promotion, DaemonError> {
+        self.owned
+            .ensure_agent_before_deadline(&event.room_id, &event.agent_id)?;
         let store = &self.owned.durable_state_store;
         let Some((event, read)) = store.agent_inbox_event(event.sequence)? else {
             return Ok(Promotion::Delivered);
@@ -211,7 +213,10 @@ impl KernelRuntimeState {
             agent: event.agent_id.clone(),
             sequence: event.sequence,
         });
-        if released.is_err() {
+        if let Err(error) = released {
+            if crate::error::is_agent_deadline_refusal(&error) {
+                return Err(error);
+            }
             // The recipient read it, or the person cancelled it, between the look and the change.
             return Ok(Promotion::Delivered);
         }

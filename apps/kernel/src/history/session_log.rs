@@ -28,6 +28,12 @@ pub enum SessionHistoryEntryKind {
     Notice,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHistoryNoticeReason {
+    AgentDeadlineReached,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryEntry {
     pub session_id: String,
@@ -38,6 +44,8 @@ pub struct SessionHistoryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
     pub kind: SessionHistoryEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_reason: Option<SessionHistoryNoticeReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -472,6 +480,7 @@ impl SessionHistoryEntry {
             source_attachment_id: Some(source_attachment_id.to_string()),
             prompt_origin: Some(PromptOrigin::Chariox),
             kind: SessionHistoryEntryKind::UserPrompt,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -513,6 +522,7 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::ProviderStatus => SessionHistoryEntryKind::ProviderStatus,
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },
+            notice_reason: None,
             merge_key,
             source: None,
             external_provider: None,
@@ -539,6 +549,7 @@ impl SessionHistoryEntry {
             source_attachment_id: None,
             prompt_origin: None,
             kind: SessionHistoryEntryKind::Notice,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -615,6 +626,7 @@ impl SessionHistoryEntry {
             source_attachment_id: Some(external_provider_source_attachment_id(&provider)),
             prompt_origin: Some(PromptOrigin::External),
             kind,
+            notice_reason: None,
             merge_key,
             source: Some(SessionHistoryEntrySource::ExternalProviderObserved),
             external_provider: Some(provider),

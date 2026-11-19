@@ -172,6 +172,9 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             {
                 return Err(error("event is outside the authorized work binding"));
             }
+            if e.kind == "message" {
+                super::deadlines::ensure_before_deadline(tx, &room, &agent)?;
+            }
             if e.state != "pending" {
                 return Err(error(
                     "delivery is already admitted; reconcile its exact receipt",
@@ -267,6 +270,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             agent,
             sequence,
         } => {
+            super::deadlines::ensure_before_deadline(tx, &room, &agent)?;
             let mut e = queued_message(tx, &room, &agent, sequence)?;
             e.urgent = true;
             save_event(tx, &e)?;
@@ -429,6 +433,21 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             replies::reconcile_event(tx, &e)?;
             if e.state == "accepted" {
                 super::unread_steers::revert_late_receipt(tx, &mut e)?;
+            }
+            // A definite rejection may put a message back in the queue after the deadline's
+            // first pass. Settle that message before another worker can try to deliver it.
+            if e.kind == "message" && e.state == "pending" {
+                match super::deadlines::ensure_before_deadline(tx, &room, &agent) {
+                    Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
+                        super::delivery_failure::fail_undelivered(
+                            tx,
+                            &mut e,
+                            DelegateGoneReason::AgentDeadlineReached,
+                            now,
+                        )?;
+                    }
+                    result => result?,
+                }
             }
             if e.state == "accepted" && settles_on_receipt(tx, &e)? {
                 if let Outcome::Event(acked) = apply_row(

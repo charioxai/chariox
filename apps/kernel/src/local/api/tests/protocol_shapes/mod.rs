@@ -121,6 +121,7 @@ fn history_page_entry(
                 _ => None,
             },
             kind,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,

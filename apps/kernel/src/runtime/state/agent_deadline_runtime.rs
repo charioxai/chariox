@@ -18,17 +18,8 @@ impl KernelRuntimeOwnedState {
         room: &str,
         agent: &str,
     ) -> Result<(), DaemonError> {
-        if self
-            .durable_state_store
-            .agent_deadline(room, agent)?
-            .is_some_and(|d| {
-                d.state == AgentDeadlineState::Reached
-                    || d.deadline_ms <= crate::session::unix_epoch_ms()
-            })
-        {
-            return Err(refusal("agent_deadline_reached", "agent deadline reached; this agent cannot start another turn. Start a new agent for new work"));
-        }
-        Ok(())
+        self.durable_state_store
+            .ensure_agent_before_deadline(room, agent)
     }
 }
 

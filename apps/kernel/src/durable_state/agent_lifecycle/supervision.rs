@@ -532,7 +532,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
                     };
                     if !clock_quarantined {
-                        super::delivery_failure::fail_undelivered(tx, &mut e)?;
+                        super::delivery_failure::fail_undelivered(
+                            tx,
+                            &mut e,
+                            DelegateGoneReason::FailedStart,
+                            now,
+                        )?;
                     } else {
                         e.state = "blocked".into();
                         save_event(tx, &e)?;

@@ -37,9 +37,10 @@ pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,
     ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
-    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
-    SessionHistoryStore, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryNoticeReason,
+    SessionHistoryPromptAttachment, SessionHistoryStore,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
+    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -292,6 +293,12 @@ impl HistoryEvent {
                 serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
             );
         }
+        if let Some(reason) = entry.notice_reason {
+            metadata.insert(
+                "notice_reason".to_string(),
+                serde_json::to_value(reason).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if let Some(source) = entry.source {
             metadata.insert(
                 "source".to_string(),
@@ -477,6 +484,10 @@ impl HistoryEvent {
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok()),
             kind,
+            notice_reason: self
+                .metadata
+                .get("notice_reason")
+                .and_then(|reason| SessionHistoryNoticeReason::deserialize(reason).ok()),
             merge_key: self
                 .metadata
                 .get("merge_key")

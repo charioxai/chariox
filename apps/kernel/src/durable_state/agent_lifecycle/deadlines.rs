@@ -60,6 +60,20 @@ pub(super) fn get(
     value.map(|value| decode(&value)).transpose()
 }
 
+pub(super) fn ensure_before_deadline(
+    db: &Connection,
+    room: &str,
+    agent: &str,
+) -> Result<(), DaemonError> {
+    if let Some(deadline) = get(db, room, agent)?.filter(|deadline| {
+        deadline.state == AgentDeadlineState::Reached
+            || deadline.deadline_ms <= crate::session::unix_epoch_ms()
+    }) {
+        return Err(crate::error::agent_deadline_refusal(deadline.deadline_ms));
+    }
+    Ok(())
+}
+
 pub(super) fn save(db: &Connection, value: &AgentDeadline) -> Result<Outcome, DaemonError> {
     db.execute("INSERT INTO agent_deadlines(room_id,agent_id,payload) VALUES(?1,?2,?3) ON CONFLICT(room_id,agent_id) DO UPDATE SET payload=excluded.payload", params![value.session_id, value.agent_id, encode(value)?]).map_err(sql)?;
     Ok(Outcome::Deadline(Some(value.clone())))
@@ -176,6 +190,7 @@ pub(super) fn reached(
         value.stopped_at_ms.get_or_insert(now);
     }
     let outcome = save(db, &value)?;
+    super::delivery_failure::expire_deadline_messages(db, &room, &agent, now)?;
     if stopped {
         outside::publish_deadline(db, &value)?;
     }
@@ -183,6 +198,15 @@ pub(super) fn reached(
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn ensure_agent_before_deadline(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        ensure_before_deadline(&db, room, agent)
+    }
+
     pub(crate) fn agent_deadline(
         &self,
         room: &str,
