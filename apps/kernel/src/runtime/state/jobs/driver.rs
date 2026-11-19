@@ -56,25 +56,35 @@ impl WakeDriver for JobDriver {
             }
             live.insert(wake.id.clone(), cancel);
         }
-        let local = crate::hot_reload::take_local_job(&record.job_id);
+        let local = crate::hot_reload::take_local_job(&record.job_id).and_then(|handover| {
+            let active = (record.placement == JobPlacement::Local && record.result.is_none())
+                .then(|| self.local.enter())
+                .flatten();
+            if let Some(active) = active {
+                return Some((handover, active));
+            }
+            handover.discard();
+            None
+        });
         let live = self.live.clone();
         tokio::spawn(async move {
-            if let Some(local) = local {
-                if record.placement == JobPlacement::Local && record.result.is_none() {
-                    match local.restore(&state, &record) {
-                        Ok(local) => {
-                            state
-                                .execute_job(wake.clone(), record, cancelled, Some(local))
-                                .await;
-                            live.lock().expect("job live").remove(&wake.id);
-                            return;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "local job could not resume across the kernel reload")
-                        }
+            if let Some((local, active)) = local {
+                match local.restore(&state, &record) {
+                    Ok((output, progress)) => {
+                        state
+                            .execute_job(
+                                wake.clone(),
+                                record,
+                                cancelled,
+                                Some((output, active, progress)),
+                            )
+                            .await;
+                        live.lock().expect("job live").remove(&wake.id);
+                        return;
                     }
-                } else {
-                    local.discard();
+                    Err(error) => {
+                        tracing::warn!(%error, "local job could not resume across the kernel reload")
+                    }
                 }
             }
             // Left by an earlier run with remote jobs on: end the job with its reason and leave
@@ -179,7 +189,6 @@ impl WakeDriver for JobDriver {
         Recovery::Reattached
     }
     fn reconcile_ended(&self) {
-        crate::hot_reload::discard_unclaimed_local_jobs();
         let Some(state) = self.recovery_state() else {
             return;
         };
@@ -280,6 +289,26 @@ impl KernelRuntimeState {
     pub(crate) fn bind_job_recovery(&self, router: &Arc<crate::runtime::router::CommandRouter>) {
         if let Some(driver) = &self.job_wake_driver {
             let _ = driver.router.set(Arc::downgrade(router));
+            // Claim the inherited children before the transport can start a new reload.
+            // The wake scheduler may still be starting when the kernel accepts that reload.
+            for id in crate::hot_reload::local_job_wakes() {
+                match self.owned.durable_state_store.agent_wake(&id) {
+                    Ok(Some(wake))
+                        if wake.kind == KIND
+                            && matches!(
+                                wake.state.as_str(),
+                                "starting" | "running" | "cancelling"
+                            ) =>
+                    {
+                        if let Recovery::Lost(reason) = driver.recover(&wake) {
+                            tracing::warn!(%reason, "could not recover the inherited local job");
+                        }
+                    }
+                    Ok(_) => tracing::warn!("the inherited local job has no active wake"),
+                    Err(error) => tracing::warn!(%error, "could not load the inherited job's wake"),
+                }
+            }
+            crate::hot_reload::discard_unclaimed_local_jobs();
         }
     }
 

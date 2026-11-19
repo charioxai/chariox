@@ -238,10 +238,14 @@ impl KernelRuntimeState {
         wake: AgentWake,
         mut record: Record,
         mut cancelled: watch::Receiver<bool>,
-        local: Option<(Output, super::local::LocalProgress)>,
+        local: Option<(
+            Output,
+            super::local::ActiveLocalJob,
+            super::local::LocalProgress,
+        )>,
     ) {
         let (output, progress) = match local {
-            Some((output, progress)) => (Ok(output), Some(progress)),
+            Some((output, active, progress)) => (Ok(output), Some((active, progress))),
             None => (Output::new(self, &record), None),
         };
         let mut output = match output {
@@ -266,8 +270,8 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        let result = if let Some(progress) = progress {
-            self.resume_local_job(&mut record, &mut output, &mut cancelled, progress)
+        let result = if let Some((active, progress)) = progress {
+            self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
                 .await
         } else if matches!(record.remote, RemoteStage::Running { .. }) {
             self.resume_remote_job(&mut record, &mut output, &mut cancelled)

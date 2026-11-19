@@ -58,9 +58,9 @@ impl KernelRuntimeState {
         record: &mut Record,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
+        active: ActiveLocalJob,
         progress: LocalProgress,
     ) -> Result<JobResult, DaemonError> {
-        let active = self.track_local_job().await;
         let owned = LocalExec {
             service: self.owned.room_execs.clone(),
             room: record.room_id.clone(),
@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
         owned: LocalExec,
-        mut active: ActiveLocalJob<'_>,
+        mut active: ActiveLocalJob,
         mut progress: LocalProgress,
     ) -> Result<JobResult, DaemonError> {
         let execs = &owned.service;
@@ -164,7 +164,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn track_local_job(&self) -> ActiveLocalJob<'_> {
+    async fn track_local_job(&self) -> ActiveLocalJob {
         let local = &self
             .job_wake_driver
             .as_ref()
@@ -201,6 +201,7 @@ impl KernelRuntimeState {
         );
         crate::hot_reload::hand_over_local_job(
             record.job_id.clone(),
+            record.wake_id.clone(),
             frozen.handover,
             frozen.pipes,
             frozen.guard,
@@ -252,7 +253,7 @@ pub(super) struct LocalJobs {
 }
 
 impl LocalJobs {
-    fn enter(&self) -> Option<ActiveLocalJob<'_>> {
+    pub(super) fn enter(self: &Arc<Self>) -> Option<ActiveLocalJob> {
         let mut active = self.active.lock().expect("active local jobs");
         let shutdown = self.shutdown.subscribe();
         if !matches!(*shutdown.borrow(), Shutdown::Running) {
@@ -260,7 +261,7 @@ impl LocalJobs {
         }
         *active += 1;
         Some(ActiveLocalJob {
-            jobs: self,
+            jobs: Arc::clone(self),
             shutdown,
         })
     }
@@ -290,12 +291,12 @@ impl LocalJobs {
     }
 }
 
-struct ActiveLocalJob<'a> {
-    jobs: &'a LocalJobs,
+pub(super) struct ActiveLocalJob {
+    jobs: Arc<LocalJobs>,
     shutdown: watch::Receiver<Shutdown>,
 }
 
-impl ActiveLocalJob<'_> {
+impl ActiveLocalJob {
     async fn shutdown(&mut self) -> Shutdown {
         *self
             .shutdown
@@ -305,7 +306,7 @@ impl ActiveLocalJob<'_> {
     }
 }
 
-impl Drop for ActiveLocalJob<'_> {
+impl Drop for ActiveLocalJob {
     fn drop(&mut self) {
         let mut active = self.jobs.active.lock().expect("active local jobs");
         *active -= 1;
@@ -331,15 +332,23 @@ struct LocalJobState {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct LocalJobHandover {
     job: String,
+    wake: String,
     exec: JobExecHandover,
     state_fd: i32,
     log_fd: i32,
 }
 
 impl LocalJobHandover {
-    pub(crate) fn new(job: String, exec: JobExecHandover, state_fd: i32, log_fd: i32) -> Self {
+    pub(crate) fn new(
+        job: String,
+        wake: String,
+        exec: JobExecHandover,
+        state_fd: i32,
+        log_fd: i32,
+    ) -> Self {
         Self {
             job,
+            wake,
             exec,
             state_fd,
             log_fd,
@@ -348,6 +357,10 @@ impl LocalJobHandover {
 
     pub(crate) fn id(&self) -> &str {
         &self.job
+    }
+
+    pub(crate) fn wake_id(&self) -> &str {
+        &self.wake
     }
 
     pub(crate) fn pid(&self) -> Option<u32> {

@@ -857,6 +857,7 @@ pub(crate) fn hand_over_watched(watched: Vec<crate::runtime::state::WatchedProce
 
 pub(crate) fn hand_over_local_job(
     job_id: String,
+    wake_id: String,
     exec: crate::room_exec::JobExecHandover,
     pipes: Vec<OwnedFd>,
     guard: Option<crate::room_exec::JobExecGuard>,
@@ -870,6 +871,7 @@ pub(crate) fn hand_over_local_job(
         .ok_or_else(|| std::io::Error::other("the kernel reload is no longer prepared"))?;
     prepared.handover.local_jobs.push(LocalJobHandover::new(
         job_id,
+        wake_id,
         exec,
         state.as_raw_fd(),
         log.as_raw_fd(),
@@ -879,6 +881,13 @@ pub(crate) fn hand_over_local_job(
     prepared.masters.push(log);
     prepared.local_job_guards.extend(guard);
     Ok(())
+}
+
+pub(crate) fn local_job_wakes() -> Vec<String> {
+    lock(&RECEIVED_LOCAL_JOBS)
+        .iter()
+        .map(|job| job.wake_id().to_string())
+        .collect()
 }
 
 pub(crate) fn take_local_job(id: &str) -> Option<LocalJobHandover> {

@@ -27,6 +27,10 @@ fn a_local_job_completes_once_with_its_output_after_two_hot_reloads() {
             ("CHARIOX_CODEX_BIN", codex),
             ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
             ("CODEX_HOME", scratch.join("codex-home")),
+            (
+                "CHARIOX_WAKE_SCHEDULER_STALL_FILE",
+                scratch.join("wake-stall"),
+            ),
         ],
     );
     tokio::runtime::Builder::new_current_thread()
@@ -104,6 +108,9 @@ async fn local_job_drill(kernel: &Kernel, record: &Path) {
     assert_eq!(wake["fire_count"], 0, "{wake}");
 
     std::fs::write(record.join("swap"), "").unwrap();
+    // A second reload can arrive before the successor's wake scheduler runs.
+    let wake_stall = kernel.scratch.join("wake-stall");
+    std::fs::write(&wake_stall, "").unwrap();
     for round in 1..=2 {
         let installed = kernel.scratch.join("bin/chariox-kernel");
         install(
@@ -134,6 +141,7 @@ async fn local_job_drill(kernel: &Kernel, record: &Path) {
         );
     }
 
+    std::fs::remove_file(wake_stall).unwrap();
     std::fs::write(project.join("finish"), "").unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut poll = 0;

@@ -70,7 +70,7 @@ pub(super) struct JobDriver {
     router: std::sync::OnceLock<std::sync::Weak<crate::runtime::router::CommandRouter>>,
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
-    local: local::LocalJobs,
+    local: Arc<local::LocalJobs>,
     remote_requested: std::sync::Mutex<BTreeSet<String>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
     remote_samples:
