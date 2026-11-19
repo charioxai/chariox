@@ -432,8 +432,11 @@ fn apply_claude_turn_stall_policy(
         .action(Instant::now(), claude_turn_stall_timeout())
     {
         ClaudeTurnStallAction::Wait => Ok(()),
-        ClaudeTurnStallAction::Restart => retry_stalled_claude_turn(run, state, batch),
-        ClaudeTurnStallAction::Fail => {
+        // A turn Claude started on its own has no prompt to send again.
+        ClaudeTurnStallAction::Restart if state.active_prompt_message.is_some() => {
+            retry_stalled_claude_turn(run, state, batch)
+        }
+        ClaudeTurnStallAction::Restart | ClaudeTurnStallAction::Fail => {
             stop_child(&mut state.child);
             clear_active_claude_turn(state);
             batch.terminal_failure = Some(

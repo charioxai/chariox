@@ -39,6 +39,13 @@ fn apply_system_message(
     {
         record_claude_session_id(state, batch, session_id);
     }
+    if starts_claudes_own_turn(state, value) {
+        state.active_turn_id = Some(format!("turn-{}", state.next_turn_number));
+        state.next_turn_number += 1;
+        state.turn_watchdog.begin(std::time::Instant::now());
+        state.tool_transcript.clear();
+        batch.provider_turn_started = true;
+    }
     if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
         // The summary replaces the history that held the run base.
         state.delivered_hidden_base = None;
@@ -456,6 +463,17 @@ fn apply_result_message(
         );
     }
     complete_claude_turn(state, batch);
+}
+
+/// Claude opens every turn with `system/init`; one that names no user message is a turn Claude
+/// started on its own (it reports a finished background command), not the answer to a prompt.
+fn starts_claudes_own_turn(state: &ClaudeRuntimeState, value: &Value) -> bool {
+    state.active_turn_id.is_none()
+        && value.get("subtype").and_then(Value::as_str) == Some("init")
+        && value
+            .get("user_message_uuids")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
 }
 
 /// Claude also runs turns no Chariox prompt asked for, such as the one that

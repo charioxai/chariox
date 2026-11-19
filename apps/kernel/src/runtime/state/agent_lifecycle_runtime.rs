@@ -776,11 +776,11 @@ impl KernelRuntimeState {
             },
         })
     }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
-    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
-    /// no longer the active prompt, settle its task definitively. The person drives the provider
-    /// TUI, so there is no completion-check turn.
-    pub(super) async fn settle_finished_native_tui_turn(
+    /// Claude native-bridge turns (native TUI and headless) end at the provider Stop event, which
+    /// completes the prompt without the managed-provider settlement. Each output pass remembers
+    /// the turn the run is on; once it is no longer the active prompt, settle its task at once, so
+    /// the supervision sweep never finds a finished turn Working and ends it as interrupted.
+    pub(super) async fn settle_finished_native_bridge_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
@@ -798,7 +798,7 @@ impl KernelRuntimeState {
         let finished = {
             let mut turns = self
                 .owned
-                .native_tui_turns
+                .native_bridge_turns
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous = turns
@@ -832,7 +832,7 @@ impl KernelRuntimeState {
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
-                "native TUI task settlement retained for sweep",
+                "native bridge task settlement retained for sweep",
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
@@ -1651,8 +1651,12 @@ impl KernelRuntimeState {
                 // it instead of blocking an answered task.
                 match self.owned.settle_answered_unsettled_turn(&task) {
                     Ok(Some(settlement)) => {
-                        tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
-                            "MP-08/MP-09/MP-10/MP-11 A03: supervisor assessed an answered turn whose end was never settled");
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "supervision sweep settled an answered turn whose end was never settled",
+                            serde_json::json!({"room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                                "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id}),
+                        );
                         let source = crate::session::PromptQueueItem::new(
                             task.prompt_id.clone(),
                             "kernel-supervisor",
@@ -1665,15 +1669,26 @@ impl KernelRuntimeState {
                         continue;
                     }
                     Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: unsettled turn assessment failed; blocking")
-                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "unsettled turn assessment failed; ending the turn as interrupted",
+                        serde_json::json!({"task_id": task.task_id, "prompt_id": task.prompt_id,
+                            "error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                    ),
                 }
                 if let Some(ended) = ledger::end_failed_turn(
                     &self.owned.durable_state_store,
                     &task,
                     "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
                 )? {
+                    // The sweep found no live executor for a Working turn and no answer to settle it with.
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep ended a turn with no live executor as interrupted",
+                        serde_json::json!({"room_id": ended.room_id, "agent_id": ended.agent_id, "task_id": ended.task_id,
+                            "prompt_id": ended.prompt_id, "provider_run_id": ended.provider_run_id,
+                            "state": ended.state, "last_progress_at_ms": task.last_progress_at_ms}),
+                    );
                     blocked.push(ended);
                 }
             }

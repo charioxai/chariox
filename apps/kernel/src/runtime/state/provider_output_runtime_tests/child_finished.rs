@@ -692,6 +692,69 @@ async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     assert!(events[0].urgent);
 }
 
+/// Case H: the owner's cancel of a child's card reached the parent as `child_finished`
+/// "cancelled" with an empty reason; every cancel outcome says why.
+#[tokio::test]
+async fn a_cancelled_childs_finish_says_why() {
+    let team = team_with("child-finished-cancel-reason", None, false).await;
+    let Outcome::Task(cancelled) = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::CancelTask {
+            task: team.task.task_id.clone(),
+            owner: "local".into(),
+            revision: team.task.revision,
+        })
+        .unwrap()
+    else {
+        panic!("cancelled")
+    };
+    assert!(!cancelled.reason.is_empty());
+    team.runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    team.runtime
+        .finish_agent_task_settlement(Some((cancelled.clone(), false)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
+    assert_eq!(
+        events[0].payload["outcome"]["reason"],
+        cancelled.reason.as_str(),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_child_turn_cancelled_by_its_provider_says_why() {
+    let team = team("child-finished-turn-cancel-reason", true, false).await;
+    assert_eq!(
+        team.task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+    );
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let reason = events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!reason.is_empty(), "{events:?}");
+}
+
 async fn end_kid(family: &Family, kid: &Kid) {
     let store = &family.runtime.owned.durable_state_store;
     let Outcome::Settled { task, correction } = store
