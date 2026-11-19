@@ -234,8 +234,8 @@ pub(super) fn prepare_claude_native_tui_files(
         "hooks": {
             "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "UserPromptSubmit": [{ "hooks": prompt_hooks }],
-            // The start of a compaction, so the row shows it running; its end is the summary in the transcript.
             "PreCompact": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
+            "PostCompact": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -382,7 +382,7 @@ mod tests {
     use crate::error::DaemonError;
 
     #[test]
-    fn claude_stop_failure_hook_preserves_error_fields() {
+    fn claude_native_compaction_hooks_preserve_prompt_ids_and_payload_fields() {
         let request = LaunchProviderRequest::new(
             "session-1",
             "claude",
@@ -391,50 +391,55 @@ mod tests {
             "sonnet",
         );
         let native = prepare_claude_native_tui_files(&request).unwrap();
-        let input = serde_json::json!({
-            "hook_event_name": "StopFailure",
-            "error": "rate_limit",
-            "error_details": "429 Too Many Requests",
-            "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
-        });
-        let mut child = crate::process_spawn::command("node")
-            .arg(
-                native
-                    .events_file
-                    .parent()
-                    .unwrap()
-                    .join("hook-handler.mjs"),
-            )
-            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let recorded: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&native.events_file).unwrap()).unwrap();
-        for key in [
-            "hook_event_name",
-            "error",
-            "error_details",
-            "last_assistant_message",
-        ] {
-            assert_eq!(
-                recorded[key], input[key],
-                "{key} must reach the native failure bridge"
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&native.settings_file).unwrap()).unwrap();
+        let inputs = [
+            serde_json::json!({"hook_event_name": "PreCompact", "prompt_id": "claude-first"}),
+            serde_json::json!({
+                "hook_event_name": "PostCompact",
+                "prompt_id": "claude-first",
+                "compact_summary": "Summary from Claude."
+            }),
+            serde_json::json!({
+                "hook_event_name": "StopFailure",
+                "prompt_id": "claude-next",
+                "error": "rate_limit",
+                "error_details": "429 Too Many Requests",
+                "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
+            }),
+        ];
+        for input in &inputs {
+            let event_name = input["hook_event_name"].as_str().unwrap();
+            let command = settings["hooks"][event_name][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            let mut child = crate::process_spawn::command("sh")
+                .args(["-c", command])
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.to_string().as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
             );
+        }
+        let raw = fs::read_to_string(&native.events_file).unwrap();
+        let records = raw.lines().collect::<Vec<_>>();
+        assert_eq!(records.len(), inputs.len());
+        for (record, input) in records.into_iter().zip(inputs) {
+            let record: serde_json::Value = serde_json::from_str(record).unwrap();
+            for (key, value) in input.as_object().unwrap() {
+                assert_eq!(&record[key], value, "{key} must reach the native bridge");
+            }
         }
     }
 

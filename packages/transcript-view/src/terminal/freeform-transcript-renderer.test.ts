@@ -1,9 +1,35 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { providerTranscriptRoleForKind } from "@chariox/kernel-client/transcript-kind-role"
 import { renderMarkdownHtml, renderMarkdownInlineHtml } from "../markdown/markdown-renderer.js"
 import { renderFreeformMessage, renderFreeformTranscriptEntry } from "./freeform-transcript-renderer.js"
 import { renderPatchFilesDiffHtml } from "../markdown/diff-render.js"
 import type { TerminalOutputEntry } from "./runtime-state.js"
+
+test("native compaction states render as product text through the shared transcript renderer", () => {
+  const render = (payload: object) => renderFreeformTranscriptEntry({
+    key: "compaction:1",
+    role: providerTranscriptRoleForKind("context_compacted"),
+    agentId: "a",
+    text: JSON.stringify(payload),
+  })
+
+  const running = render({ state: "running", started_at_ms: Date.now() - 3_000 })
+  assert.match(running, /Compacting context…/)
+  assert.match(running, /<time[^>]*>\d+s<\/time>/)
+
+  const done = render({ state: "done", summary: "Kept <plan>." })
+  assert.match(done, /<details[^>]*>\s*<summary>Context compacted/)
+  assert.match(done, /Kept &lt;plan&gt;\./)
+  assert.match(render({ state: "done", summary: "" }), /Summary unavailable/)
+
+  const failed = render({ state: "failed", reason: "Claude rejected <request>." })
+  assert.match(failed, /Context compaction failed/)
+  assert.match(failed, /Claude rejected &lt;request&gt;\./)
+  for (const html of [running, done, failed]) {
+    assert.doesNotMatch(html, /(?:&quot;|")state(?:&quot;|")/)
+  }
+})
 
 // MP-08: a pane that cannot draw the page a visualize line names shows one calm line instead of raw JSON.
 test("a reply ending in a visualize line names the page, while a fenced one stays code", () => {

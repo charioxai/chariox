@@ -102,14 +102,16 @@ fn native_stop_failure_settles_only_its_compaction_row() {
         .to_string(),
     )
     .unwrap();
-    ProviderOutputClaudeNativeBridge::new(&mut app)
-        .drain_claude_transcript(
-            session.id(),
-            run.id(),
-            context_file.to_str().unwrap(),
-            transcript_path.to_str().unwrap(),
-        )
-        .unwrap();
+    process_event(
+        &mut app,
+        &serde_json::json!({
+            "hook_event_name": "PostCompact",
+            "prompt_id": "next-prompt",
+            "transcript_path": transcript_path,
+            "compact_summary": "A later summary."
+        })
+        .to_string(),
+    );
     let finished = app.terminal().output_records();
     assert_eq!(&finished[..after.len()], after);
     assert_eq!(finished.len(), after.len() + 2);
