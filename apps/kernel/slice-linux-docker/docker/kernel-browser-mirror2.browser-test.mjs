@@ -1181,6 +1181,14 @@ for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer gets each src
     assert.deepEqual(await settleImages(next, imageViews(await next(), ['x', 'w', 'p']), expected), expected);
   }, DENSITY_ROUTES, { device_scale_factor: scale }));
 
+// Chrome picks the lowest candidate density at or above the screen's, else the highest: it no longer steps down to the
+// candidate below when their geometric mean exceeds the screen's density (Chrome 155: `1.5x, 3x` at 2 draws the 3x).
+test("MP-10: a density-2 viewer gets the lowest candidate at or above 2, as Chrome picks it", () => mirrored(
+  `<img id="x" srcset="/one.svg 1.5x, /two.svg 3x">`, async ({ next }) => {
+    const expected = [['x', '0000ff', '3']];
+    assert.deepEqual(await settleImages(next, imageViews(await next(), ['x']), expected), expected);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+
 // A srcset change re-picks at the viewer's density: the new candidate's key travels with its density.
 test("MP-10: a srcset change at viewer density 2 sends the new density-2 candidate and its density", () => mirrored(
   `<img id="x" src="/one.svg" width="30" height="40">`, async ({ next, evaluate }) => {

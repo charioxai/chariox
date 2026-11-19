@@ -527,7 +527,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return css;
     };
-    // Blink's pick: the lowest density at or above the screen's, or the one below when their geometric mean exceeds it.
+    // Blink's pick, as for image-set(): the lowest density at or above the screen's, else the highest.
     // The page's own candidate (and its density) travels until the viewer's has loaded.
     const imageChoice = node => {
       const candidates = imageCandidates(node), own = node.currentSrc || node.src;
@@ -537,9 +537,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const target = viewerDensity || node.ownerDocument.defaultView.devicePixelRatio;
       if (target === node.ownerDocument.defaultView.devicePixelRatio) return current;
       const sorted = candidates.sort((a, b) => a.density - b.density);
-      let at = sorted.findIndex(entry => entry.density >= target); if (at < 0) at = sorted.length - 1;
-      if (at > 0 && Math.sqrt(sorted[at - 1].density * sorted[at].density) > target) at--;
-      const pick = sorted[at], url = resolve(pick);
+      const pick = sorted.find(entry => entry.density >= target) ?? sorted.at(-1), url = resolve(pick);
       if (!url || url === own) return url ? { url: own, density: pick.density } : current;
       return node.complete && node.naturalWidth > 0 && viewerLoaded(node, url) ? pick : current;
     };
