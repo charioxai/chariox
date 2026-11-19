@@ -1,16 +1,30 @@
-//! The machines agents acquired without asking the owner: each one's class, rate, start and end.
-//! A row is held before the request reaches the service, so the owner's limit on machines at the
-//! same time is one compare-and-set; the decision is in `runtime/state/machine_acquisition/without_asking.rs`.
-use rusqlite::{params, Connection, Transaction};
+//! The machines agents acquired without asking the owner: one row per agent request, with its
+//! class, rate, start and end. Every write is a compare-and-set on the row's state, so concurrent
+//! requests, a lost answer, a cancel and a stale list can never move a row the wrong way; the
+//! decisions are in `runtime/state/machine_acquisition/without_asking.rs`.
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
+/// Where one acquisition is in its life. A row is created `Pending` and leaves the ledger only
+/// while pending, when it is certain no machine exists.
+///
+/// | state | counts toward the maximum | costs | moves to, on |
+/// |---|---|---|---|
+/// | (none) | | | `Pending`: admitted while fewer than the maximum rows are live. A retry of the same request finds its row and takes no new place. |
+/// | `Pending` | yes | from its start | `Running`: the service accepted it (also when a retry or job cleanup learns the answer). Removed: the service refused it, it was never sent, or job cleanup confirmed no machine exists. An uncertain answer leaves it pending. |
+/// | `Running` | yes | yes | `Deleting`: the service says it is being deleted. `Ended`: the service confirms it deleted, or a list sent while it was running no longer has it. |
+/// | `Deleting` | yes | yes | `Ended`, as from `Running`. |
+/// | `Ended` | no | until its end | nothing. |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcquiredState {
-    /// Admitted against the limit; the service has not accepted it yet.
-    Held,
+    /// Sent to the service; its answer is not known yet: in flight, lost, or the kernel restarted.
+    Pending,
     Running {
+        allocation_ref: String,
+    },
+    Deleting {
         allocation_ref: String,
     },
     Ended {
@@ -19,36 +33,57 @@ pub(crate) enum AcquiredState {
     },
 }
 
+impl AcquiredState {
+    /// Whether the machine may exist and be charged, so it holds a place.
+    pub(crate) fn is_live(&self) -> bool {
+        !matches!(self, Self::Ended { .. })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AcquiredMachine {
-    /// The request's decision id, so a retry of the same request finds its row.
-    pub(crate) id: String,
-    pub(crate) room_id: String,
+    /// The agent and its request_id: a retry of the same request finds this row.
     pub(crate) agent_id: String,
+    pub(crate) request_id: String,
+    /// The job whose machine this is, so its cleanup can settle the row.
+    pub(crate) job_ref: Option<String>,
+    pub(crate) room_id: String,
     pub(crate) class_id: String,
     pub(crate) rate_micros: u64,
     pub(crate) currency: String,
+    /// When the request was sent: an uncertain answer may hide a machine charged from then.
     pub(crate) started_ms: u64,
     pub(crate) state: AcquiredState,
 }
 
+/// The row a write names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AcquisitionKey {
+    Request {
+        agent_id: String,
+        request_id: String,
+    },
+    Job(String),
+}
+
 #[derive(Debug)]
 pub(crate) enum AcquiredMachineWrite {
-    /// Inserts `machine` as held while fewer than `max_live` rows are held or running.
-    Hold {
+    /// Inserts `machine` as pending while fewer than `max_live` rows are live.
+    Admit {
         machine: AcquiredMachine,
         max_live: u32,
     },
-    /// A held row the service accepted starts now, unless its allocation is already recorded (the
-    /// service replayed an earlier request): one machine is one row.
-    Start {
-        id: String,
+    /// A pending row the service accepted runs. When the allocation is already another row's (the
+    /// service replayed an earlier request), this row leaves instead: one machine is one row.
+    Accept {
+        key: AcquisitionKey,
         allocation_ref: String,
-        started_ms: u64,
     },
-    /// A held row the service refused leaves the ledger.
-    Drop { id: String },
-    /// A running allocation ended.
+    /// A pending row for which no machine exists leaves the ledger.
+    Remove { key: AcquisitionKey },
+    /// A running allocation is being deleted.
+    Deleting { allocation_ref: String },
+    /// A running or deleting allocation's deletion is confirmed.
     End {
         allocation_ref: String,
         ended_ms: u64,
@@ -58,66 +93,98 @@ pub(crate) enum AcquiredMachineWrite {
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS durable_acquired_machines (
-            id TEXT PRIMARY KEY NOT NULL,
-            room_id TEXT NOT NULL, agent_id TEXT NOT NULL, class_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL, request_id TEXT NOT NULL, job_ref TEXT UNIQUE,
+            room_id TEXT NOT NULL, class_id TEXT NOT NULL,
             rate_micros INTEGER NOT NULL, currency TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('held', 'running', 'ended')),
-            allocation_ref TEXT CHECK ((state = 'held') = (allocation_ref IS NULL)),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'deleting', 'ended')),
+            allocation_ref TEXT UNIQUE CHECK ((state = 'pending') = (allocation_ref IS NULL)),
             started_ms INTEGER NOT NULL,
-            ended_ms INTEGER CHECK ((state = 'ended') = (ended_ms IS NOT NULL))
+            ended_ms INTEGER CHECK ((state = 'ended') = (ended_ms IS NOT NULL)),
+            PRIMARY KEY (agent_id, request_id)
         );",
     )
 }
 
+const COLUMNS: &str = "agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency,
+    state, allocation_ref, started_ms, ended_ms";
+
+fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcquiredMachine> {
+    let state = match (
+        row.get::<_, String>(7)?.as_str(),
+        row.get::<_, Option<String>>(8)?,
+        row.get::<_, Option<i64>>(10)?,
+    ) {
+        ("pending", None, None) => AcquiredState::Pending,
+        ("running", Some(allocation_ref), None) => AcquiredState::Running { allocation_ref },
+        ("deleting", Some(allocation_ref), None) => AcquiredState::Deleting { allocation_ref },
+        ("ended", Some(allocation_ref), Some(ended_ms)) => AcquiredState::Ended {
+            allocation_ref,
+            ended_ms: ended_ms as u64,
+        },
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(AcquiredMachine {
+        agent_id: row.get(0)?,
+        request_id: row.get(1)?,
+        job_ref: row.get(2)?,
+        room_id: row.get(3)?,
+        class_id: row.get(4)?,
+        rate_micros: row.get::<_, i64>(5)? as u64,
+        currency: row.get(6)?,
+        started_ms: row.get::<_, i64>(9)? as u64,
+        state,
+    })
+}
+
 impl DurableKernelStateStore {
-    /// Every machine that is held or running, and every one that ended at or after `ended_since_ms`.
+    /// Every live machine, and every one that ended at or after `ended_since_ms`.
     pub(crate) fn acquired_machines(
         &self,
         ended_since_ms: u64,
     ) -> Result<Vec<AcquiredMachine>, DaemonError> {
         let connection = self.lock_connection("acquired_machines.read")?;
         let mut statement = connection
-            .prepare(
-                "SELECT id, room_id, agent_id, class_id, rate_micros, currency, state, allocation_ref,
-                    started_ms, ended_ms
-                FROM durable_acquired_machines WHERE state != 'ended' OR ended_ms >= ?1
-                ORDER BY started_ms, id",
-            )
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM durable_acquired_machines
+                WHERE state != 'ended' OR ended_ms >= ?1 ORDER BY started_ms, agent_id, request_id"
+            ))
             .map_err(|error| state_error(error.to_string()))?;
         let rows = statement
-            .query_map(params![ended_since_ms as i64], |row| {
-                let state = match (
-                    row.get::<_, String>(6)?.as_str(),
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<i64>>(9)?,
-                ) {
-                    ("held", None, None) => AcquiredState::Held,
-                    ("running", Some(allocation_ref), None) => {
-                        AcquiredState::Running { allocation_ref }
-                    }
-                    ("ended", Some(allocation_ref), Some(ended_ms)) => AcquiredState::Ended {
-                        allocation_ref,
-                        ended_ms: ended_ms as u64,
-                    },
-                    _ => return Err(rusqlite::Error::InvalidQuery),
-                };
-                Ok(AcquiredMachine {
-                    id: row.get(0)?,
-                    room_id: row.get(1)?,
-                    agent_id: row.get(2)?,
-                    class_id: row.get(3)?,
-                    rate_micros: row.get::<_, i64>(4)? as u64,
-                    currency: row.get(5)?,
-                    started_ms: row.get::<_, i64>(8)? as u64,
-                    state,
-                })
-            })
+            .query_map(params![ended_since_ms as i64], read_row)
             .map_err(|error| state_error(error.to_string()))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|error| state_error(error.to_string()))
     }
 
-    /// Applies `write` when the ledger is in the state it expects; false when it is not.
+    /// The row of one agent request, or of the machine `allocation_ref`.
+    pub(crate) fn acquired_machine(
+        &self,
+        find: AcquiredMachineLookup<'_>,
+    ) -> Result<Option<AcquiredMachine>, DaemonError> {
+        let connection = self.lock_connection("acquired_machines.read")?;
+        let (filter, values): (&str, Vec<&str>) = match find {
+            AcquiredMachineLookup::Request {
+                agent_id,
+                request_id,
+            } => (
+                "agent_id = ?1 AND request_id = ?2",
+                vec![agent_id, request_id],
+            ),
+            AcquiredMachineLookup::Allocation(allocation_ref) => {
+                ("allocation_ref = ?1", vec![allocation_ref])
+            }
+        };
+        connection
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM durable_acquired_machines WHERE {filter}"),
+                rusqlite::params_from_iter(values),
+                read_row,
+            )
+            .optional()
+            .map_err(|error| state_error(error.to_string()))
+    }
+
+    /// Applies `write` when the row is in the state it expects; false when it is not.
     pub(crate) fn write_acquired_machine(
         &self,
         write: AcquiredMachineWrite,
@@ -128,21 +195,52 @@ impl DurableKernelStateStore {
     }
 }
 
+/// How to find one row.
+pub(crate) enum AcquiredMachineLookup<'a> {
+    Request {
+        agent_id: &'a str,
+        request_id: &'a str,
+    },
+    Allocation(&'a str),
+}
+
+/// The (agent_id, request_id) of the row `key` names, if it exists.
+fn resolve(
+    transaction: &Transaction<'_>,
+    key: &AcquisitionKey,
+) -> rusqlite::Result<Option<(String, String)>> {
+    match key {
+        AcquisitionKey::Request {
+            agent_id,
+            request_id,
+        } => Ok(Some((agent_id.clone(), request_id.clone()))),
+        AcquisitionKey::Job(job_ref) => transaction
+            .query_row(
+                "SELECT agent_id, request_id FROM durable_acquired_machines WHERE job_ref = ?1",
+                params![job_ref],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional(),
+    }
+}
+
 pub(super) fn apply(
     transaction: &Transaction<'_>,
     write: &AcquiredMachineWrite,
 ) -> rusqlite::Result<u64> {
     let changed = match write {
-        AcquiredMachineWrite::Hold { machine, max_live } => transaction.execute(
+        AcquiredMachineWrite::Admit { machine, max_live } => transaction.execute(
             "INSERT INTO durable_acquired_machines
-                (id, room_id, agent_id, class_id, rate_micros, currency, state, started_ms)
-            SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'held', ?7
-            WHERE (SELECT COUNT(*) FROM durable_acquired_machines WHERE state != 'ended') < ?8
-            ON CONFLICT (id) DO NOTHING",
+                (agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency, state,
+                    started_ms)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8
+            WHERE (SELECT COUNT(*) FROM durable_acquired_machines WHERE state != 'ended') < ?9
+            ON CONFLICT DO NOTHING",
             params![
-                machine.id,
-                machine.room_id,
                 machine.agent_id,
+                machine.request_id,
+                machine.job_ref,
+                machine.room_id,
                 machine.class_id,
                 machine.rate_micros as i64,
                 machine.currency,
@@ -150,27 +248,49 @@ pub(super) fn apply(
                 max_live
             ],
         )?,
-        AcquiredMachineWrite::Start {
-            id,
+        AcquiredMachineWrite::Accept {
+            key,
             allocation_ref,
-            started_ms,
-        } => transaction.execute(
-            "UPDATE durable_acquired_machines
-            SET state = 'running', allocation_ref = ?2, started_ms = ?3
-            WHERE id = ?1 AND state = 'held'
-                AND NOT EXISTS (SELECT 1 FROM durable_acquired_machines WHERE allocation_ref = ?2)",
-            params![id, allocation_ref, *started_ms as i64],
-        )?,
-        AcquiredMachineWrite::Drop { id } => transaction.execute(
-            "DELETE FROM durable_acquired_machines WHERE id = ?1 AND state = 'held'",
-            params![id],
+        } => {
+            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
+                return Ok(0);
+            };
+            let started = transaction.execute(
+                "UPDATE durable_acquired_machines SET state = 'running', allocation_ref = ?3
+                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'
+                    AND NOT EXISTS (SELECT 1 FROM durable_acquired_machines WHERE allocation_ref = ?3)",
+                params![agent_id, request_id, allocation_ref],
+            )?;
+            if started == 0 {
+                transaction.execute(
+                    "DELETE FROM durable_acquired_machines
+                    WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                    params![agent_id, request_id],
+                )?;
+            }
+            started
+        }
+        AcquiredMachineWrite::Remove { key } => {
+            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
+                return Ok(0);
+            };
+            transaction.execute(
+                "DELETE FROM durable_acquired_machines
+                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                params![agent_id, request_id],
+            )?
+        }
+        AcquiredMachineWrite::Deleting { allocation_ref } => transaction.execute(
+            "UPDATE durable_acquired_machines SET state = 'deleting'
+            WHERE allocation_ref = ?1 AND state = 'running'",
+            params![allocation_ref],
         )?,
         AcquiredMachineWrite::End {
             allocation_ref,
             ended_ms,
         } => transaction.execute(
             "UPDATE durable_acquired_machines SET state = 'ended', ended_ms = MAX(started_ms, ?2)
-            WHERE allocation_ref = ?1 AND state = 'running'",
+            WHERE allocation_ref = ?1 AND state IN ('running', 'deleting')",
             params![allocation_ref, *ended_ms as i64],
         )?,
     };
@@ -188,90 +308,129 @@ fn state_error(message: String) -> DaemonError {
 mod tests {
     use super::*;
 
-    fn acquired_machine(id: &str) -> AcquiredMachine {
-        AcquiredMachine {
-            id: id.into(),
-            room_id: "room".into(),
+    fn request(request_id: &str) -> AcquisitionKey {
+        AcquisitionKey::Request {
             agent_id: "agent".into(),
-            class_id: "small".into(),
-            rate_micros: 1_000,
-            currency: "EUR".into(),
-            started_ms: 10,
-            state: AcquiredState::Held,
+            request_id: request_id.into(),
         }
     }
 
-    fn hold(store: &DurableKernelStateStore, id: &str) -> bool {
+    fn admit(store: &DurableKernelStateStore, request_id: &str, job_ref: Option<&str>) -> bool {
         store
-            .write_acquired_machine(AcquiredMachineWrite::Hold {
-                machine: acquired_machine(id),
+            .write_acquired_machine(AcquiredMachineWrite::Admit {
+                machine: AcquiredMachine {
+                    agent_id: "agent".into(),
+                    request_id: request_id.into(),
+                    job_ref: job_ref.map(str::to_owned),
+                    room_id: "room".into(),
+                    class_id: "small".into(),
+                    rate_micros: 1_000,
+                    currency: "EUR".into(),
+                    started_ms: 10,
+                    state: AcquiredState::Pending,
+                },
                 max_live: 2,
             })
             .unwrap()
     }
 
+    fn write(store: &DurableKernelStateStore, write: AcquiredMachineWrite) -> bool {
+        store.write_acquired_machine(write).unwrap()
+    }
+
+    fn state_of(store: &DurableKernelStateStore, request_id: &str) -> Option<AcquiredState> {
+        store
+            .acquired_machine(AcquiredMachineLookup::Request {
+                agent_id: "agent",
+                request_id,
+            })
+            .unwrap()
+            .map(|machine| machine.state)
+    }
+
     #[test]
-    fn the_limit_counts_held_and_running_rows_and_an_end_frees_a_place_after_a_restart() {
+    fn every_transition_is_a_compare_and_set_and_only_an_end_frees_a_place_after_a_restart() {
         let directory = crate::test_support::TestTempDir::new("acquired-machines");
         let path = directory.path().join("kernel.db");
         {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
-            assert!(hold(&store, "a"));
-            assert!(!hold(&store, "a"), "a retry holds no second place");
-            assert!(hold(&store, "b"));
-            assert!(!hold(&store, "c"), "two at the same time is the limit");
-            assert!(store
-                .write_acquired_machine(AcquiredMachineWrite::Start {
-                    id: "a".into(),
-                    allocation_ref: "alloc-a".into(),
-                    started_ms: 20,
-                })
-                .unwrap());
-            assert!(store
-                .write_acquired_machine(AcquiredMachineWrite::Drop { id: "b".into() })
-                .unwrap());
+            assert!(admit(&store, "a", None));
+            assert!(!admit(&store, "a", None), "a retry takes no second place");
+            assert!(admit(&store, "b", Some("job-b")));
             assert!(
-                !store
-                    .write_acquired_machine(AcquiredMachineWrite::Drop { id: "a".into() })
-                    .unwrap(),
-                "a started machine is never dropped"
+                !admit(&store, "c", None),
+                "two at the same time is the limit"
             );
+            let accept = |key, allocation_ref: &str| AcquiredMachineWrite::Accept {
+                key,
+                allocation_ref: allocation_ref.into(),
+            };
+            assert!(write(&store, accept(request("a"), "alloc-a")));
+            assert!(
+                !write(&store, accept(request("a"), "alloc-a")),
+                "accepted once"
+            );
+            assert!(
+                !write(&store, AcquiredMachineWrite::Remove { key: request("a") }),
+                "an accepted machine never leaves the ledger"
+            );
+            assert!(write(
+                &store,
+                AcquiredMachineWrite::Remove {
+                    key: AcquisitionKey::Job("job-b".into())
+                }
+            ));
+            assert!(write(
+                &store,
+                AcquiredMachineWrite::Deleting {
+                    allocation_ref: "alloc-a".into()
+                }
+            ));
         }
         let store = DurableKernelStateStore::open(path).unwrap();
-        assert!(hold(&store, "c"));
-        assert!(!hold(&store, "d"));
-        assert!(store
-            .write_acquired_machine(AcquiredMachineWrite::End {
+        assert!(admit(&store, "c", None));
+        assert!(
+            !admit(&store, "d", None),
+            "a deleting machine still holds its place"
+        );
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::End {
                 allocation_ref: "alloc-a".into(),
                 ended_ms: 80,
-            })
-            .unwrap());
-        assert!(hold(&store, "d"));
+            }
+        ));
+        assert!(!write(
+            &store,
+            AcquiredMachineWrite::Deleting {
+                allocation_ref: "alloc-a".into()
+            }
+        ));
+        assert!(admit(&store, "d", None));
         assert!(
-            !store
-                .write_acquired_machine(AcquiredMachineWrite::Start {
-                    id: "d".into(),
+            !write(
+                &store,
+                AcquiredMachineWrite::Accept {
+                    key: request("d"),
                     allocation_ref: "alloc-a".into(),
-                    started_ms: 90,
-                })
-                .unwrap(),
+                }
+            ),
             "a replayed allocation is not recorded twice"
         );
-        let acquired = store.acquired_machines(0).unwrap();
-        assert_eq!(acquired.len(), 3);
-        let ended = acquired.iter().find(|machine| machine.id == "a").unwrap();
+        assert_eq!(state_of(&store, "d"), None, "its row left the ledger");
         assert_eq!(
-            ended.state,
-            AcquiredState::Ended {
+            state_of(&store, "a"),
+            Some(AcquiredState::Ended {
                 allocation_ref: "alloc-a".into(),
                 ended_ms: 80
-            }
+            })
         );
-        assert_eq!(ended.started_ms, 20);
+        assert_eq!(state_of(&store, "c"), Some(AcquiredState::Pending));
+        assert_eq!(store.acquired_machines(0).unwrap().len(), 2);
         assert!(store
             .acquired_machines(81)
             .unwrap()
             .iter()
-            .all(|r| r.id != "a"));
+            .all(|machine| machine.request_id != "a"));
     }
 }

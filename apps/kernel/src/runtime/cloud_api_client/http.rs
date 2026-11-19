@@ -321,6 +321,14 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     Some(code.split(':').next().unwrap_or(code))
 }
 
+/// Whether the service answered with its own refusal (a client error naming its reason), so the
+/// request changed nothing there.
+pub(crate) fn cloud_error_is_refusal(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::LocalTransport { message, .. }
+        if message.starts_with("cloud relay request failed with 4"))
+        && cloud_error_code(error).is_some()
+}
+
 pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
     if let Some(code) = cloud_error_code(error) {
         match code {

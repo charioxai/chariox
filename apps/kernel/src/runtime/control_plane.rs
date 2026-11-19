@@ -59,8 +59,10 @@ pub(crate) async fn execute(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
-        // A machine acquired without asking that ended elsewhere frees its place before the limits apply.
-        if state.has_running_acquired_machines() {
+        // A machine acquired without asking that ended elsewhere frees its place before the limits
+        // apply. Only machines accepted before the list is sent are settled by it.
+        let expected = state.acquired_machines_to_reconcile();
+        if !expected.is_empty() {
             if let ControlPlaneResponse::Machines { machines, .. } =
                 crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
                     profile.api_url.clone(),
@@ -73,7 +75,7 @@ pub(crate) async fn execute(
                 )
                 .await?
             {
-                state.settle_ended_acquired_machines(&machines);
+                state.reconcile_acquired_machines(&expected, &machines);
             }
         }
         let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
@@ -121,38 +123,38 @@ pub(crate) async fn execute(
         })();
         if let crate::runtime::state::Approval::WithoutAsking(hold) = approval {
             if let Err(error) = still_allowed {
-                state.settle_acquisition_hold(hold, None);
+                state.withdraw_acquisition(hold);
                 return Err(error);
             }
             acquisition_hold = Some(hold);
         }
         still_allowed?;
     }
-    let sent = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+    let send = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
         cloud_request_body(&profile.account_id, credential, request),
-    )
-    .await;
-    if let Some(hold) = acquisition_hold {
-        let allocation_ref = match &sent {
-            Ok(ControlPlaneResponse::Machine { allocation_ref, .. }) => {
-                Some(allocation_ref.as_str())
-            }
-            _ => None,
-        };
-        state.settle_acquisition_hold(hold, allocation_ref);
-    }
-    // A machine acquired without asking ends when a release or a status read finds it going away.
-    if let (
-        Ok(ControlPlaneResponse::Machine { state: machine, .. }),
-        ControlPlaneRequest::Release { allocation_ref, .. }
-        | ControlPlaneRequest::Get { allocation_ref },
-    ) = (&sent, request)
-    {
-        if machine == "deleting" || machine == "deleted" {
-            state.end_acquired_machine(allocation_ref, crate::session::unix_epoch_ms());
+    );
+    let sent = match acquisition_hold {
+        // The service's answer settles the admitted request even when its caller is cancelled.
+        Some(hold) => {
+            let state = state.clone();
+            tokio::spawn(async move { state.settle_acquisition(hold, send.await) })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "control_plane.acquire",
+                    message: error.to_string(),
+                })?
         }
+        None => send.await,
+    };
+    if let Ok(ControlPlaneResponse::Machine {
+        allocation_ref,
+        state: machine,
+        ..
+    }) = &sent
+    {
+        state.observe_acquired_machine(allocation_ref, machine, crate::session::unix_epoch_ms());
     }
     let mut result = sent.map_err(
         |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {

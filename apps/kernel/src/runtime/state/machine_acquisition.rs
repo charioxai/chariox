@@ -11,7 +11,8 @@ use sha2::Digest;
 pub(crate) enum Approval {
     /// The person asked, the owner approved it, or the owner's /sudo covers it.
     Owner,
-    /// Within the owner's limits for acquiring without asking; the service's answer settles the hold.
+    /// Within the owner's limits for acquiring without asking, or a retry of a request admitted
+    /// before; the service's answer settles it (`settle_acquisition`).
     WithoutAsking(without_asking::AcquisitionHold),
 }
 
@@ -80,7 +81,6 @@ impl KernelRuntimeState {
             return Ok(Approval::Owner);
         }
         let outside_limits = match self.admit_without_asking(
-            &id,
             &room,
             agent.unwrap_or_default(),
             request,

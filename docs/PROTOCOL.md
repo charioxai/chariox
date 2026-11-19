@@ -7368,10 +7368,20 @@ for an allowed class, while fewer than the maximum machines acquired without ask
 today's cost of those machines is below the cap, goes ahead with no card. Each one is recorded in the
 kernel's ledger (class, rate per minute, start, end) and the agent's Room gets a notice when it starts
 (class, rate, how many run, today's cost) and when it ends (minutes and cost, by started minute at the
-service's rate). The place is held before the request reaches the service, so concurrent requests never
-exceed the maximum; a refused request frees it. A release ends the record; a machine that ended
-elsewhere is closed when the service no longer lists it as live. Outside the limits, or with no class
-named, the owner's ordinary card is raised and says why ("Asked because …").
+service's rate). Each record moves along one state table, every step a compare-and-set:
+
+| state | holds a place and costs | next |
+|---|---|---|
+| pending | yes, from the send | running when the service accepts it; removed when it refuses, the request was never sent, or a job's cleanup confirms no machine exists. A lost answer keeps it pending, and the agent is told to retry with the same request_id. |
+| running | yes | deleting when the service says so; ended when deletion is confirmed |
+| deleting | yes | ended when the service confirms deletion, or a list sent while it was running no longer has it |
+| ended | no | — |
+
+The place is taken before the request reaches the service, so concurrent requests never exceed the
+maximum. The request runs to the service's answer even when the agent's call is cancelled. A retry of a
+request already recorded (same agent and request_id) takes no new place and raises no card: the
+service replays its answer, which settles the same record. Outside the limits, or with no class named,
+the owner's ordinary card is raised and says why ("Asked because …").
 
 A card that closes without the owner's answer (nobody answered within its deadline, or the kernel
 withdrew it) refuses with `acquisition_unanswered`, names what closed it and says nothing was allocated

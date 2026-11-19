@@ -1,11 +1,12 @@
 //! The owner's setting "Agents may acquire machines without asking" and its limits. This is the one
 //! place that decides whether an agent's acquisition goes ahead without the owner's card, and it
 //! keeps the ledger of what went ahead: class, rate, start, end and cost, told in the agent's Room.
+//! Each answer the service gives moves the request's ledger row along `AcquiredState`.
 use super::*;
 use crate::durable_state::acquired_machines::{
-    AcquiredMachine, AcquiredMachineWrite, AcquiredState,
+    AcquiredMachine, AcquiredMachineLookup, AcquiredMachineWrite, AcquiredState, AcquisitionKey,
 };
-use crate::local::{ControlPlaneMachineRow, JobMachineRate};
+use crate::local::{ControlPlaneMachineRow, ControlPlaneResponse, JobMachineRate};
 
 const DAY_MS: u64 = 86_400_000;
 const MINUTE_MS: u64 = 60_000;
@@ -16,14 +17,25 @@ pub(crate) enum Admission {
     Off,
     /// Allowed, but this request is outside the owner's limits, for this reason.
     Outside(String),
-    /// Within the owner's limits: it holds one place in the ledger until the service answers.
+    /// Within the owner's limits, or a retry of a request admitted before: its ledger row holds its
+    /// place until the service's answer settles it.
     Within(AcquisitionHold),
 }
 
-/// One held place in the ledger. The service's answer starts or drops it.
+/// An admitted request on its way to the service; `settle_acquisition` applies the answer.
 #[derive(Debug)]
 pub(crate) struct AcquisitionHold {
-    id: String,
+    agent_id: String,
+    request_id: String,
+}
+
+impl AcquisitionHold {
+    fn key(&self) -> AcquisitionKey {
+        AcquisitionKey::Request {
+            agent_id: self.agent_id.clone(),
+            request_id: self.request_id.clone(),
+        }
+    }
 }
 
 /// What an agent's request would acquire, as the service's capability lists it.
@@ -97,7 +109,9 @@ fn requested<'a>(
 fn cost_micros(machine: &AcquiredMachine, from_ms: u64, until_ms: u64) -> u64 {
     let end = match &machine.state {
         AcquiredState::Ended { ended_ms, .. } => (*ended_ms).min(until_ms),
-        AcquiredState::Held | AcquiredState::Running { .. } => until_ms,
+        AcquiredState::Pending | AcquiredState::Running { .. } | AcquiredState::Deleting { .. } => {
+            until_ms
+        }
     };
     let start = machine.started_ms.max(from_ms);
     if end <= start {
@@ -120,15 +134,40 @@ fn amount(micros: u64, currency: &str) -> String {
 
 impl KernelRuntimeState {
     /// Decides whether the agent's acquisition goes ahead without the owner's card and, when it does,
-    /// holds its place in the ledger. Only the owner's settings decide; nothing an agent sends does.
+    /// admits it to the ledger. Only the owner's settings decide; nothing an agent sends does.
     pub(super) fn admit_without_asking(
         &self,
-        id: &str,
         room: &str,
         agent: &str,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
     ) -> Result<Admission, DaemonError> {
+        let (request_id, job_ref) = match request {
+            ControlPlaneRequest::Acquire { request_id, .. } => (request_id, None),
+            ControlPlaneRequest::AcquireJob {
+                request_id,
+                job_ref,
+                ..
+            } => (request_id, Some(job_ref)),
+            _ => return Ok(Admission::Off),
+        };
+        let hold = AcquisitionHold {
+            agent_id: agent.into(),
+            request_id: request_id.clone(),
+        };
+        // A retry of a request admitted before takes no new place and is never asked again: the
+        // service replays its answer, which settles the same row.
+        if self
+            .owned
+            .durable_state_store
+            .acquired_machine(AcquiredMachineLookup::Request {
+                agent_id: agent,
+                request_id,
+            })?
+            .is_some()
+        {
+            return Ok(Admission::Within(hold));
+        }
         let settings = self.owned.config_projection.snapshot().user_config.agents;
         if settings.offload_without_asking != Some(true) {
             return Ok(Admission::Off);
@@ -159,13 +198,6 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let day = now - now % DAY_MS;
         let acquired = self.owned.durable_state_store.acquired_machines(day)?;
-        if acquired
-            .iter()
-            .any(|machine| machine.id == id && machine.state == AcquiredState::Held)
-        {
-            // A retry of a request whose first try is still unanswered keeps its place.
-            return Ok(Admission::Within(AcquisitionHold { id: id.into() }));
-        }
         let max = settings
             .offload_max_machines
             .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES);
@@ -182,73 +214,151 @@ impl KernelRuntimeState {
                 )));
             }
         }
-        let held =
+        let admitted =
             self.owned
                 .durable_state_store
-                .write_acquired_machine(AcquiredMachineWrite::Hold {
+                .write_acquired_machine(AcquiredMachineWrite::Admit {
                     machine: AcquiredMachine {
-                        id: id.into(),
-                        room_id: room.into(),
                         agent_id: agent.into(),
+                        request_id: request_id.clone(),
+                        job_ref: job_ref.cloned(),
+                        room_id: room.into(),
                         class_id: requested.class_id.into(),
                         rate_micros: requested.rate.amount_micros,
                         currency: requested.rate.currency.clone(),
                         started_ms: now,
-                        state: AcquiredState::Held,
+                        state: AcquiredState::Pending,
                     },
                     max_live: max,
                 })?;
-        if !held {
+        if !admitted {
             return Ok(Admission::Outside(format!(
                 "the most machines acquired without asking at the same time ({max}) are already running"
             )));
         }
-        Ok(Admission::Within(AcquisitionHold { id: id.into() }))
+        Ok(Admission::Within(hold))
     }
 
-    /// The service answered a held acquisition: accepted, it runs from now and the Room is told;
-    /// refused, its place is free again.
-    pub(crate) fn settle_acquisition_hold(
+    /// Applies the service's answer to an admitted request. Accepted, the machine runs and the Room
+    /// is told; refused, its place is free again. Any other end leaves it pending, so a machine the
+    /// service may have created keeps its place and its cost, and the agent is told to retry.
+    pub(crate) fn settle_acquisition(
         &self,
         hold: AcquisitionHold,
-        allocation_ref: Option<&str>,
-    ) {
-        let now = crate::session::unix_epoch_ms();
-        let write = match allocation_ref {
-            Some(allocation_ref) => AcquiredMachineWrite::Start {
-                id: hold.id.clone(),
-                allocation_ref: allocation_ref.into(),
-                started_ms: now,
-            },
-            None => AcquiredMachineWrite::Drop {
-                id: hold.id.clone(),
-            },
-        };
-        let store = &self.owned.durable_state_store;
-        // A replayed request whose machine is already recorded frees this place.
-        let started = store.write_acquired_machine(write).and_then(|started| {
-            if !started && allocation_ref.is_some() {
-                store.write_acquired_machine(AcquiredMachineWrite::Drop {
-                    id: hold.id.clone(),
-                })?;
+        sent: Result<ControlPlaneResponse, DaemonError>,
+    ) -> Result<ControlPlaneResponse, DaemonError> {
+        match &sent {
+            Ok(ControlPlaneResponse::Machine { allocation_ref, .. }) => {
+                self.accept_acquired_machine(hold.key(), allocation_ref);
             }
-            Ok(started)
-        });
-        match started {
-            Ok(true) if allocation_ref.is_some() => {}
-            Ok(_) => return,
+            Err(error) if crate::runtime::cloud_api_client::cloud_error_is_refusal(error) => {
+                self.record_acquired_machine(AcquiredMachineWrite::Remove { key: hold.key() });
+            }
+            Ok(_) => {}
             Err(error) => {
-                crate::logging::error_with_fields(
-                    "kernel.machines",
-                    "a machine acquired without asking could not be recorded",
-                    serde_json::json!({"machine": hold.id, "error": error.to_string()}),
-                );
-                return;
+                return Err(acquisition_error(
+                    "acquisition_uncertain",
+                    &format!("{error}. The service's answer was lost, so the machine may exist: it counts against the owner's limits for acquiring without asking until you retry with the same request_id, which returns it or confirms nothing was acquired"),
+                ))
             }
         }
-        let Some(machine) = self.acquired_machine(|machine| machine.id == hold.id) else {
+        sent
+    }
+
+    /// An admitted request that was never sent leaves the ledger.
+    pub(crate) fn withdraw_acquisition(&self, hold: AcquisitionHold) {
+        self.record_acquired_machine(AcquiredMachineWrite::Remove { key: hold.key() });
+    }
+
+    /// A job's cleanup, after the service fenced the job, learned whether its machine exists.
+    pub(crate) fn settle_job_acquisition(&self, job_ref: &str, found: Option<(&str, &str)>) {
+        let key = AcquisitionKey::Job(job_ref.into());
+        match found {
+            Some((allocation_ref, machine_state)) => {
+                self.accept_acquired_machine(key, allocation_ref);
+                self.observe_acquired_machine(
+                    allocation_ref,
+                    machine_state,
+                    crate::session::unix_epoch_ms(),
+                );
+            }
+            None => {
+                self.record_acquired_machine(AcquiredMachineWrite::Remove { key });
+            }
+        }
+    }
+
+    /// The service said `allocation_ref` is in `machine_state`: deletion moves a machine acquired
+    /// without asking on, and only a confirmed deletion ends it, at `at_ms`.
+    pub(crate) fn observe_acquired_machine(
+        &self,
+        allocation_ref: &str,
+        machine_state: &str,
+        at_ms: u64,
+    ) {
+        match machine_state {
+            "deleting" => {
+                self.record_acquired_machine(AcquiredMachineWrite::Deleting {
+                    allocation_ref: allocation_ref.into(),
+                });
+            }
+            "deleted" => self.end_acquired_machine(allocation_ref, at_ms),
+            _ => {}
+        }
+    }
+
+    /// The machines a list sent now must account for: every one accepted before it was sent. A
+    /// machine accepted later may be missing from that list and is never ended by it.
+    pub(crate) fn acquired_machines_to_reconcile(&self) -> Vec<String> {
+        self.owned
+            .durable_state_store
+            .acquired_machines(i64::MAX as u64)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|machine| match machine.state {
+                AcquiredState::Running { allocation_ref }
+                | AcquiredState::Deleting { allocation_ref } => Some(allocation_ref),
+                AcquiredState::Pending | AcquiredState::Ended { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Settles each of `expected` against the service's whole list `machines`, sent after they
+    /// were read: one missing from it has ended.
+    pub(crate) fn reconcile_acquired_machines(
+        &self,
+        expected: &[String],
+        machines: &[ControlPlaneMachineRow],
+    ) {
+        let now = crate::session::unix_epoch_ms();
+        for allocation_ref in expected {
+            match machines
+                .iter()
+                .find(|row| &row.allocation_ref == allocation_ref)
+            {
+                Some(row) => {
+                    let since = chrono::DateTime::parse_from_rfc3339(&row.since)
+                        .ok()
+                        .and_then(|since| u64::try_from(since.timestamp_millis()).ok())
+                        .unwrap_or(now);
+                    self.observe_acquired_machine(allocation_ref, &row.state, since);
+                }
+                None => self.end_acquired_machine(allocation_ref, now),
+            }
+        }
+    }
+
+    fn accept_acquired_machine(&self, key: AcquisitionKey, allocation_ref: &str) {
+        if !self.record_acquired_machine(AcquiredMachineWrite::Accept {
+            key,
+            allocation_ref: allocation_ref.into(),
+        }) {
+            return;
+        }
+        let Some(machine) = self.acquired_machine_by_allocation(allocation_ref) else {
             return;
         };
+        let now = crate::session::unix_epoch_ms();
         let day = now - now % DAY_MS;
         let acquired = self
             .owned
@@ -257,7 +367,7 @@ impl KernelRuntimeState {
             .unwrap_or_default();
         let running = acquired
             .iter()
-            .filter(|machine| !matches!(machine.state, AcquiredState::Ended { .. }))
+            .filter(|machine| machine.state.is_live())
             .count();
         let spent: u64 = acquired
             .iter()
@@ -277,29 +387,14 @@ impl KernelRuntimeState {
 
     /// A machine acquired without asking ended at `ended_ms`: the ledger closes it and the Room is
     /// told what it cost. Any other allocation is not in the ledger and changes nothing.
-    pub(crate) fn end_acquired_machine(&self, allocation_ref: &str, ended_ms: u64) {
-        let ended =
-            self.owned
-                .durable_state_store
-                .write_acquired_machine(AcquiredMachineWrite::End {
-                    allocation_ref: allocation_ref.into(),
-                    ended_ms,
-                });
-        match ended {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "kernel.machines",
-                    "the end of a machine acquired without asking could not be recorded",
-                    serde_json::json!({"allocation_ref": allocation_ref, "error": error.to_string()}),
-                );
-                return;
-            }
+    fn end_acquired_machine(&self, allocation_ref: &str, ended_ms: u64) {
+        if !self.record_acquired_machine(AcquiredMachineWrite::End {
+            allocation_ref: allocation_ref.into(),
+            ended_ms,
+        }) {
+            return;
         }
-        let Some(machine) = self.acquired_machine(|machine| {
-            matches!(&machine.state, AcquiredState::Ended { allocation_ref: ended, .. } if ended == allocation_ref)
-        }) else {
+        let Some(machine) = self.acquired_machine_by_allocation(allocation_ref) else {
             return;
         };
         let AcquiredState::Ended { ended_ms, .. } = machine.state else {
@@ -319,49 +414,27 @@ impl KernelRuntimeState {
         );
     }
 
-    /// Closes every running machine the service no longer lists as live; `machines` is its whole list.
-    pub(crate) fn settle_ended_acquired_machines(&self, machines: &[ControlPlaneMachineRow]) {
-        let now = crate::session::unix_epoch_ms();
-        let Ok(acquired) = self.owned.durable_state_store.acquired_machines(now) else {
-            return;
-        };
-        for machine in acquired {
-            let AcquiredState::Running { allocation_ref } = &machine.state else {
-                continue;
-            };
-            let listed = machines
-                .iter()
-                .find(|row| &row.allocation_ref == allocation_ref);
-            let ended_ms = match listed {
-                Some(row) if row.state == "deleted" => {
-                    chrono::DateTime::parse_from_rfc3339(&row.since)
-                        .ok()
-                        .and_then(|since| u64::try_from(since.timestamp_millis()).ok())
-                        .unwrap_or(now)
-                }
-                Some(_) => continue,
-                None => now,
-            };
-            self.end_acquired_machine(allocation_ref, ended_ms);
-        }
-    }
-
-    /// Whether any machine acquired without asking is running, so its end needs the service's list.
-    pub(crate) fn has_running_acquired_machines(&self) -> bool {
-        self.acquired_machine(|machine| matches!(machine.state, AcquiredState::Running { .. }))
-            .is_some()
-    }
-
-    fn acquired_machine(
-        &self,
-        matches: impl Fn(&AcquiredMachine) -> bool,
-    ) -> Option<AcquiredMachine> {
+    /// Applies one ledger transition; false when the row was not in the state it expects.
+    fn record_acquired_machine(&self, write: AcquiredMachineWrite) -> bool {
         self.owned
             .durable_state_store
-            .acquired_machines(0)
-            .ok()?
-            .into_iter()
-            .find(matches)
+            .write_acquired_machine(write)
+            .unwrap_or_else(|error| {
+                crate::logging::error_with_fields(
+                    "kernel.machines",
+                    "a machine acquired without asking could not be recorded",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                false
+            })
+    }
+
+    fn acquired_machine_by_allocation(&self, allocation_ref: &str) -> Option<AcquiredMachine> {
+        self.owned
+            .durable_state_store
+            .acquired_machine(AcquiredMachineLookup::Allocation(allocation_ref))
+            .ok()
+            .flatten()
     }
 
     fn agent_name(&self, agent_id: &str) -> String {
@@ -393,9 +466,10 @@ mod tests {
     #[test]
     fn an_acquired_machine_costs_each_started_minute_within_the_window() {
         let machine = |state| AcquiredMachine {
-            id: "r".into(),
-            room_id: "room".into(),
             agent_id: "agent".into(),
+            request_id: "r".into(),
+            job_ref: None,
+            room_id: "room".into(),
             class_id: "small".into(),
             rate_micros: 1_000,
             currency: "EUR".into(),

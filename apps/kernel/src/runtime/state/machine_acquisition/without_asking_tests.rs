@@ -1,17 +1,45 @@
 //! "Agents may acquire machines without asking" through the agent's `chariox.machines.acquire`
 //! and `chariox.machines.release` tools against a stand-in connected service.
 use super::*;
-use crate::durable_state::acquired_machines::AcquiredState;
+use crate::durable_state::acquired_machines::{AcquiredMachine, AcquiredState};
 use crate::local::{JobMachineRate, MachineOption};
 use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// A connected service offering a small and a big class; it accepts every acquire and lists each
-/// allocation it made with its state.
+/// A connected service offering a small and a big class. It answers acquires as `script` says,
+/// replays a reused request_id with its first allocation, and lists each allocation with its state.
 struct Service {
     api_url: String,
     acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
-    machines: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    machines: Arc<std::sync::Mutex<Vec<Listed>>>,
+    script: Arc<std::sync::Mutex<Script>>,
+}
+
+struct Listed {
+    allocation_ref: String,
+    state: String,
+    request_id: String,
+}
+
+/// How the stand-in service answers.
+struct Script {
+    acquire: AcquireReply,
+    /// The state a released machine is left in.
+    release_leaves: &'static str,
+    /// The next list takes its snapshot, signals `.0`, and answers only after `.1` is notified.
+    held_list: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+}
+
+#[derive(Clone)]
+enum AcquireReply {
+    Machine,
+    /// The machine is created, but its answer cannot be read.
+    Lost,
+    /// Answers only after the notify, then refuses or creates the machine.
+    Held {
+        gate: Arc<tokio::sync::Notify>,
+        refuse: bool,
+    },
 }
 
 fn option(class_id: &str, vcpu: u32, amount_micros: u64) -> MachineOption {
@@ -30,102 +58,176 @@ fn option(class_id: &str, vcpu: u32, amount_micros: u64) -> MachineOption {
     }
 }
 
+fn machine_json(allocation_ref: &str, state: &str) -> serde_json::Value {
+    serde_json::json!({"kind":"machine","revision":1,"available_actions":[],
+        "allocation_ref":allocation_ref,"state":state,"kernel_target":null,
+        "access_state":"pending","access_reason":null})
+}
+
 async fn service() -> Service {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
-    let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let machines = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
-    let (seen, listed) = (acquires.clone(), machines.clone());
+    let service = Service {
+        api_url,
+        acquires: Arc::default(),
+        machines: Arc::default(),
+        script: Arc::new(std::sync::Mutex::new(Script {
+            acquire: AcquireReply::Machine,
+            release_leaves: "deleted",
+            held_list: None,
+        })),
+    };
+    let (seen, listed, script) = (
+        service.acquires.clone(),
+        service.machines.clone(),
+        service.script.clone(),
+    );
     tokio::spawn(async move {
         loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let body = loop {
-                let mut chunk = [0; 4096];
-                let n = socket.read(&mut chunk).await.unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-                let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
-                    continue;
-                };
-                let length: usize = std::str::from_utf8(&bytes[..end])
-                    .unwrap()
-                    .lines()
-                    .find_map(|line| {
-                        let (key, value) = line.split_once(':')?;
-                        key.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse().unwrap())
-                    })
-                    .unwrap();
-                if bytes.len() >= end + 4 + length {
-                    break serde_json::from_slice::<serde_json::Value>(
-                        &bytes[end + 4..end + 4 + length],
-                    )
-                    .unwrap();
-                }
-            };
-            let request = &body["request"];
-            let machine = |allocation_ref: &str, state: &str| {
-                serde_json::json!({"kind":"machine","revision":1,"available_actions":[],
-                    "allocation_ref":allocation_ref,"state":state,"kernel_target":null,
-                    "access_state":"pending","access_reason":null})
-            };
-            let response = match request["action"].as_str().unwrap() {
-                "capabilities" => serde_json::json!({"kind":"capabilities","machine_allocation":{
-                    "revision":"v1","actions":["acquire"],"offer":null,
-                    "offers":[option("small", 2, 1_000), option("big", 8, 4_000)]}}),
-                "acquire" => {
-                    seen.lock().unwrap().push(request.clone());
-                    let mut machines = listed.lock().unwrap();
-                    let allocation_ref = format!("alloc-{}", machines.len() + 1);
-                    machines.push((allocation_ref.clone(), "creating".into()));
-                    machine(&allocation_ref, "creating")
-                }
-                "list" => serde_json::json!({"kind":"machines","saved_states":[],
-                    "machines": listed.lock().unwrap().iter().map(|(allocation_ref, state)| serde_json::json!({
-                        "allocation_ref":allocation_ref,"name":allocation_ref,"state":state,"revision":1,
-                        "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":[]}))
-                        .collect::<Vec<_>>()}),
-                "get" => {
-                    let allocation_ref = request["allocation_ref"].as_str().unwrap();
-                    let state = listed
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .find(|(listed, _)| listed == allocation_ref)
-                        .map(|(_, state)| state.clone())
-                        .unwrap();
-                    machine(allocation_ref, &state)
-                }
-                "release" => {
-                    let allocation_ref = request["allocation_ref"].as_str().unwrap().to_owned();
-                    for (listed, state) in listed.lock().unwrap().iter_mut() {
-                        if *listed == allocation_ref {
-                            *state = "deleted".into();
-                        }
-                    }
-                    machine(&allocation_ref, "deleting")
-                }
-                other => panic!("unexpected control-plane action {other}"),
-            }
-            .to_string();
-            socket
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                        response.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+            let (socket, _) = listener.accept().await.unwrap();
+            let (seen, listed, script) = (seen.clone(), listed.clone(), script.clone());
+            tokio::spawn(answer(socket, seen, listed, script));
         }
     });
-    Service {
-        api_url,
-        acquires,
-        machines,
-    }
+    service
+}
+
+async fn answer(
+    mut socket: tokio::net::TcpStream,
+    seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    listed: Arc<std::sync::Mutex<Vec<Listed>>>,
+    script: Arc<std::sync::Mutex<Script>>,
+) {
+    let mut bytes = Vec::new();
+    let body = loop {
+        let mut chunk = [0; 4096];
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+        let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
+            continue;
+        };
+        let length: usize = std::str::from_utf8(&bytes[..end])
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        if bytes.len() >= end + 4 + length {
+            break serde_json::from_slice::<serde_json::Value>(&bytes[end + 4..end + 4 + length])
+                .unwrap();
+        }
+    };
+    let request = &body["request"];
+    let create = |request_id: &str| {
+        let mut machines = listed.lock().unwrap();
+        if let Some(replayed) = machines.iter().find(|m| m.request_id == request_id) {
+            return machine_json(&replayed.allocation_ref, &replayed.state);
+        }
+        let allocation_ref = format!("alloc-{}", machines.len() + 1);
+        machines.push(Listed {
+            allocation_ref: allocation_ref.clone(),
+            state: "creating".into(),
+            request_id: request_id.into(),
+        });
+        machine_json(&allocation_ref, "creating")
+    };
+    let (status, response) = match request["action"].as_str().unwrap() {
+        "capabilities" => (
+            200,
+            serde_json::json!({"kind":"capabilities","machine_allocation":{
+            "revision":"v1","actions":["acquire"],"offer":null,
+            "offers":[option("small", 2, 1_000), option("big", 8, 4_000)]}})
+            .to_string(),
+        ),
+        "acquire" => {
+            seen.lock().unwrap().push(request.clone());
+            let request_id = request["request_id"].as_str().unwrap();
+            let reply = script.lock().unwrap().acquire.clone();
+            match reply {
+                AcquireReply::Machine => (200, create(request_id).to_string()),
+                AcquireReply::Lost => {
+                    create(request_id);
+                    (200, "{\"kind\":".into())
+                }
+                AcquireReply::Held { gate, refuse } => {
+                    gate.notified().await;
+                    if refuse {
+                        (409, serde_json::json!({"error":{"code":"capacity_exceeded","message":"none left"}}).to_string())
+                    } else {
+                        (200, create(request_id).to_string())
+                    }
+                }
+            }
+        }
+        "list" => {
+            let snapshot = serde_json::json!({"kind":"machines","saved_states":[],
+                "machines": listed.lock().unwrap().iter().map(|m| serde_json::json!({
+                    "allocation_ref":m.allocation_ref,"name":m.allocation_ref,"state":m.state,"revision":1,
+                    "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":[]}))
+                    .collect::<Vec<_>>()}).to_string();
+            let held = script.lock().unwrap().held_list.take();
+            if let Some((reached, gate)) = held {
+                reached.notify_one();
+                gate.notified().await;
+            }
+            (200, snapshot)
+        }
+        "cancel_job" => (
+            200,
+            serde_json::json!({"kind":"job_cancelled","job_ref":request["job_ref"]}).to_string(),
+        ),
+        "get_job" => {
+            let job_ref = request["job_ref"].as_str().unwrap();
+            match listed
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|m| m.request_id == job_ref)
+            {
+                Some(m) => (200, machine_json(&m.allocation_ref, &m.state).to_string()),
+                None => (
+                    404,
+                    serde_json::json!({"error":{"code":"not_found","message":"no job"}})
+                        .to_string(),
+                ),
+            }
+        }
+        "get" => {
+            let allocation_ref = request["allocation_ref"].as_str().unwrap();
+            let machines = listed.lock().unwrap();
+            let state = &machines
+                .iter()
+                .find(|m| m.allocation_ref == allocation_ref)
+                .unwrap()
+                .state;
+            (200, machine_json(allocation_ref, state).to_string())
+        }
+        "release" => {
+            let allocation_ref = request["allocation_ref"].as_str().unwrap().to_owned();
+            let leaves = script.lock().unwrap().release_leaves;
+            for machine in listed.lock().unwrap().iter_mut() {
+                if machine.allocation_ref == allocation_ref {
+                    machine.state = leaves.into();
+                }
+            }
+            (200, machine_json(&allocation_ref, "deleting").to_string())
+        }
+        other => panic!("unexpected control-plane action {other}"),
+    };
+    // The socket may be gone when the caller was cancelled.
+    let _ = socket
+        .write_all(
+            format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .as_bytes(),
+        )
+        .await;
 }
 
 /// A kernel with the owner's offload settings, one running agent connected to `api_url`, and the
@@ -243,14 +345,31 @@ async fn acquire_waits_for_a_card(
     request_id: &str,
     class_id: &str,
 ) -> String {
-    let (call_state, token, request_id, class_id) = (
+    let call = spawn_acquire(state, token, request_id, class_id);
+    waits_for_a_card(state, room, call).await
+}
+
+fn spawn_acquire(
+    state: &KernelRuntimeState,
+    token: &str,
+    request_id: &str,
+    class_id: &str,
+) -> tokio::task::JoinHandle<Result<serde_json::Value, DaemonError>> {
+    let (state, token, request_id, class_id) = (
         state.clone(),
         token.to_owned(),
         request_id.to_owned(),
         class_id.to_owned(),
     );
-    let call =
-        tokio::spawn(async move { acquire(&call_state, &token, &request_id, &class_id).await });
+    tokio::spawn(async move { acquire(&state, &token, &request_id, &class_id).await })
+}
+
+/// Waits until `call` shows the owner's card, and returns the card's message.
+async fn waits_for_a_card(
+    state: &KernelRuntimeState,
+    room: &str,
+    call: tokio::task::JoinHandle<Result<serde_json::Value, DaemonError>>,
+) -> String {
     let message = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(card) = state
@@ -275,6 +394,37 @@ async fn acquire_waits_for_a_card(
     );
     call.abort();
     message
+}
+
+/// Waits until the ledger satisfies `done`.
+async fn ledger_reaches(state: &KernelRuntimeState, done: impl Fn(&[AcquiredMachine]) -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let acquired = state
+                .owned
+                .durable_state_store
+                .acquired_machines(0)
+                .unwrap();
+            if done(&acquired) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "ledger never reached the state: {:?}",
+            state.owned.durable_state_store.acquired_machines(0)
+        )
+    });
+}
+
+fn running(machine: &AcquiredMachine, allocation_ref: &str) -> bool {
+    machine.state
+        == AcquiredState::Running {
+            allocation_ref: allocation_ref.into(),
+        }
 }
 
 fn notices(state: &KernelRuntimeState) -> Vec<String> {
@@ -339,6 +489,15 @@ async fn within_the_limits_an_agent_acquires_with_no_card_and_the_room_records_c
         )
         .await
         .unwrap();
+    // The status read that confirms deletion ends it.
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"allocation_ref":"alloc-1"}),
+        )
+        .await
+        .unwrap();
     let acquired = state
         .owned
         .durable_state_store
@@ -385,7 +544,7 @@ async fn more_machines_than_the_owner_allows_at_the_same_time_ask_the_owner() {
     );
     assert_eq!(service.acquires.lock().unwrap().len(), 1);
     // A machine that ended elsewhere frees its place: the service lists it deleted.
-    service.machines.lock().unwrap()[0].1 = "deleted".into();
+    service.machines.lock().unwrap()[0].state = "deleted".into();
     tokio::time::timeout(
         Duration::from_secs(5),
         acquire(&state, &token, "r3", "small"),
@@ -530,7 +689,7 @@ async fn a_status_read_that_finds_the_machine_deleted_closes_its_record() {
     let (state, token, _room, _workspace) =
         agent_kernel(service.api_url.clone(), allowed(None, None, None)).await;
     acquire(&state, &token, "r1", "small").await.unwrap();
-    service.machines.lock().unwrap()[0].1 = "deleted".into();
+    service.machines.lock().unwrap()[0].state = "deleted".into();
     state
         .machine_tool(
             &token,
@@ -551,4 +710,239 @@ async fn a_status_read_that_finds_the_machine_deleted_closes_its_record() {
     assert!(notices(&state)
         .iter()
         .any(|notice| notice.contains("The small machine that") && notice.contains("it cost")));
+}
+
+/// Finding 1: a list the service snapshotted before another acquisition was accepted never ends
+/// that machine, so the maximum holds.
+#[tokio::test]
+async fn a_list_snapshotted_before_an_acquisition_was_accepted_never_frees_its_place() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(2), None)).await;
+    acquire(&state, &token, "r0", "small").await.unwrap();
+    let (reached, gate) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    service.script.lock().unwrap().held_list = Some((reached.clone(), gate.clone()));
+    // B's list is taken now, with only alloc-1, and delivered after A runs.
+    let b = spawn_acquire(&state, &token, "b", "small");
+    tokio::time::timeout(Duration::from_secs(5), reached.notified())
+        .await
+        .expect("B asked for the list");
+    let a = tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "a", "small"),
+    )
+    .await
+    .expect("A has the second place")
+    .unwrap();
+    assert_eq!(a["allocation"]["allocation_ref"], "alloc-2");
+    gate.notify_one();
+    let message = waits_for_a_card(&state, &room, b).await;
+    assert!(message.contains("(2) are already running"), "{message}");
+    assert_eq!(service.acquires.lock().unwrap().len(), 2);
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert!(
+        acquired.iter().any(|m| running(m, "alloc-2")),
+        "{acquired:?}"
+    );
+}
+
+/// Finding 2: an acquisition whose answer was lost keeps its place and its cost, and a retry
+/// with the same request_id settles it with no card.
+#[tokio::test]
+async fn an_acquisition_whose_answer_was_lost_keeps_counting_until_a_retry_settles_it() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Lost;
+    let error = acquire(&state, &token, "r1", "small")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("retry with the same request_id"), "{error}");
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    let message = acquire_waits_for_a_card(&state, &token, &room, "r2", "small").await;
+    assert!(message.contains("(1) are already running"), "{message}");
+    let replayed = tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "r1", "small"),
+    )
+    .await
+    .expect("a retry of an admitted request is not asked again")
+    .unwrap();
+    assert_eq!(replayed["allocation"]["allocation_ref"], "alloc-1");
+    ledger_reaches(&state, |acquired| {
+        acquired.len() == 1 && running(&acquired[0], "alloc-1")
+    })
+    .await;
+}
+
+/// Finding 3: a cancelled acquisition never leaves a hold behind: the service's answer still
+/// settles it, as a running machine or as a freed place.
+#[tokio::test]
+async fn a_cancelled_acquisition_is_settled_by_the_services_answer() {
+    let service = service().await;
+    let (state, token, _room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(2), None)).await;
+    for (request_id, refuse) in [("accepted", false), ("refused", true)] {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        service.script.lock().unwrap().acquire = AcquireReply::Held {
+            gate: gate.clone(),
+            refuse,
+        };
+        let sent = service.acquires.lock().unwrap().len();
+        let call = spawn_acquire(&state, &token, request_id, "small");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while service.acquires.lock().unwrap().len() == sent {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        call.abort();
+        assert!(call.await.unwrap_err().is_cancelled());
+        gate.notify_one();
+        ledger_reaches(&state, |acquired| {
+            acquired.len() == 1 && running(&acquired[0], "alloc-1")
+        })
+        .await;
+    }
+    // The refused one freed its place: a second machine goes ahead with no card.
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "after", "small"),
+    )
+    .await
+    .expect("no owner decision while a place is free")
+    .unwrap();
+}
+
+/// Finding 4: a retry of an accepted request replays its machine with no card and no new place.
+#[tokio::test]
+async fn a_retry_of_an_accepted_request_replays_it_without_asking_again() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(4), None)).await;
+    acquire(&state, &token, "r1", "small").await.unwrap();
+    let replayed = tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "r1", "small"),
+    )
+    .await
+    .expect("the accepted request is not asked again")
+    .unwrap();
+    assert_eq!(replayed["allocation"]["allocation_ref"], "alloc-1");
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert_eq!(acquired.len(), 1, "{acquired:?}");
+    assert!(running(&acquired[0], "alloc-1"));
+}
+
+/// Finding 5: a machine being deleted keeps its place and its cost until deletion is confirmed.
+#[tokio::test]
+async fn a_machine_being_deleted_counts_until_its_deletion_is_confirmed() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    service.script.lock().unwrap().release_leaves = "deleting";
+    acquire(&state, &token, "r1", "small").await.unwrap();
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.release",
+            serde_json::json!({"allocation_ref":"alloc-1"}),
+        )
+        .await
+        .unwrap();
+    assert!(!notices(&state).iter().any(|n| n.contains("ended after")));
+    let message = acquire_waits_for_a_card(&state, &token, &room, "r2", "small").await;
+    assert!(message.contains("(1) are already running"), "{message}");
+    service.machines.lock().unwrap()[0].state = "deleted".into();
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"allocation_ref":"alloc-1"}),
+        )
+        .await
+        .unwrap();
+    assert!(notices(&state).iter().any(|n| n.contains("ended after")));
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "r3", "small"),
+    )
+    .await
+    .expect("no owner decision once deletion is confirmed")
+    .unwrap();
+}
+
+/// Finding 3, job path: a job cancelled or found after a restart while its acquisition was
+/// pending is settled by the job's cleanup: no machine frees the place; a found machine runs until
+/// its confirmed deletion ends it.
+#[tokio::test]
+async fn a_jobs_cleanup_settles_its_pending_acquisition() {
+    use crate::durable_state::acquired_machines::{AcquiredMachineLookup, AcquiredMachineWrite};
+    let service = service().await;
+    let (state, _token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(2), None)).await;
+    let store = &state.owned.durable_state_store;
+    for job in ["job-gone", "job-found"] {
+        assert!(store
+            .write_acquired_machine(AcquiredMachineWrite::Admit {
+                machine: AcquiredMachine {
+                    agent_id: "agent".into(),
+                    request_id: format!("job:{job}"),
+                    job_ref: Some(job.into()),
+                    room_id: room.clone(),
+                    class_id: "small".into(),
+                    rate_micros: 1_000,
+                    currency: "EUR".into(),
+                    started_ms: crate::session::unix_epoch_ms(),
+                    state: AcquiredState::Pending,
+                },
+                max_live: 2,
+            })
+            .unwrap());
+    }
+    service.machines.lock().unwrap().push(Listed {
+        allocation_ref: "alloc-job".into(),
+        state: "deleted".into(),
+        request_id: "job-found".into(),
+    });
+    state.job_compute_release_job_ref("job-gone").await.unwrap();
+    state
+        .job_compute_release_job_ref("job-found")
+        .await
+        .unwrap();
+    let row = |request_id: &str| {
+        store
+            .acquired_machine(AcquiredMachineLookup::Request {
+                agent_id: "agent",
+                request_id,
+            })
+            .unwrap()
+            .map(|machine| machine.state)
+    };
+    assert_eq!(row("job:job-gone"), None);
+    assert!(matches!(
+        row("job:job-found"),
+        Some(AcquiredState::Ended { allocation_ref, .. }) if allocation_ref == "alloc-job"
+    ));
 }
