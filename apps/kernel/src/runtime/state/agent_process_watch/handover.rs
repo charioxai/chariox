@@ -45,6 +45,13 @@ impl WatchedHandover {
     }
 }
 
+/// Owns what the old supervisor must keep alive until exec.
+pub(crate) struct WatchedProcessTransfer {
+    pub(crate) handover: WatchedHandover,
+    pub(crate) pipes: Vec<OwnedFd>,
+    pub(crate) resources: Option<crate::runtime::process_resources::ProcessDomain>,
+}
+
 /// How long supervision may take to stop for a hot reload.
 const STOP_LIMIT: Duration = Duration::from_secs(5);
 
@@ -53,7 +60,7 @@ impl WatchedProcesses {
     /// the next program what it needs to supervise them again, with the pipes
     /// it keeps open until then. One that settled or did not stop in time is
     /// left out: the next program reports it lost.
-    pub(crate) fn hand_over(&self) -> Vec<(WatchedHandover, Vec<OwnedFd>)> {
+    pub(crate) fn hand_over(&self) -> Vec<WatchedProcessTransfer> {
         self.stopping.store(true, Ordering::Release);
         let live: Vec<Owned> = self
             .live
@@ -95,7 +102,13 @@ impl WatchedProcesses {
                         .and_then(|domain| domain.cgroup_path()),
                     output,
                 };
-                Some((handover, pipes))
+                // Dropping the old resource watcher stops the command. The
+                // prepared swap holds it even after the runtime is dropped.
+                Some(WatchedProcessTransfer {
+                    handover,
+                    pipes,
+                    resources: child.resources.take(),
+                })
             })
             .collect()
     }
@@ -242,18 +255,28 @@ impl KernelRuntimeState {
 mod tests {
     use super::super::tests::{yield_on_watches_with, WatchRig, YieldedWatches};
     use super::*;
+    use crate::runtime::process_resources::{pause_sampling_for_key, ProcessDomain};
+
+    #[derive(Default)]
+    struct PreviousWatches {
+        // Resume before dropping the resource guards, which join the watchers.
+        sampling_pauses: Vec<std::sync::mpsc::Sender<()>>,
+        resources: Vec<ProcessDomain>,
+    }
+
+    type Reloaded = (YieldedWatches, Vec<WatchedHandover>, PreviousWatches);
 
     /// A process watched when the kernel hot-reloads, as the next program
     /// finds it: handed over with its pipes, which the exec keeps open, and
     /// none of the previous program's supervision.
-    async fn after_reload(argv: &[&str]) -> (YieldedWatches, Vec<WatchedHandover>) {
+    async fn after_reload(argv: &[&str]) -> Reloaded {
         restarted(watching(argv, WatchRig::default()).await).await
     }
 
-    async fn restarted(rig: YieldedWatches) -> (YieldedWatches, Vec<WatchedHandover>) {
-        let (rig, handed_over) = reload(rig);
+    async fn restarted(rig: YieldedWatches) -> Reloaded {
+        let (rig, handed_over, resources) = reload(rig);
         next_program(&rig).await;
-        (rig, handed_over)
+        (rig, handed_over, resources)
     }
 
     async fn watching(argv: &[&str], rig: WatchRig) -> YieldedWatches {
@@ -264,21 +287,28 @@ mod tests {
         rig
     }
 
-    fn reload(rig: YieldedWatches) -> (YieldedWatches, Vec<WatchedHandover>) {
+    fn reload(rig: YieldedWatches) -> Reloaded {
         let processes = &rig.state.owned.agent_wakes.processes;
-        let (handed_over, pipes): (Vec<_>, Vec<_>) = processes.hand_over().into_iter().unzip();
-        for pipe in pipes.into_iter().flatten() {
-            std::mem::forget(pipe);
+        let mut handed_over = Vec::new();
+        let mut previous = PreviousWatches::default();
+        for transfer in processes.hand_over() {
+            for pipe in transfer.pipes {
+                std::mem::forget(pipe);
+            }
+            if let Some(resources) = transfer.resources {
+                // Exec ends the old watcher before the successor moves the
+                // workload out of its cgroup. Park it in this in-process test.
+                previous
+                    .sampling_pauses
+                    .push(pause_sampling_for_key(&transfer.handover.wake));
+                previous.resources.push(resources);
+            }
+            handed_over.push(transfer.handover);
         }
-        // The exec ends the previous program's threads and never drops its
-        // state, which would end the process with its resource domain.
-        let live = std::mem::take(&mut *processes.live.lock().unwrap());
-        for child in live.values() {
-            child.lock().unwrap().lost = true;
-            std::mem::forget(child.clone());
-        }
-        std::mem::forget(live);
-        (rig, handed_over)
+        // The old runtime is dropped before exec. Only the resources owned by
+        // the prepared swap may keep the process alive through that drop.
+        processes.live.lock().unwrap().clear();
+        (rig, handed_over, previous)
     }
 
     /// The previous program's delivery has stopped hearing signals.
@@ -344,12 +374,21 @@ mod tests {
     #[tokio::test]
     async fn a_hot_reload_keeps_the_wake_of_a_watched_process() {
         crate::test_support::isolated_env_test!();
-        let (rig, handed_over) =
-            after_reload(&["sh", "-c", "echo before; sleep 2; echo after; exit 7"]).await;
+        let gate = crate::test_support::TestTempDir::new("watched-reload");
+        let resume = gate.path().join("resume");
+        let (rig, handed_over, _resources) = after_reload(&[
+            "sh",
+            "-c",
+            "echo before; while [ ! -f \"$1\" ]; do sleep 0.05; done; echo after; exit 7",
+            "watched-reload",
+            resume.to_str().unwrap(),
+        ])
+        .await;
         assert_eq!(handed_over.len(), 1, "the running process is handed over");
         rig.state
             .adopt_watched_processes(handed_over, crate::session::unix_epoch_ms())
             .unwrap();
+        std::fs::write(resume, "").unwrap();
         let wake = &rig.wakes[0];
         let answer = rig
             .inbox_event(|event| {
@@ -369,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn a_watched_process_gone_in_a_hot_reload_wakes_its_owner_with_the_reason() {
         crate::test_support::isolated_env_test!();
-        let (rig, handed_over) = after_reload(&["sleep", "60"]).await;
+        let (rig, handed_over, _resources) = after_reload(&["sleep", "60"]).await;
         let pid = handed_over[0].pid();
         // Something else ends and reaps it while the kernel swaps programs.
         unsafe {
@@ -399,7 +438,8 @@ mod tests {
             leased: true,
             ..Default::default()
         };
-        let (rig, handed_over) = restarted(watching(&["sleep", "60"], leased).await).await;
+        let (rig, handed_over, _resources) =
+            restarted(watching(&["sleep", "60"], leased).await).await;
         let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
         let _kill = KillOnDrop(pid, birth);
         let id = rig.wakes[0].id.clone();
@@ -472,7 +512,7 @@ mod tests {
             "cancelling",
             "the process is still being stopped when the kernel reloads"
         );
-        let (rig, handed_over) = restarted(rig).await;
+        let (rig, handed_over, _resources) = restarted(rig).await;
         let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
         let _kill = KillOnDrop(pid, birth);
         rig.state
@@ -490,7 +530,7 @@ mod tests {
             ..Default::default()
         };
         // No newline: the line is flushed as supervision stops.
-        let (rig, handed_over) =
+        let (rig, handed_over, _resources) =
             restarted(watching(&["sh", "-c", "printf ready; sleep 60"], rig).await).await;
         let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
         let _kill = KillOnDrop(pid, birth);

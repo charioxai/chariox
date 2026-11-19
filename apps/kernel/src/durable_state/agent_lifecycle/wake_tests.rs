@@ -983,27 +983,38 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             work: None,
             through: 0,
         });
-        f.apply(Operation::Receipt {
-            room: "room".into(),
-            agent: "agent".into(),
-            sequence: e.sequence,
-            state: "accepted".into(),
-            now: now + 1,
-        });
-        f.apply(Operation::Begin {
+        let bind_run = |now| Operation::Begin {
             owner: "owner".into(),
             room: "room".into(),
             agent: "agent".into(),
             prompt: prompt.clone(),
             run: Some("run".into()),
-            now: now + 2,
+            now,
+        };
+        f.apply(bind_run(now + 2));
+        f.apply(Operation::BindSubmission {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            prompt: prompt.clone(),
+            target: None,
+            run: "run".into(),
+            submit_epoch: 1,
+            now: now + 3,
+        });
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+            now: now + 4,
         });
         f.apply(Operation::Ack {
             room: "room".into(),
             agent: "agent".into(),
             sequence: e.sequence,
             handled: true,
-            now: now + 3,
+            now: now + 5,
         });
         f.apply(Operation::Yield {
             task: "p".into(),
@@ -1012,8 +1023,15 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             cursor: e.sequence,
             deadline: Some(10_000_000),
             reason: "next check-in".into(),
-            now: now + 4,
+            now: now + 6,
         });
+        if n == 2 {
+            // The restored provider yielded before the successor finished
+            // binding this already-running turn during restart recovery.
+            let accepted_wait = f.task().wait.unwrap();
+            f.apply(bind_run(now + 7));
+            assert_eq!(f.task().wait, Some(accepted_wait));
+        }
         f.apply(Operation::Settle {
             room: "room".into(),
             agent: "agent".into(),
@@ -1021,7 +1039,7 @@ fn recurring_timer_ack_only_passes_keep_running_after_six_wakes() {
             run: "run".into(),
             has_answer: true,
             cancelled: false,
-            now: now + 5,
+            now: now + 8,
         });
         assert_eq!(
             f.task().state,

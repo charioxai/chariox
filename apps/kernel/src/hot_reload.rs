@@ -776,6 +776,7 @@ impl PreparedForTests {
         *lock(&PREPARED) = Some(Prepared {
             handover: Handover::default(),
             masters: Vec::new(),
+            watched_resources: Vec::new(),
             kernel: None,
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
@@ -831,15 +832,13 @@ pub(crate) fn hand_over_claude(
     }
 }
 
-/// Keeps the processes agents watch for the next program, with the output
-/// pipes it reads them from.
-pub(crate) fn hand_over_watched(
-    watched: Vec<(crate::runtime::state::WatchedHandover, Vec<OwnedFd>)>,
-) {
+/// Keeps the processes agents watch and their output pipes until exec.
+pub(crate) fn hand_over_watched(watched: Vec<crate::runtime::state::WatchedProcessTransfer>) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
-        for (process, pipes) in watched {
-            prepared.handover.watched.push(process);
-            prepared.masters.extend(pipes);
+        for transfer in watched {
+            prepared.handover.watched.push(transfer.handover);
+            prepared.masters.extend(transfer.pipes);
+            prepared.watched_resources.extend(transfer.resources);
         }
     }
 }
@@ -935,6 +934,7 @@ struct Prepared {
     // `exec`: the terminals and runs that handed them over close their own
     // descriptors whenever the kernel's stop drops them.
     masters: Vec<OwnedFd>,
+    watched_resources: Vec<crate::runtime::process_resources::ProcessDomain>,
     // The stopped kernel's state, which owns the handed-over PTY processes.
     kernel: Option<Box<dyn std::any::Any + Send>>,
     path: PathBuf,
@@ -947,6 +947,7 @@ impl Prepared {
         Self {
             handover: Handover::with_terminals(terminals),
             masters,
+            watched_resources: Vec::new(),
             kernel: None,
             path,
             offered_ptys: BTreeMap::new(),
