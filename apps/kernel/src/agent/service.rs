@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
-    RemoteAgentBinding, UsageLimitStop,
+    AgentInstance, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
+    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop, calculate_agent_layout,
+    generate_agent_ref, recalculate_positions,
 };
 
 #[derive(Debug, Clone)]
@@ -98,8 +98,12 @@ impl AgentService {
         let mut session_summary = self.store.session_summary(session.id());
         let current_count = session_summary.count;
         let new_count = requests.len();
-        if requests.iter().any(|r| r.parent_agent_id.is_none())
-            && current_count + new_count > session.max_agents() as usize
+        if requests.iter().any(|request| {
+            request
+                .parent_agent_id
+                .as_ref()
+                .is_none_or(|parent| parent.room_id().is_some())
+        }) && current_count + new_count > session.max_agents() as usize
         {
             return Err(DaemonError::AgentLimitReached {
                 session_id: session.id().to_string(),
@@ -108,7 +112,9 @@ impl AgentService {
         }
 
         for (index, request) in requests.iter().enumerate() {
-            self.check_authority_limit(request, &requests[..index], &session)?;
+            self.check_authority_limit(request, &requests[..index], &session, |id| {
+                sessions.get_session(id).ok()
+            })?;
             if request.role == crate::agent::AgentRole::Meta {
                 return Err(DaemonError::LocalTransport {
                     operation,
@@ -184,15 +190,27 @@ impl AgentService {
         request: &CreateAgentRequest,
         earlier_in_batch: &[CreateAgentRequest],
         session: &RuntimeSession,
+        find_room: impl Fn(&str) -> Option<RuntimeSession>,
     ) -> Result<(), DaemonError> {
-        let Some(parent) = request.parent_agent_id.as_ref() else {
+        let Some(edge) = request.parent_agent_id.as_ref() else {
             return Ok(());
         };
-        let agents = self.store.get_by_session(&request.session_id);
-        let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
-            return Ok(());
+        let parent = self.get_agent(edge.agent_id())?;
+        let parent_room = if parent.session_id() == session.id() {
+            session.clone()
+        } else {
+            find_room(parent.session_id()).ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: parent.session_id().to_owned(),
+            })?
         };
-        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
+        let limit = crate::session::effective_agent_execution_config_with_parents(
+            &parent_room,
+            &parent,
+            |id| self.get_agent(id).ok(),
+            find_room,
+        );
+        let agents = self.list_agents();
+        super::authority_limit::check_spawn(request, &parent, &agents, earlier_in_batch, limit)
     }
 
     pub(crate) fn create_agent_for_session(
@@ -210,14 +228,14 @@ impl AgentService {
             });
         }
 
-        self.check_authority_limit(&request, &[], session)?;
+        self.check_authority_limit(&request, &[], session, |_| None)?;
 
         // Check max agents limit
         let current_count = self
             .store
             .get_by_session(&request.session_id)
             .iter()
-            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
+            .filter(|agent| !agent.archived() && agent.is_room_agent())
             .count();
         if request.parent_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
@@ -441,7 +459,7 @@ impl AgentService {
             .store
             .get_by_session(&session_id)
             .into_iter()
-            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
+            .filter(|agent| !agent.archived() && agent.is_room_agent())
             .collect();
 
         if !remaining_agents.is_empty() {
@@ -1177,6 +1195,21 @@ impl AgentService {
     }
 
     /// Get agent by ID
+    pub(crate) fn is_ancestor(&self, ancestor_id: &str, agent: &AgentInstance) -> bool {
+        let mut seen = HashSet::from([agent.id()]);
+        let mut edge = agent.parent_agent_id();
+        while let Some(id) = edge {
+            if !seen.insert(id) {
+                return false;
+            }
+            if id == ancestor_id {
+                return true;
+            }
+            edge = self.store.get(id).and_then(AgentInstance::parent_agent_id);
+        }
+        false
+    }
+
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.store
             .get(agent_id)
@@ -1456,22 +1489,28 @@ mod workflow_copy_alias_tests {
     fn security_f6_alias_cannot_squat_on_future_agent_id() {
         let mut service = AgentService::new();
         let source = insert_source(&mut service, "room", "child");
-        assert!(service
-            .alias_agent(source.id(), Some("agent-999999".into()))
-            .is_err());
+        assert!(
+            service
+                .alias_agent(source.id(), Some("agent-999999".into()))
+                .is_err()
+        );
         assert_eq!(
             service.get_agent(source.id()).unwrap().alias(),
             Some("child")
         );
-        assert!(service
-            .alias_agent(
-                source.id(),
-                Some("agent-0123456789abcdef0123456789abcdef".into())
-            )
-            .is_err());
-        assert!(service
-            .alias_agent(source.id(), Some("agent-helper".into()))
-            .is_ok());
+        assert!(
+            service
+                .alias_agent(
+                    source.id(),
+                    Some("agent-0123456789abcdef0123456789abcdef".into())
+                )
+                .is_err()
+        );
+        assert!(
+            service
+                .alias_agent(source.id(), Some("agent-helper".into()))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1742,9 +1781,11 @@ mod workflow_copy_alias_tests {
             .set_focused_agent(session.id(), Some(copy.id().to_string()))
             .expect("hidden runtime focus should be stored");
 
-        assert!(service
-            .repair_stale_session_focus(session.id(), &mut sessions)
-            .expect("stale focus should repair"));
+        assert!(
+            service
+                .repair_stale_session_focus(session.id(), &mut sessions)
+                .expect("stale focus should repair")
+        );
         assert_eq!(
             sessions
                 .get_session(session.id())
@@ -1766,9 +1807,11 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
-        assert!(!service
-            .repair_stale_session_focus(session.id(), &mut sessions)
-            .expect("valid focus should stay unchanged"));
+        assert!(
+            !service
+                .repair_stale_session_focus(session.id(), &mut sessions)
+                .expect("valid focus should stay unchanged")
+        );
     }
 
     #[test]
@@ -1838,9 +1881,11 @@ mod workflow_copy_alias_tests {
             .focus_agent(session.id(), hidden.id(), &mut sessions)
             .expect("legacy hidden focus should be stored");
 
-        assert!(service
-            .repair_stale_session_focus(session.id(), &mut sessions)
-            .expect("hidden-only focus should repair"));
+        assert!(
+            service
+                .repair_stale_session_focus(session.id(), &mut sessions)
+                .expect("hidden-only focus should repair")
+        );
         assert_eq!(
             sessions
                 .get_session(session.id())
@@ -1989,12 +2034,14 @@ mod default_agent_alias_tests {
                 Err(DaemonError::AgentAliasConflict { .. })
             ));
         }
-        assert!(service
-            .create_agent(
-                CreateAgentRequest::new(&session_id, "codex").with_alias("agent-9"),
-                &mut sessions,
-            )
-            .is_err());
+        assert!(
+            service
+                .create_agent(
+                    CreateAgentRequest::new(&session_id, "codex").with_alias("agent-9"),
+                    &mut sessions,
+                )
+                .is_err()
+        );
     }
 
     #[test]

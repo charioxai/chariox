@@ -50,13 +50,12 @@ impl KernelRuntimeState {
         after: u64,
     ) -> Result<InlineWake, DaemonError> {
         let reader = self.owned.agent_store.get_agent(agent)?;
-        let agents = self.owned.agent_store.get_session_agents(room);
         let events: Vec<&InboxEvent> = std::iter::once(lead).chain(batch).collect();
         let mut blocks = Vec::new();
         let mut used = 0;
         for event in &events {
             let text = body(event);
-            let sender = self.event_sender(room, &reader, &agents, event);
+            let sender = self.event_sender(room, &reader, event);
             let mut block = format!(
                 "Event {} ({}). {}",
                 event.sequence,

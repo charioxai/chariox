@@ -15,7 +15,7 @@ use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
 use crate::session::{
-    effective_agent_execution_config_in_tree, CollaborationLevel, RuntimeSession,
+    CollaborationLevel, RuntimeSession, effective_agent_execution_config_with_parents,
 };
 
 /// What the latest task of an agent says about its turn.
@@ -101,7 +101,8 @@ pub(crate) fn tree_for_viewer(
             .find(|agent| agent.id() == node.agent_id)
             .is_some_and(|agent| {
                 is_viewers(agent.owner_user_id())
-                    || session.can_view_tree_agent_owned_by(member, agent.owner_user_id())
+                    || (agent.session_id() == session.id()
+                        && session.can_view_tree_agent_owned_by(member, agent.owner_user_id()))
             })
     });
     if !level.can_view_agent_parameters() {
@@ -122,22 +123,14 @@ pub(crate) fn project_agent_tree(
     session: &RuntimeSession,
     agents: &[AgentInstance],
     root: &str,
-    held_by_agent: &dyn Fn(&str) -> bool,
-    deadline_ms: &dyn Fn(&str) -> Option<u64>,
-    turn_of: &dyn Fn(&str) -> Option<NodeTurn>,
+    held_by_agent: &dyn Fn(&RuntimeSession, &str) -> bool,
+    deadline_ms: &dyn Fn(&AgentInstance) -> Option<u64>,
+    turn_of: &dyn Fn(&AgentInstance) -> Option<NodeTurn>,
+    find_room: &dyn Fn(&str) -> Option<RuntimeSession>,
 ) -> Option<AgentTree> {
-    agents.iter().find(|agent| agent.id() == root)?;
-    let pending = |agent_id: &str| {
-        session
-            .active_interactions()
-            .iter()
-            .any(|interaction| interaction.agent_id() == Some(agent_id))
-    };
-    let user_holds = |agent_id: &str| {
-        session.active_interactions().iter().any(|interaction| {
-            interaction.agent_id() == Some(agent_id) && !held_by_agent(interaction.id())
-        })
-    };
+    agents
+        .iter()
+        .find(|agent| agent.id() == root && agent.session_id() == session.id())?;
     // Membership and depth come from the parent edges, whatever the creation order: the user can
     // place an older agent under a newer descendant. Only the display order is by creation.
     let mut children = std::collections::HashMap::<&str, Vec<&AgentInstance>>::new();
@@ -166,17 +159,45 @@ pub(crate) fn project_agent_tree(
     });
     let mut nodes = Vec::new();
     for (agent, depth) in members {
-        let turn = turn_of(agent.id());
+        let other_room = (agent.session_id() != session.id())
+            .then(|| find_room(agent.session_id()))
+            .flatten();
+        let room = other_room.as_ref().unwrap_or(session);
+        let pending = room
+            .active_interactions()
+            .iter()
+            .filter(|interaction| interaction.agent_id() == Some(agent.id()))
+            .collect::<Vec<_>>();
+        let user_holds = pending
+            .iter()
+            .any(|interaction| !held_by_agent(room, interaction.id()));
+        let turn = turn_of(agent);
         let state = node_state(
             agent,
-            pending(agent.id()) || (!agent.is_processing() && session.agent_is_waiting(agent.id())),
+            !pending.is_empty() || (!agent.is_processing() && room.agent_is_waiting(agent.id())),
             turn,
         );
-        // The value approval gating reads, after the limit of the parent chain.
-        let effective = effective_agent_execution_config_in_tree(session, agent, agents);
+        let find_agent = |id: &str| agents.iter().find(|candidate| candidate.id() == id);
+        let effective = effective_agent_execution_config_with_parents(
+            room,
+            agent,
+            |id| find_agent(id).cloned(),
+            find_room,
+        );
+        let started_by = other_room.as_ref().and_then(|_| {
+            agent
+                .parent_agent_id()
+                .and_then(find_agent)
+                .map(|parent| parent.alias().unwrap_or(parent.agent_ref()).to_owned())
+        });
         nodes.push(AgentTreeNode {
             agent_id: agent.id().to_owned(),
             parent_agent_id: agent.parent_agent_id().map(str::to_owned),
+            room_id: other_room.as_ref().map(|room| room.id().to_owned()),
+            room_alias: other_room
+                .as_ref()
+                .and_then(|room| room.alias().map(str::to_owned)),
+            started_by,
             kernel_id: None,
             alias: agent.alias().map(str::to_owned),
             provider: agent.provider().to_owned(),
@@ -189,13 +210,13 @@ pub(crate) fn project_agent_tree(
             workspace_id: Some(
                 agent
                     .workspace_id()
-                    .unwrap_or_else(|| session.workspace_id())
+                    .unwrap_or_else(|| room.workspace_id())
                     .to_owned(),
             ),
             worktree_id: Some(
                 agent
                     .worktree_id()
-                    .unwrap_or_else(|| session.worktree_id())
+                    .unwrap_or_else(|| room.worktree_id())
                     .to_owned(),
             ),
             worker_kernel_id: agent
@@ -204,9 +225,9 @@ pub(crate) fn project_agent_tree(
             depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
-            needs_user: user_holds(agent.id())
+            needs_user: user_holds
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
-            deadline_ms: deadline_ms(agent.id()),
+            deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
             usage_limit_stop: agent.usage_limit_stop().cloned(),
         });
@@ -222,6 +243,25 @@ pub(crate) fn project_agent_tree(
 
 #[cfg(test)]
 mod tests {
+    fn project_agent_tree(
+        session: &RuntimeSession,
+        agents: &[AgentInstance],
+        root: &str,
+        held_by_agent: &dyn Fn(&str) -> bool,
+        deadline_ms: &dyn Fn(&str) -> Option<u64>,
+        turn_of: &dyn Fn(&str) -> Option<NodeTurn>,
+    ) -> Option<AgentTree> {
+        super::project_agent_tree(
+            session,
+            agents,
+            root,
+            &|_, interaction| held_by_agent(interaction),
+            &|agent| deadline_ms(agent.id()),
+            &|agent| turn_of(agent.id()),
+            &|_| None,
+        )
+    }
+
     use super::*;
     use crate::agent::{AgentRef, GridPosition};
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
@@ -312,15 +352,17 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(shape, vec![("c1", 1), ("c2", 1), ("g", 2)]);
         assert_eq!(tree.totals.live, 0, "idle nodes are not live");
-        assert!(project_agent_tree(
-            &session,
-            session.agents(),
-            "missing",
-            &|_| false,
-            &|_| None,
-            &|_| None
-        )
-        .is_none());
+        assert!(
+            project_agent_tree(
+                &session,
+                session.agents(),
+                "missing",
+                &|_| false,
+                &|_| None,
+                &|_| None
+            )
+            .is_none()
+        );
     }
 
     fn shape(tree: &AgentTree) -> Vec<(&str, u32)> {
@@ -355,12 +397,14 @@ mod tests {
             .filter(|node| node.agent_id == "x")
             .count();
         assert_eq!(x_nodes, 1, "listed once, as a descendant");
-        assert!(session
-            .agents()
-            .iter()
-            .find(|a| a.id() == "x")
-            .unwrap()
-            .is_sub_agent());
+        assert!(
+            session
+                .agents()
+                .iter()
+                .find(|a| a.id() == "x")
+                .unwrap()
+                .is_sub_agent()
+        );
     }
 
     #[test]

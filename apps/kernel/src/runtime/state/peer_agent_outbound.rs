@@ -4,12 +4,12 @@
 //! failure into one typed refusal the agent can act on. An unknown room, kernel or agent and one
 //! the caller may not address give the same refusal.
 use super::*;
-use crate::durable_state::agent_lifecycle::created_peers::CreatedPeer;
 use crate::durable_state::agent_lifecycle::Operation;
+use crate::durable_state::agent_lifecycle::created_peers::CreatedPeer;
 use crate::runtime::room_tool_admission::{denied, retry_later};
 use crate::transport::relay_peer::{
-    PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority, RelayPeerRequest,
-    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority,
+    RELAY_PEER_PROTOCOL_VERSION, RelayPeerRequest, RelayPeerResponse,
 };
 
 const PEER_AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -45,7 +45,9 @@ fn uncertain(kernel: &str, retry: &str) -> DaemonError {
 fn retry_hint(request: &RelayPeerRequest) -> String {
     match request {
         RelayPeerRequest::PeerAgentMessage { request_id, .. } => {
-            format!("make the same call again (the send_agent_message tool needs idempotency_key `{request_id}`)")
+            format!(
+                "make the same call again (the send_agent_message tool needs idempotency_key `{request_id}`)"
+            )
         }
         RelayPeerRequest::PeerAgentCancel { .. } => "make the same call again in this turn".into(),
         _ => "make the same call again".into(),
@@ -614,10 +616,10 @@ impl KernelRuntimeState {
                 "this kernel is not signed in to the Cloud account of this room's owner, so it cannot reach agents on other kernels",
             ));
         };
-        let authority = crate::session::effective_agent_execution_config_in_tree(
+        let authority = self.owned.agent_store.effective_execution_config(
             &session,
             sender,
-            &self.session_agents(sender.session_id()),
+            &self.owned.session_store,
         );
         Ok(PeerAgentCaller {
             owner,

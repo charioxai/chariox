@@ -1,6 +1,5 @@
-// MP-08 / MP-09 / MP-10 / MP-11 M2 P3: `agent spawn --room` makes an ordinary agent of another room
-// of the same owner. Rooms from `world`: `room` (a -> {b -> {d}, s}, peer) and `other_room` (q).
-use super::subtree::{error_text, launch, room_command, world, World};
+// Cross-Room children use the authenticated Room commands and local client reads.
+use super::subtree::{World, error_text, launch, room_command, world};
 use super::*;
 use crate::provider::AgentPermissionLevel;
 use crate::transport::runtime_tools::RuntimeToolResult;
@@ -19,14 +18,14 @@ async fn spawn_into(world: &World, who: &str, room: &str, rest: &str) -> Runtime
 }
 
 #[test]
-fn a_room_agent_spawns_an_ordinary_peer_in_another_room_of_the_same_owner() {
+fn cross_room_spawn_sets_its_spawner_as_parent() {
     run_large_stack_async_test("peer-spawn-happy", happy_path);
 }
 
 async fn happy_path() {
     let world = world("peer-spawn-happy").await;
     let before = agents_of(&world, &world.room).await.len();
-    let spawned = spawn_into(&world, "a", &world.other_room.clone(), "--no-follow").await;
+    let spawned = spawn_into(&world, "a", &world.other_room, "").await;
     assert!(spawned.ok, "{spawned:?}");
     let id = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
     let in_target = agents_of(&world, &world.other_room).await;
@@ -36,14 +35,8 @@ async fn happy_path() {
         .expect("peer in the target room");
     assert_eq!(peer.session_id(), world.other_room);
     assert_eq!(peer.alias(), Some("px"));
-    assert!(
-        peer.parent_agent_id().is_none(),
-        "a peer has no parent edge"
-    );
-    assert!(
-        !peer.is_sub_agent(),
-        "it counts in the room's max_agents and is listed"
-    );
+    assert_eq!(peer.parent_agent_id(), Some(world.ids["a"].as_str()));
+    assert!(peer.is_sub_agent());
     assert_eq!(
         agents_of(&world, &world.room).await.len(),
         before,
@@ -73,6 +66,28 @@ async fn happy_path() {
         agents.iter().any(|agent| agent.id() == id),
         "listed in the target room"
     );
+    let request = LocalDaemonRequest::ListDescendants(crate::local::ListDescendantsRequest {
+        session_id: world.room.clone(),
+        agent_id: world.ids["a"].clone(),
+    });
+    let LocalDaemonResponse::AgentTree { tree } = world
+        .router
+        .dispatch(
+            KernelCommand::from_local_request("cross-room-tree", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("missing parent tree")
+    };
+    let child = tree
+        .nodes
+        .iter()
+        .find(|child| child.agent_id == id)
+        .unwrap();
+    assert_eq!(child.room_id.as_deref(), Some(world.other_room.as_str()));
+    assert!(child.started_by.is_some());
 }
 
 #[test]
@@ -101,10 +116,12 @@ async fn clamp() {
         !raised.ok && error_text(&raised).contains("more authority than its parent"),
         "{raised:?}"
     );
-    assert!(agents_of(&world, &room)
-        .await
-        .iter()
-        .all(|agent| agent.alias() != Some("px")));
+    assert!(
+        agents_of(&world, &room)
+            .await
+            .iter()
+            .all(|agent| agent.alias() != Some("px"))
+    );
     let inherited = spawn_into(&world, "a", &room, "").await;
     assert!(inherited.ok, "{inherited:?}");
     let id = inherited.payload["response"]["agent"]["id"]
@@ -123,22 +140,92 @@ async fn clamp() {
 }
 
 #[test]
-fn a_sub_agent_cannot_spawn_a_peer_in_another_room() {
-    run_large_stack_async_test("peer-spawn-sub-agent", sub_agent_refused);
+fn cross_room_spawn_stays_in_the_spawners_folder_scope() {
+    run_large_stack_async_test("cross-room-folder", || async {
+        let world = world("cross-room-folder").await;
+        let folder = world._env.root.join("outside");
+        std::fs::create_dir_all(&folder).unwrap();
+        let room = {
+            let mut app = world.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    folder.to_string_lossy(),
+                    folder.to_string_lossy(),
+                ))
+                .unwrap()
+                .0
+        };
+        let result = spawn_into(&world, "a", room.id(), "").await;
+        assert!(
+            !result.ok && error_text(&result).contains("outside that scope"),
+            "{result:?}"
+        );
+    });
 }
 
-async fn sub_agent_refused() {
-    let world = world("peer-spawn-sub-agent").await;
-    let room = world.other_room.clone();
-    let refused = spawn_into(&world, "b", &room, "").await;
-    assert!(
-        !refused.ok && error_text(&refused).contains("only a room agent"),
-        "{refused:?}"
-    );
-    assert!(agents_of(&world, &room)
-        .await
-        .iter()
-        .all(|agent| agent.alias() != Some("px")));
+#[test]
+fn cross_room_spawn_uses_the_current_authority_of_its_parent() {
+    run_large_stack_async_test("cross-room-lowered-parent", || async {
+        let mut world = world("cross-room-lowered-parent").await;
+        let other = world.other_room.clone();
+        let spawned = spawn_into(&world, "a", &other, "--permission yolo").await;
+        assert!(spawned.ok, "{spawned:?}");
+        let child = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
+        let request = serde_json::from_value(serde_json::json!({"UpdateAgentConfig": {
+            "session_id": world.room,
+            "agent_id": world.ids["a"],
+            "execution_mode": "plan",
+            "permission_level": "required",
+        }}))
+        .unwrap();
+        world
+            .router
+            .dispatch(
+                KernelCommand::from_local_request("cross-room-parent-drop", None, None, &request),
+                request,
+            )
+            .await
+            .unwrap();
+        world
+            .tokens
+            .insert("px", launch(&world.app, &other, child).await);
+        let refused = room_command(
+            &world,
+            "px",
+            "agent spawn grandchild --provider dev-stub --permission yolo",
+        )
+        .await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("more authority than its parent"),
+            "{refused:?}"
+        );
+    });
+}
+
+#[test]
+fn cross_room_spawn_from_a_child_keeps_the_same_tree() {
+    run_large_stack_async_test("cross-room-grandchild", || async {
+        let world = world("cross-room-grandchild").await;
+        let spawned = spawn_into(&world, "b", &world.other_room, "").await;
+        assert!(spawned.ok, "{spawned:?}");
+        let created = agents_of(&world, &world.other_room).await;
+        assert_eq!(
+            created
+                .iter()
+                .find(|agent| agent.alias() == Some("px"))
+                .unwrap()
+                .parent_agent_id(),
+            Some(world.ids["b"].as_str()),
+        );
+        let listed = room_command(&world, "a", "agent children").await;
+        assert!(
+            listed.payload["response"]["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|child| child["alias"] == "px" && child["depth"] == 2)
+        );
+    });
 }
 
 #[test]
@@ -162,10 +249,12 @@ async fn other_owner() {
     // The room refuses a non-member before the spawn is admitted.
     let refused = spawn_into(&world, "a", &foreign, "").await;
     assert!(!refused.ok, "{refused:?}");
-    assert!(agents_of(&world, &foreign)
-        .await
-        .iter()
-        .all(|agent| agent.alias() != Some("px")));
+    assert!(
+        agents_of(&world, &foreign)
+            .await
+            .iter()
+            .all(|agent| agent.alias() != Some("px"))
+    );
     // The admission itself refuses a room of another owner for a member (a guest of that room).
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
         max_context_tokens: None,
@@ -210,7 +299,7 @@ async fn parse_refusals() {
         ),
         (
             format!("agent spawn px --room {room} --no-follow --command-id c1"),
-            "--command-id",
+            "reports to you automatically",
         ),
         (
             format!("agent spawn px --room {room} --kernel somewhere --no-follow"),
@@ -231,10 +320,12 @@ async fn parse_refusals() {
             "{command}: {refused:?}"
         );
     }
-    assert!(agents_of(&world, &room)
-        .await
-        .iter()
-        .all(|agent| agent.alias() != Some("px")));
+    assert!(
+        agents_of(&world, &room)
+            .await
+            .iter()
+            .all(|agent| agent.alias() != Some("px"))
+    );
 }
 
 #[test]
@@ -253,10 +344,12 @@ async fn unknown_machine_refused() {
         .await;
         assert!(!refused.ok, "{flag}: {refused:?}");
     }
-    assert!(agents_of(&world, &world.room)
-        .await
-        .iter()
-        .all(|agent| agent.alias() != Some("sx")));
+    assert!(
+        agents_of(&world, &world.room)
+            .await
+            .iter()
+            .all(|agent| agent.alias() != Some("sx"))
+    );
 }
 
 #[test]
@@ -353,88 +446,50 @@ fn the_spawn_usage_documents_the_room_option() {
 }
 
 #[test]
-fn a_peer_spawn_follows_the_peer_unless_told_not_to() {
-    run_large_stack_async_test("peer-spawn-follow", follows);
-}
-
-async fn follows() {
-    let world = world("peer-spawn-follow").await;
-    let other = world.other_room.clone();
-    let followed = spawn_into(&world, "a", &other, "").await;
-    assert!(followed.ok, "{followed:?}");
-    let peer = followed.payload["response"]["agent"]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let registration = followed.payload["follow_registration_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the spawner follows its peer: {followed:?}"))
-        .to_owned();
-    let runtime = world.router.runtime_state();
-    let store = runtime.durable_state_store();
-    let registrations = store
-        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
-        .unwrap()
-        .into_iter()
-        .flat_map(|task| store.agent_registrations(&task.task_id).unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        registrations
-            .iter()
-            .any(|r| r.id == registration && r.source_id == peer && r.peer && r.live),
-        "{registrations:?}"
-    );
-
-    let unfollowed = room_command(
-        &world,
-        "a",
-        &format!("agent spawn py --provider dev-stub --room {other} --no-follow"),
-    )
-    .await;
-    assert!(unfollowed.ok, "{unfollowed:?}");
-    assert!(
-        unfollowed.payload["follow_registration_id"].is_null(),
-        "{unfollowed:?}"
-    );
-    let quiet = unfollowed.payload["response"]["agent"]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert!(!store
-        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
-        .unwrap()
-        .into_iter()
-        .flat_map(|task| store.agent_registrations(&task.task_id).unwrap())
-        .any(|r| r.source_id == quiet));
-
-    // Following is also open later, by the peer's address in its room.
-    let task = store
-        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
-        .unwrap()
-        .pop()
-        .unwrap();
-    let subscribe = |source: &str| {
-        world.router.dispatch_authenticated_runtime_tool_call(
-            &world.tokens["a"],
-            "chariox.events.subscribe",
-            serde_json::json!({"task_id": task.task_id, "origin_prompt_id": task.prompt_id,
-                "source_id": source, "room": other}),
+fn cross_room_spawn_receives_parent_instructions() {
+    run_large_stack_async_test("cross-room-instruction", || async {
+        let world = world("cross-room-instruction").await;
+        let room = &world.other_room;
+        let spawned = spawn_into(&world, "a", room, "").await;
+        assert!(spawned.ok, "{spawned:?}");
+        let id = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
+        let token = launch(&world.app, room, id).await;
+        let sent = room_command(
+            &world,
+            "a",
+            &format!("agent message px 'Write a report' --room {room}"),
         )
-    };
-    let subscribed = subscribe("py").await.unwrap();
-    assert!(subscribed.ok, "{subscribed:?}");
-    assert_eq!(subscribed.payload["source_id"], quiet.as_str());
-    let id = subscribed.payload["registration_id"].as_str().unwrap();
-    assert!(store
-        .agent_registrations(&task.task_id)
-        .unwrap()
-        .iter()
-        .any(|r| r.id == id && r.source_id == quiet && r.peer));
-    let refused = format!("{:?}", subscribe("nobody").await);
-    assert!(
-        refused.contains("agent is unavailable in that room"),
-        "{refused}"
-    );
+        .await;
+        assert!(sent.ok, "{sent:?}");
+        let task = world
+            .router
+            .runtime_state()
+            .durable_state_store()
+            .agent_tasks(Some(room), Some(id))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let inbox = world
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "chariox.events.inbox",
+                serde_json::json!({"task_id": task.task_id, "origin_prompt_id": task.prompt_id}),
+            )
+            .await
+            .unwrap();
+        let events = inbox.payload["events"].as_array().unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event["source"]["relation"] == "ancestor"
+                    && event["guidance"]
+                        .as_str()
+                        .is_some_and(|guidance| guidance.contains("From your parent agent"))
+                    && event["payload"]["message"] == "Write a report"
+            }),
+            "{inbox:?}"
+        );
+    });
 }
 
 #[test]
@@ -471,36 +526,29 @@ async fn own_room_refused() {
 }
 
 #[test]
-fn a_peer_spawn_says_the_owner_ends_it_and_a_delete_by_the_spawner_says_so_too() {
-    run_large_stack_async_test("peer-spawn-lifetime", peer_lifetime);
-}
-
-async fn peer_lifetime() {
-    let world = world("peer-spawn-lifetime").await;
-    let other = world.other_room.clone();
-    let spawned = spawn_into(&world, "a", &other, "--no-follow").await;
-    assert!(spawned.ok, "{spawned:?}");
-    let lifetime = spawned.payload["lifetime"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the spawn answer states the peer's lifetime: {spawned:?}"));
-    assert!(
-        lifetime.contains("owner") && lifetime.contains("agent cancel"),
-        "{lifetime}"
-    );
-    let id = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
-    let refused = room_command(&world, "a", &format!("agent delete {id} --room {other}")).await;
-    let text = error_text(&refused);
-    assert!(
-        !refused.ok && text.contains("owner") && !text.contains("usage: agent delete"),
-        "{refused:?}"
-    );
-    assert!(
-        agents_of(&world, &other)
-            .await
-            .iter()
-            .any(|agent| agent.id() == id),
-        "the peer is still there"
-    );
+fn cross_room_spawn_is_controlled_by_its_parent() {
+    run_large_stack_async_test("cross-room-parent-control", || async {
+        let world = world("cross-room-parent-control").await;
+        let room = &world.other_room;
+        let spawned = spawn_into(&world, "a", room, "--deadline 30m").await;
+        assert!(spawned.ok, "{spawned:?}");
+        let id = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
+        let _token = launch(&world.app, room, id).await;
+        for command in [
+            format!("agent deadline px 10m --room {room}"),
+            format!("agent cancel px --room {room}"),
+            format!("agent delete px --room {room}"),
+        ] {
+            let result = room_command(&world, "a", &command).await;
+            assert!(result.ok, "{command}: {result:?}");
+        }
+        assert!(
+            agents_of(&world, room)
+                .await
+                .iter()
+                .all(|agent| agent.id() != id)
+        );
+    });
 }
 
 #[test]
@@ -527,23 +575,29 @@ async fn own_room_slice() {
 }
 
 #[test]
-fn a_delete_naming_the_callers_own_room_is_told_to_drop_the_room_option() {
-    run_large_stack_async_test("delete-own-room", delete_own_room);
-}
-
-async fn delete_own_room() {
-    let world = world("delete-own-room").await;
-    let own = world.room.clone();
-    let refused = room_command(&world, "a", &format!("agent delete b --room {own}")).await;
-    let text = error_text(&refused);
-    assert!(
-        !refused.ok && text.contains("without --room") && !text.contains("belongs to that room"),
-        "{refused:?}"
-    );
-    let other = world.other_room.clone();
-    let refused = room_command(&world, "a", &format!("agent delete q --room {other}")).await;
-    assert!(
-        !refused.ok && error_text(&refused).contains("belongs to that room and its owner"),
-        "{refused:?}"
-    );
+fn a_cross_room_peer_cannot_be_deleted_by_an_unrelated_agent() {
+    run_large_stack_async_test("delete-cross-room-peer", || async {
+        let world = world("delete-cross-room-peer").await;
+        let other = &world.other_room;
+        let agents = agents_of(&world, other).await;
+        let [peer] = agents.as_slice() else {
+            panic!("the destination Room starts with one ordinary peer");
+        };
+        let refused = room_command(
+            &world,
+            "a",
+            &format!("agent delete {} --room {other}", peer.id()),
+        )
+        .await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("agents above"),
+            "{refused:?}"
+        );
+        assert!(
+            agents_of(&world, other)
+                .await
+                .iter()
+                .any(|agent| agent.id() == peer.id())
+        );
+    });
 }

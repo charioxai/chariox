@@ -59,10 +59,10 @@ impl KernelRuntimeOwnedState {
                 let effective_config = session
                     .as_ref()
                     .map(|session| {
-                        crate::session::effective_agent_execution_config_in_tree(
+                        self.agent_store.effective_execution_config(
                             session,
                             &agent,
-                            &self.agent_store.get_session_agents(&request.session_id),
+                            &self.session_store,
                         )
                     })
                     .unwrap_or_default();
@@ -264,11 +264,10 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
         let effective_config = match agent.as_ref() {
-            Some(agent) => crate::session::effective_agent_execution_config_in_tree(
-                &session,
-                agent,
-                &self.agent_store.get_session_agents(session.id()),
-            ),
+            Some(agent) => {
+                self.agent_store
+                    .effective_execution_config(&session, agent, &self.session_store)
+            }
             None => crate::session::effective_agent_execution_config(&session, None),
         };
         if request.execution_mode.is_none() {
@@ -754,10 +753,12 @@ mod tests {
             "CLAUDE_CODE_OAUTH_TOKEN",
             zeroize::Zeroizing::new("synthetic-setup-token".into()),
         );
-        assert!(runtime
-            .checked_claude_credentials(&request, credentials)
-            .await
-            .is_ok());
+        assert!(
+            runtime
+                .checked_claude_credentials(&request, credentials)
+                .await
+                .is_ok()
+        );
     }
 
     #[cfg(unix)]
@@ -806,10 +807,12 @@ mod tests {
         )]))
         .with_provider_credential_env(credentials);
         let started = runtime.owned.start_provider_launch(request).unwrap();
-        assert!(started
-            .provider_credential_env
-            .iter()
-            .any(|(name, _)| name == "CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(
+            started
+                .provider_credential_env
+                .iter()
+                .any(|(name, _)| name == "CLAUDE_CODE_OAUTH_TOKEN")
+        );
         assert!(
             !started
                 .run
@@ -820,8 +823,7 @@ mod tests {
         let state:serde_json::Value = serde_json::from_slice(&std::fs::read(profile.join(".claude.json")).expect("owned native launch must initialize selected onboarding before separating credentials")).unwrap();
         assert_eq!(state["hasCompletedOnboarding"], true);
         assert_eq!(
-            state["projects"][root.canonicalize().unwrap().to_str().unwrap()]
-                ["hasTrustDialogAccepted"],
+            state["projects"][root.canonicalize().unwrap().to_str().unwrap()]["hasTrustDialogAccepted"],
             true,
             "the agent's own workspace is trusted in the selected profile before launch"
         );
@@ -939,11 +941,13 @@ mod tests {
             .prepare_provider_launch_request(request, config.runtime_mcp_url())
             .expect("home credential must attach despite the credential-less replica");
         assert_eq!(prepared.provider_account_env, local_env);
-        assert!(prepared
-            .provider_credential_env
-            .iter()
-            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
-                && value == "synthetic-home-token"));
+        assert!(
+            prepared
+                .provider_credential_env
+                .iter()
+                .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
+                    && value == "synthetic-home-token")
+        );
         let repeated = runtime
             .owned
             .prepare_provider_launch_request(prepared.clone(), config.runtime_mcp_url())
@@ -1017,11 +1021,13 @@ mod tests {
             force_queue: false,
             refresh_projection: true,
         };
-        assert!(runtime
-            .owned
-            .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
-            .expect("next prompt must use the completed home run's account authority")
-            .is_some());
+        assert!(
+            runtime
+                .owned
+                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+                .expect("next prompt must use the completed home run's account authority")
+                .is_some()
+        );
         let completed_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
         assert_eq!(
             completed_agent.provider_account_profile(),
@@ -1053,10 +1059,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(credentials
-            .iter()
-            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
-                && value == "synthetic-home-token"));
+        assert!(
+            credentials
+                .iter()
+                .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
+                    && value == "synthetic-home-token")
+        );
         registry
             .update_observation(
                 "local",
@@ -1272,10 +1280,12 @@ mod tests {
         assert_eq!(prepared.provider_account_env, environment);
         assert_eq!(prepared.workspace_live_sync_roots, vec![primary.clone()]);
         for name in ["OPENAI_API_KEY", "CODEX_API_KEY"] {
-            assert!(prepared
-                .provider_env_remove
-                .iter()
-                .any(|existing| existing == name));
+            assert!(
+                prepared
+                    .provider_env_remove
+                    .iter()
+                    .any(|existing| existing == name)
+            );
         }
 
         let _ = std::fs::remove_dir_all(root);
@@ -1345,9 +1355,11 @@ mod tests {
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
             .expect_err("a launch on a signed-out account must fail before spawn");
-        assert!(error
-            .to_string()
-            .contains("this Claude account is not signed in"));
+        assert!(
+            error
+                .to_string()
+                .contains("this Claude account is not signed in")
+        );
 
         let foreground = runtime
             .owned
@@ -1408,12 +1420,14 @@ mod tests {
                 metadata: None,
             })
             .expect("vault credential should register");
-        assert!(crate::provider::provider_account_credential_uses_vault(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            "claude",
-            &profile.profile_id,
-        )
-        .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
+        assert!(
+            crate::provider::provider_account_credential_uses_vault(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+            )
+            .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode")
+        );
         drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
@@ -1593,14 +1607,18 @@ mod tests {
         }
         #[cfg(unix)]
         {
-            assert!(symlink_escape
-                .workspace_live_sync_roots
-                .iter()
-                .any(|root| root == &instance_worktree.join("outside-link")));
-            assert!(!symlink_escape
-                .workspace_live_sync_roots
-                .iter()
-                .any(|root| root == &primary || root == &supporting));
+            assert!(
+                symlink_escape
+                    .workspace_live_sync_roots
+                    .iter()
+                    .any(|root| root == &instance_worktree.join("outside-link"))
+            );
+            assert!(
+                !symlink_escape
+                    .workspace_live_sync_roots
+                    .iter()
+                    .any(|root| root == &primary || root == &supporting)
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1843,10 +1861,12 @@ mod tests {
             .workflow_ensure_provider_run(session.id(), workflow_agent.id(), false, None)
             .expect("locked vault must not block synchronous workflow admission");
         assert!(retired_provider_run_id.is_none());
-        assert!(runtime
-            .owned
-            .take_pending_provider_launch_credentials(&workflow_provider_run_id)
-            .is_empty());
+        assert!(
+            runtime
+                .owned
+                .take_pending_provider_launch_credentials(&workflow_provider_run_id)
+                .is_empty()
+        );
         let workflow_run = runtime
             .owned
             .provider_store
@@ -2691,8 +2711,10 @@ mod tests {
         holder.join().expect("authority released");
         std::fs::remove_dir(&workspace).expect("remove test workspace");
         assert_eq!(snapshot.active_provider_run_id(), Some("launching-run"));
-        assert!(elapsed < std::time::Duration::from_millis(150),
-            "presentation must use the existing projection while launch authority is held: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "presentation must use the existing projection while launch authority is held: {elapsed:?}"
+        );
         // Once authority is available, its newer lifecycle state wins over the
         // cached Starting projection.
         let mut current = run;

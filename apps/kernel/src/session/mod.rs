@@ -3,8 +3,8 @@ mod agent_trigger_http_options;
 mod agent_triggers;
 mod internal_prompts;
 pub(crate) use internal_prompts::{
-    is_agent_inbox_prompt_id, is_internal_prompt_echo_id, is_internal_prompt_turn,
-    WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX,
+    WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX, is_agent_inbox_prompt_id, is_internal_prompt_echo_id,
+    is_internal_prompt_turn,
 };
 mod metaagent_task;
 mod owner;
@@ -17,8 +17,8 @@ mod room_environment;
 mod room_setup;
 mod room_setup_store;
 mod runtime_interactions;
-pub(crate) use runtime_interactions::bounded_display_text;
 pub use runtime_interactions::NativeInteractionOrigin;
+pub(crate) use runtime_interactions::bounded_display_text;
 pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
@@ -47,17 +47,17 @@ mod workflow_scheduling;
 mod workflow_turns;
 mod workspace_links;
 
+pub(crate) use agent_config::effective_agent_execution_config_with_parents;
 pub use agent_config::{
-    effective_agent_execution_config, effective_agent_execution_config_in_tree,
-    effective_agent_execution_mode, effective_agent_extension_registration_authority,
-    effective_agent_permission_level, effective_agent_user_authority,
     EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority, SESSION_AGENT_MODE_CONFIG_KEY,
-    SESSION_AGENT_PERMISSION_CONFIG_KEY,
+    SESSION_AGENT_PERMISSION_CONFIG_KEY, effective_agent_execution_config,
+    effective_agent_execution_config_in_tree, effective_agent_execution_mode,
+    effective_agent_extension_registration_authority, effective_agent_permission_level,
+    effective_agent_user_authority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use project_id::{EmptyProjectId, ProjectId};
 pub use room_environment::{
-    agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
     CanonicalViewport, EnvironmentAction, EnvironmentActionArguments,
     EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
@@ -68,7 +68,8 @@ pub use room_environment::{
     EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
     EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
     EnvironmentTab, EnvironmentTabApp, InputOwnership, InputTarget, PendingInputTakeover,
-    RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome, agent_environment_actor_id,
+    human_environment_actor_id, human_environment_actor_label,
 };
 pub(crate) use room_environment::{
     EnvironmentActionLedger, EnvironmentElementTarget, EnvironmentTabObservation,
@@ -82,17 +83,25 @@ pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };
 pub(crate) use runtime_session::DurableWorkflowHotState;
-pub use service::{
-    classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowHandoffValidationFailure, WorkflowHandoffValidationWarning,
-    WorkflowMissingOutputFailure, WorkflowRunOutputValidationFailure, WorkflowWatchdogTickPlan,
-};
 pub use service::{PromptIdAllocator, SessionService};
+pub use service::{
+    WorkflowCompletionUpdate, WorkflowDispatch, WorkflowHandoffValidationFailure,
+    WorkflowHandoffValidationWarning, WorkflowMissingOutputFailure,
+    WorkflowRunOutputValidationFailure, WorkflowWatchdogTickPlan, classify_workflow_failure_kind,
+};
 pub use store::SessionStore;
 pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
-    unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, HandoffChangeLine,
-    HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
+    AgentPromptState, CollaborationLevel, CreateSessionRequest, DEFAULT_LOCAL_USER_ID,
+    DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
+    DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT, DEFAULT_WORKFLOW_CODE_MAX_EDGES,
+    DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS, DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES,
+    DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
+    DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
+    DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
+    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, HandoffChangeLine, HandoffChangeOp, HandoffKind,
+    HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus, OUTCOME_DETAIL_CHARS,
     PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
     PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask,
     ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff,
@@ -120,15 +129,7 @@ pub use types::{
     WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
     WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWaitingOn,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
-    DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
-    DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT, DEFAULT_WORKFLOW_CODE_MAX_EDGES,
-    DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS, DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES,
-    DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
-    DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
-    DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
+    WorkspaceLinkDefinition, WorktreeIsolationMode, unix_epoch_ms,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification};
 pub(crate) use workflow_definition::{
@@ -141,10 +142,10 @@ pub use workflow_instances::{
     WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 pub use workflow_publication::{
-    WorkflowEventDeliveryReceipt, WorkflowPublicationRuntimeMaterialization,
-    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
     WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
     WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+    WorkflowEventDeliveryReceipt, WorkflowPublicationRuntimeMaterialization,
+    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
 };
 pub(crate) use workflow_scheduling::{WorkflowQueuedPromptInput, WorkflowScheduleReconfiguration};
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;

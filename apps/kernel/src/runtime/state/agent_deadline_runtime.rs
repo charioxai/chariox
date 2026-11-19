@@ -26,7 +26,10 @@ impl KernelRuntimeOwnedState {
                     || d.deadline_ms <= crate::session::unix_epoch_ms()
             })
         {
-            return Err(refusal("agent_deadline_reached", "agent deadline reached; this agent cannot start another turn. Start a new agent for new work"));
+            return Err(refusal(
+                "agent_deadline_reached",
+                "agent deadline reached; this agent cannot start another turn. Start a new agent for new work",
+            ));
         }
         Ok(())
     }
@@ -54,15 +57,12 @@ impl KernelRuntimeState {
             });
         }
         // A deadline is never later than an ancestor's: the parent's deadline ends its team.
-        let agents = self
-            .owned
-            .agent_store
-            .get_session_agents(&request.session_id);
+        let agents = self.owned.agent_store.list_agents();
         for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
             if self
                 .owned
                 .durable_state_store
-                .agent_deadline(&request.session_id, ancestor.id())?
+                .agent_deadline(ancestor.session_id(), ancestor.id())?
                 .is_some_and(|parent| {
                     request
                         .deadline_ms
@@ -89,7 +89,7 @@ impl KernelRuntimeState {
             if self
                 .owned
                 .durable_state_store
-                .agent_deadline(&request.session_id, descendant.id())?
+                .agent_deadline(descendant.session_id(), descendant.id())?
                 .is_some_and(|own| own.state == AgentDeadlineState::Reached)
             {
                 continue;
@@ -97,30 +97,34 @@ impl KernelRuntimeState {
             let mut effective = self
                 .owned
                 .durable_state_store
-                .agent_deadline_intent(&request.session_id, descendant.id())?;
+                .agent_deadline_intent(descendant.session_id(), descendant.id())?;
             for ancestor in crate::agent::authority_limit::ancestors(descendant, &agents) {
                 let limit = if ancestor.id() == agent.id() {
                     request.deadline_ms
                 } else {
                     self.owned
                         .durable_state_store
-                        .agent_deadline_intent(&request.session_id, ancestor.id())?
+                        .agent_deadline_intent(ancestor.session_id(), ancestor.id())?
                 };
                 effective = match (effective, limit) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 };
             }
-            inherited.push((descendant.id().to_string(), effective));
+            inherited.push((
+                descendant.session_id().to_string(),
+                descendant.id().to_string(),
+                effective,
+            ));
         }
         // The executor confirms every changed limit before the local transaction commits.
         self.arm_leased_agent_deadline(&agent, request.deadline_ms)
             .await?;
-        for (id, effective) in &inherited {
+        for (_, id, effective) in &inherited {
             let descendant = agents
                 .iter()
                 .find(|agent| agent.id() == id)
-                .expect("descendant in room");
+                .expect("descendant in tree");
             self.arm_leased_agent_deadline(descendant, *effective)
                 .await?;
         }
@@ -362,7 +366,9 @@ impl KernelRuntimeState {
             owned.persist_deadline_prompt_state(&session, agent)?;
             return Err(refusal(
                 "agent_deadline_cleanup_pending",
-                &format!("deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"),
+                &format!(
+                    "deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"
+                ),
             ));
         }
         // A leased agent's provider process lives on its worker.

@@ -22,6 +22,12 @@ pub(crate) enum DecisionHolder {
     Agent(String),
 }
 
+pub(super) struct MovedDecision {
+    room: String,
+    id: String,
+    announce: bool,
+}
+
 /// Decisions that never leave the user. Default deny: a decision no case names is the user's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UserOnly {
@@ -105,17 +111,35 @@ fn subject_agent(interaction: &crate::session::RuntimeInteraction) -> Option<&st
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn decision_execution_config(
+        &self,
+        rooms: &crate::session::SessionService,
+        room: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+    ) -> crate::session::EffectiveAgentExecutionConfig {
+        crate::session::effective_agent_execution_config_with_parents(
+            room,
+            agent,
+            |id| self.agent_store.get_agent(id).ok(),
+            |id| rooms.get_session(id).ok(),
+        )
+    }
+
     /// Whether `ancestor` may hold a decision now: it is alive, not stopped, not past its deadline,
     /// not itself waiting for the user, and would approve for itself (a `Required` agent would ask
     /// the user, and a parent passes on only the authority it holds).
     pub(super) fn ancestor_can_hold(
         &self,
-        session: &crate::session::RuntimeSession,
+        rooms: &crate::session::SessionService,
         ancestor: &crate::agent::AgentInstance,
-        agents: &[crate::agent::AgentInstance],
     ) -> bool {
+        let Ok(session) = rooms.get_session(ancestor.session_id()) else {
+            return false;
+        };
         if ancestor.archived()
-            || crate::session::effective_agent_execution_config_in_tree(session, ancestor, agents)
+            || session.status() == crate::session::SessionStatus::Ended
+            || self
+                .decision_execution_config(rooms, &session, ancestor)
                 .permission_level
                 == AgentPermissionLevel::Required
             || session
@@ -145,23 +169,24 @@ impl KernelRuntimeOwnedState {
     }
 
     /// The nearest ancestor above `from` that may answer `interaction`, or the user.
-    pub(super) fn decision_holder_above(
+    fn eligible_holder(
         &self,
-        session: &crate::session::RuntimeSession,
+        rooms: &crate::session::SessionService,
         pending: &PendingInteraction,
         interaction: &crate::session::RuntimeInteraction,
         from: &str,
+        accepts: impl Fn(&crate::agent::AgentInstance) -> bool,
     ) -> DecisionHolder {
         if user_only(pending, interaction).is_some() {
             return DecisionHolder::User;
         }
-        let agents = self.agent_store.get_session_agents(session.id());
+        let agents = self.agent_store.list_agents();
         let Some(start) = agents.iter().find(|agent| agent.id() == from) else {
             return DecisionHolder::User;
         };
         ancestors(start, &agents)
             .into_iter()
-            .find(|ancestor| self.ancestor_can_hold(session, ancestor, &agents))
+            .find(|ancestor| accepts(ancestor) && self.ancestor_can_hold(rooms, ancestor))
             .map_or(DecisionHolder::User, |ancestor| {
                 DecisionHolder::Agent(ancestor.id().to_owned())
             })
@@ -170,32 +195,27 @@ impl KernelRuntimeOwnedState {
     /// Whether `holder` may still answer: it is an ancestor of the asker that can hold now.
     pub(super) fn holder_may_answer(
         &self,
-        session: &crate::session::RuntimeSession,
+        rooms: &crate::session::SessionService,
         pending: &PendingInteraction,
         interaction: &crate::session::RuntimeInteraction,
         holder: &str,
     ) -> bool {
-        let agents = self.agent_store.get_session_agents(session.id());
-        user_only(pending, interaction).is_none()
-            && subject_agent(interaction)
-                .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
-                .is_some_and(|asker| {
-                    ancestors(asker, &agents).into_iter().any(|ancestor| {
-                        ancestor.id() == holder
-                            && self.ancestor_can_hold(session, ancestor, &agents)
-                    })
-                })
+        subject_agent(interaction).is_some_and(|asker| {
+            self.eligible_holder(rooms, pending, interaction, asker, |agent| {
+                agent.id() == holder
+            }) != DecisionHolder::User
+        })
     }
 
     /// The holder of a decision at the moment it is raised.
     pub(super) fn decision_holder_at_raise(
         &self,
-        session: &crate::session::RuntimeSession,
+        rooms: &crate::session::SessionService,
         pending: &PendingInteraction,
         interaction: &crate::session::RuntimeInteraction,
     ) -> DecisionHolder {
         subject_agent(interaction).map_or(DecisionHolder::User, |agent| {
-            self.decision_holder_above(session, pending, interaction, agent)
+            self.eligible_holder(rooms, pending, interaction, agent, |_| true)
         })
     }
 
@@ -221,15 +241,12 @@ impl KernelRuntimeOwnedState {
             })
     }
 
-    /// The decisions of `session_id` the agent `holder` holds now.
-    fn decisions_held_by(&self, session_id: &str, holder: &str) -> Vec<String> {
+    /// The decisions held by this agent, including cards raised in a different Room.
+    fn decisions_held_by(&self, holder: &str) -> Vec<String> {
         self.pending_interactions
             .write()
             .iter()
-            .filter(|(_, pending)| {
-                pending.session_id == session_id
-                    && pending.holder == DecisionHolder::Agent(holder.to_owned())
-            })
+            .filter(|(_, pending)| pending.holder == DecisionHolder::Agent(holder.to_owned()))
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -306,10 +323,7 @@ impl KernelRuntimeOwnedState {
             .pending_interactions
             .write()
             .iter()
-            .filter(|(_, pending)| {
-                pending.session_id == session_id
-                    && pending.holder == DecisionHolder::Agent(holder.to_owned())
-            })
+            .filter(|(_, pending)| pending.holder == DecisionHolder::Agent(holder.to_owned()))
             .map(|(id, pending)| (id.clone(), pending.holder_tenure))
             .collect::<Vec<_>>();
         held.into_iter()
@@ -362,13 +376,14 @@ impl KernelRuntimeOwnedState {
     /// Withdraws the holder's event once the decision is no longer pending.
     pub(super) fn withdraw_settled_child_decision(
         &self,
-        session_id: &str,
         interaction_id: &str,
         pending: &PendingInteraction,
     ) {
-        if let DecisionHolder::Agent(holder) = &pending.holder {
+        if let DecisionHolder::Agent(holder) = &pending.holder
+            && let Ok(agent) = self.agent_store.get_agent(holder)
+        {
             self.withdraw_child_decision_event(
-                session_id,
+                agent.session_id(),
                 holder,
                 pending.holder_tenure,
                 interaction_id,
@@ -380,11 +395,11 @@ impl KernelRuntimeOwnedState {
     /// model turn. Returns the decisions whose new holder is an agent, to be announced.
     fn move_decisions_up_from(
         &self,
-        session_id: &str,
+        holder_room: &str,
         agent: &str,
         only: Option<&str>,
         settled: Option<&str>,
-    ) -> Result<(usize, Vec<String>), DaemonError> {
+    ) -> Result<Vec<MovedDecision>, DaemonError> {
         let _mutation =
             self.pending_interactions
                 .mutation
@@ -393,20 +408,18 @@ impl KernelRuntimeOwnedState {
                     operation: "runtime interaction",
                     message: "Interaction store is unavailable".into(),
                 })?;
-        let mut announce = Vec::new();
-        let mut moved = 0;
-        for id in self.decisions_held_by(session_id, agent) {
+        let mut moved = Vec::new();
+        for id in self.decisions_held_by(agent) {
             if only.is_some_and(|only| only != id) {
                 continue;
             }
             let mut sessions = self.session_store.write();
-            let mut session = sessions.get_session(session_id)?.clone();
             let Some(pending) = self.pending_interactions.write().get(&id).cloned() else {
                 continue;
             };
             if settled.is_some_and(|task| {
                 self.handed_to_another_running_task(
-                    session_id,
+                    holder_room,
                     agent,
                     task,
                     &id,
@@ -415,7 +428,8 @@ impl KernelRuntimeOwnedState {
             }) {
                 continue;
             }
-            moved += 1;
+            let session_id = pending.session_id.as_str();
+            let mut session = sessions.get_session(session_id)?.clone();
             let Some(interaction) = session
                 .active_interactions()
                 .iter()
@@ -424,7 +438,7 @@ impl KernelRuntimeOwnedState {
             else {
                 continue;
             };
-            let holder = self.decision_holder_above(&session, &pending, &interaction, agent);
+            let holder = self.eligible_holder(&sessions, &pending, &interaction, agent, |_| true);
             let old_tenure = pending.holder_tenure;
             self.hand_decision_to(session_id, &id, &holder)?;
             let mut handed_to_user = false;
@@ -433,7 +447,7 @@ impl KernelRuntimeOwnedState {
                     let shown = self.decision_shown_in(session_id, &interaction);
                     session.show_interaction_in(&id, shown.clone());
                     // The follower hears of it now: it was not listed while an agent held it.
-                    let mut pending = pending;
+                    let mut pending = pending.clone();
                     pending.holder = DecisionHolder::User;
                     self.publish_outside_interaction(
                         session_id,
@@ -443,15 +457,20 @@ impl KernelRuntimeOwnedState {
                     sessions.restore_session(session);
                     handed_to_user = true;
                 }
-                DecisionHolder::Agent(_) => announce.push(id.clone()),
+                DecisionHolder::Agent(_) => {}
             }
             drop(sessions);
             if handed_to_user {
                 self.alert_owner_of_handed_up_task(&id);
             }
-            self.withdraw_child_decision_event(session_id, agent, old_tenure, &id);
+            self.withdraw_child_decision_event(holder_room, agent, old_tenure, &id);
+            moved.push(MovedDecision {
+                room: session_id.to_owned(),
+                id,
+                announce: !handed_to_user,
+            });
         }
-        Ok((moved, announce))
+        Ok(moved)
     }
 
     /// A blocked task's card nobody above could hold reaches the person now, so they are alerted to it.
@@ -474,9 +493,8 @@ impl KernelRuntimeOwnedState {
     /// its subtree is checked again under the interaction lock, exactly as for a move in the tree.
     pub(super) fn recheck_subtree_decisions(
         &self,
-        session_id: &str,
         agent: &str,
-    ) -> Result<(usize, Vec<String>), DaemonError> {
+    ) -> Result<Vec<MovedDecision>, DaemonError> {
         let _mutation =
             self.pending_interactions
                 .mutation
@@ -485,23 +503,40 @@ impl KernelRuntimeOwnedState {
                     operation: "runtime interaction",
                     message: "Interaction store is unavailable".into(),
                 })?;
-        self.move_subtree_decisions(session_id, agent)
+        self.move_subtree_decisions(agent)
     }
 
     /// `agent` was just placed elsewhere in the tree; the caller holds the interaction lock. Every
     /// open decision its subtree raised follows it: every card is shown in the new top panel, and
     /// one held by an agent that is no longer above the asker, or can no longer hold
     /// under the new parent chain, goes to the nearest ancestor that may hold it, or the user.
-    /// Returns the moved count and the decisions to announce.
+    /// Returns the decisions affected and their Rooms.
     pub(super) fn move_subtree_decisions(
         &self,
-        session_id: &str,
         agent: &str,
-    ) -> Result<(usize, Vec<String>), DaemonError> {
-        let agents = self.agent_store.get_session_agents(session_id);
-        let subtree = std::iter::once(agent)
-            .chain(descendants(agent, &agents).into_iter().map(|a| a.id()))
-            .collect::<std::collections::HashSet<_>>();
+    ) -> Result<Vec<MovedDecision>, DaemonError> {
+        let agents = self.agent_store.list_agents();
+        let root = self.agent_store.get_agent(agent)?;
+        let mut subtrees = std::collections::BTreeMap::<_, std::collections::HashSet<_>>::new();
+        for child in std::iter::once(&root).chain(descendants(agent, &agents)) {
+            subtrees
+                .entry(child.session_id())
+                .or_default()
+                .insert(child.id());
+        }
+        let mut moved = Vec::new();
+        for (room, subtree) in subtrees {
+            self.move_room_subtree_decisions(room, &subtree, &mut moved)?;
+        }
+        Ok(moved)
+    }
+
+    fn move_room_subtree_decisions(
+        &self,
+        session_id: &str,
+        subtree: &std::collections::HashSet<&str>,
+        moved: &mut Vec<MovedDecision>,
+    ) -> Result<(), DaemonError> {
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
         let open = session
@@ -510,32 +545,24 @@ impl KernelRuntimeOwnedState {
             .filter(|interaction| subject_agent(interaction).is_some_and(|s| subtree.contains(s)))
             .cloned()
             .collect::<Vec<_>>();
-        let (mut placed, mut announce, mut withdraw) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut placed, mut withdraw) = (Vec::new(), Vec::new());
         for interaction in open {
             let id = interaction.id().to_owned();
             let Some(mut pending) = self.pending_interactions.write().get(&id).cloned() else {
                 continue;
             };
             // Above the asker is not enough: a new parent chain can lower the holder's authority.
-            let may_still_hold = |holder: &str| {
-                subject_agent(&interaction)
-                    .and_then(|asker| agents.iter().find(|a| a.id() == asker))
-                    .is_some_and(|asker| {
-                        ancestors(asker, &agents).iter().any(|a| {
-                            a.id() == holder && self.ancestor_can_hold(&session, a, &agents)
-                        })
-                    })
-            };
             let rehanded = match pending.holder.clone() {
-                DecisionHolder::Agent(holder) if may_still_hold(&holder) => false,
+                DecisionHolder::Agent(holder)
+                    if self.holder_may_answer(&sessions, &pending, &interaction, &holder) =>
+                {
+                    false
+                }
                 DecisionHolder::Agent(holder) => {
                     withdraw.push((holder, pending.holder_tenure, id.clone()));
-                    let holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+                    let holder = self.decision_holder_at_raise(&sessions, &pending, &interaction);
                     self.hand_decision_to(session_id, &id, &holder)?;
                     pending.hand_to(holder);
-                    if let DecisionHolder::Agent(_) = pending.holder {
-                        announce.push(id.clone());
-                    }
                     true
                 }
                 DecisionHolder::User => false,
@@ -544,6 +571,11 @@ impl KernelRuntimeOwnedState {
             let shown = self.decision_shown_in(session_id, &interaction);
             if shown.as_deref() != interaction.shown_in_agent_id() || rehanded {
                 session.show_interaction_in(&id, shown.clone());
+                moved.push(MovedDecision {
+                    room: session_id.to_owned(),
+                    id,
+                    announce: rehanded && pending.holder != DecisionHolder::User,
+                });
                 placed.push((interaction.shown_in(shown), pending));
             }
         }
@@ -553,7 +585,9 @@ impl KernelRuntimeOwnedState {
         }
         drop(sessions);
         for (holder, tenure, id) in &withdraw {
-            self.withdraw_child_decision_event(session_id, holder, *tenure, id);
+            if let Ok(agent) = self.agent_store.get_agent(holder) {
+                self.withdraw_child_decision_event(agent.session_id(), holder, *tenure, id);
+            }
         }
         // The follower hears of each card the user holds where it is now listed.
         for (interaction, pending) in &placed {
@@ -565,8 +599,7 @@ impl KernelRuntimeOwnedState {
                 )?;
             }
         }
-        // A card handed to a new holder agent was placed again, so it is counted once.
-        Ok((placed.len(), announce))
+        Ok(())
     }
 }
 
@@ -610,7 +643,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         interaction_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
+    ) -> Result<Option<(String, String)>, DaemonError> {
         let Some(pending) = self
             .pending_interactions
             .write()
@@ -622,6 +655,7 @@ impl KernelRuntimeOwnedState {
         let DecisionHolder::Agent(holder) = pending.holder else {
             return Ok(None);
         };
+        let holder_room = self.agent_store.get_agent(&holder)?.session_id().to_owned();
         let session = self.session_store.get_session(session_id)?;
         let Some(interaction) = session
             .active_interactions()
@@ -661,7 +695,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         let mut event = ledger::occurrence(
-            session_id,
+            &holder_room,
             &holder,
             child,
             &child_decision_occurrence(interaction_id, &holder, pending.holder_tenure),
@@ -671,7 +705,7 @@ impl KernelRuntimeOwnedState {
         event.urgent = true;
         self.durable_state_store
             .agent_lifecycle(Operation::Occur(event))?;
-        Ok(Some(holder))
+        Ok(Some((holder_room, holder)))
     }
 
     /// Whether `agent`'s last turn ended or parked on its sources: no turn of it is running.
@@ -722,7 +756,7 @@ impl KernelRuntimeOwnedState {
     /// holder), or when the stored agent can no longer hold it: it is then handed on at raise.
     pub(super) fn restored_decision_holder(
         &self,
-        session: &crate::session::RuntimeSession,
+        rooms: &crate::session::SessionService,
         pending: &PendingInteraction,
         interaction: &crate::session::RuntimeInteraction,
     ) -> Result<Option<(DecisionHolder, u32)>, DaemonError> {
@@ -738,16 +772,7 @@ impl KernelRuntimeOwnedState {
         let holder = match stored.holder_agent_id {
             None => DecisionHolder::User,
             Some(holder) => {
-                let agents = self.agent_store.get_session_agents(&pending.session_id);
-                let may_still_hold = subject_agent(interaction)
-                    .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
-                    .is_some_and(|asker| {
-                        ancestors(asker, &agents).iter().any(|ancestor| {
-                            ancestor.id() == holder
-                                && self.ancestor_can_hold(session, ancestor, &agents)
-                        })
-                    });
-                if !may_still_hold {
+                if !self.holder_may_answer(rooms, pending, interaction, &holder) {
                     return Ok(None);
                 }
                 DecisionHolder::Agent(holder)
@@ -796,18 +821,11 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
-        let agents = self.agent_store.get_session_agents(session_id);
-        let holder = subject_agent(&interaction)
-            .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
-            .and_then(|asker| {
-                ancestors(asker, &agents).into_iter().find(|ancestor| {
-                    self.ancestor_can_hold(&session, ancestor, &agents)
-                        && !self.turn_is_settled(session_id, ancestor.id())
-                })
+        let holder = subject_agent(&interaction).map_or(DecisionHolder::User, |asker| {
+            self.eligible_holder(&sessions, &pending, &interaction, asker, |ancestor| {
+                !self.turn_is_settled(ancestor.session_id(), ancestor.id())
             })
-            .map_or(DecisionHolder::User, |ancestor| {
-                DecisionHolder::Agent(ancestor.id().to_owned())
-            });
+        });
         self.hand_decision_to(session_id, interaction_id, &holder)?;
         if holder != DecisionHolder::User {
             drop(sessions);
@@ -841,30 +859,35 @@ impl KernelRuntimeState {
         session_id: &str,
         interaction_id: &str,
     ) -> Result<(), DaemonError> {
-        let Some(holder) = self
+        let Some((holder_room, holder)) = self
             .owned
             .record_child_decision_event(session_id, interaction_id)?
         else {
             return Ok(());
         };
-        Box::pin(self.deliver_agent_inbox(session_id, &holder)).await
+        Box::pin(self.deliver_agent_inbox(&holder_room, &holder)).await
     }
 
     /// Shows the cards that moved to the user and tells each new holder agent.
     pub(super) async fn finish_moved_decisions(
         &self,
-        session_id: &str,
-        moved: usize,
-        announce: Vec<String>,
+        moved: &[MovedDecision],
     ) -> Result<(), DaemonError> {
-        if moved > 0 {
-            self.owned.session_snapshot(session_id)?;
+        for room in moved
+            .iter()
+            .map(|decision| &decision.room)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            self.owned.session_snapshot(room)?;
             self.owned
                 .terminal_stream
-                .notify_terminal_projection_change(session_id);
+                .notify_terminal_projection_change(room);
         }
-        for id in announce {
-            self.announce_child_decision(session_id, &id).await?;
+        for decision in moved {
+            if decision.announce {
+                self.announce_child_decision(&decision.room, &decision.id)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -905,19 +928,11 @@ impl KernelRuntimeState {
         only: Option<&str>,
         settled: Option<&str>,
     ) -> Result<usize, DaemonError> {
-        let (moved, announce) = self
+        let moved = self
             .owned
             .move_decisions_up_from(session_id, agent, only, settled)?;
-        if moved > 0 {
-            self.owned.session_snapshot(session_id)?;
-            self.owned
-                .terminal_stream
-                .notify_terminal_projection_change(session_id);
-        }
-        for id in announce {
-            self.announce_child_decision(session_id, &id).await?;
-        }
-        Ok(moved)
+        self.finish_moved_decisions(&moved).await?;
+        Ok(moved.len())
     }
 
     /// `agent pass`: the holder hands the decision to the next holder above it.
@@ -971,6 +986,16 @@ impl KernelRuntimeState {
         if status != ChildDecisionStatus::Answered {
             return Ok(status);
         }
+        let Some(card_room) = self
+            .owned
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .map(|pending| pending.session_id.clone())
+        else {
+            return Ok(ChildDecisionStatus::SettledByUser);
+        };
+        let session_id = card_room.as_str();
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(interaction) = session
             .active_interactions()
@@ -1055,13 +1080,21 @@ impl KernelRuntimeState {
         holder: &str,
         interaction_id: &str,
     ) -> ChildDecisionStatus {
+        let caller_is_in_room = self
+            .owned
+            .agent_store
+            .get_agent(holder)
+            .is_ok_and(|agent| agent.session_id() == session_id);
         match self
             .owned
             .pending_interactions
             .write()
             .get(interaction_id)
-            .filter(|pending| pending.session_id == session_id)
-        {
+            .filter(|pending| {
+                pending.session_id == session_id
+                    || pending.holder == DecisionHolder::Agent(holder.to_owned())
+                        && caller_is_in_room
+            }) {
             None => self.settled_or_unknown(session_id, holder, interaction_id),
             Some(pending) if pending.holder != DecisionHolder::Agent(holder.to_owned()) => {
                 ChildDecisionStatus::NotHolder

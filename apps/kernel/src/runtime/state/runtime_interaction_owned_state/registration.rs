@@ -175,7 +175,7 @@ impl KernelRuntimeOwnedState {
             _ => {
                 return Err(interaction_error(
                     "Interaction subject does not match its registration authority",
-                ))
+                ));
             }
         }
         // MP-11: bind both review forms to the enrolled human, while leaving
@@ -420,10 +420,10 @@ impl KernelRuntimeOwnedState {
             holder_tenure: 0,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
-        pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+        pending.holder = self.decision_holder_at_raise(&sessions, &pending, &interaction);
         // Registered again after a restart, a question keeps the holder it was handed to.
         if let Some((holder, tenure)) =
-            self.restored_decision_holder(&session, &pending, &interaction)?
+            self.restored_decision_holder(&sessions, &pending, &interaction)?
         {
             pending.holder = holder;
             pending.holder_tenure = tenure;

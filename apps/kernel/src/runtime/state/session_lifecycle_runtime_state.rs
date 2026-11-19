@@ -631,17 +631,20 @@ impl KernelRuntimeState {
         &self,
         request: &crate::agent::CreateAgentRequest,
     ) -> Result<(), DaemonError> {
-        let (Some(parent), Some(directory)) = (
-            request.parent_agent_id.as_ref(),
-            request.worktree_id.as_deref(),
-        ) else {
+        let Some(edge) = request.parent_agent_id.as_ref() else {
             return Ok(());
         };
-        let Ok(parent) = self.owned.agent_store.get_agent(parent.agent_id()) else {
-            return Ok(());
-        };
-        let session = self.owned.session_store.get_session(&request.session_id)?;
-        crate::agent::authority_limit::check_directory(&parent, &session, directory)
+        let parent = self.owned.agent_store.get_agent(edge.agent_id())?;
+        let source = self.owned.session_store.get_session(parent.session_id())?;
+        if parent.session_id() != request.session_id {
+            let target = self.owned.session_store.get_session(&request.session_id)?;
+            for directory in [target.workspace_id(), target.worktree_id()] {
+                crate::agent::authority_limit::check_directory(&parent, &source, directory)?;
+            }
+        } else if let Some(directory) = request.worktree_id.as_deref() {
+            crate::agent::authority_limit::check_directory(&parent, &source, directory)?;
+        }
+        Ok(())
     }
 
     /// The checkout made for a spawn that failed before any agent was registered leaves nothing
@@ -1677,9 +1680,11 @@ mod tests {
         connection
             .execute_batch("DROP TRIGGER fail_workflow_runtime_update_order;")
             .expect("workflow failure trigger should be removed");
-        assert!(error
-            .to_string()
-            .contains("injected durable mutation failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected durable mutation failure")
+        );
         assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
         assert_eq!(
             runtime.owned.session_projection.change_sequence(),
@@ -1738,21 +1743,25 @@ mod tests {
         connection
             .execute_batch("DROP TRIGGER fail_metaagent_session_update_order;")
             .expect("metaagent failure trigger should be removed");
-        assert!(error
-            .to_string()
-            .contains("injected durable mutation failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected durable mutation failure")
+        );
         assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
         assert_eq!(
             runtime.owned.session_projection.change_sequence(),
             projection_sequence
         );
-        assert!(runtime
-            .owned
-            .session_projection
-            .get(&session_id)
-            .expect("last durable projection should remain")
-            .queued_metaagent_tasks()
-            .is_empty());
+        assert!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("last durable projection should remain")
+                .queued_metaagent_tasks()
+                .is_empty()
+        );
         assert!(runtime.managed_activity_report_snapshot().is_err());
     }
 
@@ -1801,13 +1810,15 @@ mod tests {
             .load_events_by_kind("session.ended")
             .unwrap()[0]
             .sequence;
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_by_kind("session.activity.updated")
-            .unwrap()
-            .iter()
-            .all(|event| event.sequence < ended_sequence));
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.activity.updated")
+                .unwrap()
+                .iter()
+                .all(|event| event.sequence < ended_sequence)
+        );
         // Replays from older executables may already contain a late completion.
         runtime
             .owned
@@ -1937,9 +1948,11 @@ mod tests {
         connection
             .execute_batch("DROP TRIGGER fail_session_end_order;")
             .expect("session end failure trigger should be removed");
-        assert!(error
-            .to_string()
-            .contains("injected durable mutation failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected durable mutation failure")
+        );
         assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
         assert_eq!(
             runtime.owned.session_projection.change_sequence(),
@@ -1965,12 +1978,14 @@ mod tests {
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
         assert_eq!(still_busy.working_agent_count, 1);
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_by_kind("session.ended")
-            .expect("session end events should read")
-            .is_empty());
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.ended")
+                .expect("session end events should read")
+                .is_empty()
+        );
 
         let ended = runtime
             .end_session(&session_id)
@@ -2034,9 +2049,11 @@ mod tests {
         connection
             .execute_batch("DROP TRIGGER fail_session_delete_order;")
             .expect("session delete failure trigger should be removed");
-        assert!(error
-            .to_string()
-            .contains("injected durable mutation failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected durable mutation failure")
+        );
         assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
         assert_eq!(
             runtime.owned.session_projection.change_sequence(),
@@ -2052,23 +2069,27 @@ mod tests {
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
         assert_eq!(still_busy.working_agent_count, 1);
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_by_kind("session.deleted")
-            .expect("session delete events should read")
-            .is_empty());
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.deleted")
+                .expect("session delete events should read")
+                .is_empty()
+        );
 
         let deleted = runtime
             .delete_session_ref(&session_id, None)
             .await
             .expect("session delete should remain retryable");
         assert_eq!(deleted.id(), session_id);
-        assert!(runtime
-            .owned
-            .session_store
-            .get_session(&session_id)
-            .is_err());
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .is_err()
+        );
         assert!(runtime.owned.session_projection.get(&session_id).is_none());
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
@@ -2170,9 +2191,11 @@ mod tests {
         let error = codex_linux_slice_live_sync_request(request, &slice("linux"))
             .expect_err("managed codex linux slice should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("do not support managed workspace live sync"));
+        assert!(
+            error
+                .to_string()
+                .contains("do not support managed workspace live sync")
+        );
     }
 
     #[test]
@@ -2295,23 +2318,29 @@ mod tests {
             .await;
 
         assert!(runtime.owned.agent_store.get_agent(&agent_id).is_err());
-        assert!(runtime
-            .owned
-            .session_store
-            .get_session(&session_id)
-            .is_err());
-        assert!(runtime
-            .owned
-            .session_store
-            .get_project(&project_id)
-            .is_err());
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_after(0)
-            .expect("durable events should read")
-            .iter()
-            .all(|event| event.kind != "session.deleted" && event.kind != "project.deleted"));
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .is_err()
+        );
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_project(&project_id)
+                .is_err()
+        );
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .expect("durable events should read")
+                .iter()
+                .all(|event| event.kind != "session.deleted" && event.kind != "project.deleted")
+        );
     }
 
     #[tokio::test]
@@ -2382,20 +2411,26 @@ mod tests {
         connection
             .execute_batch("DROP TRIGGER fail_unpublished_session_create;")
             .expect("session creation failure trigger should be removed");
-        assert!(error
-            .to_string()
-            .contains("injected session.created failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected session.created failure")
+        );
         assert!(runtime.owned.agent_store.get_agent(&agent_id).is_err());
-        assert!(runtime
-            .owned
-            .session_store
-            .get_session(&session_id)
-            .is_err());
-        assert!(runtime
-            .owned
-            .session_store
-            .get_project(&project_id)
-            .is_err());
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .is_err()
+        );
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_project(&project_id)
+                .is_err()
+        );
         let project_creations = runtime
             .owned
             .durable_state_store
@@ -2417,18 +2452,22 @@ mod tests {
             project_deletions[0].subject_id.as_deref(),
             Some(&*project_id)
         );
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_by_kind("session.created")
-            .expect("session creation events should read")
-            .is_empty());
-        assert!(runtime
-            .owned
-            .durable_state_store
-            .load_events_by_kind("session.deleted")
-            .expect("session deletion events should read")
-            .is_empty());
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.created")
+                .expect("session creation events should read")
+                .is_empty()
+        );
+        assert!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.deleted")
+                .expect("session deletion events should read")
+                .is_empty()
+        );
     }
 
     fn slice(os: &str) -> crate::slice::SliceRecord {

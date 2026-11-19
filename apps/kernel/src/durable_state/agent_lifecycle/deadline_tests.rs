@@ -60,26 +60,30 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
             inherited: Vec::new(),
         })
         .unwrap();
-    assert!(fixture
-        .store
-        .agent_lifecycle(Operation::ReachDeadline {
-            room: "room".into(),
-            agent: "parent".into(),
-            now: 99,
-            stopped: false
-        })
-        .is_err());
+    assert!(
+        fixture
+            .store
+            .agent_lifecycle(Operation::ReachDeadline {
+                room: "room".into(),
+                agent: "parent".into(),
+                now: 99,
+                stopped: false
+            })
+            .is_err()
+    );
     fixture.apply(Operation::SetDeadline {
         room: "room".into(),
         agent: "parent".into(),
         deadline: None,
         inherited: Vec::new(),
     });
-    assert!(fixture
-        .store
-        .agent_deadline("room", "parent")
-        .unwrap()
-        .is_none());
+    assert!(
+        fixture
+            .store
+            .agent_deadline("room", "parent")
+            .unwrap()
+            .is_none()
+    );
     fixture.apply(Operation::SetDeadline {
         room: "room".into(),
         agent: "parent".into(),
@@ -107,7 +111,7 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                     room: "room".into(),
                     agent: "parent".into(),
                     deadline,
-                    inherited: vec![("child".into(), deadline)],
+                    inherited: vec![("room".into(), "child".into(), deadline)],
                 })
                 .unwrap();
         }
@@ -147,14 +151,16 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
         })
         .unwrap();
     for deadline in [Some(300), None] {
-        assert!(store
-            .agent_lifecycle(Operation::SetDeadline {
-                room: "room".into(),
-                agent: "parent".into(),
-                deadline,
-                inherited: Vec::new()
-            })
-            .is_err());
+        assert!(
+            store
+                .agent_lifecycle(Operation::SetDeadline {
+                    room: "room".into(),
+                    agent: "parent".into(),
+                    deadline,
+                    inherited: Vec::new()
+                })
+                .is_err()
+        );
     }
 }
 
@@ -162,7 +168,7 @@ fn set(
     store: &DurableKernelStateStore,
     agent: &str,
     deadline: u64,
-    inherited: Vec<(String, Option<u64>)>,
+    inherited: Vec<(String, String, Option<u64>)>,
 ) {
     store
         .agent_lifecycle(Operation::SetDeadline {
@@ -189,7 +195,7 @@ fn a_kernel_start_gives_back_the_time_the_kernel_was_stopped() {
         store,
         "parent",
         1_000_000,
-        vec![("child".into(), Some(900_000))],
+        vec![("room".into(), "child".into(), Some(900_000))],
     );
     store
         .agent_lifecycle(Operation::BeatDeadlineClock { now: 50_000 })
@@ -276,9 +282,11 @@ fn a_shift_past_the_largest_time_is_refused_and_changes_nothing() {
         .store
         .agent_lifecycle(Operation::BeatDeadlineClock { now: 1 })
         .unwrap();
-    assert!(fixture
-        .store
-        .agent_lifecycle(Operation::ResumeDeadlines { now: 100 })
-        .is_err());
+    assert!(
+        fixture
+            .store
+            .agent_lifecycle(Operation::ResumeDeadlines { now: 100 })
+            .is_err()
+    );
     assert_eq!(deadline_of(&fixture.store, "parent"), i64::MAX as u64 - 10);
 }

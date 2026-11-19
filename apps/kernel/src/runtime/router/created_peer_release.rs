@@ -9,7 +9,7 @@ use crate::local::{DestroyAgentRequest, LocalDaemonRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::state::peer_agent_inbound::peer_spawn_key;
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RELAY_PEER_PROTOCOL_VERSION, RelayPeerRequest, RelayPeerResponse,
 };
 use std::time::Duration;
 
@@ -76,9 +76,6 @@ impl CommandRouter {
 
     /// The delete itself; a peer that is already gone is a finished delete.
     async fn delete_created_peer(&self, link: &CreatedPeer) -> Result<(), DaemonError> {
-        if link.kernel.is_empty() {
-            return self.destroy_created_agent(&link.peer).await;
-        }
         self.runtime_state.delete_created_peer_on_kernel(link).await
     }
 

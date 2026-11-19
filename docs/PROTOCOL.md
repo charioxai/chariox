@@ -837,9 +837,9 @@ as `resolution.via = "parent_agent"` and writes an `interaction.answered` audit 
 `answered_by_agent` names the parent and `child_agent_id` the child that raised it. The relay peer protocol needs no change for it.
 
 Agents may spawn without room agent-count limits, message any current room
-agent, create workflows, and observe/run peers' workflows. Agent rename/delete
-requires the caller's direct spawned child in the same room; self, peers,
-parents and grandchildren are denied. Workflow mutations require the caller
+agent, create workflows, and observe/run peers' workflows. A parent can delete
+agents below it, including a child placed in another Room on this kernel.
+Workflow mutations require the caller
 or its direct child as immutable object creator. A peer workflow invocation
 creates a separately caller-owned run, without changing definition ownership.
 Running a peer's saved source may create a caller-owned definition/run; it
@@ -849,11 +849,9 @@ owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
 a replaced provider run cannot receive an asynchronous room-tool result.
 
-A peer a room agent creates with `agent spawn --room` (in another room of this kernel, or
-on another kernel with `--kernel`) ends with its creator. The kernel records the link when
-it creates the peer (for another kernel, before the request goes out, named by the spawn
-`request_id`; an offline retry of the same spawn never takes back a link an earlier attempt
-wrote). When the creator is deleted, or its room ends or is deleted, the kernel deletes
+A peer a Room agent creates on another kernel with `agent spawn --room --kernel` ends
+with its creator. Before sending the request, the kernel records the link under the spawn
+`request_id`. An offline retry keeps the earlier attempt's link. When the creator is deleted, or its room ends or is deleted, the kernel deletes
 each peer it created through the ordinary agent delete, audited as `agent.deleted`; on another
 kernel that is the same-owner `DeleteRoomPeer` request (relay peer 442), which names only the spawn's
 `request_id`: the receiving kernel finds the peer by the spawn key, whatever its room is called
@@ -7518,8 +7516,8 @@ Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answ
 carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
 while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
 `totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. A node also carries `execution_mode` (build|plan) and `permission_level` (required|yolo), the values its approvals really use after the limit of its parent chain, and `effort` (omitted when it has none); all three are omitted for a collaborator who may not view parameters. `rev` moves only when the read differs. The follow event
-`agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
-or announced as room members.
+`agent_tree { root, rev }` is published once per change of the tree below `root`.
+A child appears in the tree and, when placed across Rooms, in its destination Room.
 
 ### A Vault provider login travels with a new managed machine — local 1000 / relay peer 439
 
@@ -7616,6 +7614,24 @@ spawn --room`, messages, steer, cancel and follow of an ordinary agent of anothe
 inbox kind), the room clients' `agent_tree_changed` event and the typed `kernel_access_sub_agent`
 refusal. Relay peer 440 carries the same peers across kernels of one owner, below. Managed upgrades
 admit 1000 and 1001.
+
+### Sub-agents in another Room — local 1082
+
+On the same kernel, `agent spawn --room <room>` creates a child in another
+Room of the same owner. The persisted parent edge contains
+`{"agent_id", "room_id", "started_by"}` for this placement. `started_by` is
+the parent's name when it started the child. Only the owner sees the source
+Room or its parent label in the destination Room. The child continues to
+receive instructions from its parent and reports `child_finished` to the
+parent's Room. `agent cancel`, `agent deadline` and `agent delete` accept
+`--room <room>` to reach the child.
+
+The destination Room's folders must be within the parent's permitted folder
+scope. Permission and mode use the current authority of each ancestor in its
+own Room. The parent-side `ListDescendants` tree reports children in other
+Rooms with `room_id`, optional `room_alias` and `started_by`. The destination
+Room also lists the child. Peers placed through another kernel use the existing
+peer protocol.
 
 ### Workflow entry gates, held launch placement and the sub-agent node's settings — local 1002
 

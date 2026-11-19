@@ -54,16 +54,6 @@ fn child_authority(
     Ok((Some(child_mode), Some(child_level)))
 }
 
-fn parent_limit(
-    session: &crate::session::RuntimeSession,
-    parent: Option<&crate::agent::AgentInstance>,
-    agents: &[crate::agent::AgentInstance],
-) -> Option<crate::session::EffectiveAgentExecutionConfig> {
-    parent.map(|parent| {
-        crate::session::effective_agent_execution_config_in_tree(session, parent, agents)
-    })
-}
-
 /// An agent that calls is the origin of the change; so is an outside agent acting through an
 /// owner grant. A client's call is the person's.
 fn settings_context(
@@ -344,12 +334,14 @@ impl SessionRuntimeStore {
                 .then(|| defaults.account_profile.clone())
                 .flatten()
         });
-        let parent = caller_metaagent_id.as_deref().and_then(|id| {
-            self.state
-                .session_agents(&request.session_id)
-                .into_iter()
-                .find(|agent| agent.id() == id)
-        });
+        let parent = match caller_metaagent_id
+            .as_deref()
+            .map(|id| self.state.agent_for_parent(id))
+            .transpose()
+        {
+            Ok(parent) => parent,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         // A parent's command id, or a peer spawn's request from another kernel, names one agent.
         if let Some(key) = idempotency_key.as_deref() {
             let parent_id = parent.as_ref().map(|parent| parent.id());
@@ -371,23 +363,16 @@ impl SessionRuntimeStore {
                     .await;
             }
         }
-        let peer_limit = match caller_metaagent_id
-            .as_deref()
-            .map(|caller| self.state.peer_spawn_limit(caller, &request.session_id))
+        let parent_limit = match parent
+            .as_ref()
+            .map(|parent| self.state.parent_execution_limit(&session, parent))
             .transpose()
         {
-            Ok(limit) => limit.flatten(),
+            Ok(limit) => limit,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let is_peer = peer_limit.is_some();
         let (execution_mode, permission_level) = match child_authority(
-            peer_limit.or_else(|| {
-                parent_limit(
-                    &session,
-                    parent.as_ref(),
-                    &self.state.session_agents(&request.session_id),
-                )
-            }),
+            parent_limit,
             request.execution_mode,
             request.permission_level,
             defaults,
@@ -432,11 +417,9 @@ impl SessionRuntimeStore {
         };
         let create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
             .with_owner_user_id(owner_user_id);
-        let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent && !is_peer => {
-                create_request.with_parent_agent_id(metaagent_id)
-            }
-            _ => create_request,
+        let create_request = match parent.as_ref() {
+            Some(parent) => create_request.with_parent(parent),
+            None => create_request,
         };
         // A parent's spawn always carries a key: it marks the child as the parent's own.
         let create_request = match (idempotency_key, parent.as_ref()) {
@@ -538,12 +521,6 @@ impl SessionRuntimeStore {
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
-                // A peer lives and dies with the room agent that made it.
-                if let (true, Some(creator)) = (is_peer, caller_metaagent_id.as_deref()) {
-                    if let Err(error) = self.state.record_created_local_peer(creator, &agent) {
-                        return self.with_session_projection_action_result(Err(error)).await;
-                    }
-                }
                 if let Some(slice_ref) = slice_ref_for_agent {
                     let agent_id = agent.id().to_string();
                     if let Err(error) = self
@@ -655,6 +632,14 @@ impl SessionRuntimeStore {
         let parent = caller_metaagent_id
             .as_deref()
             .and_then(|id| room_agents.iter().find(|agent| agent.id() == id).cloned());
+        let parent_limit = match parent
+            .as_ref()
+            .map(|parent| self.state.parent_execution_limit(&session, parent))
+            .transpose()
+        {
+            Ok(limit) => limit,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
@@ -692,7 +677,7 @@ impl SessionRuntimeStore {
                 .effort
                 .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
             let (execution_mode, permission_level) = match child_authority(
-                parent_limit(&session, parent.as_ref(), &room_agents),
+                parent_limit,
                 item.execution_mode,
                 item.permission_level,
                 defaults,
@@ -762,7 +747,7 @@ impl SessionRuntimeStore {
                 {
                     Ok(selection) => selection,
                     Err(error) => {
-                        return self.with_session_projection_action_result(Err(error)).await
+                        return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
             } else {

@@ -70,18 +70,23 @@ impl KernelRuntimeOwnedState {
                 "reason": crate::provider::sanitize_provider_diagnostic(diagnostic),
             }),
         );
-        self.durable_state_store
-            .agent_lifecycle(Operation::SourceOutcome {
-                room: room.into(),
-                source: agent.into(),
-                occurrence: "failed-start".into(),
-                success: false,
-                public_answer: Some(
-                    crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart
-                        .answer(agent),
-                ),
-                now: crate::session::unix_epoch_ms(),
-            })?;
+        let actor = self.agent_store.get_agent(agent).ok();
+        for receiver in
+            std::iter::once(room).chain(actor.as_ref().and_then(|actor| actor.parent_room_id()))
+        {
+            self.durable_state_store
+                .agent_lifecycle(Operation::SourceOutcome {
+                    room: receiver.into(),
+                    source: agent.into(),
+                    occurrence: "failed-start".into(),
+                    success: false,
+                    public_answer: Some(
+                        crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart
+                            .answer(agent),
+                    ),
+                    now: crate::session::unix_epoch_ms(),
+                })?;
+        }
         Ok(())
     }
 

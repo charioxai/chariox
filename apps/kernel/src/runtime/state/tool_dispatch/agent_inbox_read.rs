@@ -123,10 +123,9 @@ impl KernelRuntimeState {
             })?;
         }
         let reader = self.owned.agent_store.get_agent(actor)?;
-        let agents = self.owned.agent_store.get_session_agents(room);
         let views: Vec<(SenderRelation, serde_json::Value)> = shown
             .iter()
-            .map(|event| self.inbox_event_view(room, &reader, &agents, event, 0))
+            .map(|event| self.inbox_event_view(room, &reader, event, 0))
             .collect::<Result<_, _>>()?;
         let untrusted = views.iter().any(|(relation, _)| !relation.is_instruction());
         let events: Vec<serde_json::Value> = views.into_iter().map(|(_, view)| view).collect();
@@ -165,8 +164,7 @@ impl KernelRuntimeState {
             })?;
         }
         let reader = self.owned.agent_store.get_agent(actor)?;
-        let agents = self.owned.agent_store.get_session_agents(room);
-        let (relation, view) = self.inbox_event_view(room, &reader, &agents, &event, offset)?;
+        let (relation, view) = self.inbox_event_view(room, &reader, &event, offset)?;
         Ok(serde_json::json!({
             "untrusted": !relation.is_instruction(),
             "notice": READING_NOTICE,
@@ -206,7 +204,6 @@ impl KernelRuntimeState {
         &self,
         room: &str,
         reader: &crate::agent::AgentInstance,
-        agents: &[crate::agent::AgentInstance],
         event: &InboxEvent,
     ) -> EventSender {
         let agent = self.owned.agent_store.get_agent(&event.source_id).ok();
@@ -246,7 +243,9 @@ impl KernelRuntimeState {
         let relation = if remote.is_some() {
             SenderRelation::Peer
         } else {
-            SenderRelation::of(reader, agent.as_ref(), agents)
+            SenderRelation::of(reader, agent.as_ref(), |id, target| {
+                self.owned.agent_store.is_ancestor(id, target)
+            })
         };
         EventSender {
             agent,
@@ -262,7 +261,6 @@ impl KernelRuntimeState {
         &self,
         room: &str,
         reader: &crate::agent::AgentInstance,
-        agents: &[crate::agent::AgentInstance],
         event: &InboxEvent,
         offset: usize,
     ) -> Result<(SenderRelation, serde_json::Value), DaemonError> {
@@ -273,7 +271,7 @@ impl KernelRuntimeState {
             alias,
             name,
             relation,
-        } = self.event_sender(room, reader, agents, event);
+        } = self.event_sender(room, reader, event);
         let name = name.as_str();
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");

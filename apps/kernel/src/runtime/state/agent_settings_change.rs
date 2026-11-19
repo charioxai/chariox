@@ -107,9 +107,9 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
     ) -> Result<AgentSettingsView, DaemonError> {
         let session = self.session_store.get_session(agent.session_id())?;
-        let agents = self.agent_store.get_session_agents(agent.session_id());
         let limit =
-            crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
+            self.agent_store
+                .effective_execution_config(&session, agent, &self.session_store);
         let account = self.account_label(agent, agent.provider_account_profile());
         Ok(AgentSettingsView {
             provider: agent.provider().to_string(),
@@ -148,14 +148,13 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
     ) -> Result<crate::session::EffectiveAgentExecutionConfig, DaemonError> {
         let session = self.session_store.get_session(agent.session_id())?;
-        let agents = self.agent_store.get_session_agents(agent.session_id());
         let mut capped = agent.clone();
         capped.set_execution_mode_override(None);
         capped.set_permission_level_override(None);
         capped.set_parent_limit_waived(false);
-        Ok(crate::session::effective_agent_execution_config_in_tree(
-            &session, &capped, &agents,
-        ))
+        Ok(self
+            .agent_store
+            .effective_execution_config(&session, &capped, &self.session_store))
     }
 
     /// Refuses a mode or permission level an agent asks for above what the agent above allows,
@@ -172,27 +171,23 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
         let cap = self.parent_cap(agent)?;
-        let session = self.session_store.get_session(agent.session_id())?;
-        let agents = self.agent_store.get_session_agents(agent.session_id());
+        let agents = self.agent_store.list_agents();
         let limiting =
             |holds_lower: &dyn Fn(&crate::session::EffectiveAgentExecutionConfig) -> bool| {
-                let mut current = agent;
-                for _ in 0..16 {
-                    let Some(parent) = current
-                        .parent_agent_id()
-                        .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
-                    else {
+                for parent in crate::agent::authority_limit::ancestors(agent, &agents) {
+                    let Ok(room) = self.session_store.get_session(parent.session_id()) else {
                         break;
                     };
-                    let own =
-                        crate::session::effective_agent_execution_config(&session, Some(parent));
+                    let own = crate::session::effective_agent_execution_config(&room, Some(parent));
                     if holds_lower(&own) {
                         return parent
                             .alias()
                             .unwrap_or_else(|| parent.agent_ref())
                             .to_string();
                     }
-                    current = parent;
+                    if parent.parent_limit_waived() {
+                        break;
+                    }
                 }
                 "the room".to_string()
             };

@@ -7,12 +7,12 @@ use crate::app::DaemonApp;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::transport::relay_client::{
-    send_peer_request_via_connected_relay_authorized,
-    send_peer_request_via_temporary_connection_authorized, RelayClientState,
+    RelayClientState, send_peer_request_via_connected_relay_authorized,
+    send_peer_request_via_temporary_connection_authorized,
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION,
+    MINIMUM_RELAY_PEER_RUNTIME_VERSION, RelayPeerRequest, RelayPeerResponse,
 };
 
 use super::remote_kernel_selection::{
@@ -736,11 +736,9 @@ impl DaemonApp {
             .clone()
             .unwrap_or_else(|| self.config.clone());
         let session = self.sessions().get_session(agent.session_id())?;
-        let effective_config = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            agent,
-            &self.agents.get_session_agents(agent.session_id()),
-        );
+        let effective_config =
+            self.agents
+                .effective_execution_config(&session, agent, &self.sessions);
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),
@@ -1100,11 +1098,9 @@ impl DaemonApp {
             });
         }
         let session = self.sessions.get_session(agent.session_id())?;
-        let effective_config = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            &agent,
-            &self.agents.get_session_agents(agent.session_id()),
-        );
+        let effective_config =
+            self.agents
+                .effective_execution_config(&session, &agent, &self.sessions);
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),
@@ -2119,11 +2115,13 @@ mod tests {
         assert!(
             super::remote_provider_account_confirmed(&ensured("codex", " "), &expected).is_none()
         );
-        assert!(super::remote_provider_account_confirmed(
-            &ensured("claude", "codex-1-vfx4dshw"),
-            &expected
-        )
-        .is_none());
+        assert!(
+            super::remote_provider_account_confirmed(
+                &ensured("claude", "codex-1-vfx4dshw"),
+                &expected
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2184,13 +2182,15 @@ mod tests {
 
         assert_eq!(installed.owner_user_id, "worker-owner");
         assert_eq!(installed.profile_id, profile.profile_id);
-        assert!(super::installed_remote_account_metadata(
-            &profile,
-            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
-            "another-worker",
-            "worker-owner",
-        )
-        .is_none());
+        assert!(
+            super::installed_remote_account_metadata(
+                &profile,
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                "another-worker",
+                "worker-owner",
+            )
+            .is_none()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2690,9 +2690,10 @@ mod tests {
             )
             .expect("slice relay endpoint should update");
 
-        assert!(app
-            .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
-            .is_none());
+        assert!(
+            app.slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
+                .is_none()
+        );
         assert!(app.hosted_shared_slice_uses_connected_relay(&slice.worker_kernel_ref));
         assert_eq!(
             app.remote_account_materialization_target_kind(&slice.worker_kernel_ref),
@@ -3018,8 +3019,8 @@ mod cleanup_tests {
             ("worker", "other-agent", "leased_agent_not_found"),
             ("worker", "agent", "execution_lease_not_found"),
         ] {
-            assert!(app
-                .reconcile_remote_cleanup_response(
+            assert!(
+                app.reconcile_remote_cleanup_response(
                     &binding,
                     "agent",
                     "leased_agent_not_found",
@@ -3029,7 +3030,8 @@ mod cleanup_tests {
                         code
                     })
                 )
-                .is_err());
+                .is_err()
+            );
         }
         assert!(
             app.reconcile_remote_cleanup_response(
@@ -3046,8 +3048,8 @@ mod cleanup_tests {
             .is_err(),
             "a code alone is insufficient"
         );
-        assert!(app
-            .reconcile_remote_cleanup_response(
+        assert!(
+            app.reconcile_remote_cleanup_response(
                 &binding,
                 "agent",
                 "leased_agent_not_found",
@@ -3055,7 +3057,8 @@ mod cleanup_tests {
                     leased_agent_id: "other-agent".into()
                 })
             )
-            .is_err());
+            .is_err()
+        );
         let receipts = app
             .durable_state_store()
             .load_events_by_kind("agent.worker_cleanup.already_absent")
@@ -3110,18 +3113,24 @@ mod cleanup_tests {
             app.operational_history_store().path().to_path_buf(),
         )
         .unwrap();
-        assert!(history
-            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
-            .unwrap());
-        assert!(!history
-            .remote_lease_context_pending(session.id(), agent.id(), &original)
-            .unwrap());
+        assert!(
+            history
+                .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+                .unwrap()
+        );
+        assert!(
+            !history
+                .remote_lease_context_pending(session.id(), agent.id(), &original)
+                .unwrap()
+        );
         let (result, committed) = app.commit_remote_agent_binding_refresh(&refresh);
         assert!(result.is_err());
         assert!(!committed);
-        assert!(history
-            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
-            .unwrap());
+        assert!(
+            history
+                .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+                .unwrap()
+        );
     }
 
     /// MP-08 / MP-09 / MP-10 / MP-11: a renewed binding launches the worker within the parent chain.
