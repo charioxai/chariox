@@ -391,7 +391,7 @@ mod tests {
         assert!(!local.message.contains(&profile.profile_id));
         let external = map_relay_error(&error);
         assert_eq!(external.code, "provider_profile_unverified");
-        assert!(external.message.contains("RefreshProviderAccountProfile"));
+        assert!(external.message.contains("Sign in"));
         assert!(!external.message.contains(&profile.label));
         assert!(!external.message.contains(&profile.profile_id));
     }
@@ -524,7 +524,7 @@ mod tests {
             crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
         );
         assert!(!mapped.retryable);
-        assert!(mapped.message.contains("RefreshProviderAccountProfile"));
+        assert!(mapped.message.contains("Sign in"));
         assert!(!mapped.message.contains("private-label-canary"));
     }
     use crate::local::{

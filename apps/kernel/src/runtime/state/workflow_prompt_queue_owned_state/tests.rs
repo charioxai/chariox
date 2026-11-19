@@ -2499,7 +2499,7 @@ fn refused_gated_entry_waits_with_its_reason_until_the_gate_deadline() {
     // The expired entry fails with the plain refusal an ungated invoke returns.
     assert_eq!(
         unverified_refusal().to_string(),
-        "codex account `work`: has not been verified; refresh it in Provider Accounts, then retry"
+        "codex account `work`: has not been verified; retry, or choose Sign in for this account in Provider Accounts"
     );
 }
 

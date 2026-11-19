@@ -405,7 +405,7 @@ impl ProviderAccountUsageSnapshot {
             management_url: match provider.as_str() {
                 "codex" => Some("https://chatgpt.com/codex/settings/usage".to_string()),
                 "claude" => Some("https://claude.ai/settings/usage".to_string()),
-                "opencode" => Some("https://opencode.ai/zen".to_string()),
+                "opencode" => Some("https://opencode.ai/console".to_string()),
                 _ => None,
             },
         }
@@ -463,6 +463,10 @@ impl ProviderAccountUsageSnapshot {
 struct ProviderAccountUsageBlock {
     exhausted_labels: Vec<String>,
     requires_exhausted_credits: bool,
+}
+
+pub(crate) fn is_opencode_go_model(model: Option<&str>) -> bool {
+    model.is_some_and(|model| model.starts_with("opencode-go/"))
 }
 
 fn provider_account_usage_block(
@@ -1357,6 +1361,17 @@ impl ProviderAccountProfileRegistry {
                 }
             }
         };
+        let auth_state = if provider == "opencode" && is_opencode_go_model(model) {
+            profile
+                .services
+                .iter()
+                .find(|service| service.service_id == "opencode-go")
+                .map_or(ProviderAccountAuthState::NotConfigured, |service| {
+                    service.auth_state
+                })
+        } else {
+            profile.auth_state
+        };
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check. A
@@ -1371,7 +1386,7 @@ impl ProviderAccountProfileRegistry {
                 "claude",
                 &profile.profile_id,
             )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
-        if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
+        if auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if provider_account_usage_block(
                 &profile.provider,
                 model,
@@ -1387,7 +1402,7 @@ impl ProviderAccountProfileRegistry {
             return Ok(profile);
         }
         Err(refused(
-            if profile.auth_state == ProviderAccountAuthState::Unknown {
+            if auth_state == ProviderAccountAuthState::Unknown {
                 crate::error::ProviderProfileRefusal::Unverified
             } else {
                 crate::error::ProviderProfileRefusal::Unauthenticated
@@ -1407,7 +1422,7 @@ impl ProviderAccountProfileRegistry {
         // OpenCode runs its free models with no account, as plain `opencode`
         // does. The running server's connected catalog refuses a model that
         // needs an account and names the models that are available.
-        if provider == "opencode" {
+        if provider == "opencode" && !is_opencode_go_model(agent.model()) {
             self.get(owner_user_id, provider, agent.provider_account_profile())?;
             return Ok(());
         }
@@ -1664,6 +1679,24 @@ impl ProviderAccountProfileRegistry {
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
         services.dedup_by(|left, right| left.service_id == right.service_id);
+        if provider == "opencode" {
+            profile.public.usage.management_url = Some(
+                if services
+                    .iter()
+                    .any(|service| service.service_id == "opencode-go")
+                {
+                    "https://opencode.ai/console/go"
+                } else if services
+                    .iter()
+                    .any(|service| service.service_id == "opencode")
+                {
+                    "https://opencode.ai/zen"
+                } else {
+                    "https://opencode.ai/console"
+                }
+                .to_string(),
+            );
+        }
         profile.public.services = services;
         let result = profile.public.clone();
         self.persist_locked(&document)?;

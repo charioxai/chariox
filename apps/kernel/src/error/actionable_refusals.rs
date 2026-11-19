@@ -9,9 +9,9 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "control_plane_authorization_denied" => "Reconnect the owner's signed-in client and refresh machine capabilities",
         "control_plane_binding_invalid" => "The connected service returned an invalid machine binding",
 
-        "provider_profile_unverified" => "provider profile has not been verified; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel, then retry the prompt",
-        "provider_profile_unauthenticated" => "provider profile is not authenticated; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel. If it remains unauthenticated, reconnect it in Provider Accounts before retrying",
-        "provider_profile_usage_exhausted" => "provider profile usage is exhausted; run RefreshProviderAccountProfile {provider, account_profile} to refresh usage, or select another account before starting work",
+        "provider_profile_unverified" => "provider profile has not been verified; retry the prompt, or choose Sign in for this account in Provider Accounts",
+        "provider_profile_unauthenticated" => "provider profile is not authenticated; choose Sign in for this account in Provider Accounts, then retry",
+        "provider_profile_usage_exhausted" => "provider profile usage is exhausted; select another account in Provider Accounts before starting work",
         "provider_profile_unavailable" => "provider profile is not registered for this owner on this kernel; run ListProviderAccountProfiles {provider}, then link or select a profile on the executing kernel",
         "provider_account_name_taken" => "an account with this name already exists on this kernel; choose another name or use the existing account",
         "provider_login_code_incomplete" => "the sign-in code is incomplete; paste the whole code the provider showed and submit it again",

@@ -32,8 +32,9 @@ impl KernelRuntimeOwnedState {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(None);
         };
-        // OpenCode's free models run with no account; its server refuses the rest.
-        if provider == "opencode" {
+        // OpenCode can run free models without a provider login. Go requires
+        // verification of its own credential, even when Zen is signed in.
+        if provider == "opencode" && !crate::account_profile::is_opencode_go_model(agent.model()) {
             return Ok(None);
         }
         let current = selected_run.cloned().or_else(|| {
@@ -111,6 +112,39 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    pub(super) async fn verify_opencode_go_account(
+        &self,
+        owner: &str,
+        profile: &str,
+    ) -> Result<(), DaemonError> {
+        let registry = self.owned.provider_account_profiles.clone();
+        let owner = owner.to_string();
+        let profile = profile.to_string();
+        let config = self.owned.config_projection.snapshot();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::local::provider_requests::refresh_provider_account_auth_with_config(
+                &registry, &owner, "opencode", &profile, &config,
+            )?;
+            registry.require_authenticated(
+                &owner,
+                "opencode",
+                &profile,
+                Some("opencode-go/"),
+                "verify OpenCode Go account",
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "verify OpenCode Go account",
+            message: error.to_string(),
+        })?;
+        self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        self.record_room_list_change();
+        result
+    }
+
     pub(super) async fn refresh_unknown_prompt_account(
         &self,
         session_id: &str,
@@ -130,6 +164,22 @@ impl KernelRuntimeState {
         };
         let registry = self.owned.provider_account_profiles.clone();
         let profile = registry.get(&owner, provider, &selection)?;
+        if provider == "opencode" {
+            if registry
+                .require_authenticated(
+                    &owner,
+                    provider,
+                    &profile.profile_id,
+                    agent.model(),
+                    "submit prompt",
+                )
+                .is_err()
+            {
+                self.verify_opencode_go_account(&owner, &profile.profile_id)
+                    .await?;
+            }
+            return Ok(());
+        }
         if profile.auth_state != crate::account_profile::ProviderAccountAuthState::Unknown {
             return Ok(());
         }

@@ -19,13 +19,19 @@ impl KernelRuntimeState {
         model_source: Source,
         effort: Option<String>,
     ) -> Result<(Option<String>, Option<String>), DaemonError> {
-        if model.is_some() && effort.is_some() && model_source != Source::Named {
-            return Ok((model, effort));
-        }
         let Some(family) = crate::provider::canonical_provider_family(provider) else {
             return Ok((model, effort));
         };
         let account_owner = self.provider_account_authority_owner_user_id(owner_user_id);
+        let is_explicit_go =
+            family == "opencode" && crate::account_profile::is_opencode_go_model(model.as_deref());
+        if is_explicit_go {
+            self.verify_opencode_go_account(&account_owner, account_profile.unwrap_or("default"))
+                .await?;
+        }
+        if model.is_some() && effort.is_some() && model_source != Source::Named {
+            return Ok((model, effort));
+        }
         // An account the owner does not have is refused by the launch admission that follows, with
         // the action to take; this step only chooses among the models of an account that exists.
         let Ok(profile) = self.provider_account_profile_registry().get(
@@ -67,6 +73,13 @@ impl KernelRuntimeState {
             },
         )
         .map_err(|refusal| model_refused(provider, &profile, refusal))?;
+        if !is_explicit_go
+            && family == "opencode"
+            && crate::account_profile::is_opencode_go_model(Some(&choice.model))
+        {
+            self.verify_opencode_go_account(&account_owner, &profile)
+                .await?;
+        }
         Ok((Some(choice.model), choice.effort))
     }
 

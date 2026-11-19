@@ -412,7 +412,8 @@ async function handleProviderAccountsCommand(
     const profiles = await deps.listProviderAccountProfiles(provider ?? null)
     const lines = profiles.map((entry) => {
       const services = formatProviderAccountServices(entry)
-      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}`
+      const managementLink = entry.usage.management_url
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}${managementLink ? ` · Manage at ${managementLink}` : ""}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
