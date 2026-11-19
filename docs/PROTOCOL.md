@@ -39,6 +39,26 @@ registration with another `public_key` closes the socket with `daemon identity
 key changed; reconnect to register it`. A kernel refuses a relay that offers no
 challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
 
+### A kernel too old for the relay (relay peer 497, provisional)
+
+A `daemon_register` the relay cannot read (a kernel older than the relay, such as
+one that sends no `proof`) carries no traffic, as before. If its first frame still
+names a kernel (`registration.auth_token`, `daemon_id`, `machine_id`,
+`public_key`, a kernel capability and the optional `local_protocol`), the relay
+runs the same token and identity checks as a real registration and, when they
+pass, records the refusal for 150 seconds (an old kernel retries at least once a
+minute; a live registration of the same kernel clears it). It closes the socket
+with `update needed: this kernel runs protocol N (or reports no protocol) and is
+older than the relay; update Chariox on this machine and restart the kernel` and
+logs `relay_registration_update_needed`. The relay's machine list names each
+such kernel under its machine as `update_needed_kernels: [{kernel_id,
+local_protocol?}]`; a machine with only refused kernels is listed with
+`kernel_count: 0`. The kernel's machine presence adds them to the machine's
+`kernels` with that protocol, so clients show Update needed on the machine's own
+entry, and never routes to or probes them. Cloud has such a kernel offline, so the
+machine-list grant names every kernel the account links; kernel queries are still
+granted the online ones.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
