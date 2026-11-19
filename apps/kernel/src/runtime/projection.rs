@@ -5,6 +5,7 @@ mod agent_liveness;
 mod agent_runtime_projection;
 mod config_projection;
 mod daemon_health_model;
+pub(crate) mod machine_list_renewal;
 mod provider_projection;
 mod queued_prompt_controls;
 mod remote_relay_inventory_projection;
@@ -41,7 +42,7 @@ pub use queued_prompt_controls::AgentQueuedPromptControlProjection;
 #[cfg(test)]
 pub(crate) use queued_prompt_controls::QUEUED_PROMPT_STEER_EXTERNAL_REASON;
 pub(crate) use remote_relay_inventory_projection::{
-    RemoteInventoryWatch, RemoteRelayInventoryProjectionStore,
+    LivePassVerdict, RemoteInventoryWatch, RemoteRelayInventoryProjectionStore,
 };
 pub(crate) use session_active_run_projection::projected_active_provider_run_id;
 pub(crate) use session_snapshot_projection::{

@@ -7,7 +7,7 @@ use futures_util::FutureExt;
 use crate::config::DaemonConfig;
 use crate::runtime::machine_presence;
 use crate::runtime::projection::{
-    DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
+    DaemonConfigProjectionStore, LivePassVerdict, RemoteRelayInventoryProjectionStore,
 };
 use crate::session::unix_epoch_ms;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -86,8 +86,8 @@ pub(crate) fn retain_remembered_machines(
     })
 }
 
-/// A Remove or Approve can land while a live pass awaits the relay; the pass then starts over,
-/// this many times at most.
+/// A Remove can land while a live pass awaits the relay; the pass then starts over, this many
+/// times at most.
 const LIVE_PASS_ATTEMPTS: usize = 3;
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
@@ -165,26 +165,55 @@ pub(crate) async fn refresh_remote_inventory_projection(
     runtime_config.relay_request_timeout_ms = runtime_config
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
+    let directory = crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+        .map(relay_discovery::authorization::cloud_directory_key);
     for _ in 0..LIVE_PASS_ATTEMPTS {
-        let started_revision = projection.registry_revision();
-        let (listed, remote_kernels) =
-            live_pass(&runtime_config, &projection, main.as_ref()).await?;
-        let published = DaemonConfig::update_machine_registry(|registry| {
-            // Compare and set: a pass that a Remove or Approve overtook does not publish.
-            if projection.registry_revision() != started_revision {
-                return false;
+        let pass = projection.begin_live_pass();
+        let seen = live_pass(&runtime_config, &projection, main.as_ref()).await?;
+        let verdict = DaemonConfig::update_machine_registry(|registry| {
+            // Compare and set, before anything is written: a pass that a newer pass or a Remove
+            // overtook changes neither the registry nor the projection.
+            let verdict = projection.live_pass_verdict(pass);
+            if verdict != LivePassVerdict::Publish {
+                return verdict;
             }
-            let inventory = machine_presence::reconcile(
+            if let Some(read) = seen.directory_read {
+                projection.record_directory_read(read.linked);
+                projection.record_directory_machines(&read.directory, read.linked_machines);
+            }
+            // Membership is the directory's: a machine Cloud no longer links (Remove unlinks it)
+            // is forgotten by every kernel that remembers it through that directory, not only
+            // the one that was asked. Records of a private relay or a pairing are no directory's.
+            if let Some(directory) = &directory {
+                machine_presence::record_directory_of_new_machines(
+                    registry,
+                    &seen.listed,
+                    directory,
+                    &runtime_config.host_machine_id,
+                );
+                let unlinked = projection.gone_machines(
+                    directory,
+                    registry
+                        .iter()
+                        .filter(|entry| entry.directory.as_deref() == Some(directory))
+                        .map(|entry| &entry.machine_id),
+                );
+                machine_presence::forget_unlinked(registry, directory, &unlinked);
+            }
+            let mut inventory = machine_presence::reconcile(
                 registry,
-                listed,
+                seen.listed,
                 &projection.online_machine_ids(),
                 &runtime_config.host_machine_id,
                 unix_epoch_ms(),
             );
-            projection.publish_live(started_revision, inventory, remote_kernels)
+            inventory.directory = directory.clone();
+            projection.publish_live(pass, inventory, seen.remote_kernels)
         })?;
-        if published {
-            return Ok(());
+        match verdict {
+            // A superseded pass has nothing to add: the newer list is the one shown.
+            LivePassVerdict::Publish | LivePassVerdict::Superseded => return Ok(()),
+            LivePassVerdict::RegistryChanged => {}
         }
     }
     Err(DaemonError::LocalTransport {
@@ -195,26 +224,40 @@ pub(crate) async fn refresh_remote_inventory_projection(
     })
 }
 
+/// One read of the owner's Cloud directory, recorded only by a pass that publishes.
+struct DirectoryRead {
+    directory: String,
+    linked: std::collections::BTreeSet<String>,
+    linked_machines: Option<std::collections::BTreeSet<String>>,
+}
+
+/// What one live pass saw, written only if it publishes.
+struct LivePassSeen {
+    listed: Vec<crate::local::RemoteMachineRecord>,
+    remote_kernels: Vec<chariox_relay::protocol::RelayKernelPresence>,
+    directory_read: Option<DirectoryRead>,
+}
+
 /// What the relay lists now: the machines a client can reach and their live kernels.
 async fn live_pass(
     runtime_config: &DaemonConfig,
     projection: &RemoteRelayInventoryProjectionStore,
     main: Option<&MainConnection>,
-) -> Result<
-    (
-        Vec<crate::local::RemoteMachineRecord>,
-        Vec<chariox_relay::protocol::RelayKernelPresence>,
-    ),
-    DaemonError,
-> {
+) -> Result<LivePassSeen, DaemonError> {
+    let mut directory_read = None;
     let visible_kernel_ids = if let Some(profile) =
         crate::runtime::cloud_relay_control::active_cloud_profile(runtime_config)
     {
-        let directory = relay_discovery::authorization::visible_directory(profile).await?;
-        if let Some(directory) = &directory {
-            projection.record_directory_read(directory.linked.clone());
-        }
-        directory.map(|directory| directory.online)
+        relay_discovery::authorization::visible_directory(profile)
+            .await?
+            .map(|visible| {
+                directory_read = Some(DirectoryRead {
+                    directory: relay_discovery::authorization::cloud_directory_key(profile),
+                    linked: visible.linked,
+                    linked_machines: visible.linked_machines,
+                });
+                visible.online
+            })
     } else {
         None
     };
@@ -266,7 +309,11 @@ async fn live_pass(
         &runtime_config.host_machine_id,
         visible_kernel_ids.is_some(),
     );
-    Ok((listed, remote_kernels))
+    Ok(LivePassSeen {
+        listed,
+        remote_kernels,
+        directory_read,
+    })
 }
 
 /// A machine is listed for the kernels a client can reach on it. This kernel is "local" to its
@@ -351,6 +398,7 @@ mod tests {
     #[test]
     fn the_own_machine_is_listed_only_while_another_kernel_runs_on_it() {
         let machine = |machine_id: &str, kernel_count| crate::local::RemoteMachineRecord {
+            directory: None,
             machine_id: machine_id.into(),
             machine_alias: None,
             display_name: machine_id.into(),

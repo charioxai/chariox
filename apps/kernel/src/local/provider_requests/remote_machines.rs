@@ -47,6 +47,7 @@ fn remote_machine_record(
         .clone()
         .unwrap_or_else(|| machine.machine_id.clone());
     RemoteMachineRecord {
+        directory: None,
         machine_id: machine.machine_id,
         machine_alias: machine.machine_alias,
         display_name,

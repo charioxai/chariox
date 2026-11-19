@@ -258,3 +258,107 @@ async fn a_remote_kernel_lists_the_protocol_it_registered_with() {
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+// A kernel no client follows keeps the machine list it made when it connected. A client that
+// makes it the source of its list later (its previous source dropped) is answered with what the
+// relay lists then, not with that stale list, where machines that joined since are missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_list_asked_for_after_it_went_stale_is_the_live_one() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    }));
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+    let relay_url = format!("ws://{addr}");
+    let start_kernel = |daemon_id: &str, machine_id: &str| {
+        let mut config = DaemonConfig::for_tests();
+        config.daemon_id = daemon_id.to_string();
+        config.host_machine_id = machine_id.to_string();
+        config.relay_url = Some(relay_url.clone());
+        config.relay_token = Some("secret".to_string());
+        config.relay_heartbeat_ms = 50;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+        ));
+        let relay_state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app),
+            Arc::clone(&relay_state),
+            shutdown_rx,
+        ));
+        (config, app, relay_state, shutdown_tx, task)
+    };
+    let (home, home_app, home_relay, home_shutdown, home_task) =
+        start_kernel("home-kernel", "home-machine");
+    wait_for_daemon_registration(registry.clone(), &home.daemon_id).await;
+    let (config_projection, inventory) = {
+        let app = home_app.lock().await;
+        (
+            app.config_projection_store(),
+            app.remote_relay_inventory_projection_store(),
+        )
+    };
+    // The pass the home kernel makes when it connects lists no other machine yet.
+    timeout(Duration::from_secs(5), async {
+        while !inventory.is_fresh(crate::session::unix_epoch_ms(), 60_000) {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the home kernel's connect pass should publish");
+    assert!(inventory.inventory().machines.is_empty());
+
+    let (worker, _worker_app, _worker_relay, worker_shutdown, worker_task) =
+        start_kernel("worker-kernel", "worker-machine");
+    wait_for_daemon_registration(registry.clone(), &worker.daemon_id).await;
+    // No client follows the home kernel's list, so nothing renews it: it goes stale.
+    sleep(Duration::from_millis(1_200)).await;
+
+    let response = crate::runtime::remote_relay_inventory::execute_list_remote_machines_request(
+        Arc::clone(&home_relay),
+        config_projection,
+        inventory,
+        ListRemoteMachinesRequest,
+    )
+    .await
+    .expect("the machines should list");
+    let LocalDaemonResponse::RemoteMachinesListed { machines, .. } = response else {
+        panic!("expected the machine list, got {response:?}");
+    };
+    assert_eq!(
+        machines
+            .iter()
+            .map(|machine| machine.machine_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![worker.host_machine_id.as_str()],
+        "the answer is what the relay lists now"
+    );
+
+    for (shutdown, task) in [(home_shutdown, home_task), (worker_shutdown, worker_task)] {
+        let _ = shutdown.send(true);
+        task.await.expect("connector should join");
+    }
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}

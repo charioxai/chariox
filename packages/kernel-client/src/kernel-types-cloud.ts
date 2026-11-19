@@ -124,6 +124,8 @@ export type RemoteMachineRecord = {
   provider_accounts?: ProviderAccountSummary[]
   /** The machine's live kernels with the protocol each registered with; `local_protocol` absent for a kernel older than the field. */
   kernels?: RemoteMachineKernel[]
+  /** Protocol 1065: the Cloud directory the machine belongs to; absent for a machine of a private relay. */
+  directory?: string | null
 }
 
 export type RemoteMachineKernel = {
@@ -136,6 +138,8 @@ export type OfflineMachineRecord = {
   machine_id: string
   display_name: string
   last_seen_ms: number
+  /** Protocol 1065: as `RemoteMachineRecord.directory`. */
+  directory?: string | null
 }
 
 /** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */

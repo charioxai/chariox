@@ -123,11 +123,13 @@ export type KernelEvent =
       available_providers?: string[]
       provider_accounts?: ProviderAccountSummary[]
       kernels?: RemoteMachineKernel[]
+      directory?: string | null
     }>
     offline_machines: Array<{
       machine_id: string
       display_name: string
       last_seen_ms: number
+      directory?: string | null
     }>
   }
   | {

@@ -13,26 +13,93 @@ use crate::runtime::projection::{
 use crate::transport::relay_client::{refresh_remote_inventory_projection, RelayClientState};
 
 const REMOTE_RELAY_INVENTORY_REFRESH_COOLDOWN_MS: u64 = 1_000;
+/// How long an answer on a stale machine list waits for its renewal.
+const STALE_LIST_RENEWAL_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub(crate) async fn projected_remote_machines_response(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    request_remote_relay_inventory_projection_refresh(
-        relay_state,
-        config_projection,
-        remote_relay_inventory_projection.clone(),
-    )
-    .await;
+    // A kernel no client follows keeps the list it made when it connected: a client that just
+    // made it the source of its machine list would miss every machine that joined since.
+    // Connected, a stale list is renewed before the answer; a renewal slower than the budget
+    // goes on, and the answer is the last list marked as being renewed.
+    let stale_after_ms = config_projection
+        .snapshot()
+        .relay_heartbeat_ms
+        .saturating_mul(2)
+        .max(1_000);
+    let now_ms = crate::session::unix_epoch_ms();
+    let stale = !remote_relay_inventory_projection.is_fresh(now_ms, stale_after_ms);
+    let renewing = if stale && relay_state.read().await.connected() {
+        let projection = remote_relay_inventory_projection.clone();
+        renewed_machine_list(
+            &remote_relay_inventory_projection,
+            now_ms,
+            stale_after_ms,
+            move || {
+                refresh_remote_inventory_projection(
+                    config_projection,
+                    projection,
+                    Some(relay_state),
+                )
+            },
+            STALE_LIST_RENEWAL_WAIT,
+        )
+        .await?
+    } else {
+        request_remote_relay_inventory_projection_refresh(
+            relay_state,
+            config_projection,
+            remote_relay_inventory_projection.clone(),
+        )
+        .await;
+        false
+    };
     let crate::local::RemoteMachineInventory {
         machines,
         offline_machines,
+        directory,
     } = remote_relay_inventory_projection.inventory();
     Ok(LocalDaemonResponse::RemoteMachinesListed {
+        directory,
+        renewing,
         machines,
         offline_machines,
     })
+}
+
+/// Renews the machine list before an answer, waiting at most `budget`: Ok(false) when the renewed
+/// list is in the projection, Ok(true) when the answer is the last list because the renewal still
+/// runs (it goes on and publishes), and the failure with its reason when the renewal failed. A
+/// request takes a renewal that started within its freshness bound (`now_ms - stale_after_ms`);
+/// otherwise it starts one (`machine_list_renewal`).
+async fn renewed_machine_list<F>(
+    projection: &RemoteRelayInventoryProjectionStore,
+    now_ms: u64,
+    stale_after_ms: u64,
+    renew: impl FnOnce() -> F + Send + 'static,
+    budget: std::time::Duration,
+) -> Result<bool, DaemonError>
+where
+    F: std::future::Future<Output = Result<(), DaemonError>> + Send + 'static,
+{
+    let wait = projection.renewal().request(
+        now_ms.saturating_sub(stale_after_ms),
+        now_ms,
+        move || async move { renew().await.map_err(|error| error.to_string()) },
+    );
+    match crate::runtime::projection::machine_list_renewal::outcome_within(wait, budget).await {
+        None => Ok(true),
+        Some(Ok(())) => Ok(false),
+        Some(Err(reason)) => Err(DaemonError::LocalTransport {
+            operation: "renew the machine list",
+            message: format!(
+                "the machine list could not be renewed ({reason}); the last list is stale, ask again"
+            ),
+        }),
+    }
 }
 
 pub(crate) async fn execute_list_remote_machines_request(
@@ -201,6 +268,164 @@ async fn request_remote_relay_inventory_projection_refresh(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod renewal_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn machine(machine_id: &str) -> crate::local::RemoteMachineRecord {
+        crate::local::RemoteMachineRecord {
+            directory: None,
+            machine_id: machine_id.into(),
+            machine_alias: None,
+            display_name: machine_id.into(),
+            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+            presence: crate::local::RemoteMachinePresence::Online,
+            pending: false,
+            kernel_count: 1,
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            kernels: Vec::new(),
+        }
+    }
+
+    // #1474 review 5968553263 P2-2: a pass slower than the answer budget is not cancelled by it.
+    // The answer is the last list, marked as being renewed; a retry waits for the same pass and
+    // gets its list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pass_slower_than_the_answer_budget_runs_on_and_a_retry_gets_its_list() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(
+            crate::local::RemoteMachineInventory {
+                machines: vec![machine("known")],
+                ..Default::default()
+            },
+            Vec::new(),
+        );
+        let started = Arc::new(AtomicUsize::new(0));
+        let pass = || {
+            let projection = projection.clone();
+            let started = Arc::clone(&started);
+            move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    projection.update(
+                        crate::local::RemoteMachineInventory {
+                            machines: vec![machine("known"), machine("joined")],
+                            ..Default::default()
+                        },
+                        Vec::new(),
+                    );
+                    Ok(())
+                }
+            }
+        };
+        let renewing =
+            renewed_machine_list(&projection, 1_000, 1_000, pass(), Duration::from_millis(50))
+                .await
+                .expect("answers");
+        assert!(renewing, "the answer says the list is being renewed");
+        assert_eq!(projection.inventory().machines.len(), 1, "the last list");
+
+        let renewing =
+            renewed_machine_list(&projection, 1_100, 1_000, pass(), Duration::from_secs(5))
+                .await
+                .expect("answers");
+        assert!(!renewing);
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "the retry waited for the pass already running"
+        );
+        assert_eq!(
+            projection
+                .inventory()
+                .machines
+                .iter()
+                .map(|machine| machine.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["known", "joined"],
+            "the pass that outlived the first answer finished"
+        );
+    }
+}
+
+#[cfg(test)]
+mod renewal_findings {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    // #1474 review 5969448770 P2-2: a renewal that fails within the budget is a failure with its
+    // reason, never a successful answer of the stale list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewal_that_fails_answers_with_its_failure() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let answer = renewed_machine_list(
+            &projection,
+            1_000,
+            1_000,
+            || async {
+                Err(DaemonError::LocalTransport {
+                    operation: "relay metadata",
+                    message: "the relay metadata query timed out".into(),
+                })
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        let error = answer.expect_err("a failed renewal is not a successful list");
+        assert!(
+            error
+                .to_string()
+                .contains("the relay metadata query timed out"),
+            "{error}"
+        );
+    }
+
+    // #1474 review 5969448770 P2-1: a pass whose waiter timed out finishes in the background;
+    // after another stale interval a new request starts a new pass, not the finished one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_finished_renewal_is_not_reused_once_its_list_went_stale() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let started = Arc::new(AtomicUsize::new(0));
+        let pass = |delay_ms: u64| {
+            let started = Arc::clone(&started);
+            move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    Ok(())
+                }
+            }
+        };
+        let renewing = renewed_machine_list(
+            &projection,
+            1_000,
+            1_000,
+            pass(200),
+            Duration::from_millis(20),
+        )
+        .await
+        .expect("answers");
+        assert!(renewing, "the waiter timed out");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Another stale interval later (the first pass started at 1_000; the bound is 4_000).
+        let renewing =
+            renewed_machine_list(&projection, 5_000, 1_000, pass(0), Duration::from_secs(5))
+                .await
+                .expect("answers");
+        assert!(!renewing);
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            2,
+            "the stale finished pass was not reused: a new one ran"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -46,6 +46,8 @@ impl DaemonConfig {
             let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
             entry.public_key_thumbprint = Some(public_key_thumbprint);
             entry.paired_at_ms = Some(paired_at_ms);
+            // A paired machine is the pairing's, not a Cloud directory's: no directory read forgets it.
+            entry.directory = None;
             let saved = entry.clone();
             persisted
                 .revoked_worker_machines

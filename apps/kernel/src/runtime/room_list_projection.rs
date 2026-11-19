@@ -2396,6 +2396,7 @@ mod tests {
                 machine_alias: None,
             },
             vec![RemoteMachineRecord {
+                directory: None,
                 machine_id: "machine-peer".to_string(),
                 machine_alias: Some("peer".to_string()),
                 display_name: "peer".to_string(),

@@ -211,6 +211,10 @@ pub struct RemoteMachineRecord {
     /// kernel's update changes the machine list that clients follow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernels: Vec<RemoteMachineKernel>,
+    /// The Cloud directory the machine belongs to (its registry record's), omitted for a machine
+    /// of a private relay: clients apply the account's membership only to directory machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 /// One live kernel of a listed machine.
@@ -228,6 +232,9 @@ pub struct OfflineMachineRecord {
     pub machine_id: String,
     pub display_name: String,
     pub last_seen_ms: u64,
+    /// As `RemoteMachineRecord::directory`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 /// The machines this kernel projects: listed ones, and the offline ones kept apart.
@@ -235,4 +242,9 @@ pub struct OfflineMachineRecord {
 pub struct RemoteMachineInventory {
     pub machines: Vec<RemoteMachineRecord>,
     pub offline_machines: Vec<OfflineMachineRecord>,
+    /// The Cloud directory this kernel's live list reads (its active Cloud profile), absent on a
+    /// private relay: a client applies its account's membership only to machines of the
+    /// directory it shares with the answering kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
