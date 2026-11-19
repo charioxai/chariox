@@ -3,6 +3,40 @@ use super::*;
 use crate::local::AgentDeadlineState;
 
 #[test]
+fn cutover_inherited_deadline_clock_schema_allows_owned_startup() {
+    let root = crate::test_support::TestWorktree::new("inherited-deadline-clock");
+    let path = root.path().join("state.sqlite");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE agent_deadline_clock(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                instance_id TEXT NOT NULL,
+                last_seen_ms INTEGER NOT NULL
+             );
+             INSERT INTO agent_deadline_clock VALUES(1,'old-instance',42);",
+        )
+        .unwrap();
+
+    {
+        let store = DurableKernelStateStore::open(path.clone()).unwrap();
+        let clock: i64 = store
+            .lock_connection("test.deadline_clock")
+            .unwrap()
+            .query_row(
+                "SELECT last_seen_ms FROM agent_deadline_clock WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(clock, 42, "migration must preserve the last heartbeat");
+    }
+
+    DurableKernelStateStore::open_owned(path.clone()).unwrap();
+    DurableKernelStateStore::open_owned(path).unwrap();
+}
+
+#[test]
 fn agent_deadline_survives_restart_and_retains_reached_without_a_stop_receipt() {
     let root = crate::test_support::TestWorktree::new("agent-deadline-restart");
     {

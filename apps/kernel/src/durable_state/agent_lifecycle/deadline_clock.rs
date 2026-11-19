@@ -8,7 +8,20 @@ use crate::local::AgentDeadlineState;
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadline_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_seen_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_deadline_worker_held(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,held_ms INTEGER NOT NULL,PRIMARY KEY(room_id,agent_id));")
-        .map_err(sql)
+        .map_err(sql)?;
+    // The uptime clock keeps the old heartbeat but no longer records an instance ID.
+    let has_instance_id: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_deadline_clock') WHERE name='instance_id')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if has_instance_id {
+        db.execute_batch("ALTER TABLE agent_deadline_clock DROP COLUMN instance_id")
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 pub(super) fn beat(db: &Connection, now: u64) -> Result<(), DaemonError> {
