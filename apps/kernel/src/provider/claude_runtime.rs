@@ -144,6 +144,8 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             last_usage_file_contents: None,
             last_context_tokens: None,
             last_context_window: None,
+            compactions: 0,
+            compaction_started_at_ms: None,
             observed_context_model: None,
             main_stream_has_context: true,
             mcp_config_file,
@@ -919,6 +921,8 @@ mod tests {
                 last_usage_file_contents: None,
                 last_context_tokens: None,
                 last_context_window: None,
+                compactions: 0,
+                compaction_started_at_ms: None,
                 observed_context_model: None,
                 main_stream_has_context: true,
                 mcp_config_file: None,
@@ -2664,6 +2668,111 @@ done
         assert_eq!(usage.meters.len(), 1);
         assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
         assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_014_400_000));
+    }
+
+    #[test]
+    fn a_claude_compaction_is_one_row_from_its_start_to_its_end() {
+        let (mut state, mut batch) = parser_state();
+        let mut apply = |value: serde_json::Value| {
+            apply_claude_message("run-1", &mut state, value, &mut batch);
+        };
+        apply(
+            json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 0}),
+        );
+        // The status repeats while the summary streams; the row keeps its start.
+        apply(
+            json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 40}),
+        );
+        apply(
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b1", "compact_metadata": {"trigger": "auto"}}),
+        );
+        apply(json!({"type": "system", "subtype": "status", "status": "compacting"}));
+        apply(
+            json!({"type": "system", "subtype": "status", "status": null, "compact_result": "failed", "compact_error": "prompt too long"}),
+        );
+
+        let rows = batch
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.clone().unwrap(),
+                    serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes)
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keys = rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:1",
+                "claude:run-1:compaction:1"
+            ],
+            "start and end of one compaction share one key; the next compaction has its own"
+        );
+        assert!(matches!(
+            rows[0].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[1].1,
+            crate::provider::ContextCompaction::Done { .. }
+        ));
+        assert!(matches!(
+            rows[2].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert_eq!(
+            rows[3].1,
+            crate::provider::ContextCompaction::Failed {
+                reason: "prompt too long".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_claude_compaction_row_carries_the_summary_the_transcript_holds() {
+        let temp = crate::test_temp_dir::TestTempDir::new("claude-compaction-row-summary");
+        let project = temp.path().join("projects").join("-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("session-7.jsonl"),
+            format!(
+                "{}\n",
+                json!({"type": "user", "isCompactSummary": true, "uuid": "anchor-1", "message": {"content": "Condensed by Claude."}})
+            ),
+        )
+        .unwrap();
+        let (mut state, mut batch) = parser_state();
+        state.env.insert(
+            "CLAUDE_CONFIG_DIR".into(),
+            temp.path().display().to_string(),
+        );
+        state.session_id = Some("session-7".into());
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b1",
+                "compact_metadata": {"trigger": "auto", "preserved_segment": {"anchor_uuid": "anchor-1"}}}),
+            &mut batch,
+        );
+
+        let chunk = batch
+            .chunks
+            .iter()
+            .find(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .expect("the boundary yields the compaction row");
+        assert_eq!(
+            serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes).unwrap(),
+            crate::provider::ContextCompaction::Done {
+                summary: "Condensed by Claude.".into()
+            }
+        );
     }
 
     fn envelope_with(base: &str, turn: &str) -> PromptEnvelope {

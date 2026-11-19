@@ -16,6 +16,7 @@ pub(crate) use utility_stop::UtilityStop;
 mod account_credential;
 mod account_endpoints;
 mod claude;
+mod claude_compaction;
 mod claude_runtime;
 pub(crate) use claude_runtime::claude_rate_limit_snapshot;
 pub(crate) use claude_runtime::failed_to_start_before_prompt;
@@ -98,6 +99,9 @@ pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_exe
 pub(crate) use claude::{
     probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
     verify_claude_setup_token, ClaudeCredentialCheckError,
+};
+pub(crate) use claude_compaction::{
+    claude_compaction, read_summary_from_transcript, ClaudeCompaction, ContextCompaction,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
