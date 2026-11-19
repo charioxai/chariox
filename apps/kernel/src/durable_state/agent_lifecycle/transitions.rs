@@ -62,6 +62,7 @@ fn end_registration(
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let question = matches!(&op, Operation::BlockForQuestion { .. });
+    let interrupted = matches!(&op, Operation::BlockInterrupted { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
@@ -573,6 +574,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             prompt,
             reason,
+        }
+        | Operation::BlockInterrupted {
+            task,
+            prompt,
+            reason,
         } => {
             let mut t = load(tx, &task)?;
             if t.prompt_id != prompt {
@@ -597,6 +603,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.state == ExecutionState::Blocked
                 && t.reason == reason
                 && t.owner_action == owner_action
+                && super::supervision::is_interrupted_block(tx, &t)? == interrupted
             {
                 return Ok(Outcome::Task(t));
             }
@@ -625,6 +632,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 )?;
             }
             save(tx, &t)?;
+            super::supervision::record_block_cause(tx, &t, interrupted)?;
             Ok(Outcome::Task(t))
         }
         Operation::EndFailedTurn {
@@ -647,6 +655,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             t.revision += 1;
             save(tx, &t)?;
+            super::supervision::record_block_cause(tx, &t, true)?;
             Ok(Outcome::Task(t))
         }
         Operation::Settle {
