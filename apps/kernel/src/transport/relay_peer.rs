@@ -229,7 +229,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `InvokeHomeCredentialTool`), and has the relay admit a kernel registration only with the kernel identity key's
 /// signature over the connection's challenge (`DaemonRegister.proof`), and carries the confirmation card's `input`
 /// in `app_confirmation`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// 498 (provisional, above Landing 12's 449) carries the Skills v2 transfer manifest and leased skill
+/// delivery; Agent Move no longer lists skills and the per-agent skill grants are gone.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 498;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

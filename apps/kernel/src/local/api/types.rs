@@ -597,4 +597,7 @@ pub use workspace::*;
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
 /// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// 1060 (provisional, above Landing 12's 1012) carries Skills v2: Chariox and Project skill catalogs, the
+/// Auto / Manual / Off states, packages, repository install and update, and delivery to every execution
+/// place; the per-agent skill grants and the `skill` extension kind are gone.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1060;
