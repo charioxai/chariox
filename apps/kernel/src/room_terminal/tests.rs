@@ -1929,7 +1929,7 @@ fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
                 screen_has(&service, &id, "OWNER=none").await
             })
             .await;
-            service.end_session("room-1");
+            service.end_scope(TerminalScope::room("room-1"));
         });
 }
 
