@@ -4,6 +4,7 @@ use crate::runtime::process_resources::LaunchAdmission;
 use crate::session::{PromptQueueItem, RuntimeSession};
 
 const PROVIDER_MEMORY_WAIT: &str = "provider_memory_wait";
+const HELD_TURN_MEMORY_STABILITY: Duration = Duration::from_secs(1);
 
 pub(super) fn provider_memory_wait_error(message: String) -> DaemonError {
     DaemonError::RelayTransport {
@@ -75,7 +76,7 @@ impl KernelRuntimeState {
         let promote = async {
             let mut interval = provider_admission_interval();
             let mut next_worker_retry = tokio::time::Instant::now();
-            let mut memory_was_available = false;
+            let mut memory_available_since = None;
             loop {
                 interval.tick().await;
                 if !self.owned.publication_activation.is_active() {
@@ -86,15 +87,20 @@ impl KernelRuntimeState {
                 if retry_workers {
                     next_worker_retry = now + Duration::from_secs(1);
                 }
-                let memory_available = self
+                // A replacement can briefly release its old process memory while it
+                // rebuilds its state. Resume held turns only after headroom persists.
+                let mut resume_local = if self
                     .owned
                     .prompt_state_owner
                     .provider_launch_wait()
-                    .is_none();
-                // A replacement can briefly release its old process memory while it
-                // rebuilds its state. Resume held turns only after headroom persists.
-                let resume_local = memory_was_available && memory_available;
-                memory_was_available = memory_available;
+                    .is_none()
+                {
+                    now.duration_since(*memory_available_since.get_or_insert(now))
+                        >= HELD_TURN_MEMORY_STABILITY
+                } else {
+                    memory_available_since = None;
+                    false
+                };
                 for (session_id, agent_id) in
                     self.owned.prompt_state_owner.provider_launch_waiters()
                 {
@@ -110,7 +116,12 @@ impl KernelRuntimeState {
                                 tracing::warn!(%error, %session_id, %agent_id, "Could not advance a remote turn waiting for memory");
                             }
                         }
-                    } else if resume_local && !self.sample_provider_turn_pressure(&admission) {
+                    } else if resume_local {
+                        if self.sample_provider_turn_pressure(&admission) {
+                            memory_available_since = None;
+                            resume_local = false;
+                            continue;
+                        }
                         Box::pin(self.advance_project_queued_prompt_after_settlement(
                             &session_id,
                             &agent_id,
