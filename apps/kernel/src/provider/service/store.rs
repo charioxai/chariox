@@ -518,6 +518,16 @@ impl ProviderProcessServiceStore {
         self.read().get_latest_run_for_agent(session_id, agent_id)
     }
 
+    /// An unbound prompt waits for its agent's newest run, so a run that a
+    /// later one has replaced cannot hold it.
+    pub(crate) fn agent_started_a_later_run(&self, run: &RuntimeProviderRun) -> bool {
+        self.read().runs.values().any(|other| {
+            other.session_id() == run.session_id()
+                && other.agent_instance_id() == run.agent_instance_id()
+                && other.start_order() > run.start_order()
+        })
+    }
+
     pub fn get_session_run_for_provider(
         &self,
         session_id: &str,
