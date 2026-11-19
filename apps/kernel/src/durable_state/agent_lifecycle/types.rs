@@ -854,6 +854,7 @@ pub(crate) enum ReplyOutcome {
 pub(crate) enum DelegateGoneReason {
     Deleted,
     FailedStart,
+    AgentDeadlineReached,
     SourceLost,
 }
 impl DelegateGoneReason {

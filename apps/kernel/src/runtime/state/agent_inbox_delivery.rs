@@ -433,8 +433,10 @@ impl KernelRuntimeState {
                     }
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    self.owned
-                        .settle_failed_delegate_start(room, agent, &e.to_string())?;
+                    if !crate::error::is_agent_deadline_refusal(&e) {
+                        self.owned
+                            .settle_failed_delegate_start(room, agent, &e.to_string())?;
+                    }
                     self.publish_task_change(room);
                     return Err(e);
                 }

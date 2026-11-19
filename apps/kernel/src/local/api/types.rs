@@ -612,4 +612,5 @@ pub use workspace::*;
 /// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
 /// Agent settings updates drop `self_settings` from the request and agent record.
 /// Copied Project launch targets carry their source kernel and Project for Environment import.
+/// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

@@ -94,16 +94,25 @@ impl KernelRuntimeState {
                         return Ok(refused(refusal));
                     }
                 }
-                self.admit_peer_agent_message(
-                    kernel,
-                    &request_id,
-                    &sender,
-                    &target,
-                    message,
-                    urgent,
-                    reply_requested,
-                )
-                .await
+                let result = self
+                    .admit_peer_agent_message(
+                        kernel,
+                        &request_id,
+                        &sender,
+                        &target,
+                        message,
+                        urgent,
+                        reply_requested,
+                    )
+                    .await;
+                match result {
+                    Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
+                        Ok(refused(PeerAgentRefusal::AgentDeadlineReached {
+                            message: error.to_string(),
+                        }))
+                    }
+                    result => result,
+                }
             }
             RelayPeerRequest::PeerAgentCancel {
                 protocol_version: VERSION,

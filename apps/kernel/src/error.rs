@@ -10,6 +10,33 @@ pub use user_domain_refusal::UserDomainRefusalReason;
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
 
+pub(crate) const AGENT_DEADLINE_REACHED: &str = "agent_deadline_reached";
+
+pub(crate) fn agent_deadline_refusal(deadline_ms: u64) -> DaemonError {
+    let message = i64::try_from(deadline_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || external_request_failure_message(AGENT_DEADLINE_REACHED).into(),
+            |deadline| {
+                let time = deadline.format("%Y-%m-%d %H:%M:%S UTC");
+                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+            },
+        );
+    DaemonError::MachineRequest {
+        code: AGENT_DEADLINE_REACHED.into(),
+        message,
+    }
+}
+
+pub(crate) fn is_agent_deadline_refusal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::MachineRequest { code, .. } | DaemonError::RelayTransport { code, .. }
+            if code == AGENT_DEADLINE_REACHED
+    )
+}
+
 // MP-08 / MP-11: code-based explanations contain no provider/parser values.
 // Keep executor, MCP and final socket/cache projections consistent.
 pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
