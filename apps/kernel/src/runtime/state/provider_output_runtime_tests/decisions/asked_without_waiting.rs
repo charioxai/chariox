@@ -152,9 +152,10 @@ impl Tree {
 
     /// The text of every owner-action occurrence the grant has been told.
     fn alerts(&self, grant: &str) -> Vec<serde_json::Value> {
+        self.runtime.owned.route_workflow_notifications();
         self.runtime
             .outside_store()
-            .outside_list(grant, None, 100)
+            .outside_list(grant, Some(0), 100)
             .unwrap()
             .unwrap()
             .events
