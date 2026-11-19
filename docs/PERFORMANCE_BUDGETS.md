@@ -41,7 +41,7 @@ Each gate runs first where a developer runs it (`pnpm lint`, `pnpm test`, or the
 |---|---|---|
 | `perf-budget-tighten-only` | OSS `pnpm lint` (`pnpm lint:rules`) | a ceiling is raised or removed without its `budget raised:` line, or a budget file is not in the format |
 | Initial bundle (`web.initial_bundle_*`) | chariox-cloud `apps/web`: `pnpm test` after the build (`scripts/initial-bundle-budget.test.mjs`) | the built page's first-paint files are over the ceiling |
-| Reload and Room switch (`web.reload_*`, `web.room_switch_*`) | chariox-cloud `apps/web` UI data plane reload drill (`scripts/reload-stability/run.mjs`) and its landing gate (`gate:reload-stability`, DPR 1 and 2); verifyloop job `reload-stability` | a drill cell or the `switch` check is over the ceiling |
+| Reload, Room switch and the orchestrator Room (`web.reload_*`, `web.room_switch_*`, `web.orch_room_*`) | chariox-cloud `apps/web` UI data plane reload drill (`scripts/reload-stability/run.mjs`) and its landing gate (`gate:reload-stability`, DPR 1 and 2); verifyloop job `reload-stability` | a drill cell, the `switch` check or the `orchroom` check is over the ceiling |
 | Agent context (`agent_context_budget.*`) | OSS kernel tests (`prompt_assembly`, `transport/mcp_server/tests/tool_loading.rs`) | the measured size differs from the file |
 
 ## Web
@@ -53,6 +53,7 @@ Each gate runs first where a developer runs it (`pnpm lint`, `pnpm test`, or the
 - `reload_long_tasks`: main-thread tasks over 50 ms (the `longtask` entries the page reports) during one reload of a drill cell; the gate takes the reload with the most, so the ceiling does not depend on how many reloads a cell runs.
 - `room_switch_busy_p95_ms`: the drill's `switch` check opens the two drill Rooms and switches between them from the Sidebar; for each switch it counts the main thread's busy time (Chrome's `TaskDuration`) in the 2 s after the click, which holds the view-cache save that follows a switch. The budget is the p95 over the switches.
 - `room_switch_long_tasks`: tasks over 50 ms in those windows, summed over the switches.
+- `orch_room_first_useful_p95_ms`, `orch_room_settled_p95_ms`: the drill's `orchroom` check opens a Room like an orchestrator's: one agent with a long transcript, one idle agent, and twenty agents the person saw as panes that have since become its sub-agents (16), been hidden (2) or ended (2). It reloads the page into that Room with the person's remembered data and opens it from the Sidebar without any; first useful is the first frame that draws the orchestrator's transcript, settled the last frame that changes the strip or its pager. Each is the p95 over the reloads of a mode. The same check fails on any frame that draws a pane for an agent that is not a shown Room agent, a pager column without its pane, or a strip slot no pane fills.
 
 ## Agents
 
