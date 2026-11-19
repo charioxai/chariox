@@ -764,6 +764,24 @@ pub(super) fn admit_promoted_wakes(
         }
         admit(tx, &mut event, prompt, None, None, now)?;
     }
+    // Trigger admission already created a task for the queued prompt. If the batch wakes
+    // a retained task, retire that untouched admission in the same transaction. Otherwise
+    // Begin would bind the run to the fresh task and leave the retained task pending forever.
+    if let Some(queued) = for_turn(tx, room, agent, prompt)? {
+        if pending_continuation(tx, room, agent, prompt)?.is_some() {
+            if !queued.is_unstarted_prompt_task() {
+                return Err(error(
+                    "the notification prompt already owns supervised work",
+                ));
+            }
+            transitions::apply(
+                tx,
+                Operation::Withdraw {
+                    task: queued.task_id,
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 
