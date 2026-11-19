@@ -339,7 +339,7 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue, InteractionOutcome,
     KernelAccessProviderHarness, KernelAccessRequester, KernelAccessTerm, KernelConnectionClass,
     PasskeyPrompt, PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind,
     SudoRequestPresentation,

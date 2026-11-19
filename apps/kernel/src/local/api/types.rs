@@ -595,4 +595,6 @@ pub use workspace::*;
 /// instead of the whole `prompt`, and a session lists at most the next ten per agent.
 /// 1013 lets a provider catalog's model list `aliases`, the other names the provider's own tool accepts
 /// for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room resolve to the model id.
+/// the reply to `RespondToInteraction` is a small acknowledgement (`InteractionResponded` carries `interaction_id`,
+/// `choice_id` and `outcome`, no longer the Room `session`; clients read the Room from its events).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

@@ -39,6 +39,15 @@ pub struct RespondToInteractionRequest {
     pub passkey_remember_minutes: Option<u32>,
 }
 
+/// What an accepted answer did. An answer to a decision someone already closed is an error
+/// that says so, never an outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionOutcome {
+    /// The choice was recorded and the waiting agent or run continues with it.
+    Answered,
+}
+
 /// Longest optional window in which critical approvals need no passkey.
 pub const PASSKEY_REMEMBER_MAX_MINUTES: u32 = 15;
 

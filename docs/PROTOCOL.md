@@ -1066,6 +1066,13 @@ the tool returns `{interaction_id, registration_id}` immediately. Its ordinary
 that field and answer using the unchanged `RespondToInteraction` request.
 No additional card or client request is introduced.
 
+Local protocol **1034**: the reply to `RespondToInteraction` is a small acknowledgement,
+`InteractionResponded {interaction_id, choice_id, outcome}` with `outcome` `answered`; it no
+longer carries the Room `session`. A Room can be larger than the most a state-changing request
+through the kernel gateway may return (the request ran, yet the caller was told it failed). A
+client reads the Room after an answer from its events, or with `GetSessionState`. An answer to a
+card someone already closed is still an error that says so, never an outcome.
+
 An async question is the `interaction` kind of the existing durable wake
 registry. The asking task owns its obligation and completion registration;
 `events.yield` may include that registration alongside other sources. A turn
