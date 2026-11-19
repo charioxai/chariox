@@ -7372,7 +7372,8 @@ service's rate). Each record moves along one state table, every step a compare-a
 
 | state | holds a place and costs | next |
 |---|---|---|
-| pending | yes, from the send | running when the service accepts it; removed when it refuses, the request was never sent, or a job's cleanup confirms no machine exists. A lost answer keeps it pending, and the agent is told to retry with the same request_id. |
+| pending | yes, from the send | running when the service accepts it; removed when the service refuses the attempt that admitted it, that attempt was never sent, or a job's cleanup confirms no machine exists; uncertain when its answer is lost or a retry is sent |
+| uncertain | yes | running when a retry is accepted; removed only when a job's cleanup confirms no machine exists. A refused retry, or one the kernel no longer allows, leaves it as it is. Every lost answer names the request_id, given or generated, to retry with. |
 | running | yes | deleting when the service says so; ended when deletion is confirmed |
 | deleting | yes | ended when the service confirms deletion, or a list sent while it was running no longer has it |
 | ended | no | — |
@@ -7380,7 +7381,9 @@ service's rate). Each record moves along one state table, every step a compare-a
 The place is taken before the request reaches the service, so concurrent requests never exceed the
 maximum. The request runs to the service's answer even when the agent's call is cancelled. A retry of a
 request already recorded (same agent and request_id) takes no new place and raises no card: the
-service replays its answer, which settles the same record. Outside the limits, or with no class named,
+service replays its answer, which settles the same record. Only a settled outcome removes an uncertain
+record, because a refusal or failure of one attempt says nothing about a machine an earlier attempt may
+have created. Outside the limits, or with no class named,
 the owner's ordinary card is raised and says why ("Asked because …").
 
 A card that closes without the owner's answer (nobody answered within its deadline, or the kernel

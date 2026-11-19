@@ -35,6 +35,8 @@ enum AcquireReply {
     Machine,
     /// The machine is created, but its answer cannot be read.
     Lost,
+    /// Refuses at once: the caller is no longer authorized.
+    Refused,
     /// Answers only after the notify, then refuses or creates the machine.
     Held {
         gate: Arc<tokio::sync::Notify>,
@@ -153,6 +155,10 @@ async fn answer(
                     create(request_id);
                     (200, "{\"kind\":".into())
                 }
+                AcquireReply::Refused => (
+                    403,
+                    serde_json::json!({"error":{"code":"authorization_denied","message":"not allowed now"}}).to_string(),
+                ),
                 AcquireReply::Held { gate, refuse } => {
                     gate.notified().await;
                     if refuse {
@@ -765,7 +771,7 @@ async fn an_acquisition_whose_answer_was_lost_keeps_counting_until_a_retry_settl
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("retry with the same request_id"), "{error}");
+    assert!(error.contains("retry with request_id \"r1\""), "{error}");
     service.script.lock().unwrap().acquire = AcquireReply::Machine;
     let message = acquire_waits_for_a_card(&state, &token, &room, "r2", "small").await;
     assert!(message.contains("(1) are already running"), "{message}");
@@ -776,6 +782,115 @@ async fn an_acquisition_whose_answer_was_lost_keeps_counting_until_a_retry_settl
     .await
     .expect("a retry of an admitted request is not asked again")
     .unwrap();
+    assert_eq!(replayed["allocation"]["allocation_ref"], "alloc-1");
+    ledger_reaches(&state, |acquired| {
+        acquired.len() == 1 && running(&acquired[0], "alloc-1")
+    })
+    .await;
+}
+
+/// Review 5968697039 finding 1: a retry refused after a lost answer proves nothing about the
+/// first machine, so the request keeps its place and its cost.
+#[tokio::test]
+async fn a_refused_retry_of_a_lost_answer_keeps_the_machine_counted() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Lost;
+    acquire(&state, &token, "r1", "small").await.unwrap_err();
+    service.script.lock().unwrap().acquire = AcquireReply::Refused;
+    let refused = acquire(&state, &token, "r1", "small")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("authorization_denied"), "{refused}");
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert!(
+        acquired.len() == 1 && acquired[0].request_id == "r1" && acquired[0].state.is_live(),
+        "the machine that may exist still counts and costs: {acquired:?}"
+    );
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    let message = acquire_waits_for_a_card(&state, &token, &room, "r2", "small").await;
+    assert!(message.contains("(1) are already running"), "{message}");
+}
+
+/// Review 5968697039 finding 1: a retry that fails its reauthorization was never sent, and it
+/// leaves the lost request counted.
+#[tokio::test]
+async fn a_retry_that_fails_reauthorization_keeps_a_lost_answer_counted() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Lost;
+    acquire(&state, &token, "r1", "small").await.unwrap_err();
+    let agent = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap()[0]
+        .agent_id
+        .clone();
+    let retry = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "r1".into(),
+        class_id: Some("small".into()),
+        region: Some("north".into()),
+    };
+    let without_asking::Admission::Within(hold) = state
+        .admit_without_asking(&room, &agent, &retry, None)
+        .unwrap()
+    else {
+        panic!("a retry of an admitted request goes ahead without asking");
+    };
+    state.withdraw_acquisition(hold);
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert!(
+        acquired.len() == 1 && acquired[0].state.is_live(),
+        "the machine that may exist still counts and costs: {acquired:?}"
+    );
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    let message = acquire_waits_for_a_card(&state, &token, &room, "r2", "small").await;
+    assert!(message.contains("(1) are already running"), "{message}");
+}
+
+/// Review 5968697039 finding 2: an acquisition without a request_id whose answer was lost names
+/// the request_id the kernel chose, and a retry with it settles the machine.
+#[tokio::test]
+async fn a_lost_answer_names_the_generated_request_id_and_a_retry_with_it_settles() {
+    let service = service().await;
+    let (state, token, _room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Lost;
+    let error = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"class_id":"small","region":"north"}),
+        )
+        .await
+        .unwrap_err();
+    let generated = service.acquires.lock().unwrap()[0]["request_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let DaemonError::MachineRequest { code, message } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(code, "acquisition_uncertain");
+    assert!(
+        message.contains(&format!("request_id \"{generated}\"")),
+        "{message}"
+    );
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    let replayed = acquire(&state, &token, &generated, "small").await.unwrap();
     assert_eq!(replayed["allocation"]["allocation_ref"], "alloc-1");
     ledger_reaches(&state, |acquired| {
         acquired.len() == 1 && running(&acquired[0], "alloc-1")

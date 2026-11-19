@@ -8,19 +8,26 @@ use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
 /// Where one acquisition is in its life. A row is created `Pending` and leaves the ledger only
-/// while pending, when it is certain no machine exists.
+/// when it is certain no machine exists: an answer to another attempt proves nothing about the
+/// first, so once a request is `Uncertain` only the service's machine or a fenced job cleanup
+/// settles it.
 ///
 /// | state | counts toward the maximum | costs | moves to, on |
 /// |---|---|---|---|
-/// | (none) | | | `Pending`: admitted while fewer than the maximum rows are live. A retry of the same request finds its row and takes no new place. |
-/// | `Pending` | yes | from its start | `Running`: the service accepted it (also when a retry or job cleanup learns the answer). Removed: the service refused it, it was never sent, or job cleanup confirmed no machine exists. An uncertain answer leaves it pending. |
+/// | (none) | | | `Pending`: admitted while fewer than the maximum rows are live. |
+/// | `Pending` | yes | from its start | `Running`: the service accepted it. Removed: the service refused the attempt that admitted it, that attempt was never sent, or job cleanup confirmed no machine exists. `Uncertain`: its answer was lost, or a retry of the same request goes ahead. |
+/// | `Uncertain` | yes | from its start | `Running`: a retry's answer or job cleanup returns its machine. Removed: job cleanup confirmed no machine exists. A retry that is refused or never sent leaves it uncertain; a retry takes no new place. |
 /// | `Running` | yes | yes | `Deleting`: the service says it is being deleted. `Ended`: the service confirms it deleted, or a list sent while it was running no longer has it. |
 /// | `Deleting` | yes | yes | `Ended`, as from `Running`. |
 /// | `Ended` | no | until its end | nothing. |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcquiredState {
-    /// Sent to the service; its answer is not known yet: in flight, lost, or the kernel restarted.
+    /// Sent to the service by the attempt that admitted it, which applies its answer (unless the
+    /// kernel restarted before it came).
     Pending,
+    /// More than one attempt may have reached the service, or an answer was lost: a machine may
+    /// exist that no refusal can rule out.
+    Uncertain,
     Running {
         allocation_ref: String,
     },
@@ -73,13 +80,21 @@ pub(crate) enum AcquiredMachineWrite {
         machine: AcquiredMachine,
         max_live: u32,
     },
-    /// A pending row the service accepted runs. When the allocation is already another row's (the
-    /// service replayed an earlier request), this row leaves instead: one machine is one row.
+    /// A pending or uncertain row the service accepted runs. When the allocation is already another
+    /// row's (the service replayed an earlier request), this row leaves instead: one machine is one
+    /// row.
     Accept {
         key: AcquisitionKey,
         allocation_ref: String,
     },
-    /// A pending row for which no machine exists leaves the ledger.
+    /// A pending or uncertain row whose answer may have been lost, or which a retry goes ahead
+    /// with, becomes uncertain.
+    Uncertain { key: AcquisitionKey },
+    /// A pending row whose only attempt was refused or never sent leaves the ledger. An uncertain
+    /// row stays.
+    Withdraw { key: AcquisitionKey },
+    /// A pending or uncertain row for which a fenced job cleanup confirmed no machine exists leaves
+    /// the ledger.
     Remove { key: AcquisitionKey },
     /// A running allocation is being deleted.
     Deleting { allocation_ref: String },
@@ -96,8 +111,10 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             agent_id TEXT NOT NULL, request_id TEXT NOT NULL, job_ref TEXT UNIQUE,
             room_id TEXT NOT NULL, class_id TEXT NOT NULL,
             rate_micros INTEGER NOT NULL, currency TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'deleting', 'ended')),
-            allocation_ref TEXT UNIQUE CHECK ((state = 'pending') = (allocation_ref IS NULL)),
+            state TEXT NOT NULL
+                CHECK (state IN ('pending', 'uncertain', 'running', 'deleting', 'ended')),
+            allocation_ref TEXT UNIQUE
+                CHECK ((state IN ('pending', 'uncertain')) = (allocation_ref IS NULL)),
             started_ms INTEGER NOT NULL,
             ended_ms INTEGER CHECK ((state = 'ended') = (ended_ms IS NOT NULL)),
             PRIMARY KEY (agent_id, request_id)
@@ -115,6 +132,7 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcquiredMachine> {
         row.get::<_, Option<i64>>(10)?,
     ) {
         ("pending", None, None) => AcquiredState::Pending,
+        ("uncertain", None, None) => AcquiredState::Uncertain,
         ("running", Some(allocation_ref), None) => AcquiredState::Running { allocation_ref },
         ("deleting", Some(allocation_ref), None) => AcquiredState::Deleting { allocation_ref },
         ("ended", Some(allocation_ref), Some(ended_ms)) => AcquiredState::Ended {
@@ -257,18 +275,38 @@ pub(super) fn apply(
             };
             let started = transaction.execute(
                 "UPDATE durable_acquired_machines SET state = 'running', allocation_ref = ?3
-                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'
+                WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')
                     AND NOT EXISTS (SELECT 1 FROM durable_acquired_machines WHERE allocation_ref = ?3)",
                 params![agent_id, request_id, allocation_ref],
             )?;
             if started == 0 {
                 transaction.execute(
                     "DELETE FROM durable_acquired_machines
-                    WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                    WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
                     params![agent_id, request_id],
                 )?;
             }
             started
+        }
+        AcquiredMachineWrite::Uncertain { key } => {
+            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
+                return Ok(0);
+            };
+            transaction.execute(
+                "UPDATE durable_acquired_machines SET state = 'uncertain'
+                WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
+                params![agent_id, request_id],
+            )?
+        }
+        AcquiredMachineWrite::Withdraw { key } => {
+            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
+                return Ok(0);
+            };
+            transaction.execute(
+                "DELETE FROM durable_acquired_machines
+                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                params![agent_id, request_id],
+            )?
         }
         AcquiredMachineWrite::Remove { key } => {
             let Some((agent_id, request_id)) = resolve(transaction, key)? else {
@@ -276,7 +314,7 @@ pub(super) fn apply(
             };
             transaction.execute(
                 "DELETE FROM durable_acquired_machines
-                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
                 params![agent_id, request_id],
             )?
         }
@@ -432,5 +470,42 @@ mod tests {
             .unwrap()
             .iter()
             .all(|machine| machine.request_id != "a"));
+        assert!(admit(&store, "d", None));
+        assert!(
+            write(&store, AcquiredMachineWrite::Withdraw { key: request("d") }),
+            "the attempt that admitted a request withdraws it while it is pending"
+        );
+        assert!(admit(&store, "d", None));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Uncertain { key: request("c") }
+        ));
+        assert!(
+            !write(&store, AcquiredMachineWrite::Withdraw { key: request("c") }),
+            "only a settled outcome removes an uncertain request"
+        );
+        assert_eq!(state_of(&store, "c"), Some(AcquiredState::Uncertain));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Accept {
+                key: request("c"),
+                allocation_ref: "alloc-c".into(),
+            }
+        ));
+        assert!(
+            !write(
+                &store,
+                AcquiredMachineWrite::Uncertain { key: request("c") }
+            ),
+            "a running machine is never uncertain again"
+        );
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Uncertain { key: request("d") }
+        ));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Remove { key: request("d") }
+        ));
     }
 }
