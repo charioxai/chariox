@@ -81,7 +81,7 @@ fn provider_account_portability_websocket_drill() {
                 for missing in [false, true] {
                     if missing {std::fs::remove_file(path).unwrap();}
                     let request_id = format!("portability-{index}-{missing}");
-                    let request = serde_json::json!({"type":"request", "request_id":request_id, "request":{"PreflightProviderAccountPortability":{"providerAccounts":{"kind":"selected", "accounts":&accounts[index..]}}}});
+                    let request = serde_json::json!({"type":"request", "request_id":request_id, "request":{"PreflightProviderAccountPortability":{"providerAccounts":{"kind":"selected", "accounts":&accounts[index..]}, "kernelContext":"empty"}}});
                     socket.send(Message::Text(request.to_string().into())).await.unwrap();
                     let frame: Value = loop {
                         let message = timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
