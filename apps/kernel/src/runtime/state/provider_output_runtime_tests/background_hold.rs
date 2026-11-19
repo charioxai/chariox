@@ -1153,14 +1153,28 @@ async fn a_delivered_prompt_folds_inside_the_held_notification_until_its_result(
 // Review 5975524512: the adapter ends the notification before the queued prompt's result.
 #[tokio::test]
 async fn a_folded_held_answer_excludes_the_separate_queued_prompt_reply_and_calls() {
+    separate_queued_answer(false).await;
+}
+
+#[tokio::test]
+async fn a_prompt_written_before_the_notification_keeps_its_separate_answer() {
+    separate_queued_answer(true).await;
+}
+
+async fn separate_queued_answer(written_before_notification: bool) {
     let team = child_with_a_call_running("background-hold-separate-queued-reply").await;
     // The output pump holds the run's lane while the next prompt waits for its actual write.
-    let lane = team
-        .runtime
-        .provider_runtime_lanes
-        .acquire(&team.child_run)
-        .await;
+    let mut lane = Some(
+        team.runtime
+            .provider_runtime_lanes
+            .acquire(&team.child_run)
+            .await,
+    );
     let message_prompt = status_message(&team, false).await;
+    if written_before_notification {
+        drop(lane.take());
+        wait_for_prompt_delivery(&team, &message_prompt).await;
+    }
     apply_own_turn(
         &team,
         ProviderOwnTurnSignal::Running,
@@ -1171,33 +1185,10 @@ async fn a_folded_held_answer_excludes_the_separate_queued_prompt_reply_and_call
         ],
     )
     .await;
-    drop(lane);
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            let session = team
-                .runtime
-                .owned
-                .session_store
-                .get_session(&team.room)
-                .unwrap();
-            if team
-                .runtime
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, &team.child)
-                .is_some_and(|prompt| {
-                    prompt.id() == message_prompt
-                        && prompt.durable_delivery_phase()
-                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
-                })
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the queued prompt must pass through the provider write and receipt");
+    if !written_before_notification {
+        drop(lane.take());
+        wait_for_prompt_delivery(&team, &message_prompt).await;
+    }
     apply_own_turn(
         &team,
         ProviderOwnTurnSignal::Running,
@@ -1270,6 +1261,14 @@ async fn a_folded_held_answer_excludes_the_separate_queued_prompt_reply_and_call
         queued_answer.contains("SEPARATE_QUEUED_REPLY"),
         "{queued_answer}"
     );
+    if written_before_notification {
+        assert!(
+            !queued_answer.contains("notification began")
+                && !queued_answer.contains("notification continued")
+                && !queued_answer.contains("notification ended"),
+            "the independent reply must exclude the held notification: {queued_answer}"
+        );
+    }
     let entries = team
         .runtime
         .owned
@@ -1541,4 +1540,33 @@ async fn restart_interrupts_a_provider_started_held_notification_and_tells_its_p
         .is_empty());
     sweep(&team).await;
     assert_eq!(child_finished(&team).len(), 1);
+}
+
+async fn wait_for_prompt_delivery(team: &Team, message_prompt: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = team
+                .runtime
+                .owned
+                .session_store
+                .get_session(&team.room)
+                .unwrap();
+            if team
+                .runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &team.child)
+                .is_some_and(|prompt| {
+                    prompt.id() == message_prompt
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the queued prompt must pass through the provider write and receipt");
 }

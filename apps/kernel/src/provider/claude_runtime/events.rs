@@ -19,6 +19,9 @@ pub(super) fn apply_claude_message(
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return;
     };
+    if super::finished_background_task(&value).is_some() {
+        state.background_notification_pending = true;
+    }
     match kind {
         "system" => apply_system_message(state, &value, batch),
         "stream_event" => apply_stream_event(provider_run_id, state, &value, batch),
@@ -40,6 +43,7 @@ fn apply_system_message(
         record_claude_session_id(state, batch, session_id);
     }
     if starts_claudes_own_turn(state, value) {
+        state.background_notification_pending = false;
         state.active_turn_id = Some(format!("turn-{}", state.next_turn_number));
         state.next_turn_number += 1;
         state.turn_watchdog.begin(std::time::Instant::now());
@@ -513,10 +517,10 @@ fn apply_result_message(
     complete_claude_turn(state, batch);
 }
 
-/// Claude opens every turn with `system/init`; one that names no user message is a turn Claude
-/// started on its own (it reports a finished background command), not the answer to a prompt.
+/// An init after a completed task can open Claude's notification turn even when the next
+/// prompt was already written. Ordinary prompt initialization can also omit user UUIDs.
 fn starts_claudes_own_turn(state: &ClaudeRuntimeState, value: &Value) -> bool {
-    state.active_turn_id.is_none()
+    (state.active_turn_id.is_none() || state.background_notification_pending)
         && value.get("subtype").and_then(Value::as_str) == Some("init")
         && value
             .get("user_message_uuids")

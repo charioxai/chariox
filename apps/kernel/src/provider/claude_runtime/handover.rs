@@ -156,6 +156,8 @@ struct ClaudeTurn {
     session_id: Option<String>,
     active_turn_id: Option<String>,
     active_prompt_message: Option<Value>,
+    own_turn: bool,
+    background_notification_pending: bool,
     active_stream_message_id: Option<String>,
     next_turn_number: u64,
     result_number: u64,
@@ -264,6 +266,8 @@ pub(super) fn hand_over(
             session_id: state.session_id.clone(),
             active_turn_id: state.active_turn_id.clone(),
             active_prompt_message: state.active_prompt_message.clone(),
+            own_turn: state.own_turn,
+            background_notification_pending: state.background_notification_pending,
             active_stream_message_id: state.active_stream_message_id.clone(),
             next_turn_number: state.next_turn_number,
             result_number: state.result_number,
@@ -360,6 +364,8 @@ impl Adopted {
         state.settings_file = self.settings_file;
         state.usage_file = self.usage_file;
         state.session_id = turn.session_id;
+        state.own_turn = turn.own_turn;
+        state.background_notification_pending = turn.background_notification_pending;
         state.active_stream_message_id = turn.active_stream_message_id;
         state.next_turn_number = turn.next_turn_number;
         state.result_number = turn.result_number;
