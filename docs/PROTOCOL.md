@@ -5901,7 +5901,8 @@ A kernel has terminals of its own that belong to no Room: the same PTY terminals
 same `RoomTerminal { result }`. `directory` is where `open` starts (the kernel user's home folder when absent) and
 is refused on any other operation. The `exec_*` operations belong to a Room and are refused. A terminal summary
 carries `scope` (`room` or `kernel`); `session_id` is present for a Room's terminal only. The output stream is the
-Room terminal stream (`subscription_scope` `kernel_terminal`, `attachment_id` `<terminal_id>`, no Room id). The kernel advertises
+Room terminal stream (`subscription_scope` `kernel_terminal`, `attachment_id` `<terminal_id>`, no Room id: the relay
+requires a `session_id`, so the client sends the sentinel `__kernel_terminal__`, which the kernel does not read). The kernel advertises
 `kernel_terminal_v1` in `RelayStatus.capabilities`.
 
 Who may use them is decided in one place, `authorize_kernel_terminal`: the kernel owner's own clients, which includes
