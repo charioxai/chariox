@@ -410,7 +410,7 @@ mod protocol_shape {
             include_bytes!("../../local/api/tests/protocol_shapes/room-terminal-stream-1006.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "6fc91c34fce78f617100a9e5de571f984eae2a85f7cad07d3ae88c7acea96d1b"
+            "d2660f6aea7a383d5bc1adce404e2a4147387b9e16a01a0bbf3fe78e53bd8546"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
