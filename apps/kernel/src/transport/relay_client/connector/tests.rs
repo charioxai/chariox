@@ -1043,7 +1043,9 @@ async fn relay_pings_are_answered_while_the_kernel_runtime_is_blocked() {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 address_tx.send(listener.local_addr().unwrap()).unwrap();
                 let (stream, _) = listener.accept().await.unwrap();
-                let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
                 let (mut write, mut read) = socket.split();
                 let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
                 while let Some(Ok(message)) = read.next().await {
