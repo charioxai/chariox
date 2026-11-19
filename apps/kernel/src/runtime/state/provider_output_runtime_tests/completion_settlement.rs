@@ -392,7 +392,7 @@ async fn owner_stop_of_work_a_done_turn_retains_keeps_messages_pending_until_the
             .unwrap()
             .expect("the owner's prompt ends the stop")
             .state,
-        "accepted"
+        "acknowledged"
     );
 }
 
@@ -3521,9 +3521,9 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
     assert_eq!(inbox[1].prompt_id, inbox[0].prompt_id);
 }
 
-// MP-08/MP-10/MP-11: closing a synthetic delivery task retracts its owner prompt.
+// Interrupted delivery belongs to the kernel's retry, never an owner decision.
 #[tokio::test]
-async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
+async fn a02_r6_interrupted_delivery_retries_without_an_owner_interaction() {
     use crate::durable_state::agent_lifecycle::{
         occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
     };
@@ -3564,32 +3564,39 @@ async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
         })
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
-    let blocked = store
-        .agent_tasks(Some(session.id()), Some(agent.id()))
-        .unwrap()
-        .remove(0);
-    let id = format!(
-        "task-blocked-{}-{}",
-        blocked.task_id, blocked.blocked_revision
+    runtime.task_work_settled().await;
+    let retry = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
+    assert_eq!(retry.len(), 1, "recovery must retain the same inbox event");
+    assert_eq!(retry[0].sequence, e.sequence);
+    assert_eq!(retry[0].state, "pending");
+    assert!(retry[0].prompt_id.is_none());
+    assert!(retry[0].target_prompt_id.is_none());
+    assert!(retry[0].provider_run_id.is_none());
+    assert!(
+        store
+            .agent_lifecycle(Operation::Receipt {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                sequence: e.sequence,
+                state: "accepted".into(),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .is_err(),
+        "a receipt for the interrupted attempt must not settle its pending retry"
     );
-    assert!(runtime
-        .owned
-        .session_store
-        .get_session(session.id())
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .any(|i| i.id() == id));
-    store
-        .agent_lifecycle(Operation::Receipt {
-            room: session.id().into(),
-            agent: agent.id().into(),
-            sequence: e.sequence,
-            state: "accepted".into(),
-            now: crate::session::unix_epoch_ms(),
-        })
-        .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
+    assert_eq!(
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap(),
+        retry
+    );
+    assert!(
+        store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .is_empty(),
+        "delivery recovery must not manufacture provider work"
+    );
     assert!(
         runtime
             .owned
@@ -3597,20 +3604,8 @@ async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
             .get_session(session.id())
             .unwrap()
             .active_interactions()
-            .iter()
-            .all(|i| i.id() != id),
-        "exact reconciliation must retract the stale owner choice"
-    );
-    assert!(
-        store
-            .agent_lifecycle(Operation::OwnerResponse {
-                task: blocked.task_id,
-                revision: blocked.blocked_revision,
-                resume: true,
-                now: crate::session::unix_epoch_ms(),
-            })
-            .is_err(),
-        "the old Resume cannot dispatch synthetic work"
+            .is_empty(),
+        "delivery recovery must not manufacture an owner choice"
     );
 }
 
