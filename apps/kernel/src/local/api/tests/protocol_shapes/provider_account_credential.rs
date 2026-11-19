@@ -250,7 +250,7 @@ fn account_copy_recipient_protocol_710_peer_274_snapshot_and_hash() {
 #[test]
 fn provider_account_auth_error_shape_is_versioned() {
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("provider-auth-error-1072.json")).unwrap();
+        serde_json::from_str(include_str!("provider-auth-error-1014.json")).unwrap();
     let profile: crate::account_profile::ProviderAccountProfile =
         serde_json::from_value(expected["response"]["ProviderAccountProfile"]["profile"].clone())
             .unwrap();
@@ -261,6 +261,6 @@ fn provider_account_auth_error_shape_is_versioned() {
     assert_eq!(actual, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "0c4f4bf536d4e7c27e678a3ddf00dfa7dae5c87c8f75ede2d66394dac074e76d"
+        "0750f6041081091bbbeda1887a36c935c03003888c055fa3f53953fda39c6a9c"
     );
 }

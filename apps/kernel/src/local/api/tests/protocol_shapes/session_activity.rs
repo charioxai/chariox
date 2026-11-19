@@ -21,13 +21,13 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "schema": 14, "session": {"last_activity_at_ms": decoded.last_activity_at_ms()}});
     assert_eq!(
         snapshot,
-        serde_json::json!({"local":1072,"peer": 449,"schema":14,"session":{"last_activity_at_ms":42}})
+        serde_json::json!({"local":1014,"peer": 451,"schema":14,"session":{"last_activity_at_ms":42}})
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "cd06f656774e5fcbbd542da0a0039de90c09dd701d3144aa637abdc276e0c0ad"
+        "a25d8337484b14e624bca07a9724cb01b3239eb03ad848ed950a88a3d5569352"
     );
 }

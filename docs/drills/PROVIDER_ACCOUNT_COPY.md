@@ -58,7 +58,7 @@ then removes the target registration and checks the source remains usable.
 Real acceptance still requires all five scenarios in
 [the target-scope validation plan](../PROVIDER_ACCOUNT_TARGET_SCOPE_VALIDATION_PLAN.md).
 
-## Local 1072: Codex copies, same-kernel links and sign-in notices
+## Local 1014 and peer 451: Codex copies, same-kernel links and sign-in notices
 
 Cross-kernel copies remain usable without their source kernel. Same-kernel requests use the existing transaction/receipt to register a link to the same credential; they do not fork a refresh lineage. Installed Codex retries preserve target credentials after rotation or a new device login. Profile auth failures expose a safe `auth_error`.
 

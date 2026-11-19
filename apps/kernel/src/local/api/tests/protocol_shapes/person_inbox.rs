@@ -8,4 +8,24 @@ fn person_inbox_1012_snapshot_and_hash() {
     let bytes = include_bytes!("person-inbox-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d86e4140e5e85417c2b8c4b8a3d39ffefd3d6623a6f295cd81f2a919ee5db131"
+        "1287908e416dbffdb847a86436fd7f3c54956f7e317a9f7057f91863d2e0e912"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    for wire in fixture["requests"].as_array().unwrap() {
+        let parsed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
+    }
+    for wire in fixture["responses"].as_array().unwrap() {
+        let parsed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
+    }
+    // A card's state is the kernel's: a request names cards and a change, nothing else.
+    for forged in [
+        json!({"SetInboxCardState":{"card_ids":["n"],"change":{"read":{"read":true}},"owner":"someone-else"}}),
+        json!({"SetInboxCardState":{"card_ids":["n"],"change":{"mute":{}}}}),
+        json!({"SetInboxMute":{"origin":{"session_id":"room-1"},"muted":true}}),
+    ] {
+        assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
+    }
+}
