@@ -12,7 +12,13 @@ pub(crate) struct RemoteRelayInventoryProjectionStore {
     /// Clients following the machine list, local and over the relay: while any is attached the
     /// connector keeps the list fresh.
     watchers: Arc<std::sync::atomic::AtomicUsize>,
+    /// The renewal a request waits for (`shared_renewal`).
+    renewal: Arc<StdMutex<Option<SharedRenewal>>>,
 }
+
+/// One live pass that requests share.
+pub(crate) type SharedRenewal =
+    futures_util::future::Shared<futures_util::future::BoxFuture<'static, ()>>;
 
 /// One client following the machine list; dropping it ends its demand.
 pub(crate) struct RemoteInventoryWatch(Arc<std::sync::atomic::AtomicUsize>);
@@ -34,8 +40,10 @@ struct RemoteRelayInventoryProjectionState {
     appeared_kernels: std::collections::BTreeSet<String>,
     /// The kernels the owner's Cloud directory still linked on its last two reads, oldest first.
     directory_reads: std::collections::VecDeque<std::collections::BTreeSet<String>>,
-    /// The machines those reads linked, same order; None for a read that could not tell.
-    machine_directory_reads: std::collections::VecDeque<Option<std::collections::BTreeSet<String>>>,
+    /// The machines those reads linked, with the directory read, same order; None for a read
+    /// that could not tell.
+    machine_directory_reads:
+        std::collections::VecDeque<(String, Option<std::collections::BTreeSet<String>>)>,
     /// The removal generation: raised by every Remove while the registry is held, so a live pass
     /// that started before a Remove does not publish (`publish_live`).
     registry_revision: u64,
@@ -73,26 +81,31 @@ impl RemoteRelayInventoryProjectionStore {
         }
     }
 
-    /// The machines the same read of the owner's Cloud directory linked; see `gone_machines`.
+    /// The machines the same read of Cloud directory `directory` linked; see `gone_machines`.
     pub(crate) fn record_directory_machines(
         &self,
+        directory: &str,
         linked: Option<std::collections::BTreeSet<String>>,
     ) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.machine_directory_reads.push_back(linked);
+        state
+            .machine_directory_reads
+            .push_back((directory.to_string(), linked));
         while state.machine_directory_reads.len() > 2 {
             state.machine_directory_reads.pop_front();
         }
     }
 
-    /// The machines among `machines` that neither of the last two reads of the directory linked:
-    /// removed from the account (Remove unlinks them in Cloud), not merely offline. The same
-    /// two-read rule as `gone_kernels`; a read that could not tell decides nothing.
+    /// The machines among `machines` that neither of the last two reads of Cloud directory
+    /// `directory` linked: removed from the account (Remove unlinks them in Cloud), not merely
+    /// offline. The same two-read rule as `gone_kernels`; a read of another directory, or one that
+    /// could not tell, decides nothing.
     pub(crate) fn gone_machines<'a>(
         &self,
+        directory: &str,
         machines: impl IntoIterator<Item = &'a String>,
     ) -> std::collections::BTreeSet<String> {
         let state = self
@@ -102,7 +115,7 @@ impl RemoteRelayInventoryProjectionStore {
         let reads: Option<Vec<&std::collections::BTreeSet<String>>> = state
             .machine_directory_reads
             .iter()
-            .map(Option::as_ref)
+            .map(|(read, linked)| linked.as_ref().filter(|_| read == directory))
             .collect();
         let Some(reads) = reads.filter(|reads| reads.len() == 2) else {
             return std::collections::BTreeSet::new();
@@ -196,6 +209,30 @@ impl RemoteRelayInventoryProjectionStore {
             return true;
         }
         false
+    }
+
+    /// The renewal of the list that requests wait for: one at a time, run as its own task, so a
+    /// request that stops waiting does not cancel it, and the next request waits for the same pass.
+    pub(crate) fn shared_renewal<F>(&self, start: impl FnOnce() -> F) -> SharedRenewal
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use futures_util::FutureExt;
+        let mut slot = self
+            .renewal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pass) = slot.as_ref().filter(|pass| pass.peek().is_none()) {
+            return pass.clone();
+        }
+        let task = tokio::spawn(start());
+        let pass = async move {
+            let _ = task.await;
+        }
+        .boxed()
+        .shared();
+        *slot = Some(pass.clone());
+        pass
     }
 
     /// A client starts following the machine list.
@@ -420,22 +457,32 @@ mod tests {
     fn a_machine_neither_of_the_last_two_directory_reads_links_is_gone() {
         let projection = RemoteRelayInventoryProjectionStore::default();
         let remembered = kernels(&["kept", "removed"]);
-        projection.record_directory_machines(Some(kernels(&["kept"])));
+        let directory = "https://cloud.test/account-1/realm-1";
+        projection.record_directory_machines(directory, Some(kernels(&["kept"])));
         assert!(
-            projection.gone_machines(&remembered).is_empty(),
+            projection.gone_machines(directory, &remembered).is_empty(),
             "one read is not two"
         );
-        projection.record_directory_machines(Some(kernels(&["kept"])));
-        assert_eq!(projection.gone_machines(&remembered), kernels(&["removed"]));
-        projection.record_directory_machines(None);
+        projection.record_directory_machines(directory, Some(kernels(&["kept"])));
+        assert_eq!(
+            projection.gone_machines(directory, &remembered),
+            kernels(&["removed"])
+        );
         assert!(
-            projection.gone_machines(&remembered).is_empty(),
+            projection
+                .gone_machines("https://cloud.test/account-2/realm-1", &remembered)
+                .is_empty(),
+            "the reads of one directory say nothing of another's machines"
+        );
+        projection.record_directory_machines(directory, None);
+        assert!(
+            projection.gone_machines(directory, &remembered).is_empty(),
             "a read that could not tell decides nothing"
         );
-        projection.record_directory_machines(Some(kernels(&["kept", "removed"])));
-        projection.record_directory_machines(Some(kernels(&["kept"])));
+        projection.record_directory_machines(directory, Some(kernels(&["kept", "removed"])));
+        projection.record_directory_machines(directory, Some(kernels(&["kept"])));
         assert!(
-            projection.gone_machines(&remembered).is_empty(),
+            projection.gone_machines(directory, &remembered).is_empty(),
             "a machine either of the last two reads links stays"
         );
     }
@@ -473,6 +520,7 @@ mod tests {
         projection.update(
             crate::local::RemoteMachineInventory {
                 machines: vec![RemoteMachineRecord {
+                    directory: None,
                     machine_id: "machine-1".to_string(),
                     machine_alias: Some("builder".to_string()),
                     display_name: "builder".to_string(),
@@ -509,6 +557,7 @@ mod tests {
 
         // The approval's live record names no kernels; the listed machine keeps the ones it has.
         let approved = projection.approve_machine(RemoteMachineRecord {
+            directory: None,
             machine_id: "machine-1".to_string(),
             machine_alias: Some("builder".to_string()),
             display_name: "builder".to_string(),
@@ -547,6 +596,7 @@ mod tests {
         projection.update(
             crate::local::RemoteMachineInventory {
                 machines: vec![RemoteMachineRecord {
+                    directory: None,
                     machine_id: "machine-1".to_string(),
                     machine_alias: Some("builder".to_string()),
                     display_name: "builder".to_string(),

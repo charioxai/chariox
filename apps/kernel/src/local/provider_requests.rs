@@ -144,6 +144,7 @@ impl DaemonApp {
             offline_machines,
         } = self.remote_relay_inventory_projection_store().inventory();
         Ok(LocalDaemonResponse::RemoteMachinesListed {
+            renewing: false,
             machines,
             offline_machines,
         })

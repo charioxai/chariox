@@ -256,6 +256,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
     router.remote_relay_inventory_projection.update(
         crate::local::RemoteMachineInventory {
             machines: vec![crate::local::RemoteMachineRecord {
+                directory: None,
                 machine_id: "private-machine".into(),
                 machine_alias: Some("private-host".into()),
                 display_name: "private-host".into(),

@@ -3420,6 +3420,15 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1065 (provisional): machine list membership and renewal. `RemoteMachineRecord` and
+  `OfflineMachineRecord` carry `directory`, the Cloud directory (API, account, realm) whose live list
+  first recorded the machine; absent for a machine of a private relay, a pairing or an approval. A
+  kernel forgets a remembered machine of a directory once two consecutive reads of that directory
+  omit it (Remove unlinks it in Cloud), and never a machine of another directory or of a private relay.
+  A client applies the account's membership only to machines with a `directory`. `ListRemoteMachines`
+  on a stale list renews it first; when the renewal outlasts the answer budget the answer is the last
+  list with `renewing: true` (omitted when false), the renewal goes on, and its list follows as
+  `remote_machines_changed`. The relay peer protocol is unchanged.
 - protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the

@@ -273,6 +273,7 @@ async fn seed_healthy_primary_inventory(app: &Arc<Mutex<DaemonApp>>) {
     projection.update(
         crate::local::RemoteMachineInventory {
             machines: vec![crate::local::RemoteMachineRecord {
+                directory: None,
                 machine_id: "machine-live".to_string(),
                 machine_alias: None,
                 display_name: "machine-live name".to_string(),

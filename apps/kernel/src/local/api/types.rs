@@ -594,4 +594,7 @@ pub use workspace::*;
 /// `ForgetRemoteMachine` (Remove) deletes it from the kernel's machine registry; a remote kernel, and each
 /// listed machine's `kernels`, carry the `local_protocol` the kernel registered with at the relay (absent for a
 /// kernel older than the field).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// Provisional 1065: a listed and an offline machine name the Cloud `directory` they belong to
+/// (absent for a private relay's), and `RemoteMachinesListed.renewing` marks the last list while a
+/// renewal is still running.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1065;

@@ -165,6 +165,8 @@ pub(crate) async fn refresh_remote_inventory_projection(
     runtime_config.relay_request_timeout_ms = runtime_config
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
+    let directory = crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+        .map(relay_discovery::authorization::cloud_directory_key);
     for _ in 0..LIVE_PASS_ATTEMPTS {
         let started_revision = projection.registry_revision();
         let (listed, remote_kernels) =
@@ -174,10 +176,25 @@ pub(crate) async fn refresh_remote_inventory_projection(
             if projection.registry_revision() != started_revision {
                 return false;
             }
-            // Membership is the account's: a machine Cloud no longer links (Remove unlinks it)
-            // is forgotten by every kernel that remembers it, not only the one that was asked.
-            let unlinked = projection.gone_machines(registry.iter().map(|entry| &entry.machine_id));
-            registry.retain(|entry| !unlinked.contains(&entry.machine_id));
+            // Membership is the directory's: a machine Cloud no longer links (Remove unlinks it)
+            // is forgotten by every kernel that remembers it through that directory, not only
+            // the one that was asked. Records of a private relay or a pairing are no directory's.
+            if let Some(directory) = &directory {
+                machine_presence::record_directory_of_new_machines(
+                    registry,
+                    &listed,
+                    directory,
+                    &runtime_config.host_machine_id,
+                );
+                let unlinked = projection.gone_machines(
+                    directory,
+                    registry
+                        .iter()
+                        .filter(|entry| entry.directory.as_deref() == Some(directory))
+                        .map(|entry| &entry.machine_id),
+                );
+                machine_presence::forget_unlinked(registry, directory, &unlinked);
+            }
             let inventory = machine_presence::reconcile(
                 registry,
                 listed,
@@ -217,7 +234,10 @@ async fn live_pass(
         let directory = relay_discovery::authorization::visible_directory(profile).await?;
         if let Some(directory) = &directory {
             projection.record_directory_read(directory.linked.clone());
-            projection.record_directory_machines(directory.linked_machines.clone());
+            projection.record_directory_machines(
+                &relay_discovery::authorization::cloud_directory_key(profile),
+                directory.linked_machines.clone(),
+            );
         }
         directory.map(|directory| directory.online)
     } else {
@@ -356,6 +376,7 @@ mod tests {
     #[test]
     fn the_own_machine_is_listed_only_while_another_kernel_runs_on_it() {
         let machine = |machine_id: &str, kernel_count| crate::local::RemoteMachineRecord {
+            directory: None,
             machine_id: machine_id.into(),
             machine_alias: None,
             display_name: machine_id.into(),

@@ -23,8 +23,8 @@ pub(crate) async fn projected_remote_machines_response(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     // A kernel no client follows keeps the list it made when it connected: a client that just
     // made it the source of its machine list would miss every machine that joined since.
-    // Connected, a stale list is renewed before the answer, which fails (the client asks again)
-    // rather than guess.
+    // Connected, a stale list is renewed before the answer; a renewal slower than the budget
+    // goes on, and the answer is the last list marked as being renewed.
     let stale_after_ms = config_projection
         .snapshot()
         .relay_heartbeat_ms
@@ -32,21 +32,20 @@ pub(crate) async fn projected_remote_machines_response(
         .max(1_000);
     let stale = !remote_relay_inventory_projection
         .is_fresh(crate::session::unix_epoch_ms(), stale_after_ms);
-    if stale && relay_state.read().await.connected() {
-        tokio::time::timeout(
+    let renewing = if stale && relay_state.read().await.connected() {
+        let projection = remote_relay_inventory_projection.clone();
+        renewed_machine_list(
+            &remote_relay_inventory_projection,
+            move || {
+                refresh_remote_inventory_projection(
+                    config_projection,
+                    projection,
+                    Some(relay_state),
+                )
+            },
             STALE_LIST_RENEWAL_WAIT,
-            refresh_remote_inventory_projection(
-                config_projection,
-                remote_relay_inventory_projection.clone(),
-                Some(relay_state),
-            ),
         )
         .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "list remote machines",
-            message: "the relay has not answered which machines are connected yet; ask again"
-                .to_string(),
-        })??;
     } else {
         request_remote_relay_inventory_projection_refresh(
             relay_state,
@@ -54,15 +53,40 @@ pub(crate) async fn projected_remote_machines_response(
             remote_relay_inventory_projection.clone(),
         )
         .await;
-    }
+        false
+    };
     let crate::local::RemoteMachineInventory {
         machines,
         offline_machines,
     } = remote_relay_inventory_projection.inventory();
     Ok(LocalDaemonResponse::RemoteMachinesListed {
+        renewing,
         machines,
         offline_machines,
     })
+}
+
+/// Renews the machine list before an answer, waiting at most `budget`; true when the answer is the
+/// last list because the renewal is still running. The renewal outlives the wait (it is shared,
+/// `shared_renewal`): it finishes, publishes, and the next request waits for the same pass.
+async fn renewed_machine_list<F>(
+    projection: &RemoteRelayInventoryProjectionStore,
+    renew: impl FnOnce() -> F + Send + 'static,
+    budget: std::time::Duration,
+) -> bool
+where
+    F: std::future::Future<Output = Result<(), DaemonError>> + Send + 'static,
+{
+    let pass = projection.shared_renewal(move || async move {
+        if let Err(error) = renew().await {
+            crate::logging::warn_with_fields(
+                "daemon.router",
+                "machine list renewal failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    });
+    tokio::time::timeout(budget, pass).await.is_err()
 }
 
 pub(crate) async fn execute_list_remote_machines_request(
@@ -231,6 +255,84 @@ async fn request_remote_relay_inventory_projection_refresh(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod renewal_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn machine(machine_id: &str) -> crate::local::RemoteMachineRecord {
+        crate::local::RemoteMachineRecord {
+            directory: None,
+            machine_id: machine_id.into(),
+            machine_alias: None,
+            display_name: machine_id.into(),
+            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+            presence: crate::local::RemoteMachinePresence::Online,
+            pending: false,
+            kernel_count: 1,
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            kernels: Vec::new(),
+        }
+    }
+
+    // #1474 review 5968553263 P2-2: a pass slower than the answer budget is not cancelled by it.
+    // The answer is the last list, marked as being renewed; a retry waits for the same pass and
+    // gets its list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pass_slower_than_the_answer_budget_runs_on_and_a_retry_gets_its_list() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(
+            crate::local::RemoteMachineInventory {
+                machines: vec![machine("known")],
+                ..Default::default()
+            },
+            Vec::new(),
+        );
+        let started = Arc::new(AtomicUsize::new(0));
+        let pass = || {
+            let projection = projection.clone();
+            let started = Arc::clone(&started);
+            move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    projection.update(
+                        crate::local::RemoteMachineInventory {
+                            machines: vec![machine("known"), machine("joined")],
+                            ..Default::default()
+                        },
+                        Vec::new(),
+                    );
+                    Ok(())
+                }
+            }
+        };
+        let renewing = renewed_machine_list(&projection, pass(), Duration::from_millis(50)).await;
+        assert!(renewing, "the answer says the list is being renewed");
+        assert_eq!(projection.inventory().machines.len(), 1, "the last list");
+
+        let renewing = renewed_machine_list(&projection, pass(), Duration::from_secs(5)).await;
+        assert!(!renewing);
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "the retry waited for the pass already running"
+        );
+        assert_eq!(
+            projection
+                .inventory()
+                .machines
+                .iter()
+                .map(|machine| machine.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["known", "joined"],
+            "the pass that outlived the first answer finished"
+        );
+    }
 }
 
 #[cfg(test)]

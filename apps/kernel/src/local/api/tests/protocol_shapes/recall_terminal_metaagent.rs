@@ -707,6 +707,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         alias: Some("remote-codex".to_string()),
     };
     let machine = crate::local::RemoteMachineRecord {
+        directory: None,
         machine_id: "machine-1".to_string(),
         machine_alias: Some("workstation".to_string()),
         display_name: "builder".to_string(),
@@ -735,6 +736,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     };
     let snapshot = serde_json::json!([
         LocalDaemonResponse::RemoteMachinesListed {
+            renewing: false,
             machines: vec![machine],
             offline_machines: Vec::new(),
         },

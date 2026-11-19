@@ -22,7 +22,9 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
     assert_eq!(serde_json::to_value(parsed).unwrap(), forget);
 
     let listed = LocalDaemonResponse::RemoteMachinesListed {
+        renewing: false,
         machines: vec![RemoteMachineRecord {
+            directory: None,
             machine_id: "machine-1".into(),
             machine_alias: None,
             display_name: "builder".into(),
@@ -38,6 +40,7 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
             }],
         }],
         offline_machines: vec![OfflineMachineRecord {
+            directory: None,
             machine_id: "machine-2".into(),
             display_name: "laptop".into(),
             last_seen_ms: 42,

@@ -91,10 +91,7 @@ pub(crate) async fn visible_directory(
                 linked_machines: cloud_directory_linked_machines(&directory),
             })
         });
-    let key = format!(
-        "{}/{}/{}",
-        profile.api_url, profile.account_id, profile.realm_id
-    );
+    let key = cloud_directory_key(profile);
     let mut last = LAST_VISIBLE_TARGETS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -107,6 +104,15 @@ pub(crate) async fn visible_directory(
         // answer for a moment must not take the kernel list down once it has answered.
         Err(error) => last.get(&key).cloned().map(Some).ok_or(error),
     }
+}
+
+/// The Cloud directory a profile reads: its API, account and realm. A machine registry record
+/// carries it as the directory that owns the record.
+pub(crate) fn cloud_directory_key(profile: &crate::config::PersistedCloudRelayProfile) -> String {
+    format!(
+        "{}/{}/{}",
+        profile.api_url, profile.account_id, profile.realm_id
+    )
 }
 
 /// Cloud's last answer to "which kernels are visible", by account and realm.

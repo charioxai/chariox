@@ -87,6 +87,11 @@ pub struct PersistedMachineRegistration {
     /// The name the machine had when last seen, for the list of offline machines.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The Cloud directory (`cloud_directory_key`) whose live pass first recorded this machine:
+    /// only that directory's reads may forget it. None for a machine recorded through a private
+    /// relay, a pairing or an approval: no directory owns it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +241,7 @@ pub(super) fn upsert_machine_registration<'a>(
         approved: false,
         last_seen_ms: 0,
         display_name: None,
+        directory: None,
     });
     entries
         .last_mut()

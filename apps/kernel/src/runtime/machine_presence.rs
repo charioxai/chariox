@@ -84,7 +84,7 @@ pub(crate) fn reconcile(
         machine.pending = !approved;
     }
     for machine in live
-        .iter()
+        .iter_mut()
         .filter(|machine| machine.machine_id != host_machine_id)
     {
         let index = registry
@@ -98,6 +98,7 @@ pub(crate) fn reconcile(
                 registry.len() - 1
             });
         let entry = &mut registry[index];
+        machine.directory = entry.directory.clone();
         let named = entry.display_name.as_deref() == Some(machine.display_name.as_str());
         if !named || now_ms.saturating_sub(entry.last_seen_ms) >= SIGHTING_WRITE_INTERVAL_MS {
             entry.display_name = Some(machine.display_name.clone());
@@ -126,6 +127,7 @@ pub(crate) fn reconcile(
             .unwrap_or_else(|| entry.machine_id.clone());
         match absence(entry.last_seen_ms, now_ms) {
             Absence::Reconnecting => machines.push(RemoteMachineRecord {
+                directory: entry.directory.clone(),
                 machine_id: entry.machine_id.clone(),
                 machine_alias: None,
                 display_name,
@@ -142,6 +144,7 @@ pub(crate) fn reconcile(
                 kernels: Vec::new(),
             }),
             Absence::Offline => offline_machines.push(OfflineMachineRecord {
+                directory: entry.directory.clone(),
                 machine_id: entry.machine_id.clone(),
                 display_name,
                 last_seen_ms: entry.last_seen_ms,
@@ -164,6 +167,45 @@ pub(crate) fn reconcile(
     }
 }
 
+/// Records the machines Cloud directory `directory` lists that the registry does not know yet as
+/// that directory's: only its reads may forget them (`forget_unlinked`). The host machine is
+/// never tracked.
+pub(crate) fn record_directory_of_new_machines(
+    registry: &mut Vec<PersistedMachineRegistration>,
+    live: &[RemoteMachineRecord],
+    directory: &str,
+    host_machine_id: &str,
+) {
+    for machine in live
+        .iter()
+        .filter(|machine| machine.machine_id != host_machine_id)
+    {
+        if !registry
+            .iter()
+            .any(|entry| entry.machine_id == machine.machine_id)
+        {
+            registry.push(PersistedMachineRegistration {
+                machine_id: machine.machine_id.clone(),
+                directory: Some(directory.to_string()),
+                ..PersistedMachineRegistration::default()
+            });
+        }
+    }
+}
+
+/// Forgets the remembered machines of Cloud directory `directory` that it no longer links
+/// (`unlinked`, two reads; see `gone_machines`). A record of another directory, of a private
+/// relay or of a pairing stays: no read of this directory speaks for it.
+pub(crate) fn forget_unlinked(
+    registry: &mut Vec<PersistedMachineRegistration>,
+    directory: &str,
+    unlinked: &std::collections::BTreeSet<String>,
+) {
+    registry.retain(|entry| {
+        entry.directory.as_deref() != Some(directory) || !unlinked.contains(&entry.machine_id)
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +225,7 @@ mod tests {
 
     fn live(machine_id: &str) -> RemoteMachineRecord {
         RemoteMachineRecord {
+            directory: None,
             machine_id: machine_id.into(),
             machine_alias: None,
             display_name: format!("{machine_id} name"),
@@ -201,6 +244,79 @@ mod tests {
             .iter()
             .map(|machine| (machine.machine_id.as_str(), machine.presence))
             .collect()
+    }
+
+    // #1474 review 5968553263 P2-1: sibling kernels share one registry, and a private-relay
+    // pairing or another account's machine lives in it too. A Cloud directory forgets only the
+    // machines its own live passes recorded.
+    #[test]
+    fn a_directory_forgets_only_the_machines_it_recorded() {
+        let directory = "https://cloud.test/account-1/realm-1";
+        let record = |machine_id: &str, owner: Option<&str>| PersistedMachineRegistration {
+            directory: owner.map(str::to_string),
+            ..entry(machine_id, NOW)
+        };
+        let mut registry = vec![
+            record("removed-in-cloud", Some(directory)),
+            PersistedMachineRegistration {
+                public_key_thumbprint: Some("thumbprint".into()),
+                paired_at_ms: Some(1),
+                ..record("paired-private-relay", None)
+            },
+            record(
+                "other-account",
+                Some("https://cloud.test/account-2/realm-1"),
+            ),
+        ];
+        let unlinked = ["removed-in-cloud", "paired-private-relay", "other-account"]
+            .map(str::to_string)
+            .into();
+        forget_unlinked(&mut registry, directory, &unlinked);
+        assert_eq!(
+            registry
+                .iter()
+                .map(|entry| entry.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["paired-private-relay", "other-account"],
+            "the private-relay pairing keeps its approval, thumbprint and presence"
+        );
+    }
+
+    // The directory that first lists a machine owns its record; a record that exists already
+    // (paired, approved, or another directory's) and the host machine are left as they are, and
+    // the listed machine says which directory it belongs to.
+    #[test]
+    fn a_new_machine_belongs_to_the_directory_that_lists_it_first() {
+        let directory = "https://cloud.test/account-1/realm-1";
+        let mut registry = vec![PersistedMachineRegistration {
+            public_key_thumbprint: Some("thumbprint".into()),
+            ..entry("paired", NOW)
+        }];
+        let live = vec![live("paired"), live("new"), live(HOST)];
+        record_directory_of_new_machines(&mut registry, &live, directory, HOST);
+        let owners = |registry: &[PersistedMachineRegistration]| {
+            registry
+                .iter()
+                .map(|entry| (entry.machine_id.clone(), entry.directory.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            owners(&registry),
+            vec![
+                ("paired".to_string(), None),
+                ("new".to_string(), Some(directory.to_string()))
+            ]
+        );
+        let inventory = reconcile(&mut registry, live, &Default::default(), HOST, NOW);
+        let listed = |id: &str| {
+            inventory
+                .machines
+                .iter()
+                .find(|machine| machine.machine_id == id)
+                .map(|machine| machine.directory.clone())
+        };
+        assert_eq!(listed("new"), Some(Some(directory.to_string())));
+        assert_eq!(listed("paired"), Some(None));
     }
 
     #[test]
@@ -247,6 +363,7 @@ mod tests {
         assert_eq!(
             inventory.offline_machines,
             vec![OfflineMachineRecord {
+                directory: None,
                 machine_id: "b".into(),
                 display_name: "b name".into(),
                 last_seen_ms: NOW - RECONNECTING_WINDOW_MS,
