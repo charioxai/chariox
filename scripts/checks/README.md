@@ -23,6 +23,9 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `no-dead-code-allow` | Writing clean code: delete dead code in the same change | delete the unused item or use it; no `#[allow(dead_code)]` or `unused` allowance |
 | `no-legacy-read-paths` | Development stage: no shims or legacy read paths | delete the old name, serde alias or fallback and re-provision old kernels |
 | `no-empty-catch` | Writing clean code: fail clearly, never silently | handle or log the error, or comment why ignoring it is safe |
+| `no-full-snapshot-on-read-path` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: a read request does not build a full Room snapshot | read the stored Room with `session_with_agents` (or a narrower store read) |
+| `no-spawn-in-periodic-loop` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: a periodic loop does not start a subprocess on its ticks | read the value from the kernel itself (/proc, a subscription, a cached value), or start the child once outside the loop |
+| `no-polling-where-subscription` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: no fixed-interval polling of a read the kernel pushes | react to the kernel event that carries the change and read once on it |
 
 ## Allow lists
 
@@ -50,3 +53,6 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 - `no-dead-code-allow` reads `dead_code` and `unused*` allowances (also inside `cfg_attr`) in production Rust under `apps/`, `packages/` and `adapters/`; test code, comments and strings are hidden first. A clippy allowance is not matched.
 - `no-legacy-read-paths` finds every serde alias (each `alias =` in an attribute counts) and Rust or top-level TypeScript declarations whose name starts with `legacy` or `Legacy` (`legacy_` in Rust). A legacy path under another name is not seen. Each list entry says what the alias or declaration still reads.
 - `no-empty-catch` finds `catch {}` with nothing in the braces in non-test `.ts` and `.tsx` under `apps/` and `packages/`; a catch holding only a comment passes, and `.mjs` scripts and `.catch(() => {})` are not scanned. TypeScript comments and the text of string and template literals are skipped (`scripts/lib/ts-code.mjs`); a `String.raw` template is a program for another runtime and is scanned.
+- `no-full-snapshot-on-read-path` reads only the read-path files its table names (`READ_PATHS`) and matches calls of methods named `*session*_snapshot(s)*`; a full snapshot built by a helper in another file is not seen. A listed file that disappears is red until the table is updated.
+- `no-spawn-in-periodic-loop` treats a `loop`/`while` body as periodic when it calls `sleep`, `sleep_until`, `recv_timeout`, `interval` or `.tick()`, and a spawn as `process_spawn::command(` or `Command::new(`, also through functions of the same file. A child started through a closure parameter or a function of another file is not seen, and `cfg` branches are not told apart (a macOS-only `ps` counts on every platform).
+- `no-polling-where-subscription` reads production `.ts`/`.tsx` under `apps/*/src` and `packages/*/src` for `setInterval` callbacks and loops that `await` a `delay`, `sleep` or `setTimeout`, also through functions of the same file. The Cloud web client is in chariox-cloud and is not scanned here.

@@ -153,6 +153,7 @@ pub(super) async fn emit_relay_event(
     let daemon_private_key = router.relay_private_key();
     if matches!(&event, KernelEvent::SessionSnapshot { .. }) {
         let encoded = event_runtime.serialized_snapshot(event).await?;
+        crate::transport::perf_budget::check_event("session_snapshot", encoded.json().get().len());
         let encrypted_event = relay_crypto::encrypt_payload_for_peer(
             &daemon_private_key,
             client_public_key,
@@ -185,6 +186,10 @@ pub(super) async fn emit_relay_event(
                 message: error.to_string(),
             }
         })?;
+    crate::transport::perf_budget::check_event(
+        crate::transport::kernel_protocol::kernel_event_name(&event),
+        plaintext.len(),
+    );
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
     let append_started = std::time::Instant::now();
