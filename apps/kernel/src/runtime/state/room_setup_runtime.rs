@@ -73,7 +73,7 @@ impl KernelRuntimeState {
         work: impl std::future::Future<Output = Result<(), String>>,
     ) -> bool {
         if let Err(error) = self.owned.room_setup.start(session_id, step) {
-            tracing::error!(session_id, %error, "room setup could not start durably");
+            self.room_setup_progress_failed(session_id, step, &error);
             return false;
         }
         self.publish_room_setup(session_id);
@@ -88,11 +88,22 @@ impl KernelRuntimeState {
             );
         }
         if let Err(error) = self.owned.room_setup.finish(session_id, step, result) {
-            tracing::error!(session_id, %error, "room setup result could not be saved");
+            self.room_setup_progress_failed(session_id, step, &error);
             return false;
         }
         self.publish_room_setup(session_id);
         succeeded
+    }
+
+    fn room_setup_progress_failed(
+        &self,
+        session_id: &str,
+        step: RoomSetupStepId,
+        error: &DaemonError,
+    ) {
+        tracing::error!(session_id, %error, "room setup progress could not be saved; repair kernel storage, then retry or dismiss setup");
+        self.owned.room_setup.progress_failed(session_id, step);
+        self.publish_room_setup(session_id);
     }
 
     /// Shows the current setup to every client of the Room.

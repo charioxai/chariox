@@ -16,6 +16,7 @@ pub(crate) struct RoomSetupStore {
 struct RoomSetup {
     agent_id: String,
     state: RoomSetupState,
+    storage_failed: bool,
 }
 
 impl RoomSetupStore {
@@ -44,7 +45,13 @@ impl RoomSetupStore {
                 });
                 state.steps.truncate(position + 1);
             }
-            restored.change(&session, |_| Ok(Some(RoomSetup { agent_id, state })))?;
+            restored.change(&session, |_| {
+                Ok(Some(RoomSetup {
+                    agent_id,
+                    state,
+                    storage_failed: false,
+                }))
+            })?;
         }
         Ok(restored)
     }
@@ -89,6 +96,7 @@ impl RoomSetupStore {
             Ok(RoomSetupState::pending(request).map(|state| RoomSetup {
                 agent_id: agent_id.into(),
                 state,
+                storage_failed: false,
             }))
         })
     }
@@ -104,7 +112,31 @@ impl RoomSetupStore {
     pub(crate) fn holds_prompts(&self, session_id: &str) -> bool {
         self.rooms()
             .get(session_id)
-            .is_some_and(|setup| setup.state.holds_prompts())
+            .is_some_and(|setup| !setup.storage_failed && setup.state.holds_prompts())
+    }
+
+    /// A failed write cannot save its own failure. Keep a visible recovery action locally,
+    /// and stop holding prompts; Retry or Dismiss must commit normally after storage is repaired.
+    pub(crate) fn progress_failed(&self, session_id: &str, step: RoomSetupStepId) {
+        let mut rooms = self.rooms();
+        let Some(setup) = rooms.get_mut(session_id) else {
+            return;
+        };
+        let message = if step == RoomSetupStepId::Publish {
+            "Publishing progress could not be saved. Repair kernel storage and check the repository, then retry publishing."
+        } else {
+            "Room setup progress could not be saved. Repair kernel storage and check the folder, then dismiss setup to continue."
+        };
+        apply_step(
+            &mut setup.state,
+            step,
+            RoomSetupStepState::Failed,
+            Some(message.into()),
+        );
+        if let Some(position) = setup.state.steps.iter().position(|item| item.id == step) {
+            setup.state.steps.truncate(position + 1);
+        }
+        setup.storage_failed = true;
     }
 
     pub(crate) fn start(&self, session_id: &str, step: RoomSetupStepId) -> Result<(), DaemonError> {
@@ -163,6 +195,7 @@ impl RoomSetupStore {
                 .ok_or_else(nothing_to_retry)?;
             step.state = RoomSetupStepState::Pending;
             step.message = None;
+            setup.storage_failed = false;
             agent = Some(setup.agent_id.clone());
             Ok(Some(setup))
         })?;
