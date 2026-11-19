@@ -1,15 +1,15 @@
-//! Local 1032 / relay peer 449: Move to Trash and Undo for the files of a machine.
+//! Local 1012 / relay peer 449: Move to Trash and Undo for the files of a machine.
 use super::*;
 use crate::local::{KernelFileFailure, TrashedKernelFile};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use sha2::{Digest, Sha256};
 
 #[test]
-fn kernel_trash_1032_snapshot_and_hash() {
-    let bytes = include_bytes!("kernel-trash-1032.json");
+fn kernel_trash_1012_snapshot_and_hash() {
+    let bytes = include_bytes!("kernel-trash-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "9bf97b0b353af442f20198f938dc469ae340c66891de2c9bacf250cc21308f50"
+        "2061cbf2147716223191c2bb854dbc988f44961c7c5bbc513f08d0a4946ba079"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

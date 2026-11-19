@@ -306,7 +306,7 @@ impl KernelRuntimeState {
                     &reach.agent_id,
                     &request_id,
                 );
-                let result = self
+                let result = match self
                     .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Acquire {
@@ -318,9 +318,18 @@ impl KernelRuntimeState {
                         &format!("machine:{service_request_id}:acquire"),
                     )
                     .await
-                    .map_err(|error| {
-                        choice::acquire_refusal(error, &capability, &option, &request_id)
-                    })?;
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
+                        return Err(choice::acquire_refusal(
+                            error,
+                            &capability,
+                            &option,
+                            &request_id,
+                        ));
+                    }
+                };
                 let crate::local::ControlPlaneResponse::Machine { allocation_ref, .. } = &result
                 else {
                     return Err(acquisition_error(

@@ -5,16 +5,22 @@
 //! durable row of (agent, request_id). The service binds an accepted request to its option and
 //! replays it before any stock or catalogue check, so every try of a request sends the option its
 //! first try chose, whatever the service answered before. Each arrow below is one compare-and-set
-//! on that row; no transition writes another option or removes the row.
+//! on that row; no transition writes another option. The row's lifetime is the store's: it
+//! stays for the replay window after its last write (`durable_state::acquire_choices`).
 //!
 //! An option P is a listed class with its region, or the service's own default when it lists no
 //! options; both are remembered and replayed the same way, whatever the service lists later.
 //!
-//! | row \ outcome of a try | accepted (new or replay) | anything else: refusal, failure before or after the post, lost response, timeout | restart |
-//! |-----------------|-----------------------------|---------------------|---------|
-//! | none            | chose P → pending P → accepted P, ref | chose P → pending P | none |
-//! | pending P       | accepted P, ref             | pending P           | pending P |
-//! | accepted P, ref | accepted P, ref             | accepted P, ref     | accepted P, ref |
+//! | row \ outcome of a try | accepted (new or replay) | closed refusal | anything else: refusal, failure before or after the post, lost response, timeout | restart |
+//! |-----------------|-----------------------------|----------------|---------------------|---------|
+//! | none            | chose P → pending P → accepted P, ref | chose P → pending P, window restarts | chose P → pending P | none |
+//! | pending P       | accepted P, ref             | pending P, window restarts | pending P | pending P |
+//! | accepted P, ref | accepted P, ref             | accepted P, ref | accepted P, ref     | accepted P, ref |
+//!
+//! Every write restarts the replay window, so a request that is accepted, closed or abandoned
+//! keeps its answer for a retry of the same request_id for 24 hours and is then forgotten: a
+//! request_id used again after that chooses its option anew. Releasing an allocation never needs
+//! the row, only the allocation_ref.
 //!
 //! Tries of one request overlap: a try may still wait for its capability call or the owner's
 //! decision when another is refused. So only the service can say that a request holds nothing:
@@ -33,14 +39,16 @@
 //!   failure passes on as it is. The connected-service boundary passes the capability call's
 //!   failure before the acquire on without its Cloud code (`control_plane_offer_unavailable`), so
 //!   no code it carries is read as a refusal of the acquire.
-//! - Accepted moves a row with the option the try sent, unless it is accepted under another
-//!   allocation: the service's acceptance is the truth, even after a refusal.
+//! - Accepted writes the row with the option the try sent, whatever the row was and even when it
+//!   is gone: a try may wait for the service or the owner's decision past the replay window, and
+//!   the allocation it was given must not be lost to a sweep. The service's acceptance is the
+//!   truth, even after a refusal. Only a row accepted under another allocation or option stays.
 //! - Choosing writes only a missing row; a try that loses that race takes the option the winner
 //!   wrote. An explicit class_id or region that differs from the row's is refused before the
 //!   service is asked.
 //! - A restart keeps the row, so a retry after a restart resends what the first try sent.
-//! - Nothing removes a row or writes another option into it, so a request_id never forgets the
-//!   option under which the service may hold an allocation; releasing it is the owner's
+//! - Nothing writes another option into a row, so within its window a request_id never forgets
+//!   the option under which the service may hold an allocation; releasing it is the owner's
 //!   `chariox.machines.release` of the allocation_ref.
 use super::*;
 use crate::durable_state::acquire_choices::{AcquireChoiceWrite, AcquireOption};
@@ -172,7 +180,7 @@ impl KernelRuntimeState {
     ) -> Result<AcquireOption, DaemonError> {
         let store = &self.owned.durable_state_store;
         loop {
-            match store.acquire_choice(agent_id, request_id)? {
+            match store.acquire_choice(agent_id, request_id, crate::session::unix_epoch_ms())? {
                 Some(choice) => {
                     let option = choice.option.clone();
                     let differs = |named: &Option<String>, kept: Option<&str>| {
@@ -197,12 +205,35 @@ impl KernelRuntimeState {
                         AcquireChoiceWrite::Choose {
                             option: option.clone(),
                         },
+                        crate::session::unix_epoch_ms(),
                     )? {
                         return Ok(option);
                     }
                 }
             }
         }
+    }
+
+    /// Keeps the row of a request the service closed for another replay window, so a retry of it
+    /// gets the same refusal. Any other failure leaves the row as it is.
+    pub(super) fn close_acquire_option(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        option: &AcquireOption,
+        refusal: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        if matches!(acquire_failure(refusal), AcquireFailure::Closed { .. }) {
+            self.owned.durable_state_store.write_acquire_choice(
+                agent_id,
+                request_id,
+                AcquireChoiceWrite::Closed {
+                    option: option.clone(),
+                },
+                crate::session::unix_epoch_ms(),
+            )?;
+        }
+        Ok(())
     }
 
     /// Records the allocation the service accepted for the option this try sent.
@@ -220,6 +251,7 @@ impl KernelRuntimeState {
                 option: option.clone(),
                 allocation_ref: allocation_ref.to_owned(),
             },
+            crate::session::unix_epoch_ms(),
         )? {
             return Ok(());
         }
