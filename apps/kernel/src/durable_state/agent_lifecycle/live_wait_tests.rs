@@ -223,3 +223,66 @@ fn kfinish_cancelling_the_last_spawn_still_requires_handling_its_loss() {
     handle(&f, event.sequence, true);
     assert_eq!(f.task().state, ExecutionState::Done);
 }
+
+fn orphaned_registration_wait(deadline: Option<u64>) -> Fixture {
+    let f = Fixture::new();
+    wait_on_child(&f, deadline);
+    let receipt = child_finishes(&f);
+    f.begin("event-turn");
+    handle(&f, receipt, true);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert!(f
+        .task()
+        .obligations
+        .iter()
+        .all(|o| !o.requires_resolution()));
+    // Model storage loss after the receipt retired the registration, but before
+    // the parent turn ended and could settle the original task.
+    let bridge = Connection::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(
+        bridge
+            .execute(
+                "DELETE FROM agent_registrations WHERE id=?1 AND task_id=?2",
+                params!["reg", "p"]
+            )
+            .unwrap(),
+        1
+    );
+    f.settle("event-turn", true);
+    f
+}
+
+#[test]
+fn orphaned_wait_settlement_after_parent_turn() {
+    let f = orphaned_registration_wait(None);
+    sweep(&f, 60_001);
+    assert_eq!(f.task().state, ExecutionState::Done);
+}
+
+#[test]
+fn orphaned_wait_settlement_after_deadline() {
+    let f = orphaned_registration_wait(Some(60_000));
+    sweep(&f, 60_001);
+    assert_eq!(f.task().state, ExecutionState::Done);
+}
+
+#[test]
+fn orphaned_wait_settlement_with_retired_registration_and_busy_sibling() {
+    let f = Fixture::new();
+    wait_on_child(&f, Some(60_000));
+    let receipt = child_finishes(&f);
+    f.begin("event-turn");
+    handle(&f, receipt, true);
+    f.begin("unrelated-turn");
+    f.settle("event-turn", true);
+    let regs = f.store.agent_registrations("p").unwrap();
+    assert_eq!(regs.len(), 1);
+    assert!(!regs[0].live);
+    assert!(f
+        .task()
+        .obligations
+        .iter()
+        .all(|o| !o.requires_resolution()));
+    sweep(&f, 60_001);
+    assert_eq!(f.task().state, ExecutionState::Done);
+}
