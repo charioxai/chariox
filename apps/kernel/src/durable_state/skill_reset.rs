@@ -12,7 +12,7 @@ pub(crate) use executable::{
     collect_names as collect_retired_skill_names, load_names as retired_skill_names,
     retire_definition as retire_workflow_skill_references,
 };
-pub(crate) use files::{LegacySkillRoot, LegacySkillRootKind};
+pub(crate) use files::{RetiredSkillRoot, RetiredSkillRootKind};
 
 const REPLAY_TABLES: &[(&str, &str)] = &[
     ("durable_state_events", "kind"),
@@ -28,7 +28,7 @@ const REPLAY_TABLES: &[(&str, &str)] = &[
 /// remaining present. A later v2 install is never rediscovered as legacy state.
 pub(crate) fn reset(
     connection: &mut Connection,
-    roots: &[LegacySkillRoot],
+    roots: &[RetiredSkillRoot],
     external_names: &std::collections::BTreeSet<String>,
 ) -> rusqlite::Result<()> {
     use rusqlite::{params, OptionalExtension, TransactionBehavior};
@@ -255,7 +255,7 @@ fn retire_hidden_context(context: &str) -> String {
     cleaned
 }
 
-fn legacy_grant(value: &Value) -> bool {
+fn retired_grant(value: &Value) -> bool {
     value.get("kind").and_then(Value::as_str) == Some("skill")
 }
 fn queued_selection(value: &Value, names: &std::collections::BTreeSet<String>) -> bool {
@@ -299,7 +299,7 @@ fn retire_with_names(value: &mut Value, names: &std::collections::BTreeSet<Strin
                 match key.as_str() {
                     "extension_grants" | "extensions" => {
                         if let Some(grants) = field.as_array_mut() {
-                            grants.retain(|grant| !legacy_grant(grant));
+                            grants.retain(|grant| !retired_grant(grant));
                         }
                     }
                     "hidden_system_context" => {
@@ -372,10 +372,10 @@ mod tests {
             std::fs::create_dir(&root).unwrap();
             Self(std::fs::canonicalize(root).unwrap())
         }
-        fn roots(&self) -> Vec<LegacySkillRoot> {
-            vec![LegacySkillRoot {
+        fn roots(&self) -> Vec<RetiredSkillRoot> {
+            vec![RetiredSkillRoot {
                 path: self.0.join("skills"),
-                kind: LegacySkillRootKind::Installed,
+                kind: RetiredSkillRootKind::Installed,
             }]
         }
     }
