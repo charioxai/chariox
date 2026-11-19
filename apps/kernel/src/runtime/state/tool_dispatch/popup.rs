@@ -306,14 +306,21 @@ impl KernelRuntimeState {
             interaction = interaction.with_view(view);
         }
         if args.wait == Some(false) {
-            let ask = interaction.clone();
             let interaction_id = interaction.id().to_owned();
             let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
             self.resume_browser_region_cards();
             // Its holder is told as for a question that blocks the turn.
             self.announce_child_decision(session_id, &interaction_id)
                 .await?;
-            self.owned.alert_owner_of_ask(session_id, &ask);
+            if let Ok(session) = self.owned.session_store.get_session(session_id) {
+                if let Some(ask) = session
+                    .active_interactions()
+                    .iter()
+                    .find(|ask| ask.id() == interaction_id)
+                {
+                    self.owned.alert_owner_of_ask(session_id, ask);
+                }
+            }
             return Ok(result);
         }
         let provider_run =
