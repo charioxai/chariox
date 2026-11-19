@@ -444,11 +444,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A sizes length as the image's own document resolves it: its media queries read lengths as sizes does (math
     // functions, the frame's own viewport, font-relative units at the initial font). `min-width: calc(length - X +
     // 100vw)` starts to match 1/64 px below X = length and `max-width` stops 1/64 px above it, so the length is the
-    // middle of the two thresholds. Each (document, viewport, length) is bisected once.
+    // middle of the two thresholds, held as a float as Blink holds it (a 600px size bisected to 600.00001 sent its
+    // candidate's density as 1.9999999 instead of 2). Each (document, viewport, length) is bisected once.
     const lengthCache = new WeakMap();
     const threshold = (view, feature, text) => {
       let low = 0, high = 2 ** 24;
-      for (let step = 0; step < 44; step++) { const middle = (low + high) / 2; if (view.matchMedia(`(${feature}: calc(${text} - ${middle}px + 100vw))`).matches === (feature === 'min-width')) high = middle; else low = middle; }
+      for (let middle = high / 2; middle > low && middle < high; middle = (low + high) / 2) { if (view.matchMedia(`(${feature}: calc(${text} - ${middle}px + 100vw))`).matches === (feature === 'min-width')) high = middle; else low = middle; }
       return high;
     };
     const lengthPx = (text, node) => {
@@ -460,7 +461,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const view = node.ownerDocument.defaultView, key = `${view.innerWidth}x${view.innerHeight} ${text}`;
       if (!lengthCache.has(node.ownerDocument)) lengthCache.set(node.ownerDocument, new Map());
       const known = lengthCache.get(node.ownerDocument);
-      if (!known.has(key)) known.set(key, (threshold(view, 'min-width', text) + threshold(view, 'max-width', text)) / 2);
+      if (!known.has(key)) known.set(key, Math.fround((threshold(view, 'min-width', text) + threshold(view, 'max-width', text)) / 2));
       return known.get(key);
     };
     // The source size: the first sizes entry whose media matches and whose length parses; else 100vw (all in the image's document).
