@@ -1626,13 +1626,20 @@ mod tests {
     #[test]
     fn a03_terminate_settles_the_owned_group_only_while_unreaped() {
         let processes = WatchedProcesses::default();
-        let child = spawn(
+        let mut child = spawn(
             &w(),
-            &["sleep".into(), "30".into()],
+            &["sh".into(), "-c".into(), "echo ready; exec sleep 30".into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
             &super::tests::test_resources(),
+        )
+        .unwrap();
+        // Asked once it runs: a SIGTERM that arrives while the sandbox is still
+        // starting its program is dropped, and the SIGKILL after the grace ends it.
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut String::new(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1646,7 +1653,11 @@ mod tests {
             assert!(Instant::now() < deadline, "terminated session must settle");
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert_eq!(
+            crate::provider::state_confinement::confined_program_signal(&status),
+            Some(libc::SIGTERM),
+            "the program ends by the SIGTERM, not the SIGKILL that follows"
+        );
         assert!(
             !processes.terminate(&w()),
             "a reaped leader is never signalled"
