@@ -8039,10 +8039,15 @@ and inventory revision; no client skill path or body is accepted.
 `catalog` lists, besides the focused agent's run, the skills of every installed
 provider for the Project with no run (local 1060): Claude's skill folders, and
 Codex `skills/list` and OpenCode `/skill` on the managed account server, each
-under the provider's default account. Their execution id is
+under the caller's default account of that provider. The provider's own home
+on the machine holds the host owner's accounts: a Room member with no account of
+their own there sees none of its skills. A focused agent's provider is left out
+only when its run lists it. Their execution id is
 `installed:<provider>:<kernel id>:<Project id>`, so `native_details` (its
 `agent_id` is null then) and an `install` from that selection list the same
-skills again; a run still owns turn delivery. Only the owner imports them.
+skills again. Only the focused run decides how a skill reaches a turn: the
+`skills` rows resolve delivery from its inventory alone. Only the owner imports
+them.
 
 `resolve_repository` (the home owner from Skills, or an agent through
 `chariox.manage_skills` action `resolve_repository`) fetches a public git

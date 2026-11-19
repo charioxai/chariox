@@ -355,29 +355,32 @@ impl KernelRuntimeState {
                     None => None,
                 };
                 let snapshot = service.storage.snapshot()?;
-                let mut native = match &focused {
+                let run_native = match &focused {
                     Some(agent) => self
                         .agent_native_entries(agent.id(), snapshot.revision, false)?
-                        .map(|native| native.entries)
-                        .unwrap_or_default(),
-                    None => vec![],
+                        .map(|native| native.entries),
+                    None => None,
                 };
-                // Every installed provider lists its skills with no run; the focused
-                // agent's own run stays the source for its provider.
-                if let Some(project_id) = project_id.as_deref() {
-                    let run_family = focused.as_ref().and_then(|agent| {
-                        crate::provider::canonical_provider_family(agent.provider())
-                    });
-                    native.extend(self.installed_native_entries(
-                        user,
-                        project_id,
-                        snapshot.revision,
-                        run_family,
-                    ));
-                }
+                // Only the focused run decides how a skill reaches its turns; the
+                // installed providers below are listed, never delivered through.
+                let listed_by_run = run_native
+                    .as_ref()
+                    .and(focused.as_ref())
+                    .and_then(|agent| crate::provider::canonical_provider_family(agent.provider()));
+                let mut native = run_native.unwrap_or_default();
                 let revision = snapshot.revision;
                 let skills =
                     crate::skill::resolver::projections(&snapshot, project_id.as_deref(), &native);
+                // Every installed provider lists its skills with no run, except the one
+                // whose focused run already lists them.
+                if let Some(project_id) = project_id.as_deref() {
+                    native.extend(self.installed_native_entries(
+                        user,
+                        project_id,
+                        revision,
+                        listed_by_run,
+                    ));
+                }
                 let snapshot = service.storage.snapshot()?;
                 if snapshot.revision != revision {
                     return Err(skill_error("catalog changed; refresh Skills"));

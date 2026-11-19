@@ -103,7 +103,8 @@ impl KernelRuntimeState {
                 continue;
             }
             match self.installed_skill_inventory(user, provider, project_id, catalog_revision) {
-                Ok(inventory) => entries.extend(inventory.entries),
+                Ok(Some(inventory)) => entries.extend(inventory.entries),
+                Ok(None) => {}
                 Err(error) => crate::logging::warn_with_fields(
                     "daemon.skills",
                     "installed provider skills could not be listed",
@@ -136,17 +137,20 @@ impl KernelRuntimeState {
                 execution.provider,
                 &execution.project_id,
                 catalog_revision,
-            )
+            )?
+            .ok_or_else(|| failure("sign in to this provider on this kernel to see its skills"))
         }))
     }
 
+    /// `None` when `user` has no account of this provider here: the provider's own
+    /// home on this machine holds the host owner's accounts, never anyone else's.
     fn installed_skill_inventory(
         &self,
         user: &str,
         provider: &'static str,
         project_id: &str,
         catalog_revision: u64,
-    ) -> Result<NativeSkillInventory, DaemonError> {
+    ) -> Result<Option<NativeSkillInventory>, DaemonError> {
         let executable = installed_executable(provider)?;
         self.ensure_skill_project_visible(Some(project_id), user)?;
         let project = self.owned.session_store.get_project(project_id)?;
@@ -173,14 +177,15 @@ impl KernelRuntimeState {
             .list(&owner, Some(provider))?
             .into_iter()
             .find(|profile| profile.is_default);
-        // With no account set up, the provider runs on its own default home.
+        // With no account set up, the host owner's provider runs on its own default home.
         let (account_profile, account_environment) = match default_profile {
             Some(profile) => {
                 let environment =
                     registry.resolve_environment(&owner, provider, &profile.profile_id)?;
                 (profile.profile_id, environment)
             }
-            None => ("default".to_string(), BTreeMap::new()),
+            None if self.skills_host_owner(user) => ("default".to_string(), BTreeMap::new()),
+            None => return Ok(None),
         };
         let environment = capture_launch_skill_environment(&account_environment, &[]);
         let daemon_id = self.owned.config_projection.snapshot().daemon_id;
@@ -243,6 +248,7 @@ impl KernelRuntimeState {
             &[],
             false,
         )
+        .map(Some)
     }
 }
 
