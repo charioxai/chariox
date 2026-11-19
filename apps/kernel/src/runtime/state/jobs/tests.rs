@@ -425,7 +425,8 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
             &["cat".into()],
             worktree.path(),
             true,
-            admission.capacity(),
+            // The host's live headroom can exceed the configured command pool.
+            u64::MAX,
         )
         .unwrap();
     let value = state

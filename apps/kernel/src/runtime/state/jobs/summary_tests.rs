@@ -191,7 +191,8 @@ async fn job_summary_own_list_and_status_explain_memory_pressure_and_next_step()
             &["cat".into()],
             workspace.path(),
             true,
-            admission.capacity(),
+            // The host's live headroom can exceed the configured command pool.
+            u64::MAX,
         )
         .unwrap();
     let job = state
