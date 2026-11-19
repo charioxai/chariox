@@ -567,4 +567,6 @@ pub use workspace::*;
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
 /// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// Local 1032 (provisional): `TrashKernelFiles` moves files and folders to the machine's own trash and `RestoreKernelTrash` puts them
+/// back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`; docs/PROTOCOL.md, "Move to Trash").
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1032;

@@ -182,6 +182,8 @@ impl CommandRouter {
                 | LocalDaemonRequest::ListKernelDirectory(_)
                 | LocalDaemonRequest::ReadKernelFile(_)
                 | LocalDaemonRequest::WriteKernelFile(_)
+                | LocalDaemonRequest::TrashKernelFiles(_)
+                | LocalDaemonRequest::RestoreKernelTrash(_)
                 | LocalDaemonRequest::StartFileTransfer(_)
                 | LocalDaemonRequest::GetFileTransfer(_)
                 | LocalDaemonRequest::ListFileTransfers
@@ -316,6 +318,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         use crate::runtime::kernel_files as files;
+        use crate::runtime::kernel_trash as trash;
         let owner = matches!(
             command.caller.connection_class,
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
@@ -362,6 +365,8 @@ impl CommandRouter {
                 LocalDaemonRequest::ListKernelDirectory(r) => files::list(r, &guard),
                 LocalDaemonRequest::ReadKernelFile(r) => files::read(r, &guard),
                 LocalDaemonRequest::WriteKernelFile(r) => files::write(r, &guard),
+                LocalDaemonRequest::TrashKernelFiles(r) => trash::trash(r, &guard),
+                LocalDaemonRequest::RestoreKernelTrash(r) => trash::restore(r, &guard),
                 _ => unreachable!("filtered above"),
             }
         })

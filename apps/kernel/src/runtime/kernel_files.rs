@@ -45,17 +45,20 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "file_io_failed"
             | "file_staging_untrusted"
             | "file_state_protected"
+            | "file_trash_failed"
+            | "file_not_in_trash"
+            | "file_restore_conflict"
     )
 }
 
-fn fail(code: &str, message: impl Into<String>) -> DaemonError {
+pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
         message: message.into(),
     }
 }
 
-fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+pub(super) fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
     match error.kind() {
         std::io::ErrorKind::NotFound => fail(
             "file_not_found",
@@ -77,7 +80,7 @@ fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
 
 /// `~/x` becomes the kernel user's home; anything else must be absolute. The kernel's own state
 /// and the Vault are not files of the machine as far as this service goes.
-fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
+pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
     let resolved = match path.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
             .map(PathBuf::from)

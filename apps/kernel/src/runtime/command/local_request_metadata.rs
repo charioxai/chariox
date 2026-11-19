@@ -688,6 +688,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListKernelDirectory(_) => "machine_file.list",
         LocalDaemonRequest::ReadKernelFile(_) => "machine_file.read",
         LocalDaemonRequest::WriteKernelFile(_) => "machine_file.write",
+        LocalDaemonRequest::TrashKernelFiles(_) => "machine_file.trash",
+        LocalDaemonRequest::RestoreKernelTrash(_) => "machine_file.trash_restore",
         LocalDaemonRequest::StartFileTransfer(_) => "machine_file.transfer_start",
         LocalDaemonRequest::GetFileTransfer(_) => "machine_file.transfer_get",
         LocalDaemonRequest::ListFileTransfers => "machine_file.transfer_list",

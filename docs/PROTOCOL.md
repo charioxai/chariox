@@ -7643,12 +7643,52 @@ the client or agent that asked carries no bytes and may go away:
   `chariox.files.read` (a page of at most 64 KiB), `chariox.files.copy { source: { machine?, path },
   destination: { machine?, folder, name? }, conflict?, move?, wait_seconds? }` and
   `chariox.files.transfer { job_id, machine?, cancel?, wait_seconds? }`. A copy result is the job
-  without its start time; no file content ever reaches the model.
+  without its start time; no file content ever reaches the model. `chariox.files.trash` and
+  `chariox.files.restore` are described under "Move to Trash and Undo".
 
 Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
 `file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
+
+### Files: Move to Trash and Undo — local 1032 / relay peer 449 (provisional)
+
+`TrashKernelFiles { paths }` moves files and folders (absolute or `~/` paths, one or many) to the machine's own trash and
+never deletes for good. The answer is `KernelFilesTrashed { trashed: [{ path, trash_path }], failed: [{ path, message }] }`:
+`path` is where the item was, `trash_path` where it is now. Items the kernel could not move are in `failed` with a reason
+the person can act on; when none could be moved the request itself fails (`file_not_found`, `file_state_protected`,
+`file_path_invalid`, `file_trash_failed`). A path with a `..` part is refused (`file_path_invalid`): name the full
+path. A folder and something inside it, named together, moves once; the inner item is reported in `trashed` only when it is
+found in the moved folder (through real folders, not links), with its `trash_path` inside the folder's. One that is not there
+is a `failed` entry ("does not exist"). The kernel's own state and Vault, a folder that holds them, the home folder and
+anything already in the trash are refused.
+
+`RestoreKernelTrash { items: [{ path, trash_path }] }` puts items back and answers `KernelTrashRestored { restored:
+[path], failed }`. It creates missing parent folders and never overwrites: an item whose `path` is taken stays in the trash
+and fails with `file_restore_conflict` ("... is taken, so the item stays in the Trash"); an item that is not in a trash
+folder, is gone from it, or whose record names another path fails with `file_not_in_trash`. An item reported inside a moved
+folder restores on its own: its place is the folder's recorded place plus the path inside it (Linux; macOS renames it from
+its trash path). The kernel reads where an item is from its position, never from folder names below the trash folder:
+the trash folder (the home trash, or `.Trash-$uid` / `.Trash/$uid` at the top of a filesystem; on macOS `~/.Trash` or
+`.Trashes/$uid` at the mount point of the item's volume, wherever it is mounted), then `files/`, the entry with the record, and the path inside it, whose folders may
+have any names (`files`, `info`, `.Trash-$uid`). A `trash_path` that is not absolute or has a `..` part, and the trash folder
+itself, fail with `file_not_in_trash`; a folder of the user's own named `.Trash` or `.Trash-$uid` below the top of a
+filesystem is not a trash.
+
+Linux follows the freedesktop.org Trash specification: `$XDG_DATA_HOME/Trash` (`~/.local/share/Trash`) with `files/` and
+`info/<name>.trashinfo` (`Path=` percent-encoded, `DeletionDate=`); a name that is taken gets `.1`, `.2`, ...; a name too
+long for its record is cut in `files/` between characters (so `trash_path` names it exactly; a name that is not UTF-8
+is cut by bytes) and keeps its full name in `Path=`. An item on
+another filesystem than the home trash goes to that filesystem's `$topdir/.Trash/$uid` when the administrator made it
+(sticky, not a link), else `$topdir/.Trash-$uid`, with `Path=` relative to `$topdir`; where neither can be made the move
+fails with `file_trash_failed` and nothing moves. macOS moves the item with `NSFileManager trashItemAtURL` (run through
+`osascript -l JavaScript`) and restores by renaming it back (`renamex_np` with `RENAME_EXCL`); Linux restores with
+`renameat2(RENAME_NOREPLACE)`.
+
+Agent tools, same rules: `chariox.files.trash { machine?, paths }` and `chariox.files.restore { machine?, items }`. Between
+kernels of one owner (relay peer 449) they travel as `TrashMachineFiles { paths }` / `RestoreMachineTrash { items }` with the
+answers `MachineFilesTrashed` and `MachineTrashRestored`. Shape pinned by `protocol_shapes/kernel_trash.rs`; behaviour by
+`runtime::kernel_trash::tests`, `an_agent_moves_files_to_the_trash_here_and_on_another_machine_and_undoes_it_without_overwriting`.
 
 ### Files: what a link points to — local 1011 / relay peer 448
 

@@ -1,0 +1,86 @@
+{
+  "local": 1032,
+  "relayPeer": 449,
+  "requests": [
+    {
+      "TrashKernelFiles": {
+        "paths": [
+          "/home/me/a.txt",
+          "~/old"
+        ]
+      }
+    },
+    {
+      "RestoreKernelTrash": {
+        "items": [
+          {
+            "path": "/home/me/a.txt",
+            "trash_path": "/home/me/.local/share/Trash/files/a.txt"
+          }
+        ]
+      }
+    }
+  ],
+  "responses": [
+    {
+      "KernelFilesTrashed": {
+        "trashed": [
+          {
+            "path": "/home/me/a.txt",
+            "trash_path": "/home/me/.local/share/Trash/files/a.txt"
+          }
+        ],
+        "failed": [
+          {
+            "path": "~/old",
+            "message": "/home/me/old does not exist; check the path with a directory listing."
+          }
+        ]
+      }
+    },
+    {
+      "KernelTrashRestored": {
+        "restored": [
+          "/home/me/a.txt"
+        ],
+        "failed": []
+      }
+    }
+  ],
+  "peerRequests": [
+    {
+      "kind": "trash_machine_files",
+      "paths": [
+        "/srv/a.log"
+      ]
+    },
+    {
+      "kind": "restore_machine_trash",
+      "items": [
+        {
+          "path": "/srv/a.log",
+          "trash_path": "/srv/.Trash-1000/files/a.log"
+        }
+      ]
+    }
+  ],
+  "peerResponses": [
+    {
+      "kind": "machine_files_trashed",
+      "trashed": [
+        {
+          "path": "/srv/a.log",
+          "trash_path": "/srv/.Trash-1000/files/a.log"
+        }
+      ],
+      "failed": []
+    },
+    {
+      "kind": "machine_trash_restored",
+      "restored": [
+        "/srv/a.log"
+      ],
+      "failed": []
+    }
+  ]
+}

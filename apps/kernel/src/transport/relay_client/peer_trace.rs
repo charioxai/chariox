@@ -144,6 +144,8 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::ListMachineDirectory { .. } => "list_machine_directory",
         RelayPeerRequest::ReadMachineFile { .. } => "read_machine_file",
         RelayPeerRequest::DeleteMachinePath { .. } => "delete_machine_path",
+        RelayPeerRequest::TrashMachineFiles { .. } => "trash_machine_files",
+        RelayPeerRequest::RestoreMachineTrash { .. } => "restore_machine_trash",
         RelayPeerRequest::StartFileTransfer { .. } => "start_file_transfer",
         RelayPeerRequest::GetFileTransfer { .. } => "get_file_transfer",
         RelayPeerRequest::CancelFileTransfer { .. } => "cancel_file_transfer",

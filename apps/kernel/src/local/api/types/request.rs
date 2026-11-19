@@ -32,6 +32,8 @@ pub enum LocalDaemonRequest {
     ListKernelDirectory(ListKernelDirectoryRequest),
     ReadKernelFile(ReadKernelFileRequest),
     WriteKernelFile(WriteKernelFileRequest),
+    TrashKernelFiles(TrashKernelFilesRequest),
+    RestoreKernelTrash(RestoreKernelTrashRequest),
     StartFileTransfer(StartFileTransferRequest),
     GetFileTransfer(FileTransferRef),
     ListFileTransfers,
