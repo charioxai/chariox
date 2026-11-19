@@ -463,6 +463,21 @@ impl ProviderProcessServiceStore {
         self.write().terminate_run_provider_only(session_id, run_id)
     }
 
+    pub(crate) fn retire_run_before_prompt_write(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
+        let mut service = self.write();
+        service.terminate_run_provider_only(session_id, run_id)?;
+        service
+            .get_run_mut(run_id)?
+            .preserve_unwritten_prompt(prompt_id);
+        service.get_run(run_id)
+    }
+
     pub(crate) fn run_ids_for_session(&self, session_id: &str) -> Vec<String> {
         self.read()
             .runs

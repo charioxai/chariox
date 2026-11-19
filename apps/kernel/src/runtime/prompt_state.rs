@@ -37,6 +37,9 @@ pub(crate) fn prompt_holds_provider_run(
     session: &RuntimeSession,
     providers: &crate::provider::ProviderProcessServiceStore,
 ) -> bool {
+    if provider_run.unwritten_prompt_to_redispatch() == Some(prompt.id()) {
+        return false;
+    }
     let unbound_run_selected = session.active_provider_run_id() == Some(provider_run.id())
         || (provider_run.state() == crate::provider::ProviderRunState::Ended
             && !providers.agent_started_a_later_run(provider_run));

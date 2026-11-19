@@ -270,7 +270,12 @@ impl KernelRuntimeState {
                 .read()
                 .run_processes
                 .contains_key(&dispatch.provider_run_id);
-            if has_managed_process {
+            if has_managed_process
+                && owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            {
                 let recipients = owned
                     .attachment_store
                     .list_session_attachment_ids(&dispatch.session_id);

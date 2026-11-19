@@ -1170,6 +1170,96 @@ async fn dispatch_moves_to_a_live_run_after_a_stale_idle_poll_reports_exit() {
 }
 
 #[tokio::test]
+async fn idle_process_submit_rejection_retires_the_run_and_redispatches_the_prompt() {
+    let (_worktree, app, session, agent_id, old, _, prompt_id) =
+        agent_with_accepted_prompt_on_live_run("cleanup-idle-submit-exit").await;
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(old.id().to_string()),
+            None,
+        )
+        .unwrap();
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_prompt_submit_for_test(
+            session.id().to_string(),
+            old.id().to_string(),
+            agent_id.clone(),
+            prompt_id.clone(),
+            Err(DaemonError::IdleProviderProcessExited {
+                provider_run_id: old.id().to_string(),
+            }),
+        );
+    let follow_ups = runtime.owned.reap_structured_prompt_jobs();
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(old.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    let [dispatch] = follow_ups.local.as_slice() else {
+        panic!("expected one redispatch");
+    };
+    assert_eq!(dispatch.prompt_id, prompt_id);
+    // A completion-driven output pump can reconcile the ended run before
+    // the replacement dispatch acquires its lane.
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), old.id())
+        .await
+        .unwrap());
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(&agent_id)
+            .unwrap()
+            .id(),
+        prompt_id
+    );
+    let fresh = app
+        .lock()
+        .await
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(&agent_id),
+        )
+        .unwrap();
+    app.lock()
+        .await
+        .update_provider_run_projection(fresh.clone());
+    runtime.enqueue_prompt_dispatch(dispatch).await.unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(&agent_id)
+            .unwrap()
+            .durable_delivery_provider_run_id(),
+        Some(fresh.id())
+    );
+}
+
+#[tokio::test]
 async fn stale_provider_exit_does_not_settle_prompt_on_replacement_run() {
     let worktree = crate::test_support::TestWorktree::new("cleanup-stale-exit");
     let mut app =

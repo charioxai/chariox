@@ -90,7 +90,13 @@ pub(super) fn execute_submit_command(
         let (slot, mut state) = runtime_registry
             .take_claude_runtime(&run_id)
             .map_err(|error| error.steer_not_submitted(envelope.steering))?;
-        let result = submit_claude_prompt(&run, &mut state, &envelope);
+        let result = submit_claude_prompt(&run, &mut state, &envelope).map_err(|error| {
+            if matches!(error, DaemonError::IdleProviderProcessExited { .. }) {
+                error.steer_not_submitted(envelope.steering)
+            } else {
+                error
+            }
+        });
         let mut resume_state = run.resume_state().clone();
         if let Some(session_id) = state.session_id() {
             resume_state.set_claude_session_id(session_id);

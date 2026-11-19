@@ -259,7 +259,12 @@ pub(crate) fn submit_claude_prompt(
         state.output.release();
         return Ok(());
     }
-    if claude_runtime_selection_changed(run, state) || claude_runtime_child_exited(state) {
+    if claude_runtime_child_exited(state) {
+        return Err(DaemonError::IdleProviderProcessExited {
+            provider_run_id: run.id().to_string(),
+        });
+    }
+    if claude_runtime_selection_changed(run, state) {
         restart_claude_runtime(run, state, RESTART_FOR_SELECTION_CHANGE)?;
     }
     write_claude_hidden_context(run.id(), state, envelope)?;
