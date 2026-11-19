@@ -100,6 +100,7 @@ impl KernelRuntimeOwnedState {
                 sequence: None,
                 recipient_attachment_ids: recipients.into(),
                 bytes,
+                replaces: false,
             }]);
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
@@ -555,6 +556,7 @@ impl KernelRuntimeOwnedState {
                 sequence: output.sequence,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
                 bytes: bounded_bytes,
+                replaces: false,
             });
         }
         let records = self.terminal_stream.fan_out_outputs(terminal_outputs);
@@ -617,6 +619,7 @@ impl KernelRuntimeOwnedState {
                 pending_recipient_attachment_ids: Vec::new(),
                 bytes: Vec::new(),
                 external_observation_metadata: None,
+                replaces: false,
             };
         }
         let recipient_attachment_ids = if kind

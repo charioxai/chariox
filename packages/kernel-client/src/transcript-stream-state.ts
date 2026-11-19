@@ -45,6 +45,8 @@ export type TranscriptStreamEntry = {
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
   readonly historySequence?: number | undefined
+  /** The chunk is the whole text of its merge key's row, not more of it. */
+  readonly replaces?: true | undefined
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -292,25 +294,32 @@ function mergeProviderChunk(
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
       // Text never folds back above a later tool row: it continues as a new
-      // entry after the tool, in output order.
-      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning")) {
+      // entry after the tool, in output order. A replacement keeps its row's place.
+      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning") && !metadata.replaces) {
         break
       }
       if (
         candidate?.role !== role
         || candidate.mergeKey !== mergeKey
-        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId, metadata })
+        // The merge key names one prompt's row, so a late replacement still finds it.
+        || !sameStreamingMergeIdentity(candidate, {
+          currentTurnId: metadata.replaces ? null : currentTurnId,
+          providerRunId,
+          metadata,
+        })
       ) {
         continue
       }
-      const kind = applyMergedChunk(
-        candidate,
-        role,
-        normalized,
-        normalizedSource,
-        historyEntryIndex,
-        metadata.historySequence,
-      )
+      const kind = metadata.replaces
+        ? replaceMergedText(candidate, normalized, normalizedSource)
+        : applyMergedChunk(
+          candidate,
+          role,
+          normalized,
+          normalizedSource,
+          historyEntryIndex,
+          metadata.historySequence,
+        )
       if (kind === "noop") {
         return { kind, entry: candidate }
       }
@@ -365,6 +374,23 @@ function sameStreamingMergeIdentity(
     return false
   }
   return true
+}
+
+function replaceMergedText(
+  candidate: MutableTranscriptStreamEntry,
+  normalized: string,
+  normalizedSource: string | undefined,
+): "noop" | "merged" {
+  if (candidate.text === normalized && candidate.sourceText === normalizedSource) {
+    return "noop"
+  }
+  candidate.text = normalized
+  if (normalizedSource === undefined) {
+    delete candidate.sourceText
+  } else {
+    candidate.sourceText = normalizedSource
+  }
+  return "merged"
 }
 
 function applyMergedChunk(

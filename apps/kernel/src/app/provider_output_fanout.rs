@@ -143,13 +143,13 @@ impl ProviderOutputFanout {
             recipient_attachment_ids,
             bytes,
             HistoryRow::Append,
+            false,
         )
     }
 
     /// A reply streamed as it is written: clients get `delta`, while one
     /// stored row under `merge_key` holds `text`, everything so far, and is
-    /// replaced in place as it grows. A reload therefore shows the reply once,
-    /// and the finished text can take the place of what was streamed.
+    /// replaced in place as it grows. A reload therefore shows the reply once.
     pub(crate) fn fan_out_live_reply(
         &self,
         session_id: &str,
@@ -159,25 +159,58 @@ impl ProviderOutputFanout {
         delta: &str,
         text: &str,
     ) {
+        self.fan_out_live_row(
+            session_id,
+            provider_run_id,
+            merge_key,
+            recipient_attachment_ids,
+            delta,
+            text,
+            false,
+        );
+    }
+
+    /// The finished text of a reply streamed live: it replaces the row under
+    /// `merge_key` on every client and in history, so the row ends as exactly
+    /// this text whatever the stream showed.
+    pub(crate) fn fan_out_live_reply_replacement(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        text: &str,
+    ) {
+        self.fan_out_live_row(
+            session_id,
+            provider_run_id,
+            merge_key,
+            recipient_attachment_ids,
+            text,
+            text,
+            true,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The fan-out context arguments plus the live row's text"
+    )]
+    fn fan_out_live_row(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        sent: &str,
+        stored: &str,
+        replaces: bool,
+    ) {
         let agent_id = self
             .provider_store
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        if delta.is_empty() {
-            self.replace_history_row(
-                session_id,
-                SessionHistoryEntry::provider_output(
-                    session_id,
-                    provider_run_id,
-                    agent_id.as_deref(),
-                    TerminalOutputKind::ProviderOutput,
-                    Some(merge_key),
-                    text.to_string(),
-                ),
-            );
-            return;
-        }
         self.fan_out_stored(
             session_id,
             provider_run_id,
@@ -185,8 +218,9 @@ impl ProviderOutputFanout {
             TerminalOutputKind::ProviderOutput,
             Some(merge_key),
             recipient_attachment_ids,
-            delta.as_bytes(),
-            HistoryRow::ReplaceWith(text),
+            sent.as_bytes(),
+            HistoryRow::ReplaceWith(stored),
+            replaces,
         );
     }
 
@@ -204,6 +238,7 @@ impl ProviderOutputFanout {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
         history: HistoryRow<'_>,
+        replaces: bool,
     ) -> TerminalOutputRecord {
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
@@ -258,6 +293,7 @@ impl ProviderOutputFanout {
                 pending_recipient_attachment_ids: Vec::new(),
                 bytes: Vec::new(),
                 external_observation_metadata: None,
+                replaces: false,
             };
         }
         let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
@@ -326,6 +362,7 @@ impl ProviderOutputFanout {
                 sequence,
                 recipient_attachment_ids: recipient_attachment_ids.into(),
                 bytes: bounded_bytes,
+                replaces,
             }])
             .pop()
             .expect("one output yields one record");

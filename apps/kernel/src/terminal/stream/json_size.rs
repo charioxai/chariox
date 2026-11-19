@@ -30,6 +30,7 @@ pub(super) fn scoped_output_record(
         pending_recipient_attachment_ids: vec![attachment_id.to_string()],
         bytes: record.bytes.clone(),
         external_observation_metadata: record.external_observation_metadata.clone(),
+        replaces: record.replaces,
     }
 }
 
@@ -189,6 +190,9 @@ pub(super) fn terminal_output_record_scoped_json_bytes(
         "bytes",
         json_byte_array_len(&record.bytes),
     );
+    if record.replaces {
+        add_json_field(&mut total, &mut field_count, "replaces", "true".len());
+    }
     total
 }
 

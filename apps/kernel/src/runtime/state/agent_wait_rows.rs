@@ -269,6 +269,7 @@ impl KernelRuntimeOwnedState {
                 sequence: Some(event.sequence),
                 recipient_attachment_ids: recipients.into(),
                 bytes: text.into_bytes(),
+                replaces: false,
             }]);
         self.notify_metaagent_trace_activity(&task.room_id, Some(&task.agent_id));
     }

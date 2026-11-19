@@ -93,6 +93,47 @@ test("transcript stream state keeps text after a tool call below it even with a 
   ])
 })
 
+// MP-08 / MP-10 (#1425): a reply streamed live as plain text gets its finished
+// markdown as one record that replaces the row; nothing is added to it.
+test("a replacing chunk sets its row's text instead of adding to it", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const streamed = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "Run:\n\n$ sh", mergeKey: key, providerRunId: "run",
+  })
+  const finished = "Run:\n\n```sh\n$ sh\n```\n\nDone."
+  const replaced = applyTranscriptProviderChunk(streamed.entries, {
+    role: "assistant", chunk: finished, mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(replaced.kind, "merged")
+  assert.equal(replaced.updatedEntryId, 2)
+  assert.deepEqual(replaced.entries.map((item) => [item.role, item.text]), [["user", "prompt"], ["assistant", finished]])
+  const again = applyTranscriptProviderChunk(replaced.entries, {
+    role: "assistant", chunk: finished, mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(again.kind, "noop", "the same replacement twice changes nothing")
+})
+
+test("a replacement finds its row behind a later tool row and in a later turn", () => {
+  const key = "claude-transcript:run:assistant:live-prompt-1-1:0"
+  const streamed = applyTranscriptProviderChunk([entry(1, "user", "prompt", { turnId: 4 })], {
+    role: "assistant", chunk: "Listing", mergeKey: key, providerRunId: "run",
+  })
+  const tool = applyTranscriptToolUpdate(streamed.entries, JSON.stringify({
+    id: "tool-1", tool: "Bash", status: "completed", input: { command: "ls" },
+  }), new Map<string, ToolTranscriptUpdate>(), {}, { providerRunId: "run" })
+  const nextTurn = [...tool.entries, entry(4, "user", "next", { turnId: 5 })]
+  const replaced = applyTranscriptProviderChunk(nextTurn, {
+    role: "assistant", chunk: "**Listing** the files.", mergeKey: key, providerRunId: "run", metadata: { replaces: true },
+  })
+  assert.equal(replaced.kind, "merged")
+  assert.deepEqual(replaced.entries.map((item) => [item.role, item.text]), [
+    ["user", "prompt"],
+    ["assistant", "**Listing** the files."],
+    ["tool", tool.entries.at(-1)?.text],
+    ["user", "next"],
+  ])
+})
+
 test("transcript stream state can use an explicit current turn id before visible entries exist", () => {
   const result = applyTranscriptProviderChunk([], {
     role: "assistant",

@@ -129,7 +129,6 @@ fn a_reply_taller_than_the_screen_streams_row_by_row_and_the_transcript_continue
         reply.adopt(SCROLLED_REPLY),
         Adoption::Streamed {
             merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: SCROLLED_REPLY[text.len()..].to_string(),
         }
     );
 }
@@ -157,7 +156,6 @@ fn a_long_essay_streams_exactly_through_scrolls_and_redraws() {
         reply.adopt(ESSAY_REPLY),
         Adoption::Streamed {
             merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: ESSAY_REPLY[text.len()..].to_string(),
         }
     );
 }
@@ -179,17 +177,12 @@ fn emphasis_streams_plain_and_the_transcript_text_replaces_it() {
         !EMPHASIS_REPLY.starts_with(&streamed.text()),
         "the row with `echo one` is drawn without its backticks"
     );
-    let Adoption::Streamed {
-        merge_key_suffix,
-        rest,
-    } = reply.adopt(EMPHASIS_REPLY)
-    else {
-        panic!("the streamed block was not adopted");
-    };
-    assert_eq!(merge_key_suffix, "assistant:live-prompt-1-1:0");
-    assert!(
-        !rest.is_empty() && EMPHASIS_REPLY.ends_with(&rest),
-        "the tail the terminal had not drawn yet: {rest:?}"
+    assert_eq!(
+        reply.adopt(EMPHASIS_REPLY),
+        Adoption::Streamed {
+            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+        },
+        "the transcript text is paired with the plain row, whatever markup it adds"
     );
 }
 
@@ -203,7 +196,7 @@ fn a_heading_and_a_list_stream_plain_too() {
     );
     assert!(matches!(
         reply.adopt(HEADING_REPLY),
-        Adoption::Streamed { rest, .. } if rest == "\n\nFinal plain line."
+        Adoption::Streamed { .. }
     ));
 }
 
@@ -287,6 +280,8 @@ fn drawn_text_is_matched_with_its_markdown() {
     assert!(drawn_from("fn main() {}", "```rust\nfn main() {}\n```"));
     assert!(!drawn_from("Summary", "Some unrelated text that mentions many letters in a row: s u m m a r y and a long tail after it that goes on and on for a while"));
     assert!(!drawn_from("", "anything"));
+    assert!(drawn_from("};", "```\n};\nfn main() {\n```"));
+    assert!(!drawn_from("};", "No code here, only words."));
 }
 
 /// The screen of a Claude run, drawn from the top: `rows` as they are written.
@@ -306,7 +301,7 @@ fn read_twice(reply: &mut LiveReply, prompt_id: &str, screen: &[u8]) -> Vec<Live
 }
 
 #[test]
-fn the_tail_after_a_streamed_code_block_does_not_repeat_its_closing_brace() {
+fn a_streamed_code_block_is_paired_with_its_fenced_transcript_block() {
     let mut reply = LiveReply::new(40, 120);
     let deltas = read_twice(
         &mut reply,
@@ -331,33 +326,8 @@ fn the_tail_after_a_streamed_code_block_does_not_repeat_its_closing_brace() {
         reply.adopt(markdown),
         Adoption::Streamed {
             merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
-            rest: "\n\nIt runs once and stops.".to_string(),
         }
     );
-}
-
-#[test]
-fn a_withheld_closing_row_of_a_code_block_is_sent_without_its_fence() {
-    let mut reply = LiveReply::new(40, 120);
-    read_twice(
-        &mut reply,
-        "prompt-1",
-        &draw(&[
-            "● Run it:",
-            "",
-            "  fn main() {",
-            "      run();",
-            "  }",
-            "",
-            "✻ Working (3s)",
-        ]),
-    );
-    let Adoption::Streamed { rest, .. } =
-        reply.adopt("Run it:\n\n```rust\nfn main() {\n    run();\n}\n```")
-    else {
-        panic!("the streamed block was not adopted");
-    };
-    assert_eq!(rest, "\n}");
 }
 
 #[test]
@@ -492,109 +462,6 @@ fn a_repeated_line_is_confirmed_as_often_as_it_was_shown() {
     assert!(!streamed.ends_with('}'), "{streamed:?}");
 }
 
-/// Streams `rows` as the reply of a prompt and has the transcript block `markdown` adopt it.
-fn adopted_tail(rows: &[&str], markdown: &str) -> (String, String) {
-    let mut reply = LiveReply::new(40, 120);
-    let mut screen = rows.to_vec();
-    screen.extend(["", "✻ Working (3s)"]);
-    let deltas = read_twice(&mut reply, "prompt-1", &draw(&screen));
-    let streamed = deltas.iter().map(|delta| delta.text.as_str()).collect();
-    let Adoption::Streamed { rest, .. } = reply.adopt(markdown) else {
-        panic!("the streamed block was not adopted");
-    };
-    (streamed, rest)
-}
-
-#[test]
-fn the_wildcard_of_a_streamed_command_is_not_sent_again_with_the_tail() {
-    let (streamed, rest) = adopted_tail(
-        &["● Run this:", "", "  ls *", "", "  Then check the output."],
-        "Run this:\n\n```\nls *\n```\n\nThen check the output.",
-    );
-    assert_eq!(streamed, "Run this:\n\nls *");
-    assert_eq!(rest, "\n\nThen check the output.");
-}
-
-#[test]
-fn an_inline_command_ending_in_a_wildcard_is_not_sent_again() {
-    let (streamed, rest) = adopted_tail(
-        &["● Try ls *", "", "  Then check."],
-        "Try `ls *`\n\nThen check.",
-    );
-    assert_eq!(streamed, "Try ls *");
-    assert_eq!(rest, "\n\nThen check.");
-}
-
-#[test]
-fn a_literal_underscore_or_backtick_ending_the_streamed_text_is_not_sent_again_nor_its_closers() {
-    let (streamed, rest) = adopted_tail(
-        &["● Rename it to x_", "", "  Done."],
-        "Rename it to `x_`\n\nDone.",
-    );
-    assert_eq!(
-        (streamed.as_str(), rest.as_str()),
-        ("Rename it to x_", "\n\nDone.")
-    );
-    let (streamed, rest) = adopted_tail(
-        &["● Use echo `", "", "  Done."],
-        "Use `` echo ` ``\n\nDone.",
-    );
-    assert_eq!(
-        (streamed.as_str(), rest.as_str()),
-        ("Use echo `", "\n\nDone.")
-    );
-    let (streamed, rest) = adopted_tail(
-        &["● It is bold *", "", "  Done."],
-        "It is **bold** *\n\nDone.",
-    );
-    assert_eq!(
-        (streamed.as_str(), rest.as_str()),
-        ("It is bold *", "\n\nDone.")
-    );
-}
-
-#[test]
-fn a_code_fence_closing_the_text_leaves_nothing_to_send() {
-    let (streamed, rest) = adopted_tail(
-        &["● Run this:", "", "  ls *", "  cat *.log"],
-        "Run this:\n\n```\nls *\ncat *.log\n```",
-    );
-    assert_eq!(streamed, "Run this:\n\nls *");
-    assert_eq!(rest, "\ncat *.log");
-    let (_, rest) = adopted_tail(
-        &["● Run this:", "", "  ls *", "  cat *.log", "", "  Done."],
-        "Run this:\n\n```\nls *\ncat *.log\n```\n\nDone.",
-    );
-    assert_eq!(rest, "\n\nDone.");
-}
-
-#[test]
-fn a_token_longer_than_the_screen_ending_on_the_withheld_row_is_carried_on() {
-    let token = format!("https://example.com/{}", "a".repeat(160));
-    let (head, last) = token.split_at(118);
-    let (streamed, rest) = adopted_tail(
-        &["● Open", &format!("  {head}"), &format!("  {last}")],
-        &format!("Open {token}"),
-    );
-    assert_eq!(streamed, format!("Open {head}"));
-    assert_eq!(rest, last);
-}
-
-#[test]
-fn a_row_of_bold_labels_followed_by_a_withheld_paragraph_loses_nothing() {
-    let labels = [
-        "CPU", "RAM", "GPU", "SSD", "HDD", "NIC", "USB", "DNS", "TLS", "API",
-    ];
-    let drawn = labels.join(" ");
-    let markdown = format!(
-        "{}\n\nReady.",
-        labels.map(|label| format!("**{label}**")).join(" ")
-    );
-    let (streamed, rest) = adopted_tail(&[&format!("● {drawn}"), "", "  Ready."], &markdown);
-    assert_eq!(streamed, drawn);
-    assert_eq!(rest, "\n\nReady.");
-}
-
 /// A reply as the terminal draws it and as the transcript holds it.
 struct Reply {
     markdown: String,
@@ -664,6 +531,18 @@ fn generated_reply(rng: &mut rand::rngs::StdRng) -> Reply {
         "# note",
         "_private = 1",
     ];
+    // Languages that are also words in the code, and long identifiers that wrap
+    // with only symbols left on the last row.
+    const FENCE_LANGUAGES: [&str; 8] = ["", "", "sh", "rust", "text", "c", "json", "bash"];
+    const CODE_WORDS: [&str; 6] = [
+        "$ sh",
+        "c = 1;",
+        "let rust = 1;",
+        "text",
+        "$ bash -c x",
+        "{}",
+    ];
+    const IDENTIFIER_ENDS: [&str; 6] = ["();", ")", "];", "},", "?;", ""];
     const ENDINGS: [&str; 6] = ["", "", ".", ",", ":", "!"];
     let mut markdown = String::new();
     let mut rows: Vec<String> = Vec::new();
@@ -717,15 +596,25 @@ fn generated_reply(rng: &mut rand::rngs::StdRng) -> Reply {
                 rows.push(format!("{word} tool"));
             }
             2 => {
-                markdown.push_str("```\n");
+                markdown.push_str("```");
+                markdown.push_str(FENCE_LANGUAGES[rng.gen_range(0..FENCE_LANGUAGES.len())]);
+                markdown.push('\n');
                 let lines = rng.gen_range(1..=5);
                 for line in 0..lines {
-                    let code = CODE_LINES[rng.gen_range(0..CODE_LINES.len())];
+                    let code = match rng.gen_range(0..4) {
+                        0 => CODE_WORDS[rng.gen_range(0..CODE_WORDS.len())].to_string(),
+                        1 => format!(
+                            "f{}{}",
+                            "a".repeat(rng.gen_range(100..140)),
+                            IDENTIFIER_ENDS[rng.gen_range(0..IDENTIFIER_ENDS.len())]
+                        ),
+                        _ => CODE_LINES[rng.gen_range(0..CODE_LINES.len())].to_string(),
+                    };
                     if line > 0 {
                         markdown.push('\n');
                     }
-                    markdown.push_str(code);
-                    rows.push(code.to_string());
+                    markdown.push_str(&code);
+                    rows.extend(wrapped(&code, 116));
                 }
                 markdown.push_str("\n```");
             }
@@ -744,20 +633,30 @@ fn generated_reply(rng: &mut rand::rngs::StdRng) -> Reply {
     Reply { markdown, rows }
 }
 
+/// Streams a generated reply the way Claude's terminal draws it.
+fn streamed_reply(live: &mut LiveReply, reply: &Reply) -> String {
+    let mut screen = vec![format!("● {}", reply.rows[0])];
+    screen.extend(reply.rows[1..].iter().map(|row| {
+        if row.is_empty() {
+            String::new()
+        } else {
+            format!("  {row}")
+        }
+    }));
+    screen.extend([String::new(), "✻ Working (3s)".to_string()]);
+    let rows: Vec<&str> = screen.iter().map(String::as_str).collect();
+    read_twice(live, "prompt-1", &draw(&rows))
+        .iter()
+        .map(|delta| delta.text.as_str())
+        .collect()
+}
+
+/// The live row is replaced by the transcript text, so the one thing left to
+/// get right is that the transcript block finds the row it replaces. A block
+/// that does not would be shown twice: plain, then as markdown.
 #[test]
-fn nothing_is_lost_or_repeated_whatever_the_stream_and_the_transcript_differ_by() {
+fn every_streamed_reply_is_paired_with_its_transcript_block() {
     use rand::SeedableRng;
-    let alphanumerics = |text: &str| {
-        text.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-    };
-    let symbols = |text: &str| {
-        text.chars()
-            .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
-            .collect::<Vec<_>>()
-    };
     let mut rng = rand::rngs::StdRng::seed_from_u64(1425);
     let mut checked = 0;
     for case in 0..600 {
@@ -765,38 +664,46 @@ fn nothing_is_lost_or_repeated_whatever_the_stream_and_the_transcript_differ_by(
         if reply.rows.len() > 30 || reply.rows.iter().all(String::is_empty) {
             continue;
         }
-        let mut screen = vec![format!("● {}", reply.rows[0])];
-        screen.extend(reply.rows[1..].iter().map(|row| {
-            if row.is_empty() {
-                String::new()
-            } else {
-                format!("  {row}")
-            }
-        }));
-        screen.extend([String::new(), "✻ Working (3s)".to_string()]);
         let mut live = LiveReply::new(40, 120);
-        let rows: Vec<&str> = screen.iter().map(String::as_str).collect();
-        let deltas = read_twice(&mut live, "prompt-1", &draw(&rows));
-        let streamed: String = deltas.iter().map(|delta| delta.text.as_str()).collect();
-        let Adoption::Streamed { rest, .. } = live.adopt(&reply.markdown) else {
+        let streamed = streamed_reply(&mut live, &reply);
+        if streamed.is_empty() {
             continue;
-        };
+        }
         checked += 1;
-        let live_text = format!("{streamed}{rest}");
         assert_eq!(
-            alphanumerics(&live_text),
-            alphanumerics(&reply.markdown),
-            "case {case}: letters lost or repeated\nmarkdown: {:?}\nstreamed: {streamed:?}\nrest: {rest:?}",
-            reply.markdown
-        );
-        let (mut wanted, markdown_symbols) =
-            (symbols(&live_text).into_iter(), symbols(&reply.markdown));
-        let mut available = markdown_symbols.iter();
-        assert!(
-            wanted.all(|symbol| available.any(|found| *found == symbol)),
-            "case {case}: a symbol is repeated or invented\nmarkdown: {:?}\nstreamed: {streamed:?}\nrest: {rest:?}",
+            live.adopt(&reply.markdown),
+            Adoption::Streamed {
+                merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            },
+            "case {case}: the transcript block missed its row\nmarkdown: {:?}\nstreamed: {streamed:?}",
             reply.markdown
         );
     }
     assert!(checked > 100, "only {checked} replies were checked");
+}
+
+#[test]
+fn a_transcript_block_of_another_reply_is_not_paired_with_a_streamed_row() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(1426);
+    let mut checked = 0;
+    for case in 0..300 {
+        let (first, second) = (generated_reply(&mut rng), generated_reply(&mut rng));
+        if first.rows.len() > 30 || first.rows.iter().all(String::is_empty) {
+            continue;
+        }
+        let mut live = LiveReply::new(40, 120);
+        let streamed = streamed_reply(&mut live, &first);
+        if streamed.is_empty() || drawn_from(&streamed, &second.markdown) {
+            continue;
+        }
+        checked += 1;
+        assert_eq!(
+            live.adopt(&second.markdown),
+            Adoption::NotStreamed,
+            "case {case}: {:?} took the row of {streamed:?}",
+            second.markdown
+        );
+    }
+    assert!(checked > 100, "only {checked} pairs were checked");
 }

@@ -155,6 +155,27 @@ impl RunningTurn {
             .collect()
     }
 
+    /// The assistant rows as a client builds them from the live records: a
+    /// record is added to its merge key's row, or replaces it.
+    fn live_rows(&self) -> Vec<String> {
+        let mut rows: Vec<(Option<String>, String)> = Vec::new();
+        for record in self.app.terminal().output_records() {
+            if record.kind != TerminalOutputKind::ProviderOutput {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&record.bytes).into_owned();
+            match rows
+                .iter_mut()
+                .find(|(key, _)| key.is_some() && *key == record.merge_key)
+            {
+                Some((_, row)) if record.replaces => *row = text,
+                Some((_, row)) => row.push_str(&text),
+                None => rows.push((record.merge_key, text)),
+            }
+        }
+        rows.into_iter().map(|(_, row)| row).collect()
+    }
+
     fn start_prompt(&mut self, text: &str) {
         match self
             .app
@@ -477,9 +498,9 @@ fn a_reply_streams_from_the_terminal_and_its_transcript_block_completes_the_same
     turn.append_transcript(assistant_text("reply", PLAIN_REPLY));
     turn.pass();
     assert_eq!(
-        turn.output_rows().concat(),
-        PLAIN_REPLY,
-        "clients that appended the stream get exactly the rest"
+        turn.live_rows(),
+        [PLAIN_REPLY],
+        "the streamed row becomes the transcript text"
     );
     assert_eq!(turn.stored_replies(), [PLAIN_REPLY]);
 }
@@ -509,14 +530,10 @@ fn a_reply_drawn_with_emphasis_streams_plain_and_the_transcript_text_replaces_it
         [EMPHASIS_REPLY],
         "the transcript text takes the streamed row's place, nothing else stays"
     );
-    let live = turn.output_rows().concat();
-    assert!(
-        live.starts_with(&streamed),
-        "no duplicate goes live: {live}"
-    );
-    assert!(
-        live.ends_with("so this output does not by itself prove the pause was honored, only that the sequence finished."),
-        "live clients miss the row the stream withheld: {live}"
+    assert_eq!(
+        turn.live_rows(),
+        [EMPHASIS_REPLY],
+        "live clients show the markdown, the row the stream withheld included"
     );
 }
 
@@ -536,9 +553,9 @@ fn a_heading_reply_shows_its_last_row_live_without_reloading_history() {
     turn.append_transcript(assistant_text("reply", HEADING_REPLY));
     turn.pass();
     assert_eq!(
-        turn.output_rows().concat(),
-        "Heading Two\n\nA paragraph with bold, italic, code and a link (https://example.com/x) inside.\n\n- first bullet\n- second bullet with bold\n\nFinal plain line.",
-        "the complete visible answer, as live clients show it"
+        turn.live_rows(),
+        [HEADING_REPLY],
+        "the complete answer, as live clients show it"
     );
     assert_eq!(turn.stored_replies(), [HEADING_REPLY]);
 }
@@ -579,11 +596,7 @@ fn a_code_block_streamed_before_its_last_paragraph_is_not_repeated_by_the_transc
         "Here is the loop:\n\n```rust\nfn main() {\n    run();\n}\n```\n\nIt runs once and stops.";
     turn.append_transcript(assistant_text("reply", reply));
     turn.pass();
-    assert_eq!(
-        turn.output_rows().concat(),
-        "Here is the loop:\n\nfn main() {\n    run();\n}\n\nIt runs once and stops.",
-        "live clients see every row once, without the fences"
-    );
+    assert_eq!(turn.live_rows(), [reply], "every row once, as written");
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
@@ -608,10 +621,7 @@ fn a_command_with_a_wildcard_streamed_before_the_transcript_block_is_not_repeate
     let reply = "Run this:\n\n```\nls *\n```\n\nThen check the output.";
     turn.append_transcript(assistant_text("reply", reply));
     turn.pass();
-    assert_eq!(
-        turn.output_rows().concat(),
-        "Run this:\n\nls *\n\nThen check the output."
-    );
+    assert_eq!(turn.live_rows(), [reply]);
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
@@ -634,9 +644,7 @@ fn a_url_wrapped_over_two_rows_keeps_its_end_when_the_transcript_block_arrives()
     let reply = format!("Open {token}");
     turn.append_transcript(assistant_text("reply", &reply));
     turn.pass();
-    let live = turn.output_rows().concat();
-    assert!(live.ends_with(last), "the end of the URL was lost: {live}");
-    assert_eq!(live.replace(' ', ""), reply.replace(' ', ""));
+    assert_eq!(turn.live_rows(), [reply.as_str()], "the URL keeps its end");
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
@@ -664,10 +672,7 @@ fn bold_labels_streamed_before_the_last_paragraph_do_not_cost_the_paragraph() {
     );
     turn.append_transcript(assistant_text("reply", &reply));
     turn.pass();
-    assert_eq!(
-        turn.output_rows().concat(),
-        format!("{drawn_row}\n\nReady.")
-    );
+    assert_eq!(turn.live_rows(), [reply.as_str()]);
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
@@ -681,4 +686,77 @@ fn a_stopped_turn_streams_nothing_more() {
         turn.terminal_shows(&bytes);
     }
     assert!(turn.output_rows().is_empty(), "{:?}", turn.output_rows());
+}
+
+#[test]
+fn a_command_in_a_language_tagged_fence_is_shown_once_live() {
+    let mut turn = running_turn("streamed-tagged-fence");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&["● Run:", "", "  $ sh", "", "  Done.", "", "✻ Working (3s)"]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let reply = "Run:\n\n```sh\n$ sh\n```\n\nDone.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply]);
+    let records = turn.app.terminal().output_records();
+    assert!(
+        records.last().is_some_and(|record| record.replaces),
+        "the transcript text goes out as a replacement, not added to the stream"
+    );
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+#[test]
+fn a_wrapped_code_token_keeps_its_symbol_only_end_live() {
+    let mut turn = running_turn("streamed-wrapped-symbols");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let identifier = format!("f{}", "a".repeat(117));
+    let drawn = screen(&[
+        "● Run:",
+        "",
+        &format!("  {identifier}"),
+        "  ();",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let reply = format!("Run:\n\n```\n{identifier}();\n```");
+    turn.append_transcript(assistant_text("reply", &reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply.as_str()]);
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
+#[test]
+fn a_reply_streamed_before_a_kernel_restart_is_replaced_not_shown_twice() {
+    let mut turn = running_turn("streamed-restart");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Here is the plan:",
+        "",
+        "  First we read the file.",
+        "",
+        "  Then we write it.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(
+        turn.live_rows(),
+        ["Here is the plan:\n\nFirst we read the file."]
+    );
+    // The kernel restarts: what the reader streamed is gone, history keeps the row.
+    super::live_reply::forget(turn.run.id());
+
+    let reply = "Here is the plan:\n\n1. First we **read** the file.\n\nThen we write it.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply], "one row, the transcript's");
+    assert_eq!(turn.stored_replies(), [reply]);
 }

@@ -1294,21 +1294,27 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             ) {
                 saw_runtime_activity = true;
             }
-            // A text block streamed from the terminal takes the place of its live row.
+            // A text block streamed from the terminal replaces its live row.
             if chunk.kind == TerminalOutputKind::ProviderOutput
                 && chunk.merge_key_suffix.starts_with("assistant:")
             {
-                if let Adoption::Streamed {
-                    merge_key_suffix,
-                    rest,
-                } = live_reply::adopt(provider_run_id, &chunk.text)
-                {
-                    fanout.fan_out_live_reply(
+                let live_row = match live_reply::adopt(provider_run_id, &chunk.text) {
+                    Adoption::Streamed { merge_key_suffix } => Some(format!(
+                        "claude-transcript:{provider_run_id}:{merge_key_suffix}"
+                    )),
+                    Adoption::NotStreamed => self.live_row_streamed_before_a_restart(
+                        session_id,
+                        &provider_run,
+                        active_prompt_id.as_deref(),
+                        &chunk.text,
+                    ),
+                };
+                if let Some(merge_key) = live_row {
+                    fanout.fan_out_live_reply_replacement(
                         session_id,
                         provider_run_id,
-                        format!("claude-transcript:{provider_run_id}:{merge_key_suffix}"),
+                        merge_key,
                         recipient_attachment_ids.clone(),
-                        &rest,
                         &chunk.text,
                     );
                     continue;
@@ -1770,6 +1776,37 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 claude_question_updated_input(&event, &answers),
             );
         });
+    }
+
+    /// The live row a transcript block replaces when the reader no longer
+    /// knows it: a kernel restart empties the reader, while history keeps the
+    /// row streamed for the prompt, still the terminal's plain text. Only the
+    /// prompt's newest live row is taken, and only when the block continues it.
+    fn live_row_streamed_before_a_restart(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt_id: Option<&str>,
+        text: &str,
+    ) -> Option<String> {
+        let prefix = format!(
+            "claude-transcript:{}:assistant:live-{}-",
+            provider_run.id(),
+            prompt_id?
+        );
+        let row = self
+            .app
+            .operational_history_store()
+            .latest_transcript_by_merge_key_prefix(
+                session_id,
+                provider_run.agent_instance_id()?,
+                &prefix,
+            )
+            .ok()??
+            .to_session_history_entry()?;
+        (row.text != text && live_reply::drawn_from(&row.text, text))
+            .then_some(row.merge_key)
+            .flatten()
     }
 
     /// Reads the terminal output of a headless run for the reply Claude is
