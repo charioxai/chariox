@@ -18,6 +18,7 @@ pub(super) enum PromptDispatchAcceptance {
 /// `screen_line` is the first line of a Claude screen nothing in Chariox answers.
 fn prompt_ack_timeout_error(
     dispatch: &crate::app::KernelPromptDispatch,
+    start_phase: bool,
     screen_line: Option<&str>,
 ) -> DaemonError {
     crate::logging::warn_with_fields(
@@ -29,12 +30,22 @@ fn prompt_ack_timeout_error(
             "prompt_id": dispatch.prompt_id,
         }),
     );
-    let message = match screen_line {
-        Some(line) => format!(
+    let message = match (start_phase, screen_line) {
+        (true, Some(line)) => format!(
+            "Claude Code did not finish starting within {} s: its screen shows \"{line}\". \
+             The turn was stopped; open the agent's terminal to answer it, then send the request again.",
+            crate::provider::CLAUDE_START_BUDGET.as_secs()
+        ),
+        (true, None) => format!(
+            "Claude Code did not finish starting within {} s. \
+             The turn was stopped; send the request again.",
+            crate::provider::CLAUDE_START_BUDGET.as_secs()
+        ),
+        (false, Some(line)) => format!(
             "Claude Code stopped at its own screen (\"{line}\") and did not take your message. \
              Open the agent's terminal to answer it, then send the message again."
         ),
-        None => "The agent did not respond to your message.".to_string(),
+        (false, None) => "The agent did not respond to your message.".to_string(),
     };
     DaemonError::LocalTransport {
         operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
@@ -42,22 +53,22 @@ fn prompt_ack_timeout_error(
     }
 }
 
-/// A start whose Claude screen has not changed for this long, with no acknowledgement, is stuck.
-/// Claude's first composer can take a while to restore local state, and it draws while it does.
-const CLAUDE_HEADLESS_PROMPT_ACK_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
-/// A start that keeps drawing but never acknowledges the prompt ends here.
-#[cfg(test)]
-static TEST_PROMPT_ACK_IDLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How long Claude has to acknowledge a prompt once it is written to its terminal. The clock
+/// starts there; until then the start phase has its own single bound, CLAUDE_START_BUDGET.
+const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn claude_headless_prompt_ack_idle() -> std::time::Duration {
+#[cfg(test)]
+static TEST_PROMPT_TIMER_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `production` unless a test shortened every start and acknowledgement timer.
+fn prompt_timer(production: std::time::Duration) -> std::time::Duration {
     #[cfg(test)]
-    if let ms @ 1.. = TEST_PROMPT_ACK_IDLE_MS.load(std::sync::atomic::Ordering::Relaxed) {
+    if let ms @ 1.. = TEST_PROMPT_TIMER_MS.load(std::sync::atomic::Ordering::Relaxed) {
         return std::time::Duration::from_millis(ms);
     }
-    CLAUDE_HEADLESS_PROMPT_ACK_IDLE
+    production
 }
 
-const CLAUDE_HEADLESS_PROMPT_ACK_CAP: std::time::Duration = std::time::Duration::from_secs(120);
 const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
 struct DetachedWorkflowProviderLaunchClaim {
@@ -652,7 +663,11 @@ impl KernelRuntimeState {
             // dispatch pending until UserPromptSubmit proves the provider
             // accepted it; the retry loop releases the app lock between
             // attempts, so this grace period does not block other sessions.
-            let mut start_watch = crate::app::ClaudeStartWatch::new(std::time::Instant::now());
+            // One deadline: the start budget until the prompt is written, then the
+            // acknowledgement timeout. A person's card holds the start for as long as it is open.
+            let mut prompt_written = false;
+            let mut deadline =
+                tokio::time::Instant::now() + prompt_timer(crate::provider::CLAUDE_START_BUDGET);
             loop {
                 let room_guard = owned
                     .room_secret_observations
@@ -734,20 +749,31 @@ impl KernelRuntimeState {
                         }
                         // Claude answers the turn it is on before the prompt it queued, so
                         // its silence is not a failure to respond while that turn runs.
-                        let now = std::time::Instant::now();
-                        start_watch
-                            .observe(crate::app::claude_headless_start_screen(&provider_run), now);
-                        if start_watch.is_stuck(
-                            now,
-                            claude_headless_prompt_ack_idle(),
-                            CLAUDE_HEADLESS_PROMPT_ACK_CAP,
-                        ) && !crate::app::claude_headless_prompt_queued_behind_running_turn(
-                            &provider_run,
-                            &dispatch.prompt_id,
-                        ) {
+                        let now = tokio::time::Instant::now();
+                        if !prompt_written
+                            && crate::app::claude_headless_prompt_written(
+                                &provider_run,
+                                &dispatch.prompt_id,
+                            )
+                        {
+                            prompt_written = true;
+                            deadline = now + prompt_timer(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT);
+                        } else if !prompt_written
+                            && crate::app::claude_headless_owner_decision_pending(&provider_run)
+                        {
+                            deadline = now + prompt_timer(crate::provider::CLAUDE_START_BUDGET);
+                        }
+                        if now >= deadline
+                            && !crate::app::claude_headless_prompt_queued_behind_running_turn(
+                                &provider_run,
+                                &dispatch.prompt_id,
+                            )
+                        {
                             return Err(prompt_ack_timeout_error(
                                 dispatch,
-                                start_watch.unrecognised_screen_line().as_deref(),
+                                !prompt_written,
+                                crate::app::claude_headless_stuck_screen_line(&provider_run)
+                                    .as_deref(),
                             ));
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1956,7 +1982,7 @@ pub(in crate::runtime::state) mod tests {
 
     #[test]
     fn claude_headless_dispatch_allows_slow_cold_start_acknowledgement() {
-        assert!(CLAUDE_HEADLESS_PROMPT_ACK_IDLE >= std::time::Duration::from_secs(30));
+        assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
     }
 
     #[test]
@@ -1978,7 +2004,7 @@ pub(in crate::runtime::state) mod tests {
             steering: false,
         };
         let shown = crate::terminal::user_facing_dispatch_failure(&prompt_ack_timeout_error(
-            &dispatch, None,
+            &dispatch, false, None,
         ));
         for internal in [
             "provider-run-private",
@@ -4452,7 +4478,7 @@ pub(in crate::runtime::state) mod tests {
             .unwrap();
         let failed_prompt_id = dispatch.prompt_id.clone();
         let source_attachment_id = dispatch.source_attachment_id.clone();
-        let unacknowledged = prompt_ack_timeout_error(&dispatch, None);
+        let unacknowledged = prompt_ack_timeout_error(&dispatch, false, None);
         runtime
             .fail_prompt_dispatch(dispatch, unacknowledged)
             .await

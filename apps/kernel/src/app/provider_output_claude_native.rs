@@ -32,7 +32,10 @@ mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
-pub(crate) use start_screen::{claude_headless_start_screen, ClaudeStartWatch};
+pub(crate) use start_screen::{
+    claude_headless_owner_decision_pending, claude_headless_prompt_written,
+    claude_headless_stuck_screen_line,
+};
 pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
