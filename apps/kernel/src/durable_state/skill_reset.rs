@@ -1,5 +1,6 @@
 //! MP-08 / MP-10 / MP-11: destructive, one-time retirement of skill authority.
 //! This is not a legacy skill decoder or a conversion to v2 selections.
+//! Delete this module once every running kernel has started on Skills v2 and run it.
 use rusqlite::Connection;
 use serde_json::Value;
 #[path = "skill_reset_executable.rs"]
