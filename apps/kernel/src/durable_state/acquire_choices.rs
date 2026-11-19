@@ -66,7 +66,10 @@ pub(crate) struct AcquireChoice {
 pub(crate) enum AcquireChoiceWrite {
     /// No row becomes pending with `option`; a request's option is never written again.
     Choose { option: AcquireOption },
-    /// A row with `option` becomes accepted, unless it is accepted under another allocation.
+    /// The row becomes accepted with `option` and the allocation, whatever it was or whether it
+    /// was removed meanwhile: the service's acceptance is the truth, and a try that waited for it
+    /// past its window must still record it. Only a row accepted under another allocation or
+    /// option stays as it is.
     Accept {
         option: AcquireOption,
         allocation_ref: String,
@@ -192,10 +195,16 @@ pub(super) fn apply(
             option,
             allocation_ref,
         } => transaction.execute(
-            "UPDATE durable_acquire_choices
-            SET state = 'accepted', allocation_ref = ?5, touched_ms = ?6
-            WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4
-                AND (state != 'accepted' OR allocation_ref = ?5)",
+            "INSERT INTO durable_acquire_choices
+                (agent_id, request_id, class_id, region, state, allocation_ref, touched_ms)
+            VALUES (?1, ?2, ?3, ?4, 'accepted', ?5, ?6)
+            ON CONFLICT (agent_id, request_id) DO UPDATE SET
+                class_id = excluded.class_id, region = excluded.region, state = 'accepted',
+                allocation_ref = excluded.allocation_ref, touched_ms = excluded.touched_ms
+            WHERE durable_acquire_choices.state != 'accepted'
+                OR (durable_acquire_choices.allocation_ref = excluded.allocation_ref
+                    AND durable_acquire_choices.class_id IS excluded.class_id
+                    AND durable_acquire_choices.region IS excluded.region)",
             params![
                 agent_id,
                 request_id,
@@ -270,9 +279,6 @@ mod tests {
         {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
             assert_eq!(state(&store), None);
-            assert!(!store
-                .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
-                .unwrap());
             assert!(store
                 .write_acquire_choice("agent", "r1", choose("small"), now())
                 .unwrap());
@@ -292,10 +298,6 @@ mod tests {
         assert!(!store
             .write_acquire_choice("agent", "r1", choose("big"), now())
             .unwrap());
-        assert!(!store
-            .write_acquire_choice("agent", "r1", accept("big", "a1"), now())
-            .unwrap());
-        assert_eq!(state(&store), pending("small"));
         assert!(store
             .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
             .unwrap());
@@ -305,6 +307,9 @@ mod tests {
             .unwrap());
         assert!(!store
             .write_acquire_choice("agent", "r1", accept("small", "a2"), now())
+            .unwrap());
+        assert!(!store
+            .write_acquire_choice("agent", "r1", accept("big", "a1"), now())
             .unwrap());
         assert!(!store
             .write_acquire_choice("agent", "r1", choose("big"), now())
@@ -336,10 +341,6 @@ mod tests {
                 .unwrap());
             assert!(!store
                 .write_acquire_choice("agent", "r1", choose("small"), now())
-                .unwrap());
-            // An acceptance of a named option is not one of the default.
-            assert!(!store
-                .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
                 .unwrap());
         }
         let store = DurableKernelStateStore::open(path).unwrap();
@@ -487,5 +488,56 @@ mod tests {
             .write_acquire_choice("agent", "r1", closed(), start + REPLAY_WINDOW_MS - 1)
             .unwrap());
         assert!(state_at(&store, "agent", start + REPLAY_WINDOW_MS + 1).is_some());
+    }
+
+    /// A try waits for the service or the owner's decision while its row ages out, and another
+    /// write sweeps the row before the try's response is recorded.
+    #[test]
+    fn an_acceptance_is_recorded_whether_its_row_is_swept_or_chosen_again_meanwhile() {
+        let directory = crate::test_support::TestTempDir::new("acquire-choices-accept");
+        let store = DurableKernelStateStore::open(directory.path().join("kernel.db")).unwrap();
+        let start = now();
+        let accepted = |allocation_ref: &str| {
+            Some(AcquireChoiceState::Accepted {
+                allocation_ref: allocation_ref.into(),
+            })
+        };
+        // The row was swept: a write of another request past its window removed it.
+        assert!(store
+            .write_acquire_choice("agent", "r1", choose("small"), start)
+            .unwrap());
+        let swept = start + REPLAY_WINDOW_MS + 1;
+        assert!(store
+            .write_acquire_choice("other", "r1", choose("big"), swept)
+            .unwrap());
+        assert_eq!(state_at(&store, "agent", swept), None);
+        assert!(store
+            .write_acquire_choice("agent", "r1", accept("small", "a1"), swept + 1)
+            .unwrap());
+        assert_eq!(state_at(&store, "agent", swept + 1), accepted("a1"));
+        // The row was swept and a retry chose another option: the service's acceptance wins.
+        assert!(store
+            .write_acquire_choice("agent", "r2", choose("small"), start)
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r3", choose("small"), swept)
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r2", choose("big"), swept)
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r2", accept("small", "a2"), swept + 1)
+            .unwrap());
+        let row = store
+            .acquire_choice("agent", "r2", swept + 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.option, option("small"));
+        assert_eq!(row.state, accepted("a2").unwrap());
+        // The acceptance restarts the window.
+        assert_eq!(
+            state_at(&store, "agent", swept + 1 + REPLAY_WINDOW_MS - 1),
+            accepted("a1")
+        );
     }
 }

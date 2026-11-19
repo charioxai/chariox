@@ -39,8 +39,10 @@
 //!   failure passes on as it is. The connected-service boundary passes the capability call's
 //!   failure before the acquire on without its Cloud code (`control_plane_offer_unavailable`), so
 //!   no code it carries is read as a refusal of the acquire.
-//! - Accepted moves a row with the option the try sent, unless it is accepted under another
-//!   allocation: the service's acceptance is the truth, even after a refusal.
+//! - Accepted writes the row with the option the try sent, whatever the row was and even when it
+//!   is gone: a try may wait for the service or the owner's decision past the replay window, and
+//!   the allocation it was given must not be lost to a sweep. The service's acceptance is the
+//!   truth, even after a refusal. Only a row accepted under another allocation or option stays.
 //! - Choosing writes only a missing row; a try that loses that race takes the option the winner
 //!   wrote. An explicit class_id or region that differs from the row's is refused before the
 //!   service is asked.
