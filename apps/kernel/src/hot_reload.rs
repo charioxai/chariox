@@ -229,7 +229,7 @@ static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>
     Mutex::new(Vec::new());
 static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
     Mutex::new(Vec::new());
-static RECEIVED_JOBS: Mutex<Vec<JobHandover>> = Mutex::new(Vec::new());
+static RECEIVED_JOB_READERS: Mutex<Vec<JobHandover>> = Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -327,7 +327,7 @@ pub fn receive() {
     *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
-    *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.jobs);
+    *lock(&RECEIVED_JOB_READERS) = std::mem::take(&mut handover.jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -884,20 +884,20 @@ pub(crate) fn hand_over_job(
 }
 
 pub(crate) fn job_wakes() -> Vec<String> {
-    lock(&RECEIVED_JOBS)
+    lock(&RECEIVED_JOB_READERS)
         .iter()
         .map(|job| job.wake_id().to_string())
         .collect()
 }
 
 pub(crate) fn take_job(id: &str) -> Option<JobHandover> {
-    let mut jobs = lock(&RECEIVED_JOBS);
+    let mut jobs = lock(&RECEIVED_JOB_READERS);
     let index = jobs.iter().position(|job| job.id() == id)?;
     Some(jobs.swap_remove(index))
 }
 
 pub(crate) fn discard_unclaimed_jobs() {
-    let jobs = std::mem::take(&mut *lock(&RECEIVED_JOBS));
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_JOB_READERS));
     for job in jobs {
         job.discard();
     }
