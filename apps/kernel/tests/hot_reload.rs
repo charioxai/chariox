@@ -3,6 +3,9 @@
 //! running agent turn continues in the same provider process.
 #![cfg(unix)]
 
+#[path = "hot_reload/held_jobs.rs"]
+mod held_jobs;
+
 #[path = "hot_reload/local_jobs.rs"]
 mod local_jobs;
 
@@ -212,6 +215,10 @@ fn laptop_token(kernel: &Kernel) -> Option<String> {
 }
 
 async fn request(socket: &mut Socket, body: Value) -> Value {
+    request_result(socket, body).await.unwrap()
+}
+
+async fn request_result(socket: &mut Socket, body: Value) -> Result<Value, Value> {
     let id = format!("hot-reload-{:016x}", rand::random::<u64>());
     let frame = json!({"type": "request", "request_id": id, "command_id": id, "request": body});
     socket
@@ -224,8 +231,11 @@ async fn request(socket: &mut Socket, body: Value) -> Value {
                 Some(Ok(Message::Text(text))) => {
                     let frame: Value = serde_json::from_str(&text).unwrap();
                     if frame["type"] == "response" && frame["request_id"] == id.as_str() {
-                        assert!(frame["error"].is_null(), "{frame}");
-                        return frame["response"].clone();
+                        return if frame["error"].is_null() {
+                            Ok(frame["response"].clone())
+                        } else {
+                            Err(frame["error"].clone())
+                        };
                     }
                 }
                 Some(Ok(Message::Ping(data))) => socket.send(Message::Pong(data)).await.unwrap(),
