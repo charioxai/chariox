@@ -262,6 +262,10 @@ export function getSessionStateRequest(sessionId: string) {
   }
 }
 
+export function listFinishedRoomTasksRequest(sessionId: string, before: number | null = null) {
+  return { ListFinishedRoomTasks: { session_id: sessionId, before } }
+}
+
 export function updateMetaagentTaskRequest(
   sessionId: string,
   metaagentId: string,

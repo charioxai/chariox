@@ -170,7 +170,14 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         jobs: Vec<JobView>,
-        /// The rows the live `session_processes_changed` feed shows.
+        /// Only processes owned by an agent visible in this Room.
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    },
+    FinishedRoomTasks {
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+        next_before: Option<i64>,
+    },
+    MachineRoomResources {
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
         disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },

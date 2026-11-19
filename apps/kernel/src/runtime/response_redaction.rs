@@ -79,7 +79,6 @@ pub(crate) fn redact_response_for_user(
             agent_activity_revision,
             processes,
             jobs,
-            disk_usage,
         } => {
             let room_workflows =
                 crate::runtime::projection::RoomWorkflowInventory::project_with_history(
@@ -92,13 +91,15 @@ pub(crate) fn redact_response_for_user(
                 room_workflows,
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
-                processes,
+                processes: processes
+                    .into_iter()
+                    .filter(|process| process.belongs_to_room_agent(&session))
+                    .collect(),
                 jobs: jobs
                     .into_iter()
                     .filter(|job| session.agents().iter().any(|a| a.id() == job.agent_id))
                     .collect(),
-                disk_usage,
-                session,
+                session: session.without_room_workflow_details(),
             }
         }
         LocalDaemonResponse::MetaagentTaskUpdated { session, task } => {
@@ -956,7 +957,6 @@ mod tests {
             agent_activity_revision: 0,
             processes: Vec::new(),
             jobs: Vec::new(),
-            disk_usage: Vec::new(),
         }
     }
 

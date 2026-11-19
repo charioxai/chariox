@@ -133,6 +133,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        MachineRoomResources,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,
@@ -298,6 +299,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        FinishedRoomTasks,
         AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,

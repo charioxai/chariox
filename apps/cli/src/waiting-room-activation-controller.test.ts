@@ -820,7 +820,7 @@ function runtimeSession(id: string, alias: string | null, overrides: Partial<Run
       permission_level: "yolo",
     },
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,

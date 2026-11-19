@@ -67,7 +67,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
       permission_level: "yolo",
     },
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,

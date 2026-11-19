@@ -494,6 +494,64 @@ impl DurableKernelStateStore {
             })
             .collect()
     }
+
+    pub(crate) fn finished_room_tasks(
+        &self,
+        room: &str,
+        visible_agents: &[&str],
+        before: Option<i64>,
+    ) -> Result<(Vec<AgentTaskExecution>, Option<i64>), DaemonError> {
+        const PAGE_SIZE: usize = 32;
+        let agents = encode(&visible_agents)?;
+        let db = self.lock_connection("agent.lifecycle.finished_room_tasks")?;
+        // Keep the cursor in the immutable task insertion order, so new tasks do not shift pages.
+        // Apply trace visibility before the page boundary, so every page can use the same cursor.
+        let mut query = db
+            .prepare(
+                "SELECT rowid,task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE rowid IN (\
+                 SELECT rowid FROM (\
+                  SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='done' \
+                   AND rowid<?2 AND agent_id IN (SELECT value FROM json_each(?3)) ORDER BY rowid DESC LIMIT ?4) \
+                  UNION ALL SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='cancelled' \
+                   AND rowid<?2 AND agent_id IN (SELECT value FROM json_each(?3)) ORDER BY rowid DESC LIMIT ?4) \
+                  ORDER BY rowid DESC LIMIT ?4)) ORDER BY rowid DESC",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(
+                params![
+                    room,
+                    before.unwrap_or(i64::MAX),
+                    agents,
+                    (PAGE_SIZE + 1) as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        let next = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].0);
+        let tasks = rows
+            .into_iter()
+            .take(PAGE_SIZE)
+            .map(|(_, id, room, agent, prompt, payload)| {
+                let mut task = decode_task(&id, &room, &agent, &prompt, &payload)
+                    .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt));
+                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                task
+            })
+            .collect();
+        Ok((tasks, next))
+    }
     /// Whether the task's terminal outcome is recorded. It is published only once the task's
     /// resources are settled, so a cancelled task that has it needs no further cancellation.
     pub(crate) fn agent_task_terminal_recorded(

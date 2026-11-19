@@ -746,7 +746,7 @@ async function launchAndPromptAgents(
   context: ShellContext,
   deps: ShellAgentCommandDeps,
 ): Promise<BatchPromptSummary> {
-  const attachment = await resolveShellAttachmentId(context, deps)
+  const attachment = resolveShellAttachmentId(context)
   if (!attachment.ok) {
     throw new Error(attachment.message)
   }

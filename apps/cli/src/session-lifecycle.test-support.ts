@@ -43,7 +43,7 @@ const detachedState: DetachedCliTransitionState = {
     created_at_ms: 0,
     status: "Parked",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,

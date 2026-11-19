@@ -45,7 +45,7 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     created_at_ms: 1,
     status: "Active",
     active_provider_run_id: null,
-    attachment_ids: ["att-1"],
+    connected_cli_count: 1,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
@@ -112,7 +112,7 @@ test("sessionListEntryFromSession preserves runtime row metadata when present", 
     last_used_at_ms: 20,
     last_activity_at_ms: 30,
     last_prompt_sent_at_ms: 40,
-    attachment_ids: ["att-1"],
+    connected_cli_count: 1,
   })
 
   assert.deepEqual(entry, {
@@ -132,7 +132,7 @@ test("sessionListEntryFromSession preserves runtime row metadata when present", 
     last_used_at_ms: 20,
     last_activity_at_ms: 30,
     last_prompt_sent_at_ms: 40,
-    attachment_ids: ["att-1"],
+    connected_cli_count: 1,
   })
 })
 

@@ -1,6 +1,6 @@
 {
-  "local": 1012,
-  "peer": 449,
+  "local": 1077,
+  "peer": 503,
   "workflow": {
     "responsible": {
       "kind": "agent",

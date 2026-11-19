@@ -11,7 +11,7 @@ pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
     /// Attachments a live subscription heartbeats for: when the subscription ends they go stale whatever their level.
-    watched: BTreeSet<String>,
+    leased: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,14 +170,13 @@ impl AttachmentServiceStore {
     }
 
     /// A subscription's own heartbeat: from now on the attachment lives only as long as its subscription.
-    pub fn record_subscription_heartbeat(
+    pub fn renew_lease(
         &self,
         session_id: &str,
         attachment_id: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
-        self.write()
-            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+        self.write().renew_lease(session_id, attachment_id, now_ms)
     }
 
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
@@ -242,7 +241,7 @@ impl AttachmentService {
             }
         })?;
         self.last_heartbeat_at_ms.remove(attachment_id);
-        self.watched.remove(attachment_id);
+        self.leased.remove(attachment_id);
 
         let (_, effect) =
             sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
@@ -324,7 +323,7 @@ impl AttachmentService {
             .iter()
             .filter_map(|attachment_id| {
                 self.last_heartbeat_at_ms.remove(attachment_id);
-                self.watched.remove(attachment_id);
+                self.leased.remove(attachment_id);
                 self.attachments.remove(attachment_id)
             })
             .collect();
@@ -350,21 +349,21 @@ impl AttachmentService {
         Ok(())
     }
 
-    pub fn record_subscription_heartbeat(
+    pub fn renew_lease(
         &mut self,
         session_id: &str,
         attachment_id: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
         self.record_heartbeat(session_id, attachment_id, now_ms)?;
-        self.watched.insert(attachment_id.to_string());
+        self.leased.insert(attachment_id.to_string());
         Ok(())
     }
 
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
         self.attachments
             .values()
-            .filter(|attachment| self.watched.contains(attachment.id()))
+            .filter(|attachment| self.leased.contains(attachment.id()))
             .filter(|attachment| {
                 self.last_heartbeat_at_ms
                     .get(attachment.id())
@@ -443,6 +442,9 @@ mod tests {
         assert_eq!(session.attachment_ids().len(), 2);
         assert!(session.has_attachment(first.id()));
         assert!(session.has_attachment(second.id()));
+        let public_session = serde_json::to_value(session).expect("session serializes");
+        assert_eq!(public_session["connected_cli_count"], 2);
+        assert!(public_session.get("attachment_ids").is_none());
     }
 
     #[test]
@@ -514,10 +516,10 @@ mod tests {
             .expect("automation attachment should attach");
 
         attachments
-            .record_subscription_heartbeat(&session_id, stale.id(), 1_000)
+            .renew_lease(&session_id, stale.id(), 1_000)
             .expect("stale heartbeat should record");
         attachments
-            .record_subscription_heartbeat(&session_id, fresh.id(), 25_000)
+            .renew_lease(&session_id, fresh.id(), 25_000)
             .expect("fresh heartbeat should record");
         attachments
             .record_heartbeat(&session_id, automation.id(), 1_000)
@@ -553,7 +555,7 @@ mod tests {
         let held = attach(&mut attachments, &mut sessions, "leased-agent");
 
         attachments
-            .record_subscription_heartbeat(&session_id, viewer.id(), 1_000)
+            .renew_lease(&session_id, viewer.id(), 1_000)
             .expect("subscription heartbeat should record");
         attachments
             .record_heartbeat(&session_id, held.id(), 1_000)
@@ -565,7 +567,7 @@ mod tests {
             "only the attachment a subscription watched goes stale"
         );
         attachments
-            .record_subscription_heartbeat(&session_id, viewer.id(), 25_000)
+            .renew_lease(&session_id, viewer.id(), 25_000)
             .expect("subscription heartbeat should record");
         assert!(attachments
             .stale_terminal_attachment_ids(31_000, 30_000)
@@ -603,7 +605,7 @@ mod tests {
             .record_heartbeat(&session_id, driver.id(), 1_000)
             .expect("command heartbeat should record");
         attachments
-            .record_subscription_heartbeat(&session_id, terminal.id(), 1_000)
+            .renew_lease(&session_id, terminal.id(), 1_000)
             .expect("subscription heartbeat should record");
 
         assert_eq!(

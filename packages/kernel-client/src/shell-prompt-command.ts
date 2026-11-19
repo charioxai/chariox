@@ -55,7 +55,7 @@ export async function executePromptCommand(
   if (!context.sessionId) {
     return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
   }
-  const attachmentId = await resolveShellAttachmentId(context, deps)
+  const attachmentId = resolveShellAttachmentId(context)
   if (!attachmentId.ok) {
     return { ok: false, message: attachmentId.message }
   }

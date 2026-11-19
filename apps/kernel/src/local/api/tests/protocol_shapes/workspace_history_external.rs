@@ -187,7 +187,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "97ced66c2c17c360eb4e752864f2beea5aace20220b10d6f055321c6708391fe"
+        "76770648b136664c3f9120fc719d637616e70e06959c16610c24dbf9f6412f14"
     );
 }
 
@@ -1103,10 +1103,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
         "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         "shapes": [
         crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
-            disk_usage: vec![crate::runtime::disk_usage::DiskUsageEntry {
-                id: "/work/repo".into(), path: Some("/work/repo".into()), used_bytes: Some(8192),
-                sampled_at_ms: 10000, owner: None, process_id: None,
-            }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
                 remote_available: false, remote_refusal: None, estimate: None, placement: None,
@@ -1249,6 +1245,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "f800262eba713f6dd41e2488e5e73e89b1024a7e21837d03d5feff86fe393f8d"
+        "a0193f9f67017eb5c431a02b81be339eb885bf8a9cf18ef785908fa76a061f14"
     );
 }

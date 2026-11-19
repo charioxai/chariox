@@ -712,11 +712,10 @@
                 "address": "2001:db8::1"
               }
             }
-          ],
-          "disk_usage": []
+          ]
         }
       },
-      "sha256": "2ab1de7d2f8e44884e1e98cf279b5f11005837a7324c3a6fd1069a8b59ecd191"
+      "sha256": "abe05ee7be0ffe367f6a59b2bedc5b26875c7992608bf9499230804337d89dfd"
     }
   ]
 }

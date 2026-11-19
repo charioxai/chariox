@@ -618,4 +618,6 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// 1077 moves finished Room tasks to pages and machine samples to a Machine resource. Room views
+/// publish the connection count and workflow inventory alongside current activity.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1077;

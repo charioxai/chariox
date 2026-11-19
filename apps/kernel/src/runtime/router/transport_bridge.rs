@@ -75,14 +75,14 @@ impl CommandRouter {
             .await
     }
 
-    pub(crate) async fn record_subscription_attachment_heartbeat(
+    pub(crate) async fn renew_terminal_attachment_lease(
         &self,
         session_id: &str,
         attachment_id: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
         self.runtime_state
-            .record_subscription_attachment_heartbeat(session_id, attachment_id, now_ms)
+            .renew_terminal_attachment_lease(session_id, attachment_id, now_ms)
             .await
     }
 

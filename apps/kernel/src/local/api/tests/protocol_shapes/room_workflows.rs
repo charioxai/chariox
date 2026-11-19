@@ -1,4 +1,32 @@
 use super::*;
+
+#[test]
+fn room_history_and_machine_resource_protocol_shapes() {
+    let snapshot = serde_json::json!({
+        "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
+        "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        "shapes": [
+            LocalDaemonRequest::ListFinishedRoomTasks(crate::local::ListFinishedRoomTasksRequest {
+                session_id: "room".into(), before: Some(42),
+            }),
+            LocalDaemonResponse::FinishedRoomTasks { tasks: Vec::new(), next_before: None },
+            LocalDaemonRequest::GetMachineRoomResources(crate::local::GetMachineRoomResourcesRequest {
+                session_id: "room".into(),
+            }),
+            LocalDaemonResponse::MachineRoomResources { processes: Vec::new(), disk_usage: Vec::new() },
+        ],
+    });
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("lean-room-state-1077.json")).unwrap();
+    assert_eq!(snapshot, expected);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b923f47c5db8bbe3fb0d74746a6de50299d7ea3d587ff60f4bf0165592533570"
+    );
+}
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -87,7 +115,6 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
         agent_activity_revision: 0,
         processes: Vec::new(),
         jobs: Vec::new(),
-        disk_usage: Vec::new(),
     };
     let event = crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {
         room_workflows: inventory,
@@ -114,7 +141,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
-        "d4f16e437d1106d893ceb8bda8458333a4da54ec85b885c084f28f4fc3e3cfb7"
+        "628cb03a194b3ab41a12f55d462e9b4cef488981355582dd32c3c7acbb67fe8e"
     );
 }
 

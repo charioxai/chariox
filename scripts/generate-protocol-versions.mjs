@@ -57,6 +57,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/session-feed-596.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-tool-image-count-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/lean-room-state-1077.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/web-bot-auth-946.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/workflow-gate-1002.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-terminal-stream-1006.json",

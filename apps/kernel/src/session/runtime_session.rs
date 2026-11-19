@@ -123,7 +123,10 @@ pub struct RuntimeSession {
     agents: Vec<AgentInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     collaboration_agent_counts: Option<SessionCollaborationAgentCounts>,
+    #[serde(skip)]
     attachment_ids: BTreeSet<String>,
+    #[serde(default)]
+    connected_cli_count: usize,
     #[serde(flatten)]
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,7 +154,9 @@ pub struct RuntimeSession {
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflows: Vec<WorkflowDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_runs: Vec<WorkflowRun>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_runtime_instances: Vec<WorkflowEndpointRuntimeInstance>,
@@ -327,6 +332,7 @@ impl RuntimeSession {
             agents: Vec::new(),
             collaboration_agent_counts: None,
             attachment_ids: BTreeSet::new(),
+            connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
@@ -1209,6 +1215,12 @@ impl RuntimeSession {
         &self.workflows
     }
 
+    pub(crate) fn without_room_workflow_details(mut self) -> Self {
+        self.workflows.clear();
+        self.workflow_runs.clear();
+        self
+    }
+
     pub fn workflow_runs(&self) -> &[WorkflowRun] {
         &self.workflow_runs
     }
@@ -1337,6 +1349,7 @@ impl RuntimeSession {
     pub fn equivalent_except_presence(&self, other: &Self) -> bool {
         let mut left = self.clone();
         left.attachment_ids = other.attachment_ids.clone();
+        left.connected_cli_count = other.connected_cli_count;
         left.last_used_at_ms = other.last_used_at_ms;
         left == *other
     }
@@ -1345,6 +1358,7 @@ impl RuntimeSession {
         let mut left = self.clone();
         let right = other.clone();
         left.attachment_ids = right.attachment_ids.clone();
+        left.connected_cli_count = right.connected_cli_count;
         left.alias = right.alias.clone();
         left.last_used_at_ms = right.last_used_at_ms;
         left.last_activity_at_ms = right.last_activity_at_ms;
@@ -1414,15 +1428,19 @@ impl RuntimeSession {
 
     pub fn add_attachment(&mut self, attachment_id: impl Into<String>) {
         self.attachment_ids.insert(attachment_id.into());
+        self.connected_cli_count = self.attachment_ids.len();
     }
 
     pub fn remove_attachment(&mut self, attachment_id: &str) -> bool {
-        self.attachment_ids.remove(attachment_id)
+        let removed = self.attachment_ids.remove(attachment_id);
+        self.connected_cli_count = self.attachment_ids.len();
+        removed
     }
 
     pub fn clear_attachments(&mut self) -> usize {
         let removed_count = self.attachment_ids.len();
         self.attachment_ids.clear();
+        self.connected_cli_count = 0;
         removed_count
     }
 
@@ -1542,7 +1560,7 @@ impl RuntimeSession {
         if next == SessionStatus::Ended {
             self.active_provider_run_id = None;
             self.focused_agent_id = None;
-            self.attachment_ids.clear();
+            self.clear_attachments();
             self.prompt_runtime.clear();
         }
 
