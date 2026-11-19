@@ -223,6 +223,18 @@ impl KernelRuntimeState {
             if self.drop_stop_of_cancelled_task(&agent, &stop).await? {
                 continue;
             }
+            if let Some((account_profile, account_label)) = self.continued_elsewhere(&agent, &stop)
+            {
+                self.apply_stop_event(
+                    agent.id(),
+                    &StopEvent::Continued {
+                        account_profile: &account_profile,
+                        account_label: &account_label,
+                    },
+                )
+                .await?;
+                continue;
+            }
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
                     if let Some(taken) = self
@@ -310,6 +322,36 @@ impl KernelRuntimeState {
         )
         .await?;
         Ok(true)
+    }
+
+    /// The account the agent's running turn is on when it is not the account that hit the limit
+    /// and nobody took the stop: the agent went on by another route (a settings change and a
+    /// prompt, a decision on another stripe) and the stop is over.
+    fn continued_elsewhere(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+    ) -> Option<(String, String)> {
+        if !matches!(
+            stop.state,
+            UsageLimitStopState::Asking
+                | UsageLimitStopState::Armed { .. }
+                | UsageLimitStopState::Declined
+        ) || !self.agent_has_turn(agent)
+        {
+            return None;
+        }
+        let run = self
+            .owned
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)?;
+        (run.account_profile() != stop.account_profile).then(|| {
+            (
+                run.account_profile().to_string(),
+                self.owned.account_label(agent, run.account_profile()),
+            )
+        })
     }
 
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
@@ -691,6 +733,9 @@ pub(super) struct AppliedStop {
 
 /// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
 fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
+    if let StopEvent::Continued { account_label, .. } = event {
+        return format!("Continued on {account_label}.");
+    }
     let Some(stop) = stop else {
         return String::new();
     };
