@@ -612,7 +612,8 @@ impl KernelRuntimeState {
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
-        self.follow_provider_own_turn(session_id, provider_run_id, &poll_result)
+        let held_release = self
+            .follow_provider_own_turn(session_id, provider_run_id, &poll_result)
             .await?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
@@ -843,8 +844,16 @@ impl KernelRuntimeState {
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
+        if !completions.is_empty()
+            || prompt_completed
+            || terminal_failure.is_some()
+            || held_release.is_some()
+        {
             self.flush_provider_history(provider_run_id).await?;
+        }
+        if let Some(release) = held_release {
+            self.release_held_after_own_turn(session_id, release)
+                .await?;
         }
         for completion in &completions {
             owned.record_assistant_message_completion(

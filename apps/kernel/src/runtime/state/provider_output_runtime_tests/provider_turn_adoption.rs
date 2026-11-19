@@ -428,7 +428,9 @@ async fn a_pending_own_turn_is_adopted_under_the_binding_of_its_first_report() {
         &team.child_run,
         OwnTurnBinding::Fresh,
     ) {
-        ProviderTurnAdoption::Adopted { prompt, binding } => {
+        ProviderTurnAdoption::Adopted {
+            prompt, binding, ..
+        } => {
             assert_eq!(binding, held);
             assert_eq!(prompt.id(), "held-prompt");
         }

@@ -166,6 +166,20 @@ impl KernelRuntimeOwnedState {
         let Some(held) = self.background_holds.get(&task.task_id) else {
             return Ok(false);
         };
+        // Its notification turn runs, waiting for adoption behind another prompt: the turn's end
+        // releases it, after the output that answers it is in history.
+        if self.prompt_state_owner.provider_turn_pending_for_held(
+            &held.room,
+            &held.agent,
+            &held.run,
+            &held.prompt,
+        ) && self
+            .provider_store
+            .get_run(&held.run)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+        {
+            return Ok(false);
+        }
         Ok(
             match self.background_calls_of_prompt(&held.room, &held.run, &held.prompt)? {
                 BackgroundCalls::None => true,
