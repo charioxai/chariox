@@ -31,7 +31,6 @@ COPY fixtures fixtures
 COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
-COPY deploy/managed-kernel deploy/managed-kernel
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
 COPY deploy/runtime-release deploy/runtime-release
