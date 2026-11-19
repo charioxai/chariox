@@ -621,3 +621,108 @@ async fn workflow_node_behind_failed_dispatch(run_survives_the_failure: bool) {
         "the workflow node becomes the active prompt"
     );
 }
+
+#[tokio::test]
+async fn native_cancellation_settles_compaction_before_retry_on_same_run() {
+    crate::test_support::isolated_env_test!();
+    let (worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+        runtime_with_claude_headless_active_prompt().await;
+    std::fs::write(
+        std::path::Path::new(&run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"])
+            .with_file_name("active-prompt-id"),
+        format!("accepted:{}", dispatch.prompt_id),
+    )
+    .unwrap();
+    let events = &run.pty_env()["CHARIOX_CLAUDE_NATIVE_EVENTS"];
+    let transcript = worktree.path().join("compaction.jsonl");
+    let emit_pre_compact = |provider_prompt: &str| {
+        std::fs::write(
+            events,
+            serde_json::json!({"hook_event_name": "PreCompact", "prompt_id": provider_prompt})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    let owned = &runtime.owned;
+    emit_pre_compact("claude-cancelled");
+    runtime
+        .with_app_side_effect(|app| {
+            app.process_claude_native_bridge_with_handoff_for_runtime(
+                &session_id,
+                run.id(),
+                &run,
+                owned,
+            )
+        })
+        .await
+        .unwrap();
+    let cancellation = owned
+        .cancel_local_prompt(&session_id, &agent_id, &source_id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .settle_stopped_native_prompt(&cancellation.dispatch.unwrap())
+        .await;
+
+    let records = || {
+        owned
+            .terminal_stream
+            .output_records()
+            .into_iter()
+            .filter(|row| row.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .collect::<Vec<_>>()
+    };
+    let cancelled = records();
+    assert_eq!(
+        cancelled.len(),
+        2,
+        "cancellation must settle the open compaction"
+    );
+    assert_eq!(cancelled[0].merge_key, cancelled[1].merge_key);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&cancelled[1].bytes).unwrap()["reason"],
+        "The turn was cancelled before Claude finished compacting context."
+    );
+
+    emit_pre_compact("claude-next");
+    runtime
+        .with_app_side_effect(|app| {
+            app.process_claude_native_bridge_with_handoff_for_runtime(
+                &session_id,
+                run.id(),
+                &run,
+                owned,
+            )
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        &transcript,
+        serde_json::json!({"type":"user", "uuid":"next-summary", "isCompactSummary":true, "message":{"content":"New summary."}}).to_string(),
+    ).unwrap();
+    std::fs::write(
+        events,
+        serde_json::json!({"hook_event_name":"PostCompact", "prompt_id":"claude-next", "transcript_path":transcript})
+            .to_string(),
+    ).unwrap();
+    runtime
+        .with_app_side_effect(|app| {
+            app.process_claude_native_bridge_with_handoff_for_runtime(
+                &session_id,
+                run.id(),
+                &run,
+                owned,
+            )
+        })
+        .await
+        .unwrap();
+    let after = records();
+    assert_eq!(&after[..2], cancelled);
+    assert_eq!(after.len(), 4);
+    assert_ne!(after[1].merge_key, after[2].merge_key);
+    assert_eq!(after[2].merge_key, after[3].merge_key);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&after[3].bytes).unwrap()["summary"],
+        "New summary."
+    );
+}
