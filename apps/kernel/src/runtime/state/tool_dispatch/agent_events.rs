@@ -18,7 +18,7 @@ impl KernelRuntimeState {
         let current_run = self
             .owned
             .provider_store
-            .get_run_for_agent(run.session_id(), actor)
+            .get_tool_run_for_agent(run.session_id(), actor)
             .ok_or_else(|| ledger::error("provider run unavailable"))?;
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));

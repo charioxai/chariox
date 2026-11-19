@@ -167,6 +167,7 @@ mod diagnostics_timeouts;
 mod external_queue;
 mod finished_child_cleanup;
 mod focus_recovery_tests;
+mod headless_turn_settlement;
 mod history_projection;
 mod inbox_sender;
 mod large_codex_resume;

@@ -83,7 +83,7 @@ fn open(service: &RoomTerminalService, directory: &Path) -> RoomTerminalSummary 
     service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: directory.to_path_buf(),
             cols: 100,
             rows: 30,
@@ -141,7 +141,7 @@ async fn opens_the_login_shell_in_the_project_folder() {
         screen_has(&service, id, "LOGIN-42").await && screen_has(&service, id, "project").await
     })
     .await;
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 /// Restores `HOME` when the test ends, whichever way it ends.
@@ -196,7 +196,7 @@ fn an_agent_may_type_while_the_login_files_still_run() {
                 service.list("room-1")[0].driver == RoomTerminalDriver::Free
             })
             .await;
-            service.end_session("room-1");
+            service.end_scope("room-1");
         });
 }
 
@@ -208,7 +208,7 @@ fn the_first_command_ends_the_startup_window_without_a_prompt_mark() {
     use super::terminal::Terminal;
     let record = TerminalRecord {
         terminal_id: "t".to_string(),
-        session_id: "room-1".to_string(),
+        scope: TerminalScope::room("room-1"),
         title: "zsh".to_string(),
         program: "/bin/zsh".to_string(),
         working_directory: "/".to_string(),
@@ -253,7 +253,7 @@ async fn a_program_started_right_after_login_refuses_other_agents() {
         !other.accepted,
         "a running program took input from another agent"
     );
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn a_queued_line_is_not_finished_by_the_login_files_helpers() {
                 "the wait ended before the queued command: {}",
                 waited.screen_text
             );
-            service.end_session("room-1");
+            service.end_scope("room-1");
         });
 }
 
@@ -366,7 +366,7 @@ async fn one_driver_rule_protects_a_foreground_program() {
         screen_has(&service, &id, "b-types-now").await
     })
     .await;
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[test]
@@ -488,20 +488,20 @@ async fn who_owns(
         // SAFETY: the positive PID of a command this test started; never a group.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
-    service.end_session("room-1");
+    service.end_scope("room-1");
     owners
         .into_iter()
         .map(|owner| owner.expect("the sampler never saw the command"))
         .collect()
 }
 
-/// The two shells that report their job table: the login shell (bash) and zsh.
-fn integrated_shells(root: &Path) -> [Option<String>; 2] {
+/// The shells that report their job table: the login shell (bash), and zsh where the host has
+/// one (`CHARIOX_TEST_ZSH`, else /usr/bin/zsh). A builder without zsh runs the bash cases only.
+fn integrated_shells(root: &Path) -> Vec<Option<String>> {
     let zsh = std::env::var("CHARIOX_TEST_ZSH").unwrap_or_else(|_| "/usr/bin/zsh".into());
-    assert!(
-        Path::new(&zsh).exists(),
-        "zsh is not installed at {zsh}: install it or set CHARIOX_TEST_ZSH"
-    );
+    if !Path::new(&zsh).exists() {
+        return vec![None];
+    }
     // Keep the real integration .zshenv, but give it only our startup files.
     // Global rc files can run compinit and consume typed input with a prompt.
     let startup = root.join("zsh-startup");
@@ -519,7 +519,7 @@ fn integrated_shells(root: &Path) -> [Option<String>; 2] {
     )
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-    [None, Some(wrapper.to_str().unwrap().to_string())]
+    vec![None, Some(wrapper.to_str().unwrap().to_string())]
 }
 
 /// A background job's line, then a second line accepted before the shell
@@ -571,7 +571,7 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
     service.release_handover();
     // SAFETY: the positive PID of a job this test started; never a group.
     unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-    service.end_session("room-1");
+    service.end_scope("room-1");
     let submissions = serde_json::to_value(&handovers[0].0.pty.submissions).unwrap();
     assert_eq!(submissions["default"], false, "{submissions}");
     assert_eq!(submissions["unreported"], false, "{submissions}");
@@ -770,7 +770,11 @@ async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
 async fn zsh_reports_its_jobs_without_a_word_at_the_prompt() {
     let root = TempDir::new();
     let service = service(root.path());
-    service.use_shell_for_test(integrated_shells(root.path())[1].as_deref().unwrap());
+    // This case is about zsh itself: a host without zsh has nothing to report on.
+    let Some(zsh) = integrated_shells(root.path()).into_iter().nth(1).flatten() else {
+        return;
+    };
+    service.use_shell_for_test(&zsh);
     let id = open(&service, root.path()).terminal_id;
     type_as(
         &service,
@@ -798,7 +802,7 @@ async fn zsh_reports_its_jobs_without_a_word_at_the_prompt() {
             "the prompt shows `{word}`: {screen}"
         );
     }
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -896,7 +900,7 @@ async fn a_program_the_user_started_refuses_agents() {
     .await;
     let refused = type_as(&service, &id, &agent("a"), "x").await;
     assert_eq!(refused.refusal.as_deref(), Some("busy (driven by user)"));
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -930,7 +934,7 @@ async fn output_continues_from_an_offset_without_a_gap() {
         .await
         .unwrap();
     assert!(lost.gap);
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -940,7 +944,7 @@ async fn a_typed_key_is_echoed_without_waiting_for_a_slow_tick() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -975,7 +979,7 @@ async fn a_typed_key_is_echoed_without_waiting_for_a_slow_tick() {
         median < 30,
         "typing waited for the 100 ms pump tick: echo times {echo_ms:?}"
     );
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1099,7 +1103,7 @@ async fn a_restart_ends_terminals_and_keeps_scrollback() {
         .input("room-1", &id, &TerminalActor::User, b"x")
         .await
         .is_err());
-    first.end_session("room-1");
+    first.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1119,7 +1123,7 @@ async fn closing_and_ending_a_room_stop_the_shell_processes() {
     service.close("room-1", &a, &TerminalActor::User).unwrap();
     assert_eq!(service.list("room-1").len(), 1);
     assert!(service.snapshot("room-1", &a).is_err());
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert!(service.list("room-1").is_empty());
     assert!(service.snapshot("room-1", &b).is_err());
     assert!(!root
@@ -1270,7 +1274,7 @@ async fn a_blocking_wait_returns_when_the_program_finishes() {
         waited.screen_text
     );
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1318,7 +1322,7 @@ async fn a_wait_that_times_out_loses_nothing() {
     })
     .await;
     assert!(events.fired("wait:1").is_empty());
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1350,7 +1354,7 @@ async fn a_condition_that_held_before_arming_fires_at_once() {
         waited.fired,
         Some(RoomTerminalEventKind::OutputMatched { .. })
     ));
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1359,7 +1363,7 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     let service = service(root.path());
     let spec = |opened_by| OpenRoomTerminal {
         project_environment: Default::default(),
-        session_id: "room-1".to_string(),
+        scope: TerminalScope::room("room-1"),
         working_directory: root.path().to_path_buf(),
         cols: 80,
         rows: 24,
@@ -1389,7 +1393,7 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     service.close("room-1", &resized, &agent("b")).unwrap();
     let untouched = service.open(spec(agent("a"))).unwrap().terminal_id;
     service.close("room-1", &untouched, &agent("b")).unwrap();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1399,7 +1403,7 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -1426,7 +1430,7 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
         }
     );
     assert!(!type_as(&service, &id, &agent("b"), "x").await.accepted);
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1457,7 +1461,7 @@ async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
             description: "ended: kernel restarted".to_string()
         }
     );
-    first.end_session("room-1");
+    first.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -1494,7 +1498,7 @@ async fn a_graceful_shutdown_stops_disowned_jobs_and_preserves_the_terminal() {
     let second = service(root.path());
     let recovered = second.snapshot("room-1", &id);
     // Always clean up, including on the unfixed implementation.
-    first.end_session("room-1");
+    first.end_scope("room-1");
     assert!(
         stopped,
         "shutdown left the shell or its disowned job running"
@@ -1597,7 +1601,7 @@ async fn a_job_that_left_the_session_outlives_its_command() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1648,7 +1652,7 @@ async fn a_command_ends_while_its_background_child_holds_the_terminal_output() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1692,7 +1696,7 @@ async fn a_job_detaching_as_its_command_returns_keeps_running() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1739,7 +1743,7 @@ async fn a_detached_job_stays_listed_counted_and_stoppable_under_its_terminal() 
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1816,7 +1820,7 @@ async fn a_detached_job_ends_with_its_room() {
     service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-2".to_string(),
+            scope: TerminalScope::room("room-2"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1835,7 +1839,7 @@ async fn a_detached_job_ends_with_its_room() {
     .await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     let started = job_running(&detached);
-    service.end_session("room-2");
+    service.end_scope("room-2");
     crate::runtime::process_resources::stop_released(Some("room-2"), None);
     let running = job_running(&detached);
     if let Some(pid) = std::fs::read_to_string(&detached)
@@ -1857,7 +1861,7 @@ fn a_command_argument_over_the_limit_is_refused_with_that_limit() {
     let error = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 100,
             rows: 30,
@@ -1896,7 +1900,7 @@ fn the_shell_keeps_the_users_ssh_agent_but_not_kernel_tokens() {
                 screen_has(&service, &id, "AGENT=users-ssh-agent TOKEN=none").await
             })
             .await;
-            service.end_session("room-1");
+            service.end_scope("room-1");
         });
     std::env::remove_var("SSH_AUTH_SOCK");
     std::env::remove_var("CHARIOX_RELAY_TOKEN");
@@ -1925,7 +1929,7 @@ fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
                 screen_has(&service, &id, "OWNER=none").await
             })
             .await;
-            service.end_session("room-1");
+            service.end_scope(TerminalScope::room("room-1"));
         });
 }
 
@@ -1985,7 +1989,7 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
     service.pump_once();
     assert_eq!(service.list("room-1")[0].driver, RoomTerminalDriver::Free);
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2042,7 +2046,7 @@ async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
         })
     );
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2093,7 +2097,7 @@ async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
             .await
             .accepted
     );
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 fn wait_blocking(what: &str, mut done: impl FnMut() -> bool) {
@@ -2172,7 +2176,7 @@ async fn a_second_send_by_the_same_agent_waits_for_its_own_command() {
         finished_with(5)
     );
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2197,7 +2201,7 @@ async fn two_sends_before_the_next_pump_wait_for_their_own_commands() {
         finished_with(5)
     );
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2236,7 +2240,7 @@ async fn input_a_running_command_reads_does_not_hide_its_finish() {
         finished_with(4)
     );
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2273,7 +2277,7 @@ async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
     let screen = service.snapshot("room-1", &id).unwrap().screen_text;
     assert!(screen.contains("-[]"), "{screen}");
     pumping.abort();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2331,7 +2335,7 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         })
         .await;
         if refused.accepted {
-            service.end_session("room-1");
+            service.end_scope("room-1");
         }
         assert!(!refused.accepted, "another agent answered the builtin read");
         assert_eq!(
@@ -2369,7 +2373,7 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         })
         .await;
     }
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2414,7 +2418,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
             && matches!(kind, RoomTerminalEventKind::OutputMatched { text } if text == &long_needle)
     });
     drop(state);
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert!(
         long_matched,
         "the matcher lost a needle larger than its text window"
@@ -2461,7 +2465,7 @@ async fn a_late_output_wait_matches_a_marker_before_a_large_burst() {
         )
         .await
         .unwrap();
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert_eq!(
         waited.fired,
         Some(RoomTerminalEventKind::OutputMatched {
@@ -2482,7 +2486,7 @@ async fn a_start_mark_alone_keeps_foreground_completion_available() {
     terminal.apply_output(b"\x1b]133;C\x07", Instant::now());
     let tracking = terminal.mark_tracking;
     drop(state);
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert!(
         !tracking,
         "a start-only hook disabled the foreground fallback"
@@ -2509,7 +2513,7 @@ async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
     let blocked = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -2570,7 +2574,7 @@ async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
         "the stuck terminal could not be closed"
     );
     assert!(flood.join().is_ok());
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 /// What the user pasted before Ctrl-C must not run later: the interrupt
@@ -2583,7 +2587,7 @@ async fn ctrl_c_discards_the_paste_it_overtakes() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -2655,7 +2659,7 @@ async fn ctrl_c_discards_the_paste_it_overtakes() {
         dropped > 0 && dropped < paste_len,
         "the terminal reports what the interrupt dropped, got {dropped} of {paste_len}"
     );
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -2665,7 +2669,7 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -2692,7 +2696,7 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
     );
     let fired = terminal.apply_output(b"marker", now);
     drop(state);
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert_eq!(at_once, None);
     assert!(
         fired.iter().any(|(owner, kind)| owner.wake_id == "split"
@@ -2708,7 +2712,7 @@ async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
     let id = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
             cols: 80,
             rows: 24,
@@ -2754,7 +2758,7 @@ async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
     )
     .await;
     assert!(flood.join().is_ok());
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[test]
@@ -2805,7 +2809,7 @@ async fn a_large_output_flood_preserves_its_tail_and_leaves_other_terminals_resp
     let service = service(root.path());
     let open = |command| OpenRoomTerminal {
         project_environment: Default::default(),
-        session_id: "room-1".into(),
+        scope: TerminalScope::room("room-1"),
         working_directory: root.path().to_path_buf(),
         cols: 80,
         rows: 24,
@@ -2849,7 +2853,7 @@ async fn a_large_output_flood_preserves_its_tail_and_leaves_other_terminals_resp
         })
     })
     .await;
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2859,7 +2863,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let existing = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".into(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
             cols: 80,
             rows: 24,
@@ -2888,7 +2892,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let thread = std::thread::spawn(move || {
         let result = opener.open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".into(),
+            scope: TerminalScope::room("room-1"),
             working_directory: directory,
             cols: 80,
             rows: 24,
@@ -2929,7 +2933,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
         .unwrap()
         .unwrap();
     thread.join().unwrap();
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2950,7 +2954,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
         service
             .open(OpenRoomTerminal {
                 project_environment: Default::default(),
-                session_id: "room-1".into(),
+                scope: TerminalScope::room("room-1"),
                 working_directory: root.path().into(),
                 cols: 80,
                 rows: 24,
@@ -3013,7 +3017,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
     release.send(()).unwrap();
     busy_thread.join().unwrap();
     thread.join().unwrap();
-    service.end_session("room-1");
+    service.end_scope("room-1");
     assert!(
         echoed.is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("INDEPENDENT")),
         "another terminal's echo waited for paused screen work"
@@ -3027,7 +3031,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
     let terminal = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".into(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
             cols: 80,
             rows: 24,
@@ -3050,7 +3054,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
         "an exited PTY became busy solely because its state was locked"
     );
     drop(state);
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3060,7 +3064,7 @@ async fn live_terminal_state_contention_remains_managed_work() {
     let terminal = service
         .open(OpenRoomTerminal {
             project_environment: Default::default(),
-            session_id: "room-1".into(),
+            scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
             cols: 80,
             rows: 24,
@@ -3077,7 +3081,7 @@ async fn live_terminal_state_contention_remains_managed_work() {
         "a busy live owner must still fence managed Stop"
     );
     drop(state);
-    service.end_session("room-1");
+    service.end_scope("room-1");
 }
 
 #[tokio::test]
@@ -3086,7 +3090,7 @@ async fn small_live_writes_share_one_terminal_reply() {
     let root = TempDir::new();
     let service = Arc::new(service(root.path()));
     let terminal = service.open(OpenRoomTerminal {
-        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        project_environment: Default::default(), scope: TerminalScope::room("room-1"), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
         command: Some(vec!["python3".into(), "-c".into(), "import os,time; time.sleep(.15); os.write(1,b'one'); time.sleep(.005); os.write(1,b'two'); time.sleep(1)".into()]),
     }).unwrap();
     let pumping = Arc::clone(&service);
@@ -3120,7 +3124,7 @@ async fn a_burst_shares_one_reply_for_up_to_four_frames() {
     let service = Arc::new(service(root.path()));
     // Twenty parts, one every 8 ms: one frame of gathering takes two or three of them.
     let terminal = service.open(OpenRoomTerminal {
-        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        project_environment: Default::default(), scope: TerminalScope::room("room-1"), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
         command: Some(vec!["python3".into(), "-c".into(), "import os,time\ntime.sleep(.15)\nfor n in range(20):\n os.write(1,b'p%02d' % n); time.sleep(.008)\ntime.sleep(1)".into()]),
     }).unwrap();
     let pumping = Arc::clone(&service);
@@ -3158,7 +3162,7 @@ async fn a_terminal_an_agent_opens_cannot_read_the_kernels_secrets() {
     let summary = service
         .open(OpenRoomTerminal {
             project_environment: kernel.agent_environment(),
-            session_id: "room-1".to_string(),
+            scope: TerminalScope::room("room-1"),
             working_directory: kernel.workspace.clone(),
             cols: 200,
             rows: 60,
@@ -3180,4 +3184,170 @@ async fn a_terminal_an_agent_opens_cannot_read_the_kernels_secrets() {
         "{}{}",
         snapshot.scrollback_text, snapshot.screen_text
     ));
+}
+
+mod kernel_scope {
+    use super::*;
+
+    fn open_kernel(service: &RoomTerminalService, directory: &Path) -> RoomTerminalSummary {
+        service
+            .open(OpenRoomTerminal {
+                project_environment: Default::default(),
+                scope: TerminalScope::Kernel,
+                working_directory: directory.to_path_buf(),
+                cols: 100,
+                rows: 30,
+                title: None,
+                opened_by: TerminalActor::User,
+                command: None,
+            })
+            .expect("kernel terminal opens")
+    }
+
+    #[tokio::test]
+    async fn a_kernel_terminal_and_a_room_terminal_never_see_each_other() {
+        let root = TempDir::new();
+        let service = service(root.path());
+        let in_room = open(&service, root.path());
+        let in_kernel = open_kernel(&service, root.path());
+        assert_eq!(in_kernel.scope, TerminalScope::Kernel);
+        assert_eq!(in_room.scope, TerminalScope::room("room-1"));
+
+        let kernel_list = service.list(&TerminalScope::Kernel);
+        assert_eq!(
+            kernel_list
+                .iter()
+                .map(|t| &t.terminal_id)
+                .collect::<Vec<_>>(),
+            vec![&in_kernel.terminal_id]
+        );
+        let room_list = service.list("room-1");
+        assert_eq!(
+            room_list.iter().map(|t| &t.terminal_id).collect::<Vec<_>>(),
+            vec![&in_room.terminal_id]
+        );
+        // Neither scope reaches the other's terminal by id.
+        assert!(service.snapshot("room-1", &in_kernel.terminal_id).is_err());
+        assert!(service
+            .snapshot(&TerminalScope::Kernel, &in_room.terminal_id)
+            .is_err());
+        assert!(service
+            .close("room-1", &in_kernel.terminal_id, &TerminalActor::User)
+            .is_err());
+        // Ending the Room leaves the kernel's terminal running.
+        service.end_scope("room-1");
+        assert!(service
+            .snapshot(&TerminalScope::Kernel, &in_kernel.terminal_id)
+            .is_ok());
+        service.end_scope(&TerminalScope::Kernel);
+    }
+
+    #[tokio::test]
+    async fn a_kernel_terminal_survives_a_restart_as_a_kernel_terminal() {
+        let root = TempDir::new();
+        let first = service(root.path());
+        let id = open_kernel(&first, root.path()).terminal_id;
+        first.shutdown();
+        let second = service(root.path());
+        let listed = second.list(&TerminalScope::Kernel);
+        assert_eq!(
+            listed.len(),
+            1,
+            "the kernel's terminal comes back in the kernel's list"
+        );
+        assert_eq!(listed[0].terminal_id, id);
+        assert!(second.list("room-1").is_empty());
+        second.end_scope(&TerminalScope::Kernel);
+    }
+
+    #[tokio::test]
+    async fn closing_a_kernel_terminal_ends_everything_it_started() {
+        let root = TempDir::new();
+        let service = service(root.path());
+        let id = open_kernel(&service, root.path()).terminal_id;
+        let marker = root.path().join("child.pid");
+        type_as_kernel(
+            &service,
+            &id,
+            &format!("sleep 300 & echo $! > {}; wait\r", marker.display()),
+        )
+        .await;
+        until("the child pid", || async {
+            marker.exists()
+                && std::fs::read_to_string(&marker).is_ok_and(|text| !text.trim().is_empty())
+        })
+        .await;
+        let pid: i32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the child runs");
+        service
+            .close(&TerminalScope::Kernel, &id, &TerminalActor::User)
+            .unwrap();
+        until("the child to end", || async {
+            unsafe { libc::kill(pid, 0) != 0 }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_kernel_command_ends_with_its_exit_code_and_tells_no_room() {
+        let root = TempDir::new();
+        let service = service(root.path());
+        let id = service
+            .open(OpenRoomTerminal {
+                project_environment: Default::default(),
+                scope: TerminalScope::Kernel,
+                working_directory: root.path().to_path_buf(),
+                cols: 100,
+                rows: 30,
+                title: None,
+                opened_by: TerminalActor::User,
+                command: Some(vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "echo ONE-SHOT; exit 3".into(),
+                ]),
+            })
+            .unwrap()
+            .terminal_id;
+        until("the command to end", || async {
+            service.pump_once();
+            matches!(
+                service
+                    .snapshot(&TerminalScope::Kernel, &id)
+                    .unwrap()
+                    .terminal
+                    .status,
+                RoomTerminalStatus::Ended {
+                    outcome: RoomTerminalOutcome::ProgramExited {
+                        exit_code: Some(3),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .await;
+        assert!(service
+            .snapshot(&TerminalScope::Kernel, &id)
+            .unwrap()
+            .screen_text
+            .contains("ONE-SHOT"));
+        service.end_scope(&TerminalScope::Kernel);
+    }
+
+    async fn type_as_kernel(service: &RoomTerminalService, id: &str, input: &str) {
+        service
+            .input(
+                &TerminalScope::Kernel,
+                id,
+                &TerminalActor::User,
+                input.as_bytes(),
+            )
+            .await
+            .expect("input is admitted");
+    }
 }

@@ -73,6 +73,12 @@ impl OutboundBoundary {
             }
             _ => None,
         };
+        let event = match &payload {
+            Payload::Frame(KernelOutgoingFrame::Event { event, .. }) => {
+                Some(crate::transport::kernel_protocol::kernel_event_name(event))
+            }
+            _ => None,
+        };
         let message = match payload {
             Payload::Frame(frame) => {
                 if self.peer.is_some() {
@@ -141,6 +147,9 @@ impl OutboundBoundary {
             // No unclassified binary/text escape hatch to the socket.
             Payload::Control(_) => return false,
         };
+        if let (Some(event), Message::Text(text)) = (event, &message) {
+            crate::transport::perf_budget::check_event(event, text.len());
+        }
         let sent = writer.send(message).await.is_ok();
         if let Some(id) = response_id {
             self.connection

@@ -1074,7 +1074,7 @@ impl SessionRuntimeStore {
             passkey_remember_minutes,
         } = request;
         let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
-        let result = match self
+        if let Err(error) = self
             .state
             .answer_terminal_runtime_interaction(
                 &session_id,
@@ -1088,17 +1088,24 @@ impl SessionRuntimeStore {
             )
             .await
         {
-            Ok(()) => self
-                .state
-                .session_snapshot(&session_id)
-                .await
-                .map(|session| LocalDaemonResponse::InteractionResponded {
-                    interaction_id,
-                    session,
-                }),
-            Err(error) => Err(error),
-        };
-        self.with_session_projection_action_result(result).await
+            return (Err(error), None);
+        }
+        // The Room state reaches every client through the projection and its events; the
+        // reply only says what happened to this answer.
+        let projection_action = self
+            .state
+            .session_snapshot(&session_id)
+            .await
+            .ok()
+            .map(SessionProjectionAction::Update);
+        (
+            Ok(LocalDaemonResponse::InteractionResponded {
+                interaction_id,
+                choice_id,
+                outcome: crate::local::InteractionOutcome::Answered,
+            }),
+            projection_action,
+        )
     }
 
     pub(super) async fn alias_session(

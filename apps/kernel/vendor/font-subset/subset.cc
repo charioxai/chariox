@@ -36,6 +36,11 @@ uint8_t* font_subset(const uint8_t* data, size_t length, const uint32_t* code_po
   if (!input) { hb_face_destroy(face); return nullptr; }
   hb_set_t* wanted = hb_subset_input_unicode_set(input);
   for (size_t at = 0; at < count; at++) hb_set_add(wanted, code_points[at]);
+  // A page can turn on any feature of the face (font-feature-settings, font-variant-*): keep them all, not only
+  // hb-subset's default shaping list, so character variants, stylistic sets, small caps and figure styles survive.
+  hb_set_t* features = hb_subset_input_set(input, HB_SUBSET_SETS_LAYOUT_FEATURE_TAG);
+  hb_set_clear(features);
+  hb_set_invert(features);
   // An icon font names its glyphs by private-use code points that only a stylesheet's `content` mentions: a face most of
   // whose characters are private-use keeps them all. A text face with a few private-use glyphs keeps those the page uses.
   hb_set_t* mapped = hb_set_create();

@@ -1085,6 +1085,14 @@ pub(crate) fn apply_managed_provider_isolation(
     mut launch: ProviderLaunchResult,
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    // Everything the kernel starts for the agent writes its scratch in the
+    // agent's own folder; it joins the launch before the launch is confined, so
+    // the confinement keeps it reachable wherever the kernel home lies.
+    if let Some(agent_id) = request.agent_id.as_deref() {
+        for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
+            launch.pty_env.entry(name.to_string()).or_insert(value);
+        }
+    }
     if !managed_provider_isolation_required() {
         if let Some(working_directory) = request.working_directory.as_deref() {
             crate::git_worktree_placement::preflight_working_directory(

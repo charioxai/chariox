@@ -83,9 +83,22 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        let session = owned.session_store.get_session(session_id)?;
+        // An ended run settles only the prompt that held it: forcing a newer
+        // prompt closed here would report a turn the provider never ran as
+        // completed (m3h).
         let active_prompt = owned
             .prompt_state_owner
-            .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
+            .active_prompt_for_agent(&session, &agent_id)
+            .filter(|prompt| {
+                provider_run.state() != crate::provider::ProviderRunState::Ended
+                    || crate::runtime::prompt_state::prompt_holds_provider_run(
+                        prompt,
+                        &provider_run,
+                        &session,
+                        &owned.provider_store,
+                    )
+            });
         let Some(mut active_prompt) = active_prompt else {
             if !force && !prompt_completed {
                 crate::logging::debug_with_fields(

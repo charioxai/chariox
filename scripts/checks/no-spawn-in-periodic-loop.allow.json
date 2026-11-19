@@ -1,0 +1,4 @@
+[
+ {"path":"apps/kernel/src/managed_bootstrap/supervisor.rs","count":1,"why":"the managed bootstrap restarts the kernel child after its backoff: one child per kernel run, not per tick"},
+ {"path":"apps/kernel/src/runtime/process_resources/sampling.rs","count":2,"why":"outside Linux the process table is read with ps: the group kill re-reads it every 20 ms until the group is gone, and warm-up waits for the sampler's first ps; read it once per kill when touching the file"}
+]

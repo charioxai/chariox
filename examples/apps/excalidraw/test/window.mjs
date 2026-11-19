@@ -6,7 +6,7 @@
 //   save_scene   -> { version }            refused with an error unless `version` is the saved version
 //   view_changes -> { latest, dropped, changes }   `latest` rises on every write, window saves too
 //   write_file / read_file / pick_file     files; an offered copy returns a grant
-//   save_draft / read_drafts / discard_draft   one unsaved scene per window id, kept for a window that is replaced
+//   save_draft / list_drafts / read_draft / retire_draft / discard_draft   one unsaved scene per window id, kept for a window that is replaced
 //
 // `agentEdit(fn)` edits the saved scene the way the backend does for an agent action.
 import assert from 'node:assert/strict';
@@ -46,6 +46,11 @@ export async function closeEnvironment() {
   await new Promise(done => server.close(done));
 }
 
+const MAX_CALL_BYTES = 512 * 1024;
+const withinBudget = (name, value) => {
+  const bytes = Buffer.byteLength(JSON.stringify(value ?? null));
+  if (bytes > MAX_CALL_BYTES) throw Error(`${name}: ${bytes} bytes exceed the catalog's ${MAX_CALL_BYTES} byte call limit`);
+};
 const clone = value => JSON.parse(JSON.stringify(value));
 const hash = text => [...text].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 2_000_000_000, 7);
 
@@ -82,7 +87,7 @@ export const sceneOf = (elements = [], appState = {}) =>
 
 export function fakeBackend() {
   const backend = {
-    scene: null, version: null, counter: 0, feed: 0,
+    scene: null, version: null, counter: 0, feed: 0, draftWrites: 0,
     calls: [], saves: [], writes: [], files: new Map(), picked: null,
     /** How many pick_file calls answer pending before the person's choice, and the ids the window asked again with. */
     pickWaits: 0, resumed: [],
@@ -90,15 +95,20 @@ export function fakeBackend() {
     failSaves: null,
     /** The kept drafts by window id. */
     drafts: new Map(),
+    /** The revision of each kept draft: it rises with every write of that window. */
+    revisions: new Map(),
     /** Message of the error every save_draft throws, with the kept drafts unchanged. */
     failDraftSaves: null,
-    /** Awaited by read_drafts after it took its copy of the kept drafts, before it answers. */
-    afterReadDrafts: null,
+    /** Awaited by read_draft after it took its copy of the draft, before it answers. */
+    afterReadDraft: null,
     /**
      * 'lose' makes a save never get an answer and never reach the saved scene; 'commit' saves it and
-     * never answers: the two ways an App update can end a save the window is waiting for.
+     * never answers: the two ways an App update can end a save the window is waiting for. A save
+     * keeps the mode that was set when it arrived.
      */
     holdSaves: null,
+    /** A promise every save_scene that arrives while it is set waits for before it is decided. */
+    gate: null,
     /** Run once at the start of the next save_scene; the save is then refused when the version moved. */
     interleave: null,
     count: name => backend.calls.filter(call => call === name).length,
@@ -142,27 +152,52 @@ export function fakeBackend() {
     },
     /** The saved scene's live elements. */
     live: () => (backend.scene?.elements ?? []).filter(element => !element.isDeleted),
+    /** Every call and result passes the catalog's byte budget, as the kernel enforces it for the real App. */
     async call(name, input = {}) {
+      withinBudget(name, input);
+      const result = await backend.handle(name, input);
+      withinBudget(name, result);
+      return result;
+    },
+    async handle(name, input) {
       backend.calls.push(name);
       if (name === 'load_scene') return { scene: clone(backend.scene), version: backend.version };
       if (name === 'view_changes') return { latest: backend.feed, dropped: false, changes: [] };
       if (name === 'save_scene') {
         backend.saves.push(clone(input));
+        const hold = backend.holdSaves;
         const interleave = backend.interleave;
         backend.interleave = null;
         interleave?.();
+        if (backend.gate) await backend.gate;
         if (backend.failSaves) throw Error(backend.failSaves);
-        if (backend.holdSaves === 'lose') await new Promise(() => {});
+        if (hold === 'lose') await new Promise(() => {});
         if (input.version !== backend.version) throw Error('the diagram was changed by another window or an agent; load it again and retry');
         backend.write(input.scene);
-        if (backend.holdSaves === 'commit') await new Promise(() => {});
+        if (hold === 'commit') await new Promise(() => {});
         return { version: backend.version };
       }
-      if (name === 'save_draft') { if (backend.failDraftSaves) throw Error(backend.failDraftSaves); backend.drafts.set(input.id, clone(input.scene)); return {}; }
-      if (name === 'read_drafts') {
-        const reply = { drafts: [...backend.drafts].map(([id, scene]) => ({ id, scene: clone(scene) })) };
-        await backend.afterReadDrafts?.();
+      if (name === 'save_draft') {
+        if (backend.failDraftSaves) throw Error(backend.failDraftSaves);
+        backend.drafts.set(input.id, clone(input.scene));
+        backend.revisions.set(input.id, ++backend.draftWrites);
+        return {};
+      }
+      if (name === 'list_drafts') {
+        // Oldest first, as the App lists them.
+        const listed = [...backend.drafts.keys()].map(id => ({ id, revision: backend.revisions.get(id) }));
+        return { drafts: listed.sort((a, b) => a.revision - b.revision) };
+      }
+      if (name === 'read_draft') {
+        const scene = backend.drafts.get(input.id);
+        const reply = scene ? { id: input.id, revision: backend.revisions.get(input.id), scene: clone(scene) } : { id: input.id, revision: null, scene: null };
+        await backend.afterReadDraft?.();
         return reply;
+      }
+      if (name === 'retire_draft') {
+        const retired = backend.drafts.has(input.id) && backend.revisions.get(input.id) === input.revision;
+        if (retired) backend.drafts.delete(input.id);
+        return { retired };
       }
       if (name === 'discard_draft') { backend.drafts.delete(input.id); return {}; }
       if (name === 'write_file') {
@@ -245,11 +280,20 @@ export async function openApp({ dpr = 1, scene, backend = fakeBackend() } = {}) 
      * the canvas the way a person does: through the main menu's Export JSON, which serializes the
      * visible (not deleted) elements through write_file. It reads, it does not edit.
      */
-    async elements() {
+    async exported() {
       const before = backend.writes.length;
       await app.menu('Export JSON');
       await waitUntil(() => backend.writes.length > before, { what: 'Export JSON' });
-      return JSON.parse(backend.files.get('diagram.excalidraw').toString()).elements;
+      return JSON.parse(backend.files.get('diagram.excalidraw').toString());
+    },
+    async elements() { return (await app.exported()).elements; },
+    /** The document settings the canvas shows (the exported appState). */
+    async settings() { return (await app.exported()).appState; },
+    /** A person picks one of the canvas background swatches in the main menu. */
+    async setBackground(color) {
+      await page.getByTestId('main-menu-trigger').click();
+      await page.getByTestId(`color-top-pick-${color}`).click();
+      await page.keyboard.press('Escape');
     },
     async ids() { return (await app.elements()).map(element => element.id).sort(); },
     /** Read the canvas until `check(elements)` holds; returns how long the canvas took to show it. */

@@ -70,6 +70,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             deadline,
             inherited,
         } => super::deadlines::set(tx, room, agent, deadline, inherited),
+        Operation::BeatDeadlineClock { now } => {
+            super::deadline_clock::beat(tx, now)?;
+            Ok(Outcome::Saved)
+        }
+        Operation::DeadlineRearmed { room, agent } => {
+            super::deadline_clock::rearmed(tx, &room, &agent)?;
+            Ok(Outcome::Saved)
+        }
+        Operation::DeadlineKeptByWorker { room, agent } => {
+            super::deadline_clock::worker_kept_held(tx, &room, &agent)?;
+            Ok(Outcome::Saved)
+        }
+        Operation::ResumeDeadlines { now } => {
+            super::deadline_clock::resume_after_kernel_start(tx, now)?;
+            Ok(Outcome::Saved)
+        }
         Operation::ReachDeadline {
             room,
             agent,

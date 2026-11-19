@@ -596,5 +596,11 @@ pub use workspace::*;
 /// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
-/// agent's inbox while its prompt carries one line.
+/// agent's inbox while its prompt carries one line; the reply to `RespondToInteraction` is a small acknowledgement
+/// (`InteractionResponded` carries `interaction_id`, `choice_id` and `outcome`, no longer the Room `session`; clients
+/// read the Room from its events); `TrashKernelFiles` moves files and folders to the machine's own trash and
+/// `RestoreKernelTrash` puts them back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`;
+/// docs/PROTOCOL.md, "Move to Trash"); `KernelTerminal` and the `kernel_terminal` stream scope serve the kernel's own
+/// terminals, a terminal summary carries its `scope` (`session_id` only for a Room's) and the `kernel_terminal_v1`
+/// capability names them (docs/PROTOCOL.md, "Kernel terminals").
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

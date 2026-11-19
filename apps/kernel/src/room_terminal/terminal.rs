@@ -199,7 +199,10 @@ impl Terminal {
     }
 
     pub(super) fn record_program_end(&mut self, end: ProgramEnd) {
-        self.outside_ends.push(end.clone());
+        // A kernel terminal has no Room whose agents could be told it finished.
+        if self.record.scope.room_id().is_some() {
+            self.outside_ends.push(end.clone());
+        }
         self.last_program_end = Some(end);
     }
 
@@ -273,8 +276,16 @@ impl Terminal {
             return false;
         }
         match (&self.run_id, self.shell_pid) {
-            (Some(run_id), Some(shell_pid)) => {
-                pty.foreground_process_group(run_id).ok().flatten() == Some(shell_pid)
+            (Some(run_id), Some(leader)) => {
+                // An agent's shell runs inside the sandbox that leads its terminal.
+                let shell = match self.record.opened_by {
+                    super::TerminalActor::Agent(_) => u32::try_from(leader)
+                        .ok()
+                        .and_then(crate::provider::state_confinement::confined_program)
+                        .and_then(|pid| i32::try_from(pid).ok()),
+                    super::TerminalActor::User => Some(leader),
+                };
+                shell.is_some() && pty.foreground_process_group(run_id).ok().flatten() == shell
             }
             _ => true,
         }
@@ -398,7 +409,7 @@ impl Terminal {
         let record = &self.record;
         RoomTerminalSummary {
             terminal_id: record.terminal_id.clone(),
-            session_id: record.session_id.clone(),
+            scope: record.scope.clone(),
             title: record.title.clone(),
             program: record.program.clone(),
             working_directory: record.working_directory.clone(),

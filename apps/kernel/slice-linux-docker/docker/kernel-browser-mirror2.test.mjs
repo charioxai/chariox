@@ -82,6 +82,21 @@ test('MP-11: unparseable url( and @import spellings inside strings are neutraliz
   assert.ok(out.includes('url("mr:r1")'), out);
 });
 
+// Review #1475 (P2): a link's href value reads as inert `chariox-href` in the viewer. Only an href attribute selector
+// changes: text in strings and comments, other attributes' values and declarations stay as the page wrote them.
+test('MP-10: an href value selector reads chariox-href; strings, comments, other attributes and declarations stay', () => {
+  const css = 'a[href*="cookie" i] { color: red; } a:not([href^="#"]) b, a[ HREF $= ".pdf" ] { color: blue; } a[href] { color: green; } '
+    + 'main { & a[href|="en"] { color: gray; } } '
+    + '.label::after { content: "[href=help]"; } .q::before { content: \'[href^="#"]\'; } [data-example="[href=help]"] { color: red; } '
+    + '/* a[href$=".zip"] */ .c { --x: [href=help]; grid-template-areas: "[href=x]"; } a[data-href="x"] { color: red; } [x\\[href="y"] { color: red; }';
+  assert.equal(sanitizeMirrorCss(css, 'https://site.example/', () => null),
+    'a[chariox-href*="cookie" i] { color: red; } a:not([chariox-href^="#"]) b, a[ chariox-href $= ".pdf" ] { color: blue; } a[href] { color: green; } '
+    + 'main { & a[chariox-href|="en"] { color: gray; } } '
+    + '.label::after { content: "[href=help]"; } .q::before { content: \'[href^="#"]\'; } [data-example="[href=help]"] { color: red; } '
+    + '/* a[href$=".zip"] */ .c { --x: [href=help]; grid-template-areas: "[href=x]"; } a[data-href="x"] { color: red; } [x\\[href="y"] { color: red; }');
+  assert.equal(sanitizeMirrorCss('color: red; --x: [href=help]', 'https://site.example/', () => null), 'color: red; --x: [href=help]', 'a style attribute has no selector');
+});
+
 // Owner rule (2026-10-09): no value scanning in page CSS; only Vault-filled
 // plain text fields are masked (by node identity, in the observer).
 test('MP-11: executable CSS is invalidated; page CSS text is not value-scanned', () => {

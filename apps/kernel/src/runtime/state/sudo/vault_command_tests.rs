@@ -994,7 +994,9 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
     .await
     .unwrap_err();
     assert!(
-        swapped.to_string().contains("request_id already names"),
+        swapped
+            .to_string()
+            .contains("request_id already made a copy of a different entry"),
         "{swapped}"
     );
     // Refused: plain HTTP, an entry that does not exist, a missing binding.

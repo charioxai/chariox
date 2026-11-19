@@ -3,7 +3,7 @@
 `apps/kernel/slice-linux-docker/docker/kernel-browser-font-subset.wasm` is the module the Browser mirror uses to send a
 large web font as the glyphs the page can show (`kernel-browser-font-subset.mjs`; it runs in a worker thread). It decodes
 WOFF2, TrueType or OpenType, keeps the requested code points (and every private-use code point) with HarfBuzz's
-`hb-subset`, and writes WOFF2 again. `subset.cc` is the whole of our own code; `build.sh` builds the module.
+`hb-subset`, keeps every OpenType layout feature (a page may turn on any of them), and writes WOFF2 again. `subset.cc` is the whole of our own code; `build.sh` builds the module.
 
 | Part | Source | Pinned at | Licence |
 | --- | --- | --- | --- |
