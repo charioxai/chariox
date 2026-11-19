@@ -92,7 +92,7 @@ impl KernelRuntimeState {
         }
         if let LocalDaemonRequest::SpawnAgent(r) = request {
             if r.session_id != actor.session_id() {
-                return self.authorize_peer_spawn(&actor, r);
+                return self.authorize_cross_room_spawn(&actor, r);
             }
             return Ok(());
         }
@@ -153,9 +153,11 @@ impl KernelRuntimeState {
                 );
             }
         }
-        if rooms_named(request)
-            .iter()
-            .any(|room| room != actor.session_id())
+        let cross_room_delete = matches!(request, LocalDaemonRequest::DestroyAgent(r) if r.session_id != actor.session_id());
+        if !cross_room_delete
+            && rooms_named(request)
+                .iter()
+                .any(|room| room != actor.session_id())
         {
             return Err(denied("request is outside the caller room"));
         }
@@ -164,7 +166,7 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::HideAgent(_) => {
-                return Err(denied("only the owner can hide or unhide agents"))
+                return Err(denied("only the owner can hide or unhide agents"));
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
@@ -233,14 +235,20 @@ impl KernelRuntimeState {
             }
             _ => return Ok(()),
         };
-        if room != actor.session_id() {
-            return Err(denied("target is outside the caller room"));
-        }
         let target = self.owned.agent_store.get_agent(target_id)?;
-        let agents = self
-            .owned
-            .agent_store
-            .get_session_agents(actor.session_id());
+        if target.session_id() != room {
+            return Err(denied("agent is unavailable in that room"));
+        }
+        if room != actor.session_id() {
+            let source = self.owned.session_store.get_session(actor.session_id())?;
+            let destination = self.owned.session_store.get_session(room)?;
+            if !deleting
+                || self.drives_as_room_guest(&source, &actor)
+                || !self.same_owner(source.owner_user_id(), destination.owner_user_id())
+            {
+                return Err(denied("target is outside the caller room"));
+            }
+        }
         // An agent changes its own settings within what the person allowed it; the kernel's
         // settings gate holds it to that set. Everything else needs the agent to be above.
         let own_settings = target.id() == actor.id()
@@ -249,11 +257,11 @@ impl KernelRuntimeState {
                 LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
                 _ => false,
             };
-        if !own_settings {
-            in_subtree(&actor, &target, &agents)?;
+        if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
+            return Err(denied("only the agents above an agent can control it"));
         }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
-            self.keep_configured_folders_inside_parent(&target, r, &agents)?;
+            self.keep_configured_folders_inside_parent(&target, r)?;
         }
         // Deleting an agent ends its sub-agents with it (A4); only its own unsettled runs refuse.
         if deleting {
@@ -314,41 +322,35 @@ fn rooms_named(request: &LocalDaemonRequest) -> Vec<String> {
 }
 
 impl KernelRuntimeState {
-    /// M2 P3: a room agent creates an ordinary agent in another room of its owner. The request
-    /// carries no placement: the peer starts in the target room's own folder on this kernel.
-    fn authorize_peer_spawn(
+    /// A child may start in another Room of the same owner.
+    fn authorize_cross_room_spawn(
         &self,
         actor: &crate::agent::AgentInstance,
         request: &crate::local::SpawnAgentRequest,
     ) -> Result<(), DaemonError> {
-        if actor.is_sub_agent() {
-            return Err(denied(
-                "only a room agent creates peers in another room; a sub-agent creates sub-agents of its own",
-            ));
-        }
         if request.worktree_id.is_some()
             || request.kernel_ref.is_some()
             || request.slice_ref.is_some()
             || request.worktree_placement.is_some()
         {
             return Err(denied(
-                "a peer in another room starts in that room's own folder on this kernel",
+                "a sub-agent in another Room starts in that Room's own folder",
             ));
         }
         let rooms = &self.owned.session_store;
         let own_room = rooms.get_session(actor.session_id())?;
         if self.drives_as_room_guest(&own_room, actor) {
-            return Err(denied("the room for the peer does not exist"));
+            return Err(denied("the destination Room does not exist"));
         }
         let (Some(own_owner), Some(room_owner)) = (
             rooms.session_owner_user_id(actor.session_id()),
             rooms.session_owner_user_id(&request.session_id),
         ) else {
-            return Err(denied("the room for the peer does not exist"));
+            return Err(denied("the destination Room does not exist"));
         };
         if !self.same_owner(&own_owner, &room_owner) {
             return Err(denied(
-                "a peer can only be created in a room of the same owner",
+                "a sub-agent can only be created in a Room of the same owner",
             ));
         }
         Ok(())
@@ -359,22 +361,19 @@ impl KernelRuntimeState {
         &self,
         target: &crate::agent::AgentInstance,
         request: &crate::local::UpdateAgentConfigRequest,
-        agents: &[crate::agent::AgentInstance],
     ) -> Result<(), DaemonError> {
-        let Some(parent) = target
-            .parent_agent_id()
-            .and_then(|parent| agents.iter().find(|agent| agent.id() == parent))
-        else {
+        let Some(parent_id) = target.parent_agent_id() else {
             return Ok(());
         };
-        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let parent = self.owned.agent_store.get_agent(parent_id)?;
+        let session = self.owned.session_store.get_session(parent.session_id())?;
         for directory in [&request.workspace_id, &request.worktree_id]
             .into_iter()
             .flatten()
             .map(|directory| directory.trim())
             .filter(|directory| !directory.is_empty())
         {
-            crate::agent::authority_limit::check_directory(parent, &session, directory)?;
+            crate::agent::authority_limit::check_directory(&parent, &session, directory)?;
         }
         Ok(())
     }

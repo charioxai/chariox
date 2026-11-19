@@ -96,7 +96,7 @@ fn a_peer_in_another_room_of_this_kernel_ends_with_its_creator() {
             other
         };
         let spawned = a
-            .command(format!("agent spawn reviewer --room {other} --no-follow"))
+            .command(format!("agent spawn reviewer --room {other}"))
             .await
             .expect("a peer spawns in the other room");
         let peer = a

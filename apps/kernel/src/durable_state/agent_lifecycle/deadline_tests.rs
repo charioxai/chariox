@@ -107,7 +107,7 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                     room: "room".into(),
                     agent: "parent".into(),
                     deadline,
-                    inherited: vec![("child".into(), deadline)],
+                    inherited: vec![("room".into(), "child".into(), deadline)],
                 })
                 .unwrap();
         }
@@ -162,7 +162,7 @@ fn set(
     store: &DurableKernelStateStore,
     agent: &str,
     deadline: u64,
-    inherited: Vec<(String, Option<u64>)>,
+    inherited: Vec<(String, String, Option<u64>)>,
 ) {
     store
         .agent_lifecycle(Operation::SetDeadline {
@@ -189,7 +189,7 @@ fn a_kernel_start_gives_back_the_time_the_kernel_was_stopped() {
         store,
         "parent",
         1_000_000,
-        vec![("child".into(), Some(900_000))],
+        vec![("room".into(), "child".into(), Some(900_000))],
     );
     store
         .agent_lifecycle(Operation::BeatDeadlineClock { now: 50_000 })

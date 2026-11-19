@@ -149,7 +149,7 @@ pub(super) fn set(
     room: String,
     agent: String,
     deadline: Option<u64>,
-    inherited: Vec<(String, Option<u64>)>,
+    inherited: Vec<(String, String, Option<u64>)>,
 ) -> Result<Outcome, DaemonError> {
     validate(db, &room, &agent, deadline)?;
     if let Some(time) = deadline {
@@ -162,8 +162,8 @@ pub(super) fn set(
         .map_err(sql)?;
     }
     let outcome = set_effective(db, &room, &agent, deadline)?;
-    for (child, time) in inherited {
-        set_effective(db, &room, &child, time)?;
+    for (child_room, child, time) in inherited {
+        set_effective(db, &child_room, &child, time)?;
     }
     // The first armed deadline starts the heartbeat, so a kernel stopped right after has one to resume from.
     deadline_clock::beat(db, crate::session::unix_epoch_ms())?;

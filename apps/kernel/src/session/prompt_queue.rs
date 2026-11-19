@@ -136,6 +136,8 @@ pub struct PromptQueueItem {
     #[serde(default)]
     prompt_origin: PromptOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider_session_id: Option<String>,
@@ -350,6 +352,8 @@ pub struct PendingPromptSubmission {
     #[serde(skip)]
     remote_steer_reservation: RemoteSteerReservation,
     prompt_origin: PromptOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_author: Option<String>,
     external_provider: Option<String>,
     external_provider_session_id: Option<String>,
     external_provider_turn_id: Option<String>,
@@ -374,6 +378,7 @@ impl PendingPromptSubmission {
             private_metadata: prompt.private_metadata,
             remote_steer_reservation: prompt.remote_steer_reservation,
             prompt_origin: prompt.prompt_origin,
+            prompt_author: prompt.prompt_author,
             external_provider: prompt.external_provider,
             external_provider_session_id: prompt.external_provider_session_id,
             external_provider_turn_id: prompt.external_provider_turn_id,
@@ -396,6 +401,7 @@ impl PendingPromptSubmission {
             remote_steer_reservation: self.remote_steer_reservation,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
+            prompt_author: self.prompt_author,
             external_provider: self.external_provider,
             external_provider_session_id: self.external_provider_session_id,
             external_provider_turn_id: self.external_provider_turn_id,
@@ -427,6 +433,7 @@ impl PromptQueueItem {
             remote_steer_reservation: RemoteSteerReservation::default(),
             status,
             prompt_origin: PromptOrigin::Chariox,
+            prompt_author: None,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,
@@ -1174,6 +1181,15 @@ impl PromptQueueItem {
 
     pub fn status(&self) -> PromptStatus {
         self.status
+    }
+
+    pub(crate) fn with_prompt_author(mut self, name: &str) -> Self {
+        self.prompt_author = Some(name.to_string());
+        self
+    }
+
+    pub(crate) fn prompt_author(&self) -> Option<&str> {
+        self.prompt_author.as_deref()
     }
 
     pub fn prompt_origin(&self) -> PromptOrigin {

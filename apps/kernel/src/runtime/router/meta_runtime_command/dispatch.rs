@@ -613,17 +613,17 @@ impl CommandRouter {
             if let Some(kernel) = spawn.kernel_ref.take() {
                 match self.runtime_state.resolve_peer_kernel(&kernel).await {
                     Ok(Some(kernel)) => {
+                        if spawn.deadline.is_some() {
+                            return Ok(meta_command_failure_result(
+                                command,
+                                meta_command_error(
+                                    "only the owner sets a deadline on a peer of another kernel",
+                                ),
+                            ));
+                        }
                         return Ok(self
                             .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
-                            .await)
-                    }
-                    Ok(None) if spawn.command_id.is_some() => {
-                        return Ok(meta_command_failure_result(
-                            command,
-                            meta_command_error(
-                                "usage: agent spawn --room does not accept --command-id for a room on this kernel",
-                            ),
-                        ))
+                            .await);
                     }
                     Ok(None) => {}
                     Err(error) => return Ok(meta_command_failure_result(command, error)),
@@ -752,11 +752,18 @@ impl CommandRouter {
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             }
         };
+        if target_room.is_some() && spawn.no_follow {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error("your sub-agent reports to you automatically; omit --no-follow"),
+            ));
+        }
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
-        let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: spawn.initial_task,
+            peer_spawn: None,
             max_context_tokens: spawn.max_context_tokens,
-            no_subscribe: spawn.no_follow,
+            no_subscribe: false,
             session_id: target_room
                 .clone()
                 .unwrap_or_else(|| session.id().to_string()),
@@ -797,7 +804,7 @@ impl CommandRouter {
         });
         let mut spawn_command = meta_kernel_command(provider_run, metaagent, &request);
         spawn_command.idempotency_key = spawn.command_id.clone();
-        // A peer in another room of the owner is created by the owner as that room knows it.
+        // Use the owner's identity as the destination Room knows it.
         if let Some(room) = target_room.as_deref().filter(|room| *room != session.id()) {
             spawn_command.caller.user_id = Some(
                 self.runtime_state
@@ -818,16 +825,6 @@ impl CommandRouter {
                 return Ok(meta_command_failure_result(command, error));
             }
         }
-        // The spawner of a peer hears of its turns without polling, unless it said --no-follow.
-        // The peer exists either way, so a follow that fails is reported next to it.
-        let followed = match (&response, follow) {
-            (LocalDaemonResponse::AgentSpawned { agent, .. }, true) => Some(
-                self.runtime_state
-                    .follow_spawned_peer(metaagent, agent)
-                    .map_err(|error| error.to_string()),
-            ),
-            _ => None,
-        };
         let mut result = meta_command_success_result(
             command,
             &response,
@@ -841,23 +838,6 @@ impl CommandRouter {
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             };
             result.payload["response"]["agent"] = summarize_spawned_agent(agent, &facts);
-        }
-        if target_room.is_some() {
-            if let Some(payload) = result.payload.as_object_mut() {
-                payload.insert("lifetime".to_string(), PEER_LIFETIME.into());
-                let (registration, refused) = match followed {
-                    Some(Ok(registration)) => (Some(registration), None),
-                    Some(Err(refused)) => (None, Some(refused)),
-                    None => (None, None),
-                };
-                payload.insert(
-                    "follow_registration_id".to_string(),
-                    serde_json::json!(registration),
-                );
-                if let Some(refused) = refused {
-                    payload.insert("follow_refused".to_string(), serde_json::json!(refused));
-                }
-            }
         }
         if let Some(slice) = created_slice {
             if let Some(payload) = result.payload.as_object_mut() {
@@ -892,7 +872,7 @@ impl CommandRouter {
             model: spawn.model.or_else(|| inherited(metaagent.model())),
             effort: spawn.effort.or_else(|| inherited(metaagent.effort())),
             alias: spawn.alias,
-            prompt: None,
+            prompt: spawn.initial_task,
             permission_level: spawn
                 .permission_level
                 .or(metaagent.permission_level_override()),

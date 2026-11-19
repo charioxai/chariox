@@ -314,6 +314,7 @@ mod workflow_responsible;
 mod agents_run;
 mod authority_limit;
 mod decisions;
+mod first_spawn_prompt;
 mod hidden_subagents;
 mod kernel_ref_placement;
 mod peer_spawn;

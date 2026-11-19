@@ -250,7 +250,7 @@ impl HistoryEvent {
         self.worktree_path.clone_from(&origin.worktree_path);
         self.caused_by_event_id
             .clone_from(&origin.caused_by_event_id);
-        for key in ["prompt_origin", "source_attachment_id"] {
+        for key in ["prompt_origin", "prompt_author", "source_attachment_id"] {
             match origin.metadata.get(key) {
                 Some(value) => self.metadata.insert(key.to_string(), value.clone()),
                 None => self.metadata.remove(key),
@@ -285,6 +285,12 @@ impl HistoryEvent {
             metadata.insert(
                 "source_attachment_id".to_string(),
                 serde_json::Value::String(source_attachment_id),
+            );
+        }
+        if let Some(author) = entry.prompt_author.as_ref() {
+            metadata.insert(
+                "prompt_author".to_string(),
+                serde_json::Value::String(author.clone()),
             );
         }
         if let Some(prompt_origin) = entry.prompt_origin {
@@ -474,6 +480,11 @@ impl HistoryEvent {
             .and_then(|value| value.as_str())
             .map(str::to_string);
         let mut entry = SessionHistoryEntry {
+            prompt_author: self
+                .metadata
+                .get("prompt_author")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
             session_id,
             provider_run_id: self.provider_run_id.clone(),
             agent_id: self.agent_id.clone(),

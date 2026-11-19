@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::{AgentInstance, CreateAgentRequest};
 use crate::error::DaemonError;
-use crate::session::{effective_agent_execution_config_in_tree, RuntimeSession};
+use crate::session::{EffectiveAgentExecutionConfig, RuntimeSession};
 
 pub(crate) const MAX_DEPTH: usize = 4;
 pub(crate) const MAX_AGENTS_PER_TREE: usize = 64;
@@ -129,15 +129,14 @@ pub(crate) fn check_placement(
 }
 
 /// Refuses a child above its parent's current level or mode, or beyond the depth and team caps.
-/// `agents` are the agents of the parent's room.
+/// `agents` includes the parent's team across Rooms.
 pub(crate) fn check_spawn(
     request: &CreateAgentRequest,
     parent: &AgentInstance,
     agents: &[AgentInstance],
     earlier_in_batch: &[CreateAgentRequest],
-    session: &RuntimeSession,
+    limit: EffectiveAgentExecutionConfig,
 ) -> Result<(), DaemonError> {
-    let limit = effective_agent_execution_config_in_tree(session, parent, agents);
     let level_ok = request
         .permission_level_override
         .is_none_or(|level| limit.permission_level.permits(level));

@@ -640,6 +640,24 @@ impl AgentServiceStore {
         self.write().deactivate_agent_meta_mode(agent_id)
     }
 
+    pub(crate) fn is_ancestor(&self, ancestor_id: &str, agent: &AgentInstance) -> bool {
+        self.read().is_ancestor(ancestor_id, agent)
+    }
+
+    pub(crate) fn effective_execution_config(
+        &self,
+        session: &RuntimeSession,
+        agent: &AgentInstance,
+        rooms: &crate::session::SessionStateStore,
+    ) -> crate::session::EffectiveAgentExecutionConfig {
+        crate::session::effective_agent_execution_config_with_parents(
+            session,
+            agent,
+            |id| self.get_agent(id).ok(),
+            |room| rooms.get_session(room).ok(),
+        )
+    }
+
     pub fn get_agent_by_ref(&self, agent_ref: &str) -> Result<AgentInstance, DaemonError> {
         self.read().get_agent_by_ref(agent_ref)
     }

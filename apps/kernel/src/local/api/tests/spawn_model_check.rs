@@ -62,6 +62,8 @@ fn room_with_claude_account(
 
 fn spawn_request(session_id: &str, profile_id: &str, model: &str) -> LocalDaemonRequest {
     LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: Some(profile_id.to_string()),

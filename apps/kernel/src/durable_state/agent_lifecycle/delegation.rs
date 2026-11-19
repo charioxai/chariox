@@ -5,11 +5,22 @@ pub(super) fn bind(
     parent_id: &str,
     child_id: &str,
 ) -> Result<(), DaemonError> {
+    bind_admitted(tx, parent_id, child_id, false)
+}
+
+/// Cross-Room binding is used only for an instruction the kernel admitted from the child's parent.
+pub(super) fn bind_admitted(
+    tx: &Transaction<'_>,
+    parent_id: &str,
+    child_id: &str,
+    cross_room_child: bool,
+) -> Result<(), DaemonError> {
     let mut parent = load(tx, parent_id)?;
     let child = load(tx, child_id)?;
-    if parent.room_id != child.room_id
-        || parent.owner_user_id.is_empty()
-        || parent.owner_user_id != child.owner_user_id
+    if !cross_room_child
+        && (parent.room_id != child.room_id
+            || parent.owner_user_id.is_empty()
+            || parent.owner_user_id != child.owner_user_id)
     {
         return Err(error("delegation task binding is foreign or closed"));
     }
@@ -78,13 +89,11 @@ pub(super) fn bind_message(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), D
         .optional()
         .map_err(sql)?;
     if let (Some(parent), Some(prompt)) = (parent, e.prompt_id.as_deref()) {
-        // A message to another room reaches a peer, never a delegate: its reply settles the
-        // sender through the reply obligation, not a delegation binding.
-        if load(tx, &parent)?.room_id != e.room_id {
-            return Ok(());
-        }
-        if let Some(child) = for_turn(tx, &e.room_id, &e.agent_id, prompt)? {
-            bind(tx, &parent, &child.task_id)?;
+        let cross_room_child = e.payload["cross_room_child"] == true;
+        if load(tx, &parent)?.room_id == e.room_id || cross_room_child {
+            if let Some(child) = for_turn(tx, &e.room_id, &e.agent_id, prompt)? {
+                bind_admitted(tx, &parent, &child.task_id, cross_room_child)?;
+            }
         }
     }
     Ok(())

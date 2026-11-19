@@ -5,7 +5,7 @@ use crate::session::CollaborationLevel;
 
 pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> RuntimeSession {
     // A4: sub-agents are hidden before anything is counted or redacted (redaction clears the edge).
-    session.agents.retain(|agent| !agent.is_sub_agent());
+    session.agents.retain(|agent| agent.is_room_agent());
     // MP-08 / MP-10 / MP-11: private runs need participant ownership, too.
     session.workflow_runs = session
         .visible_workflow_runs_for_user(user_id, None)
@@ -72,6 +72,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
                 }
             })
             .collect();
+    }
+    if user_id != session.owner_user_id() {
+        for agent in &mut session.agents {
+            if agent.parent_room_id().is_some() {
+                agent.set_parent_agent(None);
+            }
+        }
     }
     if session
         .focused_agent_id

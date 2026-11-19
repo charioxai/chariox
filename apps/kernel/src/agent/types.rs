@@ -245,17 +245,35 @@ impl GridPosition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRef {
     agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started_by: Option<String>,
 }
 
 impl AgentRef {
     pub fn local(agent_id: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.into(),
+            room_id: None,
+            started_by: None,
+        }
+    }
+
+    fn in_room(parent: &AgentInstance) -> Self {
+        Self {
+            agent_id: parent.id().to_owned(),
+            room_id: Some(parent.session_id().to_owned()),
+            started_by: Some(parent.alias().unwrap_or(parent.agent_ref()).to_owned()),
         }
     }
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub(crate) fn room_id(&self) -> Option<&str> {
+        self.room_id.as_deref()
     }
 }
 
@@ -279,6 +297,8 @@ pub struct AgentInstance {
     /// an agent a person created never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawn_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     role: AgentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,6 +385,7 @@ impl AgentInstance {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             meta_mode: None,
             alias,
@@ -420,9 +441,15 @@ impl AgentInstance {
         self.parent_agent_id.as_ref().map(AgentRef::agent_id)
     }
 
-    /// A sub-agent is a descendant of its parent, never a member of the room:
-    /// no list, snapshot or count carries it. It keeps its room id only as the
-    /// host of its worktree, history and interactions.
+    pub(crate) fn parent_room_id(&self) -> Option<&str> {
+        self.parent_agent_id.as_ref()?.room_id.as_deref()
+    }
+
+    /// A child placed in another Room is visible in its destination Room.
+    pub(crate) fn is_room_agent(&self) -> bool {
+        self.parent_agent_id.is_none() || self.parent_room_id().is_some()
+    }
+
     pub fn is_sub_agent(&self) -> bool {
         self.parent_agent_id.is_some()
     }
@@ -438,6 +465,17 @@ impl AgentInstance {
 
     pub(crate) fn set_spawn_key(&mut self, key: Option<String>) {
         self.spawn_key = key;
+    }
+
+    pub(crate) fn peer_spawn_limit(&self) -> Option<crate::session::EffectiveAgentExecutionConfig> {
+        self.peer_spawn_limit
+    }
+
+    pub(crate) fn set_peer_spawn_limit(
+        &mut self,
+        limit: Option<crate::session::EffectiveAgentExecutionConfig>,
+    ) {
+        self.peer_spawn_limit = limit;
     }
 
     /// Only spawning and the user-only `SetAgentParent` call this; no agent
@@ -1060,6 +1098,8 @@ pub struct CreateAgentRequest {
     pub parent_agent_id: Option<AgentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_key: Option<String>,
+    #[serde(skip)]
+    pub(crate) peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -1084,6 +1124,7 @@ impl CreateAgentRequest {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
@@ -1116,6 +1157,15 @@ impl CreateAgentRequest {
 
     pub fn with_parent_agent_id(mut self, parent: impl Into<String>) -> Self {
         self.parent_agent_id = Some(AgentRef::local(parent));
+        self
+    }
+
+    pub(crate) fn with_parent(mut self, parent: &AgentInstance) -> Self {
+        self.parent_agent_id = Some(if parent.session_id() == self.session_id {
+            AgentRef::local(parent.id())
+        } else {
+            AgentRef::in_room(parent)
+        });
         self
     }
 

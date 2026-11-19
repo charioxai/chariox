@@ -233,6 +233,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// terminal request with (`session_id` stays for a Room's terminal), and the Skills v2 transfer manifest and leased
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
+/// A peer spawn carries the starter's display name.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -1001,6 +1002,7 @@ pub enum RelayPeerRequest {
         protocol_version: u32,
         request_id: String,
         sender: PeerAgentStamp,
+        sender_name: String,
         room: String,
         provider: String,
         account_profile: Option<String>,

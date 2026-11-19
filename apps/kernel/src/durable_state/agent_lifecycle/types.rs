@@ -281,7 +281,7 @@ pub(crate) enum Operation {
         room: String,
         agent: String,
         deadline: Option<u64>,
-        inherited: Vec<(String, Option<u64>)>,
+        inherited: Vec<(String, String, Option<u64>)>,
     },
     /// The deadline tick: a kernel that is running counts down its deadlines.
     BeatDeadlineClock {
@@ -408,6 +408,11 @@ pub(crate) enum Operation {
         now: u64,
     },
     BindDelegate {
+        parent_task: String,
+        child_task: String,
+    },
+    /// The runtime admitted the initial prompt from the child's parent in another Room.
+    BindCrossRoomDelegate {
         parent_task: String,
         child_task: String,
     },

@@ -43,6 +43,8 @@ pub struct SessionHistoryEntry {
     pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_author: Option<String>,
     pub kind: SessionHistoryEntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice_reason: Option<SessionHistoryNoticeReason>,
@@ -479,6 +481,7 @@ impl SessionHistoryEntry {
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(source_attachment_id.to_string()),
             prompt_origin: Some(PromptOrigin::Chariox),
+            prompt_author: None,
             kind: SessionHistoryEntryKind::UserPrompt,
             notice_reason: None,
             merge_key: None,
@@ -511,6 +514,7 @@ impl SessionHistoryEntry {
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             prompt_origin: None,
+            prompt_author: None,
             kind: match kind {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
                 TerminalOutputKind::ProviderTerminal => {
@@ -548,6 +552,7 @@ impl SessionHistoryEntry {
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             prompt_origin: None,
+            prompt_author: None,
             kind: SessionHistoryEntryKind::Notice,
             notice_reason: None,
             merge_key: None,
@@ -625,6 +630,7 @@ impl SessionHistoryEntry {
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(external_provider_source_attachment_id(&provider)),
             prompt_origin: Some(PromptOrigin::External),
+            prompt_author: None,
             kind,
             notice_reason: None,
             merge_key,

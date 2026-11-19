@@ -579,9 +579,8 @@ impl SessionRuntimeStore {
         self.state.authorize_room_agent_request(actor_id, request)
     }
 
-    /// The caller is an owned agent of this room. The one exception is a room agent creating a
-    /// peer here from another room (M2 P3): `SpawnAgent` only, admitted by the Room fence, with
-    /// the owner named as this room knows it (`local` or the enrolled owner).
+    /// Cross-Room spawn and deletion enter the destination Room's command queue.
+    /// The Room fence below checks the ownership and parent edge before either mutation.
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
@@ -596,7 +595,10 @@ impl SessionRuntimeStore {
                     agent.owner_user_id() == caller_user_id
                 } else {
                     self.state.room_agent_tools_enabled()
-                        && matches!(request, LocalDaemonRequest::SpawnAgent(_))
+                        && matches!(
+                            request,
+                            LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+                        )
                         && self.state.same_owner(agent.owner_user_id(), caller_user_id)
                 }
         }) else {

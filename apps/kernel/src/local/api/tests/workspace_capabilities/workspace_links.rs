@@ -264,6 +264,8 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
     });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

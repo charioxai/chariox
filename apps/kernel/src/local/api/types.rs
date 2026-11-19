@@ -613,4 +613,5 @@ pub use workspace::*;
 /// Agent settings updates drop `self_settings` from the request and agent record.
 /// Copied Project launch targets carry their source kernel and Project for Environment import.
 /// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
+/// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

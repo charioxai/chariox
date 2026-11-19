@@ -15,6 +15,7 @@ export type SessionHistoryEntry = {
   agent_id?: string | null
   provider_run_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_author?: string | null
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   notice_reason?: "agent_deadline_reached"
   merge_key?: string

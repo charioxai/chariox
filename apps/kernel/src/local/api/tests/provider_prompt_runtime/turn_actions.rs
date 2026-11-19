@@ -1148,6 +1148,8 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
     };
     let source = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

@@ -736,11 +736,9 @@ impl DaemonApp {
             .clone()
             .unwrap_or_else(|| self.config.clone());
         let session = self.sessions().get_session(agent.session_id())?;
-        let effective_config = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            agent,
-            &self.agents.get_session_agents(agent.session_id()),
-        );
+        let effective_config =
+            self.agents
+                .effective_execution_config(&session, agent, &self.sessions);
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),
@@ -1100,11 +1098,9 @@ impl DaemonApp {
             });
         }
         let session = self.sessions.get_session(agent.session_id())?;
-        let effective_config = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            &agent,
-            &self.agents.get_session_agents(agent.session_id()),
-        );
+        let effective_config =
+            self.agents
+                .effective_execution_config(&session, &agent, &self.sessions);
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),

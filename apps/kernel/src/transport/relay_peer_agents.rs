@@ -161,6 +161,7 @@ mod shapes {
                 protocol_version: v,
                 request_id: "request-4".into(),
                 sender: a,
+                sender_name: "Lead".into(),
                 room: "room-b".into(),
                 provider: "claude".into(),
                 account_profile: None,

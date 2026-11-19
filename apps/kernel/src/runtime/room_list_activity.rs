@@ -57,7 +57,7 @@ pub(crate) fn room_list_workflow_activity_summary(
 
 /// A4: archived agents and sub-agents are no part of a room: its agent list and its counts carry the same agents.
 pub(crate) fn counted_in_room(agent: &crate::agent::AgentInstance) -> bool {
-    !agent.archived() && !agent.is_sub_agent()
+    !agent.archived() && agent.is_room_agent()
 }
 
 pub(crate) fn room_list_session_activity_summary(

@@ -299,24 +299,14 @@ impl KernelRuntimeState {
         owner: &str,
         room: &str,
         claimed: PeerCallerAuthority,
-        mode: Option<crate::provider::AgentExecutionMode>,
-        level: Option<crate::provider::AgentPermissionLevel>,
     ) -> Result<(String, crate::session::EffectiveAgentExecutionConfig), PeerAgentRefusal> {
         let session = self.peer_room(owner, room)?;
         let record = crate::session::effective_agent_execution_config(&session, None);
-        let mine = crate::session::EffectiveAgentExecutionConfig {
-            mode: claimed.mode.lower(record.mode),
-            permission_level: claimed.permission_level.lower(record.permission_level),
+        let claimed = crate::session::EffectiveAgentExecutionConfig {
+            mode: claimed.mode,
+            permission_level: claimed.permission_level,
         };
-        Ok((
-            session.id().to_string(),
-            crate::session::EffectiveAgentExecutionConfig {
-                mode: mode.unwrap_or(mine.mode).lower(mine.mode),
-                permission_level: level
-                    .unwrap_or(mine.permission_level)
-                    .lower(mine.permission_level),
-            },
-        ))
+        Ok((session.id().to_string(), claimed.lower(record)))
     }
 
     /// The caller's authority, lowered to this kernel's own record of the target room, must

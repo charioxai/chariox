@@ -59,10 +59,10 @@ impl KernelRuntimeOwnedState {
                 let effective_config = session
                     .as_ref()
                     .map(|session| {
-                        crate::session::effective_agent_execution_config_in_tree(
+                        self.agent_store.effective_execution_config(
                             session,
                             &agent,
-                            &self.agent_store.get_session_agents(&request.session_id),
+                            &self.session_store,
                         )
                     })
                     .unwrap_or_default();
@@ -264,11 +264,10 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
         let effective_config = match agent.as_ref() {
-            Some(agent) => crate::session::effective_agent_execution_config_in_tree(
-                &session,
-                agent,
-                &self.agent_store.get_session_agents(session.id()),
-            ),
+            Some(agent) => {
+                self.agent_store
+                    .effective_execution_config(&session, agent, &self.session_store)
+            }
             None => crate::session::effective_agent_execution_config(&session, None),
         };
         if request.execution_mode.is_none() {
@@ -2691,8 +2690,10 @@ mod tests {
         holder.join().expect("authority released");
         std::fs::remove_dir(&workspace).expect("remove test workspace");
         assert_eq!(snapshot.active_provider_run_id(), Some("launching-run"));
-        assert!(elapsed < std::time::Duration::from_millis(150),
-            "presentation must use the existing projection while launch authority is held: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "presentation must use the existing projection while launch authority is held: {elapsed:?}"
+        );
         // Once authority is available, its newer lifecycle state wins over the
         // cached Starting projection.
         let mut current = run;

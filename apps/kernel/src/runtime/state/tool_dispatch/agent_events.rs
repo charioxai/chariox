@@ -75,9 +75,13 @@ impl KernelRuntimeState {
             })
         });
         Ok(if earlier_waits {
-            format!("origin_prompt_id names an earlier turn whose task is still waiting; that wait continues without this turn. Do not yield on it again: finish this turn now (an answer is optional). {ids}")
+            format!(
+                "origin_prompt_id names an earlier turn whose task is still waiting; that wait continues without this turn. Do not yield on it again: finish this turn now (an answer is optional). {ids}"
+            )
         } else {
-            format!("origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}")
+            format!(
+                "origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}"
+            )
         })
     }
     /// A tool call refused for want of a running turn names, in the kernel log, what the turn
@@ -178,7 +182,9 @@ impl KernelRuntimeState {
         // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
         // inside a native turn or mutate its sources/deadline before settlement.
         if task.wait.is_some() {
-            return Err(ledger::error("Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline."));
+            return Err(ledger::error(
+                "Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline.",
+            ));
         }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
@@ -236,9 +242,11 @@ impl KernelRuntimeState {
                         &args,
                         peer_room,
                     )?,
-                    None => return Err(ledger::error(
-                        "that kernel is this one; follow an agent of this room without `kernel`",
-                    )),
+                    None => {
+                        return Err(ledger::error(
+                            "that kernel is this one; follow an agent of this room without `kernel`",
+                        ));
+                    }
                 }
             }
             "chariox.events.subscribe" if other_room(&args, room).is_some() => self
@@ -273,7 +281,9 @@ impl KernelRuntimeState {
                         agents.iter().find(|a| a.id() == followed),
                     ) {
                         (Some(me), Some(other)) if other.id() != actor => {
-                            SenderRelation::of(me, Some(other), &agents) == SenderRelation::Peer
+                            SenderRelation::of(me, Some(other), |id, target| {
+                                self.owned.agent_store.is_ancestor(id, target)
+                            }) == SenderRelation::Peer
                         }
                         _ => false,
                     }
@@ -327,7 +337,9 @@ impl KernelRuntimeState {
                     ),
                 };
                 if let Some(deadline) = deadline.filter(|deadline| *deadline <= now) {
-                    return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
+                    return Err(ledger::error(format!(
+                        "deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000"
+                    )));
                 }
                 let cancel: Vec<String> = match args.get("cancel") {
                     None | Some(serde_json::Value::Null) => vec![],

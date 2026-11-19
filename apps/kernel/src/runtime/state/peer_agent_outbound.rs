@@ -45,7 +45,9 @@ fn uncertain(kernel: &str, retry: &str) -> DaemonError {
 fn retry_hint(request: &RelayPeerRequest) -> String {
     match request {
         RelayPeerRequest::PeerAgentMessage { request_id, .. } => {
-            format!("make the same call again (the send_agent_message tool needs idempotency_key `{request_id}`)")
+            format!(
+                "make the same call again (the send_agent_message tool needs idempotency_key `{request_id}`)"
+            )
         }
         RelayPeerRequest::PeerAgentCancel { .. } => "make the same call again in this turn".into(),
         _ => "make the same call again".into(),
@@ -410,6 +412,10 @@ impl KernelRuntimeState {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
             sender: caller.stamp,
+            sender_name: sender
+                .alias()
+                .unwrap_or_else(|| sender.agent_ref())
+                .to_string(),
             room: spawn.room.trim().into(),
             provider: spawn.provider,
             account_profile: spawn.account_profile,
@@ -618,10 +624,10 @@ impl KernelRuntimeState {
                 "this kernel is not signed in to the Cloud account of this room's owner, so it cannot reach agents on other kernels",
             ));
         };
-        let authority = crate::session::effective_agent_execution_config_in_tree(
+        let authority = self.owned.agent_store.effective_execution_config(
             &session,
             sender,
-            &self.session_agents(sender.session_id()),
+            &self.owned.session_store,
         );
         Ok(PeerAgentCaller {
             owner,

@@ -432,7 +432,7 @@ impl KernelRuntimeOwnedState {
             sessions.restore_session(session);
         }
         self.pending_interactions.write().remove(id);
-        self.withdraw_settled_child_decision(&pending.session_id, id, pending);
+        self.withdraw_settled_child_decision(id, pending);
         drop(sessions);
         if pending.passkey_prompt.is_some() {
             self.close_withdrawn_passkey_prompt(&pending.session_id, id);

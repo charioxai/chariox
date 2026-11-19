@@ -905,11 +905,8 @@ impl KernelRuntimeState {
         // The room default rescopes every agent without its own setting, as `update_agent_config`
         // does one agent: a lowered holder may no longer hold the decisions it held.
         for agent_id in rescoped {
-            let (moved, announce) = self
-                .owned
-                .recheck_subtree_decisions(session_id, &agent_id)?;
-            self.finish_moved_decisions(session_id, moved, announce)
-                .await?;
+            let moved = self.owned.recheck_subtree_decisions(&agent_id)?;
+            self.finish_moved_decisions(&moved).await?;
         }
         // Every leased agent may sit under an agent that follows the room default.
         if sets_agent_limits {
@@ -1238,9 +1235,8 @@ impl KernelRuntimeState {
         }
         if update.scope_changed {
             // A lowered agent and its subtree may no longer hold the decisions they held.
-            let (moved, announce) = self.owned.recheck_subtree_decisions(session_id, agent_id)?;
-            self.finish_moved_decisions(session_id, moved, announce)
-                .await?;
+            let moved = self.owned.recheck_subtree_decisions(agent_id)?;
+            self.finish_moved_decisions(&moved).await?;
         }
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;

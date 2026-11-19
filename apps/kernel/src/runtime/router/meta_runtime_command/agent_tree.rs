@@ -7,14 +7,6 @@ use super::*;
 /// What a spawner is told about the peer it created in another room.
 pub(super) const PEER_LIFETIME: &str = "the new agent belongs to that room and its owner and stays until the owner deletes it or you end (it is deleted with you or your room); you cannot delete it, and `agent cancel <agent> --room <room>` stops its turn";
 
-/// The value of `--room` in a command's arguments.
-fn room_option(args: &[String]) -> Option<&str> {
-    args.iter()
-        .position(|arg| arg == "--room")
-        .and_then(|index| args.get(index + 1))
-        .map(String::as_str)
-}
-
 /// The standing approval of an agent's watched commands, as `agent children` lists it and `agent revoke` names it.
 const WATCHED_PROCESS_GRANT: &str = "watched-process";
 const REVOKE_USAGE: &str = "usage: agent revoke <agent-ref> watched-process";
@@ -130,29 +122,51 @@ impl CommandRouter {
                 )
                 .await,
             ),
-            // A peer created in another room is that room's owner's to delete.
             Some("delete" | "destroy" | "remove")
                 if args
                     .iter()
                     .any(|arg| matches!(arg.as_str(), "--room" | "--kernel" | "--machine")) =>
             {
-                let own_room = match room_option(args) {
-                    Some(room) => self
+                let result = async {
+                    let [reference, option, room] = args else {
+                        return Err(meta_command_error(
+                            "usage: agent delete <agent> [--room <room>]",
+                        ));
+                    };
+                    if option != "--room" {
+                        return Err(meta_command_error(
+                            "usage: agent delete <agent> [--room <room>]",
+                        ));
+                    }
+                    let room = self
                         .runtime_state
                         .resolve_session_ref_id(room, None)
-                        .await
-                        .is_ok_and(|room| room == session.id()),
-                    None => false,
-                };
-                let message = if own_room {
-                    "an agent in your own room is deleted without --room: `agent delete <agent>`"
-                } else {
-                    "an agent in another room belongs to that room and its owner: only the owner deletes it, or it ends with you; `agent cancel <agent> --room <room>` stops its turn"
-                };
-                Some(meta_command_failure_result(
-                    command,
-                    meta_command_error(message),
-                ))
+                        .await?;
+                    let target = self.runtime_state.resolve_message_target(
+                        session,
+                        caller,
+                        Some(&room),
+                        reference,
+                    )?;
+                    let request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                        session_id: room,
+                        agent_id: target.id().into(),
+                    });
+                    Box::pin(
+                        self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+                    )
+                    .await
+                }
+                .await;
+                Some(match result {
+                    Ok(response) => super::result::meta_command_success_result(
+                        command,
+                        &response,
+                        caller,
+                        self.runtime_state.room_agent_tools_enabled(),
+                    ),
+                    Err(error) => meta_command_failure_result(command, error),
+                })
             }
             Some("delete" | "destroy" | "remove")
                 if args.len() == 1 && self.runtime_state.room_agent_tools_enabled() =>
@@ -224,7 +238,7 @@ impl CommandRouter {
         } = self
             .runtime_state
             .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
-                session_id: session.id().to_string(),
+                session_id: child.session_id().to_string(),
                 agent_id: child.id().to_string(),
             })?
         {
@@ -233,7 +247,7 @@ impl CommandRouter {
             }
         }
         let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
-            session_id: session.id().to_string(),
+            session_id: child.session_id().to_string(),
             agent_id: child.id().to_string(),
             deadline_ms: Some(deadline_ms),
         });
@@ -242,7 +256,7 @@ impl CommandRouter {
                 .await
         {
             let destroy = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
-                session_id: session.id().to_string(),
+                session_id: child.session_id().to_string(),
                 agent_id: child.id().to_string(),
             });
             let _ = Box::pin(
@@ -291,17 +305,22 @@ impl CommandRouter {
                             },
                             Err(error) => meta_command_failure_result(command, error),
                         },
-                    )
+                    );
                 }
                 Ok(None) => {}
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             }
         }
         let target = match room {
-            Some(room) => {
-                self.runtime_state
-                    .resolve_message_target(session, parent, Some(room), reference)
-            }
+            Some(room) => match self.runtime_state.resolve_session_ref_id(room, None).await {
+                Ok(room) => self.runtime_state.resolve_message_target(
+                    session,
+                    parent,
+                    Some(&room),
+                    reference,
+                ),
+                Err(error) => Err(error),
+            },
             None => {
                 self.resolve_owned_regular_agent(session.id(), parent, reference)
                     .await
@@ -454,7 +473,7 @@ impl CommandRouter {
                 return meta_command_failure_result(
                     command,
                     meta_command_error("usage: agent children [agent-ref]"),
-                )
+                );
             }
         };
         // The caller's session comes from the store without its agents, tasks and wakes; the
@@ -466,6 +485,8 @@ impl CommandRouter {
             Ok((snapshot, _)) => self.runtime_state.agent_activity_for_session(&snapshot),
             Err(error) => return meta_command_failure_result(command, error),
         };
+        let agents = self.runtime_state.list_agents();
+        let mut seen = std::collections::HashSet::from([root.id().to_owned()]);
         let mut listed = Vec::new();
         let mut frontier = vec![(root.id().to_string(), 1_u32)];
         while let Some((parent_id, depth)) = frontier.pop() {
@@ -476,9 +497,12 @@ impl CommandRouter {
                 if listed.len() == CHILDREN_LISTED_LIMIT {
                     break;
                 }
+                if !seen.insert(agent.id().to_owned()) {
+                    continue;
+                }
                 let deadline = match self.runtime_state.get_agent_deadline(
                     crate::local::GetAgentDeadlineRequest {
-                        session_id: session.id().to_string(),
+                        session_id: agent.session_id().to_string(),
                         agent_id: agent.id().to_string(),
                     },
                 ) {
@@ -490,6 +514,7 @@ impl CommandRouter {
                     "agent_ref": agent.agent_ref(),
                     "alias": agent.alias(),
                     "parent": parent_id,
+                    "room": agent.session_id(),
                     "depth": depth,
                     "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
                     "is_processing": agent.is_processing(),
@@ -533,7 +558,12 @@ impl CommandRouter {
                 || index + 2 != args.len()
                 || index < 2
             {
-                return Ok(meta_command_failure_result(command, meta_command_error("usage: agent answer <interaction> <choice|text> [--room <room-id>]; agent pass stays in this room")));
+                return Ok(meta_command_failure_result(
+                    command,
+                    meta_command_error(
+                        "usage: agent answer <interaction> <choice|text> [--room <room-id>]; agent pass stays in this room",
+                    ),
+                ));
             }
             room = args.pop();
             args.pop();
@@ -542,7 +572,12 @@ impl CommandRouter {
             .iter()
             .any(|arg| matches!(arg.as_str(), "--room" | "--kernel" | "--machine"))
         {
-            return Ok(meta_command_failure_result(command, meta_command_error("peer_decision_refused: cards on another kernel are unavailable; --room addresses rooms on this kernel")));
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "peer_decision_refused: cards on another kernel are unavailable; --room addresses rooms on this kernel",
+                ),
+            ));
         }
         if let Some(room) = room {
             let result = self.runtime_state.answer_owner_room_card(
@@ -578,12 +613,14 @@ impl CommandRouter {
                     .pass_child_decision(session.id(), caller.id(), interaction)
                     .await?
             }
-            _ => return Ok(meta_command_failure_result(
-                command,
-                meta_command_error(
-                    "usage: agent answer <interaction> <choice|text> | agent pass <interaction>",
-                ),
-            )),
+            _ => {
+                return Ok(meta_command_failure_result(
+                    command,
+                    meta_command_error(
+                        "usage: agent answer <interaction> <choice|text> | agent pass <interaction>",
+                    ),
+                ));
+            }
         };
         Ok(RuntimeToolResult {
             ok: matches!(

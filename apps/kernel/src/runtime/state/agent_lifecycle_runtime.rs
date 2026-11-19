@@ -653,7 +653,9 @@ impl KernelRuntimeState {
             sender.id(),
             &occurrence,
             "message",
-            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
+            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),
+                "cross_room_child": session.id() != target_room && target.parent_agent_id() == Some(sender.id()),
+                "no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
         event.urgent = args.urgent;
         event.reply_requested = args.reply_requested;

@@ -358,6 +358,8 @@ fn room_list_snapshot_includes_public_workflow_summaries() {
         };
         let second_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                initial_task: None,
+                peer_spawn: None,
                 max_context_tokens: None,
                 no_subscribe: false,
                 account_profile: None,
@@ -512,6 +514,8 @@ fn room_list_snapshot_includes_public_session_activity_counts() {
         };
         let idle_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                initial_task: None,
+                peer_spawn: None,
                 max_context_tokens: None,
                 no_subscribe: false,
                 account_profile: None,

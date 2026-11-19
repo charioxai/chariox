@@ -6,7 +6,7 @@ use super::RuntimeSession;
 pub const SESSION_AGENT_MODE_CONFIG_KEY: &str = "agents.mode";
 pub const SESSION_AGENT_PERMISSION_CONFIG_KEY: &str = "agents.permissions";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectiveAgentExecutionConfig {
     pub mode: AgentExecutionMode,
     pub permission_level: AgentPermissionLevel,
@@ -38,44 +38,78 @@ pub fn effective_agent_execution_config(
     }
 }
 
-/// Bounds the walk up the parent edges so a corrupt cycle cannot loop.
-const PARENT_WALK_LIMIT: usize = 16;
+impl EffectiveAgentExecutionConfig {
+    pub(crate) fn lower(self, other: Self) -> Self {
+        Self {
+            mode: self.mode.lower(other.mode),
+            permission_level: self.permission_level.lower(other.permission_level),
+        }
+    }
+}
 
-/// `effective(agent) = min(own, effective(parent))` for permission level and mode, read at the
-/// moment of use: lowering a parent lowers every agent below it, and an agent the user raised
-/// above its parent still runs at the parent's limit, unless the person raised it on purpose
-/// (`parent_limit_waived`). Only mode and permission level are limited this way; model, effort,
-/// account, provider and directory never are. `agents` are the agents of the room.
+/// Permission and mode are limited by each ancestor in its own Room. A deliberate
+/// waiver by the person keeps the agent's settings and ends the walk above it.
 pub fn effective_agent_execution_config_in_tree(
     session: &RuntimeSession,
     agent: &AgentInstance,
     agents: &[AgentInstance],
 ) -> EffectiveAgentExecutionConfig {
+    effective_agent_execution_config_with_parents(
+        session,
+        agent,
+        |id| {
+            agents
+                .iter()
+                .find(|candidate| candidate.id() == id)
+                .cloned()
+        },
+        |_| None,
+    )
+}
+
+pub(crate) fn effective_agent_execution_config_with_parents(
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    find_agent: impl Fn(&str) -> Option<AgentInstance>,
+    find_room: impl Fn(&str) -> Option<RuntimeSession>,
+) -> EffectiveAgentExecutionConfig {
     let mut config = effective_agent_execution_config(session, Some(agent));
     if agent.parent_limit_waived() {
         return config;
     }
-    let mut current = agent;
-    for _ in 0..PARENT_WALK_LIMIT {
-        let Some(parent) = current
-            .parent_agent_id()
-            .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
-        else {
-            break;
+    if let Some(limit) = agent.peer_spawn_limit() {
+        config = config.lower(limit);
+    }
+    let mut seen = std::collections::HashSet::from([agent.id().to_owned()]);
+    let mut parent_id = agent.parent_agent_id().map(str::to_owned);
+    while let Some(id) = parent_id.take() {
+        let Some(parent) = find_agent(&id).filter(|_| seen.insert(id)) else {
+            return config.lower(parent_unavailable_config());
         };
-        let parent_config = effective_agent_execution_config(session, Some(parent));
-        config.mode = config.mode.lower(parent_config.mode);
-        config.permission_level = config
-            .permission_level
-            .lower(parent_config.permission_level);
-        // A parent the person raised above its own limit runs at its own settings, so what
-        // lies below it is limited by it and by nothing above it.
+        let parent_config = if parent.session_id() == session.id() {
+            effective_agent_execution_config(session, Some(&parent))
+        } else if let Some(room) = find_room(parent.session_id()) {
+            effective_agent_execution_config(&room, Some(&parent))
+        } else {
+            parent_unavailable_config()
+        };
+        config = config.lower(parent_config);
         if parent.parent_limit_waived() {
             break;
         }
-        current = parent;
+        if let Some(limit) = parent.peer_spawn_limit() {
+            config = config.lower(limit);
+        }
+        parent_id = parent.parent_agent_id().map(str::to_owned);
     }
     config
+}
+
+fn parent_unavailable_config() -> EffectiveAgentExecutionConfig {
+    EffectiveAgentExecutionConfig {
+        mode: AgentExecutionMode::Plan,
+        permission_level: AgentPermissionLevel::Required,
+    }
 }
 
 pub fn effective_agent_execution_mode(

@@ -324,6 +324,67 @@ async fn a_delegable_permission_goes_to_the_nearest_parent_that_may_answer() {
     assert!(answer.try_recv().is_err(), "nobody has answered yet");
 }
 
+#[tokio::test]
+async fn a_cross_room_childs_permission_goes_to_its_parent() {
+    let t = tree(
+        "decision-cross-room-parent",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let destination = {
+        let mut app = t.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(t._worktree.session_request().with_alias("destination"))
+            .unwrap()
+            .0
+    };
+    let destination = destination.id().to_owned();
+    let parent = t.runtime.owned.agent_store.get_agent(&t.p).unwrap();
+    let child = t
+        .runtime
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&destination, "dev-stub").with_parent(&parent),
+        )
+        .await
+        .unwrap();
+    let child = child.id().to_owned();
+    {
+        let mut app = t.app.lock().await;
+        crate::test_support::admit_room_test_turn(&mut app, &destination, &child);
+    }
+    let mut answer = t
+        .runtime
+        .create_runtime_interaction(&destination, permission("perm-cross-room", &child))
+        .await
+        .unwrap();
+
+    let events = t.decision_events(&t.p);
+    assert_eq!(events.len(), 1, "the eligible parent is told in its Room");
+    assert_eq!(events[0].payload["interaction_id"], "perm-cross-room");
+    assert_eq!(events[0].source_id, child);
+    assert!(t.decision_events(&t.g).is_empty());
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.g, "perm-cross-room", "allow")
+            .await
+            .unwrap(),
+        ChildDecisionStatus::UnknownInteraction
+    );
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-cross-room", "allow")
+            .await
+            .unwrap(),
+        ChildDecisionStatus::Answered
+    );
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("allow")
+    );
+    assert!(t.all_closed(&t.p));
+}
+
 /// Live (pcdrive r3 F1): a parent parked in a wait held its child's decision, the person never saw
 /// it and the child waited. The person answers a decision a parent holds from the top panel; the
 /// holder's event is withdrawn and the holder hears that the user settled it.
