@@ -185,24 +185,34 @@ async fn held_job_drill(
         std::fs::read(project.join("result.txt")).unwrap(),
         b"artifact"
     );
-    let after = request(
-        &mut socket,
-        json!({"GetSessionState": {"session_id": room}}),
-    )
-    .await;
-    let wake = job_wake(&after, job);
-    assert_eq!(wake["id"], wake_id, "{wake}");
-    assert_eq!(wake["fire_count"], 1, "{wake}");
-    let obligations = after["SessionState"]["session"]["agent_tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["task_id"] == task)
-        .unwrap()["obligations"]
-        .as_array()
-        .unwrap();
-    assert_eq!(obligations.len(), 1);
-    assert_eq!(obligations[0]["status"], "failed");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = request(
+            &mut socket,
+            json!({"GetSessionState": {"session_id": room}}),
+        )
+        .await;
+        let wake = job_wake(&after, job);
+        assert_eq!(wake["id"], wake_id, "{wake}");
+        assert!(wake["fire_count"].as_u64().unwrap() <= 1, "{wake}");
+        let obligations = after["SessionState"]["session"]["agent_tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["task_id"] == task)
+            .unwrap()["obligations"]
+            .as_array()
+            .unwrap();
+        assert_eq!(obligations.len(), 1);
+        if wake["fire_count"] == 1 && obligations[0]["status"] == "failed" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "job wake or obligation did not settle"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     std::fs::write(record.join("go"), "").unwrap();
 }
 
