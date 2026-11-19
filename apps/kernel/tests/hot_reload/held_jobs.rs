@@ -124,7 +124,7 @@ async fn held_job_drill(
     let started = job_tool(record, "held-start", "chariox.jobs.run", json!({
         "task_id": task, "origin_prompt_id": task, "machine": "held-job-machine", "timeout_s": 90, "wait_s": 1,
         "outputs": ["result.txt"],
-        "command": ["/bin/sh", "-c", "printf 'before\\npartial-'; while [ ! -f finish ]; do sleep 0.05; done; printf 'line\\nafter\\n'; printf artifact > result.txt; exit 7"],
+        "command": ["/bin/sh", "-c", "printf 'before\\npartial-'; while [ ! -f finish ]; do sleep 0.05; done; rm -f finish; printf 'line\\nafter\\n'; printf artifact > result.txt; exit 7"],
     })).await;
     assert_eq!(started["placement"], "remote", "{started}");
     let job = started["job_id"].as_str().unwrap();
