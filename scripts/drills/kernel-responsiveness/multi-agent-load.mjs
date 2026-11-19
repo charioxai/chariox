@@ -14,6 +14,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
+import { seedRetainedWakes } from './retained-wakes.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -107,11 +108,12 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
   for (let i = 0; i < o.leftover; i++) leftover.push((await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: `leftover-${i}` } })).SessionCreated.session.id)
   out.leftover_sessions = leftover.length
   const kernel = (await rpc({ RelayStatus: null })).RelayStatus.status.daemon_id
-  if (o.subscriptions.length) {
+  if (o.subscriptions.length || o.retainedWakes > 0) {
     await mainClient.close()
     await stop()
     const targets = [...out.lanes.map(l => l.session_id), ...leftover]
     out.seeded_subscriptions = seedSubscriptions(root, kernel, o.subscriptions, targets, out.lanes.map(l => [l.session_id, l.agent_id]), o.padding)
+    if (o.retainedWakes > 0) out.retained_wakes = seedRetainedWakes(root, out.lanes[0].session_id, o.retainedWakes, o.retainedWakeBytes)
     out.restart_ms = await start()
     // Attachments do not survive a restart; the lanes re-attach like a reconnecting client.
     for (const [i, lane] of out.lanes.entries()) {
@@ -122,6 +124,22 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
   // The session the probes read: a lane when there is one, otherwise a leftover session.
   const probeSession = out.lanes[0]?.session_id ?? leftover[0]
   assert(probeSession, 'the drill needs at least one lane or leftover session')
+  const subscribers = []
+  out.client_events = { subscribers: o.subscribers ?? 0, received: 0, transport_closed: 0, sweep_stall_notices: 0, kernel_request_timeouts: 0 }
+  for (let index = 0; index < (o.subscribers ?? 0); index++) {
+    const client = connect()
+    const attached = (await rpc({ AttachToSession: { session_id: probeSession, client_id: `kernelstall-subscriber-${index}`, capability_level: 'FullTerminal' } })).SessionAttached
+    subscribers.push({ client, attachment: attached.attachment.id })
+    client.onKernelEvent(event => {
+      out.client_events.received++
+      if (event.event === 'transport_closed') out.client_events.transport_closed++
+      const text = JSON.stringify(event)
+      if (/supervision sweep stalled|wake delivery checks are degraded/i.test(text)) out.client_events.sweep_stall_notices++
+      if (text.includes('kernel_request_timeout')) out.client_events.kernel_request_timeouts++
+    })
+    await client.subscribeToKernelEvents(probeSession, attached.attachment.id)
+  }
+  save()
   const path = join(work, 'kr06.bin')
   await send({ WriteKernelFile: { path, offset: 0, total_size: 1, data_base64: 'eA==', overwrite: true } }).catch(async () => {
     await probe.send({ WriteKernelFile: { path, offset: 0, total_size: 1, data_base64: 'eA==', overwrite: true } }) })
@@ -158,7 +176,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
         let n = 0
         tasks.push(paced(o.readerHz, () => { const i = n++ % 3
           return guarded('reader', () => i === 0 ? client.send({ RelayStatus: null })
-            : i === 1 ? client.send({ GetSessionState: { session_id: out.lanes.length ? out.lanes[n % out.lanes.length].session_id : leftover[n % leftover.length] } })
+            : i === 1 ? client.send({ GetSessionState: { session_id: o.retainedWakes > 0 ? probeSession : out.lanes.length ? out.lanes[n % out.lanes.length].session_id : leftover[n % leftover.length] } })
             : client.send({ ReadKernelFile: { path, offset: 0, length: 1 } })) }))
       }
       // Coordinator-like list every two seconds.
@@ -167,7 +185,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       // Durable toggles on leftover sessions.
       const toggler = connect(), t = timed(timings, 'SetRoomPinned')
       let pins = 0
-      tasks.push(paced(o.toggleHz, () => guarded('toggle', () => t(() => toggler.send({ SetRoomPinned: { session_id: leftover[pins % leftover.length], pinned: (pins++ & 1) === 0 } })))))
+      tasks.push(paced(o.toggleHz, () => guarded('toggle', () => t(() => toggler.send({ SetRoomPinned: { session_id: o.retainedWakes > 0 ? probeSession : leftover[pins % leftover.length], pinned: (pins++ & 1) === 0 } })))))
       // Lanes: prompts start and are cancelled, so each lane's run state keeps changing.
       for (const [i, lane] of out.lanes.entries()) {
         if (!lane.launch) continue
@@ -275,10 +293,20 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
     ...laneChecks(out.lanes),
+    ...(o.subscribers > 0 ? {
+      subscriber_events_missing: { value: out.client_events.received > 0 ? 0 : 1, limit: 0 },
+      subscriber_sweep_stall_notices: { value: out.client_events.sweep_stall_notices, limit: 0 },
+      subscriber_kernel_request_timeouts: { value: out.client_events.kernel_request_timeouts, limit: 0 },
+      subscriber_transport_closed: { value: out.client_events.transport_closed, limit: 0 },
+    } : {}),
   }
   out.checks = checks
   Object.assign(out, verdictOf(checks))
   save()
+  for (const { client, attachment } of subscribers) {
+    await client.close()
+    await rpc({ DetachFromSession: { session_id: probeSession, attachment_id: attachment } }).catch(() => {})
+  }
   for (const lane of out.lanes) await rpc({ EndSession: { session_id: lane.session_id } }).catch(() => { out.lane_cleanup_failed = true })
   await probe.close().catch(() => {})
   return out
