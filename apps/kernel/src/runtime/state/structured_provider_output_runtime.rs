@@ -293,6 +293,31 @@ impl KernelRuntimeState {
                 .as_ref()
                 .is_some_and(|prompt| prompt.delivery_pending());
             if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                if let Some(message) = poll_result.terminal_failure.as_deref().filter(|_| {
+                    polled_prompt_id.is_none()
+                        && !poll_result.prompt_completed
+                        && active_prompt_is_dispatching
+                        && active_prompt
+                            .as_ref()
+                            .and_then(|prompt| prompt.durable_delivery_provider_run_id())
+                            != Some(finished_run_id.as_str())
+                }) {
+                    // An idle poll can report the exit only once. Retire the
+                    // run without applying the old batch to its next prompt.
+                    owned.provider_store.record_terminal_diagnostic(
+                        &finished_run_id,
+                        provider_prompt_dispatch_failure_notice(message),
+                    )?;
+                    self.retire_owned_provider_run_after_terminal_failure(
+                        session_id,
+                        &finished_run_id,
+                    )
+                    .await;
+                    owned
+                        .structured_output_records
+                        .stop_polling(&finished_run_id);
+                    return Ok(records);
+                }
                 crate::logging::debug_with_fields(
                     "daemon.provider",
                     "discarding stale structured output poll before prompt delivery",
@@ -872,6 +897,15 @@ impl KernelRuntimeState {
             }
         }
         if let Some(message) = terminal_failure {
+            if !prompt_completed
+                && !owned.provider_run_has_bound_prompt(session_id, provider_run_id)?
+            {
+                // The provider ended between turns: no prompt reached it, so its end
+                // retires the run and the next prompt starts on a fresh one.
+                self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                    .await;
+                return Ok(records);
+            }
             self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,

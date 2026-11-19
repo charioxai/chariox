@@ -352,6 +352,48 @@ impl KernelRuntimeState {
         };
         self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
             .await;
+        self.redispatch_on_fresh_run(dispatch, &prompt)
+            .await
+            .map(Some)
+    }
+
+    /// A run that ended before this dispatch reached it (its provider exited
+    /// between turns) never received the prompt: it goes to a fresh run.
+    async fn dispatch_off_ended_run(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        if dispatch.steering {
+            return Ok(None);
+        }
+        let Ok(run) = self.owned.provider_store.get_run(&dispatch.provider_run_id) else {
+            return Ok(None);
+        };
+        if run.state() != crate::provider::ProviderRunState::Ended {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .filter(|prompt| {
+                prompt.id() == dispatch.prompt_id
+                    && prompt.durable_delivery_phase()
+                        != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            })
+        else {
+            return Ok(None);
+        };
+        let rerouted = self.redispatch_on_fresh_run(dispatch, &prompt).await?;
+        Ok((rerouted.provider_run_id != run.id()).then_some(rerouted))
+    }
+
+    async fn redispatch_on_fresh_run(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<crate::app::KernelPromptDispatch, DaemonError> {
         let provider_run_id = self
             .with_app_side_effect(|app| {
                 if prompt.workflow_run_id().is_some() {
@@ -359,17 +401,17 @@ impl KernelRuntimeState {
                         app,
                         &dispatch.session_id,
                         &dispatch.agent_id,
-                        &prompt,
+                        prompt,
                     )
                 } else {
                     app.ensure_prompt_provider_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
                 }
             })
             .await?;
-        Ok(Some(crate::app::KernelPromptDispatch {
+        Ok(crate::app::KernelPromptDispatch {
             provider_run_id,
             ..dispatch.clone()
-        }))
+        })
     }
 
     pub(super) async fn enqueue_prompt_dispatch_after_liveness(
@@ -404,7 +446,11 @@ impl KernelRuntimeState {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
-        if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
+        let rerouted = match self.dispatch_off_finished_turn_substitute(dispatch).await? {
+            Some(rerouted) => Some(rerouted),
+            None => self.dispatch_off_ended_run(dispatch).await?,
+        };
+        if let Some(rerouted) = rerouted {
             return Box::pin(self.enqueue_prompt_dispatch_after_liveness_with_receipt(
                 &rerouted,
                 owned,
