@@ -210,6 +210,65 @@ fn a_fresh_provider_child_keeps_the_confinement() {
 }
 
 #[test]
+fn a_local_provider_can_read_packages_under_a_confined_state_directory() {
+    let kernel = DummyKernelHome::new();
+    let packages = kernel.home.join("state/skills/packages");
+    let reference = packages.join("skill-id/digest/references/phrase.txt");
+    let scratch = kernel.home.join("t/session/provider");
+    write(&reference, "bundled reference");
+    let launch = crate::provider::ProviderLaunchResult {
+        endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+        process_label: "provider".to_string(),
+        pty_target: None,
+        pty_program: Some("/bin/sh".to_string()),
+        pty_args: vec![
+            "-c".to_string(),
+            format!(
+                "test \"$TMPDIR\" = '{scratch}' || exit 2\n{}\ncat '{reference}' && echo && \
+                 if (echo changed > '{reference}') 2>/dev/null; then exit 1; fi",
+                kernel.probe_script(),
+                reference = reference.display(),
+                scratch = scratch.display(),
+            ),
+        ],
+        pty_env: BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            kernel.profile.display().to_string(),
+        )]),
+        pty_env_remove: Vec::new(),
+        working_directory: Some(kernel.workspace.clone()),
+        structured_endpoint: None,
+    };
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        "session", "claude", "claude", "default", "model",
+    );
+    request.agent_id = Some("provider-test".to_string());
+    let run = |request: &crate::provider::LaunchProviderRequest| {
+        let confined = crate::provider::managed_isolation::apply_managed_provider_isolation(
+            launch.clone(),
+            request,
+        )
+        .expect("the provider launch is confined");
+        crate::provider::command_from_provider_launch(confined)
+            .unwrap()
+            .output()
+            .unwrap()
+    };
+    let hidden = run(&request);
+    assert!(!hidden.status.success(), "{hidden:?}");
+    assert!(!String::from_utf8_lossy(&hidden.stdout).contains("bundled reference"));
+
+    let output = run(&request.with_skill_cache_root(packages));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.lines().any(|line| line == "bundled reference"),
+        "{output:?}"
+    );
+    kernel.assert_confined(&stdout);
+}
+
+#[test]
 fn an_endpoint_the_kernel_does_not_start_is_left_alone() {
     let _kernel = DummyKernelHome::new();
     let launch = crate::provider::ProviderLaunchResult {
@@ -223,7 +282,7 @@ fn an_endpoint_the_kernel_does_not_start_is_left_alone() {
         working_directory: None,
         structured_endpoint: Some("http://127.0.0.1:1".to_string()),
     };
-    assert_eq!(super::confine_launch(launch.clone()).unwrap(), launch);
+    assert_eq!(super::confine_launch(launch.clone(), &[]).unwrap(), launch);
 }
 
 fn run_confined(kernel: &DummyKernelHome, script: &str) -> String {

@@ -1113,7 +1113,13 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         launch.pty_env_remove.sort();
         launch.pty_env_remove.dedup();
-        return super::state_confinement::confine_launch(launch);
+        // The wrapper must know the scratch path before it masks the parent.
+        crate::agent_temp::attach_environment(
+            &request.session_id,
+            request.agent_id.as_deref(),
+            &mut launch.pty_env,
+        );
+        return super::state_confinement::confine_launch(launch, &request.skill_cache_roots);
     }
 
     let Some(program) = launch.pty_program.take() else {

@@ -287,6 +287,21 @@ impl DaemonApp {
                 )?;
             }
         }
+        // Leased runs already carry their execution's cache. Local runs read
+        // the roots `load_skill` returns from the kernel's package store.
+        if request.skill_cache_roots.is_empty() {
+            let home = self
+                .config
+                .user_config_path
+                .parent()
+                .ok_or(DaemonError::InvalidConfig {
+                    field: "CHARIOX_HOME",
+                    message: "Skills require a resolved Chariox home",
+                })?;
+            let store = crate::skill::service::SkillCatalogService::local_package_store(home)?;
+            crate::provider::state_confinement::validate_skill_package_store(&self.config, &store)?;
+            request = request.with_skill_cache_root(store);
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -1007,6 +1022,34 @@ mod tests {
         assert_eq!(prepared.working_directory.as_deref(), Some(root.as_path()));
         assert!(prepared.workspace_live_sync_roots.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_confined_local_launch_can_read_the_roots_load_skill_returns() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("sv04-local-skill-read-root");
+        let app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                worktree.path().to_string_lossy(),
+                worktree.path().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let home = app.config.user_config_path.parent().unwrap().to_path_buf();
+
+        let prepared = app.prepare_app_provider_launch_request(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "model"),
+            "SV-04 local launch",
+        );
+        let store = std::fs::canonicalize(home.join("skills/packages"))
+            .expect("the package store exists before any skill is installed");
+        assert_eq!(
+            prepared.expect("local launch should prepare").skill_cache_roots,
+            vec![store],
+            "load_skill returns roots under the package store; the confined provider must read them"
+        );
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
