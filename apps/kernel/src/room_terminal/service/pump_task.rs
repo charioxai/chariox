@@ -148,9 +148,21 @@ impl RoomTerminalService {
         if removed {
             waiters.clear();
         }
+        let terminal_id = state.terminal.record.terminal_id.clone();
         drop(state);
         owner.pump_wake.notify_one();
         owner.output_changed.notify_waiters();
+        if removed {
+            // The terminal's own process is gone; so is what its commands left running. The
+            // pump released those jobs to the registry under this owner, which the PTY removal
+            // above does not reach.
+            crate::runtime::process_resources::end_owner(
+                Some(owner.scope.process_key()),
+                Some(
+                    &crate::runtime::process_resources::SessionProcessOwner::Terminal(terminal_id),
+                ),
+            );
+        }
         result
     }
 

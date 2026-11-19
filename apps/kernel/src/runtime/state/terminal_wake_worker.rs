@@ -154,7 +154,7 @@ mod tests {
             fired,
             terminal: RoomTerminalSummary {
                 terminal_id: "term-1".into(),
-                session_id: "backing".into(),
+                scope: crate::room_terminal::TerminalScope::room("backing"),
                 title: "build".into(),
                 program: "bash".into(),
                 working_directory: "/w".into(),
@@ -222,7 +222,7 @@ mod tests {
         let terminal = service
             .open(crate::room_terminal::OpenRoomTerminal {
                 project_environment: Default::default(),
-                session_id: "room-1".into(),
+                scope: crate::room_terminal::TerminalScope::room("room-1"),
                 working_directory: root.clone(),
                 cols: 100,
                 rows: 30,

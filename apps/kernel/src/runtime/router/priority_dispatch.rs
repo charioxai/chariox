@@ -200,6 +200,11 @@ impl CommandRouter {
             LocalDaemonRequest::RoomTerminal(request) => {
                 boxed_handler(|| async move { self.room_terminal(&command.caller, request).await })
             }
+            LocalDaemonRequest::KernelTerminal(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .kernel_terminal_for_client(&command.caller, request)
+                    .await
+            }),
             LocalDaemonRequest::RoomBrowserArtifact(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state

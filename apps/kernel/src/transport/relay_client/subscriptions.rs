@@ -203,7 +203,16 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
-    if subscription_scope.as_deref() == Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) {
+    let terminal_scope = match subscription_scope.as_deref() {
+        Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) => Some(
+            crate::room_terminal::TerminalScope::room(session_id.clone()),
+        ),
+        Some(super::room_terminal_stream::KERNEL_TERMINAL_SCOPE) => {
+            Some(crate::room_terminal::TerminalScope::Kernel)
+        }
+        _ => None,
+    };
+    if let Some(scope) = terminal_scope {
         return super::room_terminal_stream::handle_subscribe(
             router,
             outgoing_tx,
@@ -211,7 +220,7 @@ pub(super) async fn handle_relay_subscribe(
             super::room_terminal_stream::RoomTerminalSubscription {
                 request_id: relay_request_id,
                 relay_id: relay_subscription_id,
-                session_id,
+                scope,
                 address: attachment_id,
                 identity: caller_identity,
                 public_key: client_public_key,

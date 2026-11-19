@@ -264,3 +264,17 @@ fn reach_error(message: &str) -> DaemonError {
         message: message.into(),
     }
 }
+
+#[cfg(test)]
+mod kernel_terminal_tests {
+    use super::*;
+
+    #[test]
+    fn a_room_agents_reach_grant_does_not_cover_the_kernels_terminals() {
+        let request = LocalDaemonRequest::KernelTerminal(crate::local::KernelTerminalRequest {
+            directory: None,
+            operation: crate::local::RoomTerminalOperation::List,
+        });
+        assert_ne!(reach_need(&request), ReachNeed::Room);
+    }
+}

@@ -23,7 +23,9 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 13;
+/// This includes the persisted terminal records used to restore the handed-over PTYs;
+/// TerminalScope records cannot restore the earlier session-only records.
+pub const HANDOVER_FORMAT: u32 = 16;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 

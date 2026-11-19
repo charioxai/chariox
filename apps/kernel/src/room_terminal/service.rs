@@ -1,4 +1,4 @@
-//! Room-scoped terminals on the kernel's `PtyManager`.
+//! Terminals of a Room or of the kernel on the kernel's `PtyManager`.
 //!
 //! The service is authority-free: callers have already decided who may
 //! reach a Room's terminals and which actor a request speaks for.
@@ -24,7 +24,7 @@ use super::terminal::Terminal;
 use super::types::{
     RoomTerminalDriver, RoomTerminalEvent, RoomTerminalEventKind, RoomTerminalInputResult,
     RoomTerminalOutcome, RoomTerminalOutput, RoomTerminalSnapshot, RoomTerminalSummary,
-    RoomTerminalWaitResult, RoomTerminalWatch, TerminalActor,
+    RoomTerminalWaitResult, RoomTerminalWatch, TerminalActor, TerminalScope,
 };
 use crate::error::DaemonError;
 use crate::pty::{PtyManager, PtySpawnRequest};
@@ -39,7 +39,7 @@ mod pump_task;
 #[cfg(unix)]
 pub use handover::TerminalHandover;
 
-const MAX_TERMINALS_PER_ROOM: usize = 16;
+const MAX_TERMINALS_PER_SCOPE: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
 /// A live reply waits while the program keeps writing: one more display frame each time the
@@ -69,7 +69,7 @@ pub(crate) const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
 ];
 
 pub struct OpenRoomTerminal {
-    pub session_id: String,
+    pub scope: TerminalScope,
     pub working_directory: PathBuf,
     pub cols: u16,
     pub rows: u16,
@@ -109,16 +109,17 @@ pub(super) struct State {
 impl RoomTerminalService {
     pub(crate) fn process_keys(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
     ) -> Vec<(
         crate::runtime::process_resources::SessionProcessOwner,
         String,
     )> {
+        let scope = scope.into();
         let owners: Vec<_> = self
             .lock()
             .terminals
             .values()
-            .filter(|owner| owner.session_id == session_id)
+            .filter(|owner| owner.scope == scope)
             .cloned()
             .collect();
         owners
@@ -203,7 +204,7 @@ impl RoomTerminalService {
         validate_size(spec.cols, spec.rows)?;
         if !spec.working_directory.is_dir() {
             return Err(refused(format!(
-                "the Room's project folder `{}` does not exist",
+                "the folder `{}` does not exist",
                 spec.working_directory.display()
             )));
         }
@@ -252,19 +253,20 @@ impl RoomTerminalService {
                     "this kernel is stopping, so it opens no terminals".to_string(),
                 ));
             }
-            let in_room: Vec<_> = state
+            let in_scope: Vec<_> = state
                 .terminals
                 .values()
-                .filter(|owner| owner.session_id == spec.session_id)
+                .filter(|owner| owner.scope == spec.scope)
                 .collect();
-            if in_room.len() >= MAX_TERMINALS_PER_ROOM {
+            if in_scope.len() >= MAX_TERMINALS_PER_SCOPE {
                 return Err(refused(format!(
-                    "this Room already has {MAX_TERMINALS_PER_ROOM} terminals; close one first"
+                    "{} already has {MAX_TERMINALS_PER_SCOPE} terminals; close one first",
+                    spec.scope.describe()
                 )));
             }
             spec.title
                 .filter(|title| !title.trim().is_empty())
-                .unwrap_or_else(|| next_title(&in_room))
+                .unwrap_or_else(|| next_title(&in_scope))
         };
         let user_interacted = spec.opened_by == TerminalActor::User;
         let terminal_id = random_terminal_id();
@@ -327,7 +329,7 @@ impl RoomTerminalService {
         }
         let record = TerminalRecord {
             terminal_id: terminal_id.clone(),
-            session_id: spec.session_id,
+            scope: spec.scope.clone(),
             title,
             program,
             working_directory: spec.working_directory.display().to_string(),
@@ -371,8 +373,8 @@ impl RoomTerminalService {
         Ok(summary)
     }
 
-    pub fn list(&self, session_id: &str) -> Vec<RoomTerminalSummary> {
-        let owners = self.owners_for_session(session_id);
+    pub fn list(&self, scope: impl Into<TerminalScope>) -> Vec<RoomTerminalSummary> {
+        let owners = self.owners_for_scope(&scope.into());
         let mut summaries = Vec::new();
         for owner in owners {
             let Ok(mut state) = owner.lock_open() else {
@@ -388,10 +390,10 @@ impl RoomTerminalService {
 
     pub fn snapshot(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
     ) -> Result<RoomTerminalSnapshot, DaemonError> {
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         let mut state = owner.lock_open()?;
         let TerminalState { pty, terminal, .. } = &mut *state;
         let driver = terminal.current_driver(pty);
@@ -402,7 +404,7 @@ impl RoomTerminalService {
     /// refuses it.
     pub async fn input(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         actor: &TerminalActor,
         input: &[u8],
@@ -412,7 +414,7 @@ impl RoomTerminalService {
                 "terminal input must be 1 to {MAX_INPUT_BYTES} bytes"
             )));
         }
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         loop {
             // Decide from what the shell has already reported, not from the
@@ -498,13 +500,13 @@ impl RoomTerminalService {
 
     pub fn resize(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         cols: u16,
         rows: u16,
     ) -> Result<RoomTerminalSummary, DaemonError> {
         validate_size(cols, rows)?;
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         let mut state = owner.lock_open()?;
         let TerminalState { pty, terminal, .. } = &mut *state;
         let Some(run_id) = terminal.run_id.clone() else {
@@ -523,12 +525,12 @@ impl RoomTerminalService {
     /// answer always arrives inside the gateway's and the CLI's transport deadline).
     pub async fn read_output(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         after_offset: u64,
         wait: Duration,
     ) -> Result<RoomTerminalOutput, DaemonError> {
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         let deadline = Instant::now() + output_wait(wait);
         // Replays and full pages stay immediate. `gathering`: when the first bytes were seen,
         // and how many bytes the last look found.
@@ -580,11 +582,11 @@ impl RoomTerminalService {
     /// Once the user has used a tab, only the user can close it.
     pub fn close(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         actor: &TerminalActor,
     ) -> Result<(), DaemonError> {
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         {
             let mut state = owner.lock_open()?;
             if *actor != TerminalActor::User && state.terminal.record.user_interacted {
@@ -605,7 +607,8 @@ impl RoomTerminalService {
     }
 
     /// The Room ended: detach its registry entries before stopping their work.
-    pub fn end_session(&self, session_id: &str) {
+    pub fn end_scope(&self, scope: impl Into<TerminalScope>) {
+        let scope = scope.into();
         let removed = {
             let _creation = self
                 .inner
@@ -616,7 +619,7 @@ impl RoomTerminalService {
             let ids: Vec<_> = state
                 .terminals
                 .iter()
-                .filter(|(_, owner)| owner.session_id == session_id)
+                .filter(|(_, owner)| owner.scope == scope)
                 .map(|(id, _)| id.clone())
                 .collect();
             ids.into_iter()
@@ -655,7 +658,7 @@ impl RoomTerminalService {
     /// goes to the `CompletionEvents` sink.
     pub fn watch(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         watch_owner: WatchOwner,
         watches: Vec<RoomTerminalWatch>,
@@ -667,7 +670,7 @@ impl RoomTerminalService {
             ));
         }
         let immediate = {
-            let owner = self.find(session_id, terminal_id)?;
+            let owner = self.find(&scope.into(), terminal_id)?;
             let mut state = owner.lock_open()?;
             let TerminalState { pty, terminal, .. } = &mut *state;
             if !terminal.is_running() {
@@ -703,8 +706,8 @@ impl RoomTerminalService {
     }
 
     /// The wake was cancelled: forget its watches.
-    pub fn cancel_watch(&self, session_id: &str, terminal_id: &str, wake_id: &str) {
-        if let Ok(owner) = self.find(session_id, terminal_id) {
+    pub fn cancel_watch(&self, scope: impl Into<TerminalScope>, terminal_id: &str, wake_id: &str) {
+        if let Ok(owner) = self.find(&scope.into(), terminal_id) {
             owner.lock().terminal.watches.disarm(wake_id);
         }
     }
@@ -714,7 +717,7 @@ impl RoomTerminalService {
     /// lost: arm a notification next. No lock is held while waiting.
     pub async fn wait(
         &self,
-        session_id: &str,
+        scope: impl Into<TerminalScope>,
         terminal_id: &str,
         agent_id: &str,
         watches: Vec<RoomTerminalWatch>,
@@ -724,7 +727,7 @@ impl RoomTerminalService {
         if watches.is_empty() {
             return Err(refused("wait needs at least one condition".to_string()));
         }
-        let owner = self.find(session_id, terminal_id)?;
+        let owner = self.find(&scope.into(), terminal_id)?;
         let (wake_id, receiver) = {
             let mut state = owner.lock_open()?;
             let TerminalState {
@@ -805,24 +808,33 @@ impl RoomTerminalService {
         self.inner.managed.report(|| self.has_running_work());
     }
 
-    fn find(&self, session_id: &str, terminal_id: &str) -> Result<Arc<TerminalOwner>, DaemonError> {
+    fn find(
+        &self,
+        scope: &TerminalScope,
+        terminal_id: &str,
+    ) -> Result<Arc<TerminalOwner>, DaemonError> {
         self.lock()
             .terminals
             .get(terminal_id)
-            .filter(|owner| owner.session_id == session_id)
+            .filter(|owner| owner.scope == *scope)
             .cloned()
-            .ok_or_else(|| refused(format!("this Room has no terminal `{terminal_id}`")))
+            .ok_or_else(|| {
+                refused(format!(
+                    "{} has no terminal `{terminal_id}`",
+                    scope.describe()
+                ))
+            })
     }
 
     fn owners(&self) -> Vec<Arc<TerminalOwner>> {
         self.lock().terminals.values().cloned().collect()
     }
 
-    fn owners_for_session(&self, session_id: &str) -> Vec<Arc<TerminalOwner>> {
+    fn owners_for_scope(&self, scope: &TerminalScope) -> Vec<Arc<TerminalOwner>> {
         self.lock()
             .terminals
             .values()
-            .filter(|owner| owner.session_id == session_id)
+            .filter(|owner| owner.scope == *scope)
             .cloned()
             .collect()
     }
@@ -870,7 +882,7 @@ fn event(
 ) -> RoomTerminalEvent {
     RoomTerminalEvent {
         terminal_id: terminal.record.terminal_id.clone(),
-        session_id: terminal.record.session_id.clone(),
+        scope: terminal.record.scope.clone(),
         wake_id: owner.wake_id,
         armed_by: owner.agent_id,
         kind,
@@ -961,10 +973,10 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {
     }
 }
 
-fn next_title(in_room: &[&Arc<TerminalOwner>]) -> String {
+fn next_title(in_scope: &[&Arc<TerminalOwner>]) -> String {
     (1..)
         .map(|number| format!("Terminal {number}"))
-        .find(|title| in_room.iter().all(|terminal| terminal.title != *title))
+        .find(|title| in_scope.iter().all(|terminal| terminal.title != *title))
         .expect("an unused title exists")
 }
 
