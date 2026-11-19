@@ -1129,3 +1129,75 @@ async fn a_captured_command_secret_refused_for_browser_fill_points_to_a_new_pass
     assert!(!refused.contains(SECRET));
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_captured_private_key_is_restored_byte_for_byte_and_loads() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let key = workspace(&f).join("id_ed25519");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "vault7", "-f"])
+        .arg(&key)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let original = std::fs::read_to_string(&key).unwrap();
+    assert!(
+        original.ends_with("-----\n"),
+        "ssh-keygen writes a final newline"
+    );
+    std::fs::create_dir(workspace(&f).join("restored")).unwrap();
+    for (request_id, tool, args) in [
+        (
+            "key-file",
+            CAPTURE_FILE,
+            json!({"path": "id_ed25519", "extract": {"kind": "whole"}}),
+        ),
+        (
+            "key-stdout",
+            CAPTURE,
+            json!({"argv": ["/bin/cat", key], "extract": {"kind": "stdout"}}),
+        ),
+    ] {
+        let restored = workspace(&f).join("restored").join(request_id);
+        let mut request = json!({"request_id": request_id, "host": "server.example.com",
+            "use_binding": {"target": {"kind": "file", "path": restored}}});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let captured = call(&f, tool, request).await.unwrap();
+        let handle = captured["credential_id"].as_str().unwrap();
+        assert_eq!(stored(&f, handle).as_str(), original, "{request_id}");
+        call(
+            &f,
+            WRITE_FILE,
+            json!({"path": format!("restored/{request_id}"), "template": "{{KEY}}",
+                "values": {"KEY": handle}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&restored).unwrap(), original);
+        let loads = std::process::Command::new("ssh-keygen")
+            .arg("-y")
+            .arg("-f")
+            .arg(&restored)
+            .output()
+            .unwrap();
+        assert!(
+            loads.status.success(),
+            "{request_id}: the restored key does not load"
+        );
+    }
+    let token = capture(&f, "token", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        stored(&f, token["credential_id"].as_str().unwrap()).as_str(),
+        SECRET,
+        "a one-line value keeps no line ending"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
