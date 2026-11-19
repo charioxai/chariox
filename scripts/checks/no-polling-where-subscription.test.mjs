@@ -28,6 +28,10 @@ test('a timer that reads through a function of the same file is red', () => {
   red('async function refresh(client) {\n  outline = await client.send({ GetSessionHistoryOutline: { session_id: id } })\n}\nexport function watch(client) {\n  const tick = setInterval(() => { void refresh(client) }, 1000)\n}\n', /room-view\.ts:5: setInterval re-reads GetSessionHistoryOutline \(through refresh\)/)
 })
 
+test('a timer given a reading function of the same file by name is red', () => {
+  red('async function refresh() {\n  state = await client.send({ GetSessionState: { session_id: id } })\n}\nexport function watch() {\n  setInterval(refresh, 1000)\n}\n', /room-view\.ts:5: setInterval re-reads GetSessionState \(through refresh\)/)
+})
+
 test('a read in a comment or string, and a test file, pass', () => {
   const r = makeRepo({
     [FILE]: 'export function watch(client) {\n  setInterval(() => {\n    // not GetSessionState\n    log("ListSessions")\n  }, 1000)\n}\n',
