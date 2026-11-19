@@ -281,9 +281,9 @@ pub(crate) fn submit_claude_prompt(
     state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
-    // A write does not end the notification turn Claude is still producing, or reset its stream.
     state.turn_watchdog.begin(Instant::now());
-    if !state.own_turn {
+    // Steering and notification turns keep the stream that can still deliver tool results.
+    if !state.own_turn && !envelope.steering {
         state.active_stream_message_id = None;
         state.emitted_text_by_block.clear();
         state.tool_transcript.clear();
