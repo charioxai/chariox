@@ -47,9 +47,9 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_usage: Option<ProviderRunTokenUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
-    /// The provider began a turn no prompt asked for, such as Claude reporting a finished
-    /// background command.
-    pub provider_turn_started: bool,
+    /// At the end of this batch the provider runs a turn no prompt asked for, such as Claude
+    /// reporting a finished background command.
+    pub provider_own_turn_running: bool,
 }
 
 impl ProviderPromptSignalBatch {

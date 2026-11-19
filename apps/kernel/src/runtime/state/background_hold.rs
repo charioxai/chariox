@@ -178,6 +178,24 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    /// The prompt of the held task a notification turn on `run` reports for: the one whose
+    /// background calls have ended, else the first one held.
+    pub(super) fn held_prompt_for_notification_turn(
+        &self,
+        room: &str,
+        agent: &str,
+        run: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let held = self.background_holds.of_run(room, agent, run);
+        for (_, task) in &held {
+            if self.background_calls_of_prompt(room, run, &task.prompt)? != BackgroundCalls::Running
+            {
+                return Ok(Some(task.prompt.clone()));
+            }
+        }
+        Ok(held.into_iter().next().map(|(_, task)| task.prompt))
+    }
+
     pub(super) fn is_held_for_background_calls(&self, task_id: &str) -> bool {
         self.background_holds.get(task_id).is_some()
     }

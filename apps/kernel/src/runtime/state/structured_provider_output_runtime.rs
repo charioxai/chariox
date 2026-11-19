@@ -612,9 +612,11 @@ impl KernelRuntimeState {
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
-        if poll_result.provider_turn_started {
-            self.adopt_provider_started_turn(session_id, provider_run_id)?;
-        }
+        self.follow_provider_own_turn(
+            session_id,
+            provider_run_id,
+            poll_result.provider_own_turn_running,
+        )?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
             let session = owned.session_store.get_session(session_id)?;
