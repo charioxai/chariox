@@ -7746,7 +7746,8 @@ source-bound selections alongside the ordinary prompt/attachment identities.
 A native selection includes kernel entry ID, provider, account, execution place
 and inventory revision; no client skill path or body is accepted.
 
-`resolve_repository` (home owner only, never an agent tool) fetches a public git
+`resolve_repository` (the home owner from Skills, or an agent through
+`chariox.manage_skills` action `resolve_repository`) fetches a public git
 repository with the machine's `git` and answers its current commit and every
 SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
 `skipped`). Nothing is installed. The owner then reviews a batch of `install`
@@ -7756,11 +7757,15 @@ commit, and the kernel itself records the commit as `source_revision` on every
 member and on the package, with `upstream_members` mapping path to skill ID. A
 revision is never accepted from a client label: a repository package refuses
 members from another commit and cannot join a custom package. Credentials in
-the URL, private or auth-required repositories and agent-initiated repository
-sources are refused.
+the URL and private or auth-required repositories are refused. An agent previews
+and publishes the same batch through `manage_skills` (normal ask/yolo approval);
+its repository URL must be a public `https` host that resolves only to public
+addresses, the boundary of agent URL downloads, so an agent cannot reach a
+local path or a private network host through the home kernel's `git`.
 
 MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
-`resolve_repository_update { package_id }` for the home owner. Its
+`resolve_repository_update { package_id }` for the home owner (an agent:
+`manage_skills` action `resolve_repository_update`). Its
 `repository_update` response contains the old and resolved commits, changed,
 added, removed, unchanged and skipped members, plus one revision-bound mutation.
 The owner reviews and confirms that mutation through the usual path; confirmation

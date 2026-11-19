@@ -218,7 +218,7 @@ pub enum SkillInstallSource {
         selection: SkillSelection,
     },
     /// One skill directory of a public git repository, pinned to the commit the
-    /// owner reviewed through `ResolveRepository`. Owner-initiated only.
+    /// owner or an agent reviewed through `ResolveRepository`.
     Repository {
         url: String,
         revision: String,

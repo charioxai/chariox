@@ -50,7 +50,7 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
                 let args: ManageSkillsArgs = serde_json::from_value(arguments)
-                    .map_err(|_| failure("invalid manage_skills arguments: action, mutation and origin_prompt_id are required at the top level; use the current prompt_id as origin_prompt_id on BOTH preview and publish. mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
+                    .map_err(|_| failure("invalid manage_skills arguments: action and origin_prompt_id are required at the top level; use the current prompt_id as origin_prompt_id on every action. preview and publish take mutation, resolve_repository takes url, resolve_repository_update takes package_id. mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
                 match args {
                     ManageSkillsArgs::Preview {
                         mutation,
@@ -92,6 +92,22 @@ impl KernelRuntimeState {
                             mutation,
                             review_receipt_id,
                         }
+                    }
+                    ManageSkillsArgs::ResolveRepository {
+                        url,
+                        origin_prompt_id: current_origin,
+                    } => {
+                        self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
+                        origin_prompt_id = current_origin;
+                        SkillsV2Request::ResolveRepository { url }
+                    }
+                    ManageSkillsArgs::ResolveRepositoryUpdate {
+                        package_id,
+                        origin_prompt_id: current_origin,
+                    } => {
+                        self.current_skill_tool_prompt(session.id(), agent.id(), &current_origin)?;
+                        origin_prompt_id = current_origin;
+                        SkillsV2Request::ResolveRepositoryUpdate { package_id }
                     }
                 }
             }

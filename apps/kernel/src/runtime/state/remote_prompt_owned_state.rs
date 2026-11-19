@@ -2977,3 +2977,7 @@ mod typed_claude_tests;
 #[cfg(test)]
 #[path = "remote_prompt_owned_state/composer_review_tests.rs"]
 mod composer_review_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_repository_tool_tests.rs"]
+mod skill_repository_tool_tests;

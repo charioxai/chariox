@@ -3,7 +3,7 @@ use super::*;
 use crate::skill::{storage::SkillCatalogStorage, turn_authority::SkillTurnAuthority, v2::*};
 use crate::transport::relay_peer::{RelayPeerRequest, RemoteWorkspaceLiveSyncContext};
 
-async fn fixture() -> (
+pub(super) async fn fixture() -> (
     KernelRuntimeState,
     RemoteWorkspaceLiveSyncContext,
     SkillCatalogStorage,

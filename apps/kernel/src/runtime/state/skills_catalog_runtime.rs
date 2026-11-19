@@ -418,17 +418,21 @@ impl KernelRuntimeState {
                 service.preview_review_with_source_access(user, &mutation, &native, access)
             }
             SkillsV2Request::ResolveRepository { url } => {
-                if origin.is_some() || !self.skills_host_owner(user) {
+                if !self.skills_host_owner(user) {
                     return Err(skill_error(
-                        "only the home kernel owner can import a repository, from Skills",
+                        "only the home kernel owner or their agents can import a repository",
                     ));
+                }
+                if origin.is_some() {
+                    crate::skill::source_access::SkillSourceAccess::Agent { workspace: None }
+                        .repository_url(&url)?;
                 }
                 service.resolve_repository(&url)
             }
             SkillsV2Request::ResolveRepositoryUpdate { package_id } => {
-                if origin.is_some() || !self.skills_host_owner(user) {
+                if !self.skills_host_owner(user) {
                     return Err(skill_error(
-                        "only the home kernel owner can update a repository package, from Skills",
+                        "only the home kernel owner or their agents can update a repository package",
                     ));
                 }
                 service.resolve_repository_update(&package_id)

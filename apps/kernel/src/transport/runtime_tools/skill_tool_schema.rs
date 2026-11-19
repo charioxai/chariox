@@ -34,7 +34,8 @@ pub(super) fn manage() -> Value {
         variant("kind","folder",&["path"],json!({"path":text})),
         variant("kind","content",&["skill_md"],json!({"skill_md":text})),
         variant("kind","url",&["url"],json!({"url":text,"pinned_revision":{"type":["string","null"]}})),
-        variant("kind","native",&["selection"],json!({"selection":selection}))]});
+        variant("kind","native",&["selection"],json!({"selection":selection})),
+        variant("kind","repository",&["url","revision","path"],json!({"url":text,"revision":text,"path":{"type":"string","description":"skill directory from resolve_repository; empty for a root skill"}}))]});
     let collision = json!({"oneOf":[variant("action","reject",&[],json!({})),
         variant("action","rename",&["name"],json!({"name":name})),
         variant("action","replace",&["skill_id"],json!({"skill_id":id}))]});
@@ -55,14 +56,27 @@ pub(super) fn manage() -> Value {
         json!({"scope":scope,"expected_revision":{"type":"integer","minimum":0},"actions":{"type":"array","minItems":1,"maxItems":256,"items":actions}}),
     );
     let mut schema = object(
-        &["action", "mutation", "origin_prompt_id"],
+        &["action", "origin_prompt_id"],
         json!({
-        "action":{"type":"string","enum":["preview","publish"]},"mutation":mutation,
-        "origin_prompt_id":{"type":"string","minLength":1,"description":"Required on preview AND publish: the current prompt_id from this turn context; never a previous turn."},"review_receipt_id":text}),
+        "action":{"type":"string","enum":["preview","publish","resolve_repository","resolve_repository_update"]},"mutation":mutation,
+        "origin_prompt_id":{"type":"string","minLength":1,"description":"Required on every action: the current prompt_id from this turn context; never a previous turn."},"review_receipt_id":text,
+        "url":{"type":"string","minLength":1,"description":"resolve_repository: a public https git repository"},
+        "package_id":id}),
     );
+    let only = |action: &str, required: &[&str]| {
+        let absent: Vec<_> = ["mutation", "review_receipt_id", "url", "package_id"]
+            .into_iter()
+            .filter(|field| !required.contains(field))
+            .map(|field| json!({"required":[field]}))
+            .collect();
+        json!({"properties":{"action":{"enum":[action]}},"required":required,"not":{"anyOf":absent}})
+    };
     schema["oneOf"] = json!([
-        {"properties":{"action":{"enum":["preview"]}},"not":{"required":["review_receipt_id"]}},
-        {"properties":{"action":{"enum":["publish"]}},"required":["review_receipt_id"]}]);
+        only("preview", &["mutation"]),
+        only("publish", &["mutation", "review_receipt_id"]),
+        only("resolve_repository", &["url"]),
+        only("resolve_repository_update", &["package_id"])
+    ]);
     schema["examples"] = json!([{
         "action":"preview", "origin_prompt_id":"current_prompt_id",
         "mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[{

@@ -31,6 +31,27 @@ impl SkillSourceAccess<'_> {
         }
         Ok(builder.build())
     }
+    /// An agent's repository is fetched by the home kernel's own `git`, so it
+    /// keeps the boundary of agent downloads: public HTTPS hosts only, never a
+    /// local path or a private network address of the home machine.
+    pub(crate) fn repository_url(self, url: &str) -> Result<(), DaemonError> {
+        if matches!(self, Self::Owner) {
+            return Ok(());
+        }
+        let refused = || {
+            failure("agents import and update only public https repositories (https://host/owner/repo); the owner can use other repository sources from Skills")
+        };
+        let url = url::Url::parse(url).map_err(|_| refused())?;
+        if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+            return Err(refused());
+        }
+        let addresses = url
+            .socket_addrs(|| Some(443))
+            .map_err(|_| failure("cannot resolve the repository host; check the URL"))?;
+        validate_public_addresses(addresses.into_iter().take(33).collect())
+            .map(|_| ())
+            .map_err(|_| refused())
+    }
 }
 fn resolve_public_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
     let addresses = netloc.to_socket_addrs()?.take(33).collect();
@@ -74,6 +95,27 @@ mod tests {
                 .download_agent(url)
                 .is_err());
         }
+        for url in [
+            "file:///srv/skills",
+            "http://example.com/org/skills.git",
+            "https://user:secret@example.com/org/skills.git",
+            "https://127.0.0.1/org/skills.git",
+            "https://10.0.0.8/org/skills.git",
+            "https://[::1]/org/skills.git",
+            "https://localhost/org/skills.git",
+        ] {
+            let error = SkillSourceAccess::Agent { workspace: None }
+                .repository_url(url)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("secret"), "{error}");
+        }
+        assert!(SkillSourceAccess::Agent { workspace: None }
+            .repository_url("https://1.1.1.1/org/skills.git")
+            .is_ok());
+        assert!(SkillSourceAccess::Owner
+            .repository_url("file:///srv/skills")
+            .is_ok());
         assert!(
             SkillSourceAccess::Owner
                 .download_agent("http://127.0.0.1/SKILL.md")
