@@ -175,63 +175,6 @@ fn is_zero(value: &u32) -> bool {
     *value == 0
 }
 
-/// One setting an agent may change about itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelfSettingKind {
-    Model,
-    Effort,
-    AccountProfile,
-    Directory,
-}
-
-/// What the person lets an agent change about itself without asking: the models, efforts,
-/// account profiles and directories it may switch to. `"*"` allows any value of that kind. A
-/// value outside the set takes one decision from the person, who may add it to the set.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSelfSettings {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub efforts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub account_profiles: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub directories: Vec<String>,
-}
-
-impl AgentSelfSettings {
-    pub fn is_empty(&self) -> bool {
-        self == &Self::default()
-    }
-
-    fn entries(&self, kind: SelfSettingKind) -> &Vec<String> {
-        match kind {
-            SelfSettingKind::Model => &self.models,
-            SelfSettingKind::Effort => &self.efforts,
-            SelfSettingKind::AccountProfile => &self.account_profiles,
-            SelfSettingKind::Directory => &self.directories,
-        }
-    }
-
-    pub fn allows(&self, kind: SelfSettingKind, value: &str) -> bool {
-        self.entries(kind)
-            .iter()
-            .any(|entry| entry == "*" || entry == value)
-    }
-
-    pub fn with_allowed(mut self, kind: SelfSettingKind, value: &str) -> Self {
-        if !self.allows(kind, value) {
-            match kind {
-                SelfSettingKind::Model => self.models.push(value.to_string()),
-                SelfSettingKind::Effort => self.efforts.push(value.to_string()),
-                SelfSettingKind::AccountProfile => self.account_profiles.push(value.to_string()),
-                SelfSettingKind::Directory => self.directories.push(value.to_string()),
-            }
-        }
-        self
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSubstituteProfile {
     pub provider: String,
@@ -375,8 +318,10 @@ pub struct AgentInstance {
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "AgentSelfSettings::is_empty")]
-    self_settings: AgentSelfSettings,
+    /// The person raised this agent's mode or permission level above what the agent above it
+    /// allows; the person's choice then holds against that agent's limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    parent_limit_waived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     usage_limit_stop: Option<UsageLimitStop>,
     #[serde(
@@ -441,7 +386,7 @@ impl AgentInstance {
             remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
             substitution_timeout_ms: None,
-            self_settings: AgentSelfSettings::default(),
+            parent_limit_waived: false,
             usage_limit_stop: None,
             visible_in_freeform: true,
             archived: false,
@@ -648,8 +593,8 @@ impl AgentInstance {
         self.substitution_timeout_ms
     }
 
-    pub fn self_settings(&self) -> &AgentSelfSettings {
-        &self.self_settings
+    pub fn parent_limit_waived(&self) -> bool {
+        self.parent_limit_waived
     }
 
     pub fn usage_limit_stop(&self) -> Option<&UsageLimitStop> {
@@ -734,7 +679,7 @@ impl AgentInstance {
         self.extension_grants.clear();
         self.substitutes.clear();
         self.substitution_timeout_ms = None;
-        self.self_settings = AgentSelfSettings::default();
+        self.parent_limit_waived = false;
         self.usage_limit_stop = None;
         self
     }
@@ -1030,13 +975,13 @@ impl AgentInstance {
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
-    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
-        self.usage_limit_stop = stop;
+    pub fn set_parent_limit_waived(&mut self, waived: bool) {
+        self.parent_limit_waived = waived;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
-    pub fn set_self_settings(&mut self, self_settings: AgentSelfSettings) {
-        self.self_settings = self_settings;
+    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
+        self.usage_limit_stop = stop;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 

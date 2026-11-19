@@ -565,8 +565,9 @@ pub use workspace::*;
 /// every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the
 /// no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a
 /// reply-box decision); a running agent's profile and config change takes effect mid-turn (`applies` on
-/// `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit`
-/// on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key
+/// `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `usage_limit`
+/// on `UpdateAgentConfig` and `AgentInstance.usage_limit_stop`; `self_settings` is gone from `UpdateAgentConfig` and
+/// `AgentInstance`: an agent changes its own settings like anyone else) and the user config key
 /// `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage
 /// limit"); the Room list has its own wire names (`GetRoomListSnapshot` → `RoomListSnapshot`,
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
@@ -597,4 +598,4 @@ pub use workspace::*;
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
 /// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1068;

@@ -119,7 +119,7 @@ async fn the_turn_goes_on_in_a_new_process_when_the_model_changes() {
     );
     assert_eq!(
         settings_notices(&turn),
-        vec![format!("Model changed to {NEXT_MODEL}, continuing.")]
+        vec![format!("Model changed to {NEXT_MODEL} by you, continuing.")]
     );
     let events = settings_events(&turn);
     assert_eq!(events.len(), 1);
@@ -213,7 +213,7 @@ async fn several_changes_of_one_step_restart_the_process_once() {
     assert_eq!(
         settings_notices(&turn),
         vec![format!(
-            "Model changed to {NEXT_MODEL}, effort changed to high, continuing."
+            "Model changed to {NEXT_MODEL}, effort changed to high by you, continuing."
         )]
     );
     assert_eq!(

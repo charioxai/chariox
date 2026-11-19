@@ -15,6 +15,7 @@ impl KernelRuntimeOwnedState {
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
         max_context_tokens: Option<Option<u64>>,
+        waive_parent_limit: Option<bool>,
     ) -> Result<owned::OwnedAgentConfigUpdate, DaemonError> {
         let workspace_id = workspace_id.map(|value| {
             value.and_then(|value| {
@@ -62,6 +63,9 @@ impl KernelRuntimeOwnedState {
         }
         if let Some(permission_level_override) = permission_level_override {
             next_agent.set_permission_level_override(permission_level_override);
+        }
+        if let Some(waived) = waive_parent_limit {
+            next_agent.set_parent_limit_waived(waived);
         }
         if let Some(workspace_id) = workspace_id.clone() {
             next_agent.set_workspace_id(workspace_id);
@@ -123,6 +127,10 @@ impl KernelRuntimeOwnedState {
                 workspace_id,
                 worktree_id,
             )?;
+            if let Some(waived) = waive_parent_limit {
+                self.agent_store
+                    .set_agent_parent_limit_waived(agent_id, waived)?;
+            }
             // A running provider keeps the compaction point it started with; the next start takes this.
             if let Some(max_context_tokens) = max_context_tokens {
                 self.agent_store

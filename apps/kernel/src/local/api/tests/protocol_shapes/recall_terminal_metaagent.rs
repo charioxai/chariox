@@ -179,7 +179,6 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
         worktree_id: Some("/repo-feature".to_string()),
         clear_worktree_id: false,
         reason: None,
-        self_settings: None,
         usage_limit: None,
     });
     let snapshot = serde_json::to_value(request).expect("request should serialize");

@@ -267,10 +267,6 @@ fn settings_set_changes_mode_permission_and_directory_as_a_config() {
         Some(crate::provider::AgentPermissionLevel::Required)
     );
     assert_eq!(request.worktree_id.as_deref(), Some("/work/tree"));
-    assert!(
-        request.self_settings.is_none(),
-        "an agent never sets what it may change"
-    );
 }
 
 #[test]

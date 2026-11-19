@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
+use crate::local::KernelConnectionClass;
 use crate::local::{
     AliasAgentRequest, DestroyAgentRequest, ForkAgentRequest, LocalDaemonResponse,
     SpawnAgentRequest, SpawnAgentsRequest, UndoTurnRequest, UpdateAgentConfigRequest,
@@ -63,14 +64,19 @@ fn parent_limit(
     })
 }
 
-/// An agent that calls is the origin of the change; a client's call is the person's.
+/// An agent that calls is the origin of the change; so is an outside agent acting through an
+/// owner grant. A client's call is the person's.
 fn settings_context(
     caller_agent_id: Option<&str>,
+    connection_class: Option<KernelConnectionClass>,
     reason: Option<String>,
 ) -> crate::runtime::state::SettingsContext {
-    match caller_agent_id {
-        Some(agent_id) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
-        None => crate::runtime::state::SettingsContext::person(),
+    match (caller_agent_id, connection_class) {
+        (Some(agent_id), _) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
+        (None, Some(KernelConnectionClass::ExternalAgent)) => {
+            crate::runtime::state::SettingsContext::external_agent(reason)
+        }
+        (None, _) => crate::runtime::state::SettingsContext::person(),
     }
 }
 
@@ -82,6 +88,7 @@ impl SessionRuntimeStore {
         request: UpdateAgentConfigRequest,
         caller_user_id: String,
         caller_agent_id: Option<String>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -137,7 +144,8 @@ impl SessionRuntimeStore {
         } else {
             request.max_context_tokens.map(Some)
         };
-        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let context =
+            settings_context(caller_agent_id.as_deref(), connection_class, request.reason);
         let result = match self
             .state
             .update_agent_config_as(
@@ -149,7 +157,6 @@ impl SessionRuntimeStore {
                 workspace_id,
                 worktree_id,
                 max_context_tokens,
-                request.self_settings,
                 context,
             )
             .await
@@ -173,6 +180,7 @@ impl SessionRuntimeStore {
         request: UpdateAgentProfileRequest,
         caller_user_id: String,
         caller_agent_id: Option<String>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -183,7 +191,8 @@ impl SessionRuntimeStore {
         } else {
             request.effort.map(Some)
         };
-        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let context =
+            settings_context(caller_agent_id.as_deref(), connection_class, request.reason);
         let result = match self
             .state
             .update_agent_profile_as(
@@ -959,5 +968,30 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::state::SettingsOrigin;
+
+    #[test]
+    fn a_settings_call_is_the_agents_the_outside_agents_or_the_persons() {
+        let origin = |agent: Option<&str>, class| settings_context(agent, class, None).origin;
+        assert_eq!(
+            origin(Some("agent-1"), Some(KernelConnectionClass::KernelAgent)),
+            SettingsOrigin::Agent("agent-1".into())
+        );
+        assert_eq!(
+            origin(None, Some(KernelConnectionClass::ExternalAgent)),
+            SettingsOrigin::ExternalAgent,
+            "an outside agent acts for the person through its grant"
+        );
+        assert_eq!(
+            origin(None, Some(KernelConnectionClass::Terminal)),
+            SettingsOrigin::Person
+        );
+        assert_eq!(origin(None, None), SettingsOrigin::Person);
     }
 }

@@ -43,13 +43,18 @@ const PARENT_WALK_LIMIT: usize = 16;
 
 /// `effective(agent) = min(own, effective(parent))` for permission level and mode, read at the
 /// moment of use: lowering a parent lowers every agent below it, and an agent the user raised
-/// above its parent still runs at the parent's limit. `agents` are the agents of the room.
+/// above its parent still runs at the parent's limit, unless the person raised it on purpose
+/// (`parent_limit_waived`). Only mode and permission level are limited this way; model, effort,
+/// account, provider and directory never are. `agents` are the agents of the room.
 pub fn effective_agent_execution_config_in_tree(
     session: &RuntimeSession,
     agent: &AgentInstance,
     agents: &[AgentInstance],
 ) -> EffectiveAgentExecutionConfig {
     let mut config = effective_agent_execution_config(session, Some(agent));
+    if agent.parent_limit_waived() {
+        return config;
+    }
     let mut current = agent;
     for _ in 0..PARENT_WALK_LIMIT {
         let Some(parent) = current

@@ -55,7 +55,6 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 worktree_id: None,
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))

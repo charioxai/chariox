@@ -146,7 +146,6 @@ async fn f4_legacy_agents_inner() {
                         worktree_id: None,
                         clear_worktree_id: false,
                         reason: None,
-                        self_settings: None,
                         usage_limit: None,
                     }),
                 ),

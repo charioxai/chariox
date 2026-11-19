@@ -8,7 +8,7 @@ fn person_inbox_1012_snapshot_and_hash() {
     let bytes = include_bytes!("person-inbox-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "48e622d6d0cd1e605d004b7ea9982e7313e76e1f0a0a65a2fa9c35359d83c330"
+        "7e825f8b769294f3723e7899d2ee49c5961ba69b032b9995905fa8eb0db22019"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

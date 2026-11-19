@@ -1320,6 +1320,7 @@ fn unchanged_agent_runtime_profile_is_not_written_again() {
                 &agent_id,
                 resume,
                 run.id(),
+                (run.provider(), run.account_profile()),
             )
             .expect("resume state should persist");
     };

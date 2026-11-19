@@ -710,7 +710,7 @@ const LIMITED: (Mode, Level) = (Mode::Plan, Level::Required);
 const OPEN: (Mode, Level) = (Mode::Build, Level::Yolo);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_local_agent_raised_beneath_a_lower_parent_keeps_its_run_at_the_parent_limit() {
+async fn a_local_agent_the_person_raised_beneath_a_lower_parent_runs_at_the_persons_setting() {
     let mut tree = leased_tree(Mode::Plan, Level::Required).await;
     let (low, local) = (tree.low.clone(), tree.local.clone());
     tree.place(&local, &low).await;
@@ -718,8 +718,8 @@ async fn a_local_agent_raised_beneath_a_lower_parent_keeps_its_run_at_the_parent
     tree.set_settings(&local, Mode::Build, Level::Yolo).await;
     assert_eq!(
         tree.next_turn(&local),
-        LIMITED,
-        "a local agent raised to Yolo/Build beneath a Required/Plan parent must keep running at Required/Plan"
+        OPEN,
+        "the person's Yolo/Build for an agent beneath a Required/Plan parent holds against the parent's limit"
     );
     assert_eq!(
         tree.own_settings(&local),
