@@ -5,6 +5,7 @@ pub(crate) fn canonical_agent_event_tool_name(name: &str) -> Option<&'static str
     [
         "chariox.jobs.run",
         "chariox.jobs.status",
+        "chariox.jobs.list",
         "chariox.jobs.cancel",
         "chariox.events.subscribe",
         "chariox.events.subscriptions",

@@ -34,7 +34,6 @@ pub(crate) use place_command::{
 };
 
 pub const CHUNK_BYTES: usize = 256 * 1024;
-const MAX_PER_KERNEL: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -131,7 +130,6 @@ pub(super) struct Record {
     input: Mutex<Input>,
     output: Mutex<buffer::Output>,
     changed: Notify,
-    space: Notify,
     cancel: watch::Sender<Option<CancelReason>>,
 }
 
@@ -156,6 +154,7 @@ pub struct RoomExecService {
 #[derive(Default)]
 struct Inner {
     records: Mutex<BTreeMap<String, Arc<Record>>>,
+    output_pool: Arc<Mutex<buffer::Pool>>,
     managed: ManagedWork,
     running: AtomicUsize,
     admission: LaunchAdmission,
@@ -279,11 +278,6 @@ impl RoomExecService {
         .map_err(|failure| error("exec_spawn_failed", failure.to_string()))?;
         let admission = self.inner.managed.admission()?;
         let mut records = self.inner.records.lock().expect("exec records poisoned");
-        if records.len() >= MAX_PER_KERNEL
-            || self.inner.running.load(Ordering::Acquire) >= MAX_PER_KERNEL
-        {
-            return Err(error("exec_limit", limit_message(&records)));
-        }
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
@@ -327,9 +321,8 @@ impl RoomExecService {
                 offset: 0,
                 last: None,
             }),
-            output: Mutex::new(buffer::Output::default()),
+            output: Mutex::new(buffer::Output::new(self.inner.output_pool.clone())),
             changed: Notify::new(),
-            space: Notify::new(),
             cancel,
         });
         records.insert(exec_id.clone(), record.clone());
@@ -388,7 +381,7 @@ impl RoomExecService {
             .ok_or_else(|| {
                 error(
                     "exec_not_found",
-                    "this Room has no such exec (records expire after five minutes without an output read); use exec_list to find current IDs",
+                    "this Room has no such command; its reader lease may have expired",
                 )
             })
     }
@@ -491,7 +484,6 @@ impl RoomExecService {
                 .lock()
                 .expect("exec output poisoned")
                 .page(after_cursor)?;
-            record.space.notify_waiters();
             if !page.chunks.is_empty()
                 || page.outcome.is_some()
                 || tokio::time::Instant::now() >= deadline
@@ -645,37 +637,6 @@ impl RoomExecService {
             });
         self.report_work();
     }
-}
-
-/// Names what fills the kernel's command limit and the tool that frees each part: job tools cannot
-/// close a retained ordinary command, and RoomTerminal cannot end a job.
-fn limit_message(records: &BTreeMap<String, Arc<Record>>) -> String {
-    let (mut jobs, mut finished, mut running) = (0, 0, 0);
-    for record in records.values() {
-        if record.job {
-            jobs += 1;
-        } else if matches!(
-            *record.state.lock().expect("exec state poisoned"),
-            ExecState::Finished
-        ) {
-            finished += 1;
-        } else {
-            running += 1;
-        }
-    }
-    let mut remedies = Vec::new();
-    if finished + running > 0 {
-        remedies.push(
-            "use RoomTerminal exec_list to find and exec_close a collected or abandoned command",
-        );
-    }
-    if jobs > 0 {
-        remedies.push("end a job with chariox.jobs.cancel once chariox.jobs.status shows it is no longer needed");
-    }
-    format!(
-        "this kernel holds its limit of {MAX_PER_KERNEL} commands ({jobs} jobs, {running} other running commands, {finished} other finished commands); {}, then try again",
-        remedies.join(" or ")
-    )
 }
 
 fn input_error(failure: mpsc::error::TrySendError<Option<Vec<u8>>>) -> DaemonError {

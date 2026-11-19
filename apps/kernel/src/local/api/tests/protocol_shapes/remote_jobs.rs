@@ -81,6 +81,13 @@ fn offload_jobs_protocol_snapshots_and_hashes() {
             shape["sha256"].as_str().unwrap()
         );
     }
+    let view = fixture["shapes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|shape| shape["kind"] == "job_view")
+        .unwrap();
+    assert!(view["wire"].get("read_error").is_some());
     let absent: crate::config::CharioxUserConfig =
         serde_json::from_value(serde_json::json!({})).unwrap();
     assert!(!absent.agents.offload_without_asking.unwrap_or(false));

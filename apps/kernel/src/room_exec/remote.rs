@@ -85,7 +85,7 @@ pub(super) async fn run(
                             message: "the other kernel sent output that is not valid base64; the stream is incomplete".into(),
                         };
                     };
-                    if !store(&record, chunk.stream, &bytes, &mut cancel).await {
+                    if !store(&record, chunk.stream, &bytes, &cancel) {
                         break;
                     }
                 }
@@ -99,29 +99,21 @@ pub(super) async fn run(
     service.finish(&record, outcome);
 }
 
-/// Returns false when the launch was cancelled while the reader was behind.
-async fn store(
+/// Retaining output never delays a producer; the shared byte ceiling marks old unread data.
+fn store(
     record: &Record,
     stream: ExecStream,
     bytes: &[u8],
-    cancel: &mut watch::Receiver<Option<CancelReason>>,
+    cancel: &watch::Receiver<Option<CancelReason>>,
 ) -> bool {
-    loop {
-        let space = record.space.notified();
-        tokio::pin!(space);
-        space.as_mut().enable();
-        if record
-            .output
-            .lock()
-            .expect("exec output poisoned")
-            .push(stream, bytes)
-        {
-            record.changed.notify_waiters();
-            return true;
-        }
-        tokio::select! {
-            _ = cancelled(cancel) => return false,
-            _ = space => {},
-        }
+    if cancel.borrow().is_some() {
+        return false;
     }
+    record
+        .output
+        .lock()
+        .expect("exec output poisoned")
+        .push(stream, bytes);
+    record.changed.notify_waiters();
+    true
 }
