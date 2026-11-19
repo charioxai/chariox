@@ -13,7 +13,7 @@ pub(crate) fn collect_names(value: &Value, names: &mut BTreeSet<String>) {
     match value {
         Value::Array(values) => values.iter().for_each(|value| collect_names(value, names)),
         Value::Object(fields) => {
-            if super::legacy_grant(value) {
+            if super::retired_grant(value) {
                 if let Some(name) = fields.get("name").and_then(Value::as_str) {
                     remember(name, names);
                 }
