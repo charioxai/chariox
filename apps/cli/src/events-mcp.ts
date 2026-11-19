@@ -14,7 +14,7 @@ const NEXT_NOTIFICATION = "chariox_next_notification"
 const LIST_SOURCES = "chariox_notification_sources"
 const FOLLOW_SOURCE = "chariox_follow_notification_source"
 const UNFOLLOW_SOURCE = "chariox_unfollow_notification_source"
-const DEFAULT_WAIT_SECONDS = 540
+const DEFAULT_WAIT_SECONDS = MAX_WAIT_SECONDS
 const REPLY = "reply"
 const PAGE = 100
 // An idle wait holds the inbox reader, so it lasts one short slice and another call's read or acknowledgement is never held for long.
@@ -405,7 +405,8 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
         const result = await (body.name === NEXT_NOTIFICATION ? nextNotification : nextChoice)(seconds, call)
         if (!call.cancelled) write({ id, result })
       } catch (error) {
-        if (!call.cancelled) write({ id, result: text({ error: error instanceof CommandFailure ? error.code : "request_failed" }, true) })
+        // A refusal says what to do next (a grant that follows nothing is told how to follow): the model gets that text.
+        if (!call.cancelled) write({ id, result: text(error instanceof CommandFailure ? { error: error.code, message: error.message } : { error: "request_failed" }, true) })
       } finally {
         calls.delete(id)
       }

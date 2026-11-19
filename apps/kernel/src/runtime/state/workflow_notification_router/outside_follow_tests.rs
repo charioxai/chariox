@@ -138,6 +138,15 @@ async fn a_new_grant_follows_nothing_and_a_wait_or_list_says_so_at_once() {
     .await
     .unwrap();
     for request in [
+        serde_json::json!({"WaitEvents":{"since":0,"timeout_ms":60000}}),
+        serde_json::json!({"ListEvents":{"since":0}}),
+    ] {
+        assert!(matches!(
+            dispatch(&router, &grant, request).await.unwrap(),
+            LocalDaemonResponse::EventsCursorExpired { .. }
+        ));
+    }
+    for request in [
         serde_json::json!({"WaitEvents":{"timeout_ms":60000}}),
         serde_json::json!({"ListEvents":{}}),
     ] {
@@ -149,7 +158,7 @@ async fn a_new_grant_follows_nothing_and_a_wait_or_list_says_so_at_once() {
 }
 
 #[tokio::test]
-async fn a_wait_over_the_limit_is_held_no_longer_than_the_limit() {
+async fn a_wait_over_the_limit_is_refused_and_one_at_the_limit_is_held_that_long() {
     let mut f = Fixture::new();
     let router = router(&mut f);
     let kernel = router.runtime_state();
@@ -160,15 +169,27 @@ async fn a_wait_over_the_limit_is_held_no_longer_than_the_limit() {
         agent_id: None,
     };
     follow(&router, &grant, serde_json::json!({"targets":[target]})).await;
-    let request = WaitEventsRequest {
+    let over = WaitEventsRequest {
         since: None,
         timeout_ms: 600_000,
+        limit: 10,
+    };
+    let message = refusal(
+        kernel
+            .outside_wait(&grant, &over, Some(&grant), None)
+            .await
+            .unwrap_err(),
+    );
+    assert!(message.contains("at most 540 s"), "{message}");
+    let at = WaitEventsRequest {
+        since: None,
+        timeout_ms: 540_000,
         limit: 10,
     };
     tokio::time::pause();
     let started = tokio::time::Instant::now();
     let LocalDaemonResponse::EventsListed { timed_out, .. } = kernel
-        .outside_wait(&grant, &request, Some(&grant), None)
+        .outside_wait(&grant, &at, Some(&grant), None)
         .await
         .unwrap()
     else {
@@ -178,7 +199,7 @@ async fn a_wait_over_the_limit_is_held_no_longer_than_the_limit() {
     let held = started.elapsed();
     assert!(
         held >= Duration::from_secs(540) && held < Duration::from_secs(541),
-        "the kernel holds a wait at most 540 s, held {held:?}"
+        "held {held:?}"
     );
     drop((router, kernel));
     cleanup(f);

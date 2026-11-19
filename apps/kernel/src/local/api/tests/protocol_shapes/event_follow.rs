@@ -21,3 +21,17 @@ fn event_follow_1069_snapshot_and_hash() {
         assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
     }
 }
+
+#[test]
+fn a_like_only_subscribe_is_the_documented_takeover() {
+    // PROTOCOL.md: `SubscribeEvents { like }` is sent without `targets` or `sources`.
+    let request: LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"SubscribeEvents": {"like": "access-0123456789abcdef"}}),
+    )
+    .unwrap();
+    let LocalDaemonRequest::SubscribeEvents(subscribe) = request else {
+        panic!("expected SubscribeEvents")
+    };
+    assert_eq!(subscribe.like.as_deref(), Some("access-0123456789abcdef"));
+    assert!(subscribe.targets.is_empty() && subscribe.sources.is_empty());
+}

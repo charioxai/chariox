@@ -13,6 +13,7 @@ pub struct EventTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribeEventsRequest {
+    #[serde(default)]
     pub targets: Vec<EventTarget>,
     /// Notification sources of this kernel (workflow exits and owner actions) by id. Their
     /// occurrences reach the grant's own event stream; nothing else can receive them.

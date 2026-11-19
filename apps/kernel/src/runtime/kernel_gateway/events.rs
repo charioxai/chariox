@@ -208,14 +208,16 @@ impl KernelGateway {
                 self.runtime_state.outside_subscription_response(id)?
             }
             LocalDaemonRequest::WaitEvents(request) => {
-                self.runtime_state.refuse_when_following_nothing(id)?;
+                self.runtime_state
+                    .refuse_when_following_nothing(id, request.since)?;
                 self.runtime_state
                     .outside_wait(id, request, Some(id), lifetime)
                     .await?
             }
             _ => {
-                if matches!(request, LocalDaemonRequest::ListEvents(_)) {
-                    self.runtime_state.refuse_when_following_nothing(id)?;
+                if let LocalDaemonRequest::ListEvents(list) = request {
+                    self.runtime_state
+                        .refuse_when_following_nothing(id, list.since)?;
                 }
                 self.runtime_state
                     .outside_part_request(id, true, owner.as_deref(), request)?

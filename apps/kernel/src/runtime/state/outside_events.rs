@@ -18,8 +18,8 @@ pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
     )
 }
-/// The longest one wait holds a request; the CLI refuses a longer `--timeout` before sending it.
-const MAX_WAIT_MS: u64 = 540_000;
+/// The longest one wait holds a request; a longer `timeout_ms` is refused, and the CLI refuses a longer `--timeout` before sending it.
+pub(crate) const MAX_WAIT_MS: u64 = 540_000;
 /// Notification sources reach a grant's own part only, through the gateway.
 pub(crate) fn source_not_available() -> DaemonError {
     crate::durable_state::agent_lifecycle::outside::refused("source not available")
@@ -208,7 +208,11 @@ impl KernelRuntimeState {
     /// A wait or a list on an inbox that follows nothing and holds nothing unread would only answer
     /// empty, for the whole timeout or for ever: refuse it at once and say how to follow. An ended
     /// inbox still answers with its ending, and unread records are still read.
-    pub(crate) fn refuse_when_following_nothing(&self, id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn refuse_when_following_nothing(
+        &self,
+        id: &str,
+        since: Option<u64>,
+    ) -> Result<(), DaemonError> {
         let store = self.outside_store();
         let ended = store
             .outside_part(id)?
@@ -216,7 +220,7 @@ impl KernelRuntimeState {
         if ended || self.outside_follow_count(id)? > 0 {
             return Ok(());
         }
-        match store.outside_list(id, None, 1)? {
+        match store.outside_list(id, since, 1)? {
             Ok(unread) if unread.events.is_empty() => {
                 Err(crate::durable_state::agent_lifecycle::outside::follows_nothing())
             }
@@ -246,8 +250,12 @@ impl KernelRuntimeState {
         grant: Option<&str>,
         lifetime: Option<&crate::runtime::command::TerminalLifetime>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_millis(request.timeout_ms.min(MAX_WAIT_MS));
+        if request.timeout_ms > MAX_WAIT_MS {
+            return Err(crate::durable_state::agent_lifecycle::outside::refused(
+                "a wait lasts at most 540 s: send timeout_ms of 540000 or less",
+            ));
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms);
         loop {
             if lifetime.is_some_and(|lifetime| !lifetime.is_live()) {
                 return Err(crate::durable_state::agent_lifecycle::outside::refused(

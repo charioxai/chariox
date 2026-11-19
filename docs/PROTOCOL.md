@@ -6146,7 +6146,7 @@ grants"); their occurrences arrive as `notification` events, and `ListNotificati
 `UnsubscribeEvents { targets, sources, all }`, `GetEventSubscription`, `ListEvents
 { since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
-or an empty timed-out batch, with a maximum wait of nine minutes (540 s; the CLI refuses a longer `--timeout` before sending it). Batches are
+or an empty timed-out batch, with a maximum wait of nine minutes (540 s): a longer `timeout_ms` is refused at once with `events_refused`, and the CLI refuses a longer `--timeout` before sending it. Batches are
 oldest first, limited to 1,000 records and the existing relay envelope budget.
 Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
 `EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
