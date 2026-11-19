@@ -58,6 +58,9 @@ pub struct ClaudeRuntimeState {
     pub(super) active_prompt_message: Option<Value>,
     pub(super) turn_watchdog: ClaudeTurnWatchdog,
     pub(super) cancelled_turn_pending_settlement: bool,
+    /// Set when Claude's `init` reports that the Chariox MCP server did not
+    /// connect: the turn would run without the agent's tools.
+    pub(super) runtime_tools_unavailable: Option<String>,
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
     pub(super) emitted_text_by_block: BTreeMap<String, String>,

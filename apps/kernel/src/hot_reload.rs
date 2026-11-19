@@ -23,7 +23,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 14;
+pub const HANDOVER_FORMAT: u32 = 15;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -682,6 +682,15 @@ pub(crate) fn take_claude(run_id: &str) -> Option<crate::provider::ClaudeHandove
             None
         }
     }
+}
+
+/// A handed-over Claude turn this program adopts for `run_id`, as after a claim.
+#[cfg(test)]
+pub(crate) fn adopt_claude_for_tests(run_id: &str, claude: crate::provider::ClaudeHandover) {
+    lock(&ADOPTING).insert(
+        run_id.to_string(),
+        HandedOverProcess::Claude(Box::new(claude)),
+    );
 }
 
 /// The PTY of a claimed run's handed-over provider server, to adopt instead
