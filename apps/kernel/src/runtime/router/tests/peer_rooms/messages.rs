@@ -4,6 +4,25 @@ use super::*;
 fn a_request_read_by_a_busy_peer_does_not_reply_with_that_turns_answer() {
     run_peer_test("peer-room-unrelated-answer", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        {
+            let app = rooms.app.lock().await;
+            let session = app.sessions().get_session(&rooms.peer_room).unwrap();
+            let prompt = session.active_prompt_for_agent(rooms.peer.id()).unwrap();
+            let run = app
+                .providers()
+                .get_run_for_agent(&rooms.peer_room, rooms.peer.id())
+                .unwrap();
+            app.durable_state_store()
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                    owner: session.owner_user_id().into(),
+                    room: rooms.peer_room.clone(),
+                    agent: rooms.peer.id().into(),
+                    prompt: prompt.id().into(),
+                    run: Some(run.id().into()),
+                    now: crate::session::unix_epoch_ms(),
+                })
+                .unwrap();
+        }
         let sent = rooms
             .send(serde_json::json!({
                 "agent": "peer",
