@@ -16,17 +16,34 @@ pub(super) struct Output {
     discarding_line: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct OutputCheckpoint {
+    pending: Vec<u8>,
+    tail: String,
+    discarding_line: bool,
+}
+
 impl Output {
-    pub(super) fn new(state: &KernelRuntimeState, record: &Record) -> Result<Self, DaemonError> {
-        let directory = state
+    fn path(state: &KernelRuntimeState, record: &Record) -> PathBuf {
+        state
             .owned
             .config_projection
             .snapshot()
             .private_runtime_state_root()
             .join("jobs")
-            .join(&record.job_id);
-        std::fs::create_dir_all(&directory).map_err(|e| ledger::error(e.to_string()))?;
-        let path = directory.join("output.log");
+            .join(&record.job_id)
+            .join("output.log")
+    }
+
+    pub(super) fn existing_log(state: &KernelRuntimeState, record: &Record) -> Option<String> {
+        let path = Self::path(state, record);
+        path.is_file().then(|| path.to_string_lossy().into_owned())
+    }
+
+    pub(super) fn new(state: &KernelRuntimeState, record: &Record) -> Result<Self, DaemonError> {
+        let path = Self::path(state, record);
+        std::fs::create_dir_all(path.parent().expect("job output has a directory"))
+            .map_err(|e| ledger::error(e.to_string()))?;
         let file = std::fs::File::create(&path)
             .map_err(|e| ledger::error(format!("Cannot keep job output: {e}")))?;
         Ok(Self {
@@ -37,6 +54,34 @@ impl Output {
             discarding_line: false,
         })
     }
+
+    pub(super) fn take_checkpoint(&mut self) -> OutputCheckpoint {
+        OutputCheckpoint {
+            pending: std::mem::take(&mut self.pending),
+            tail: std::mem::take(&mut self.tail),
+            discarding_line: self.discarding_line,
+        }
+    }
+
+    pub(super) fn reopen(
+        state: &KernelRuntimeState,
+        record: &Record,
+        checkpoint: OutputCheckpoint,
+        file: std::fs::File,
+    ) -> Self {
+        Self {
+            pending: checkpoint.pending,
+            tail: checkpoint.tail,
+            file,
+            log: Self::path(state, record).to_string_lossy().into_owned(),
+            discarding_line: checkpoint.discarding_line,
+        }
+    }
+
+    pub(super) fn keep_log(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        self.file.try_clone().map(Into::into)
+    }
+
     fn push(
         &mut self,
         state: &KernelRuntimeState,
@@ -193,8 +238,17 @@ impl KernelRuntimeState {
         wake: AgentWake,
         mut record: Record,
         mut cancelled: watch::Receiver<bool>,
+        local: Option<(
+            Output,
+            super::local::ActiveLocalJob,
+            super::local::LocalProgress,
+        )>,
     ) {
-        let mut output = match Output::new(self, &record) {
+        let (output, progress) = match local {
+            Some((output, active, progress)) => (Ok(output), Some((active, progress))),
+            None => (Output::new(self, &record), None),
+        };
+        let mut output = match output {
             Ok(output) => output,
             Err(error) => {
                 if record.remote.awaits_command() {
@@ -216,7 +270,10 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        let result = if matches!(record.remote, RemoteStage::Running { .. }) {
+        let result = if let Some((active, progress)) = progress {
+            self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
+                .await
+        } else if matches!(record.remote, RemoteStage::Running { .. }) {
             self.resume_remote_job(&mut record, &mut output, &mut cancelled)
                 .await
         } else {
@@ -558,110 +615,6 @@ impl KernelRuntimeState {
         Ok(result)
     }
 
-    async fn run_local_job(
-        &self,
-        record: &mut Record,
-        environment: &BTreeMap<String, Zeroizing<String>>,
-        output: &mut Output,
-        cancelled: &mut watch::Receiver<bool>,
-    ) -> Result<JobResult, DaemonError> {
-        record.placement = JobPlacement::Local;
-        let session = self.owned.session_store.get_session(&record.room_id)?;
-        let execs = &self.owned.room_execs;
-        let input = command_input(&record.request, environment, &record.job_id)?;
-        let exec_id = execs.open_job_as(
-            &record.room_id,
-            session.owner_user_id(),
-            &record.cwd,
-            &validate(&record.request)?,
-            &record.request.needs,
-            Some(self.clone()),
-            Some(record.agent_id.clone()),
-        )?;
-        let _owned = LocalExec {
-            service: execs.clone(),
-            room: record.room_id.clone(),
-            id: exec_id.clone(),
-        };
-        record.exec_id = Some(exec_id.clone());
-        save_record(self, record)?;
-        let next = execs.write(
-            &record.room_id,
-            &exec_id,
-            0,
-            &base64::engine::general_purpose::STANDARD.encode(input.as_bytes()),
-        )?;
-        execs.close_stdin(&record.room_id, &exec_id, next)?;
-        let mut deadline = None;
-        let (mut cursor, mut stopped) = (0, None);
-        loop {
-            if stopped.is_none()
-                && (*cancelled.borrow()
-                    || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline))
-            {
-                stopped = Some(if *cancelled.borrow() {
-                    JobOutcome::Cancelled
-                } else {
-                    JobOutcome::TimeLimit
-                });
-                execs.cancel(&record.room_id, &exec_id)?;
-            }
-            if let Some(summary) = execs
-                .list(&record.room_id)
-                .into_iter()
-                .find(|summary| summary.exec_id == exec_id)
-            {
-                let state = match summary.state {
-                    crate::room_exec::ExecState::Queued { .. } => "queued",
-                    crate::room_exec::ExecState::Starting => "starting",
-                    crate::room_exec::ExecState::Running => {
-                        deadline.get_or_insert_with(|| {
-                            tokio::time::Instant::now()
-                                + Duration::from_secs(record.request.timeout_s)
-                        });
-                        record
-                            .running_at_ms
-                            .get_or_insert_with(crate::session::unix_epoch_ms);
-                        "running"
-                    }
-                    crate::room_exec::ExecState::Finished => record.state.as_str(),
-                };
-                if record.state != state {
-                    record.state = state.into();
-                    save_record(self, record)?;
-                }
-            }
-            let page = execs
-                .read(
-                    &record.room_id,
-                    &exec_id,
-                    cursor,
-                    Duration::from_millis(250),
-                )
-                .await?;
-            cursor = page.next_cursor;
-            output.page(self, &record.room_id, &page)?;
-            if let Some(outcome) = page.outcome {
-                execs.close(&record.room_id, &exec_id)?;
-                if self.job_wake_driver.as_ref().is_some_and(|driver| {
-                    driver
-                        .remote_requested
-                        .lock()
-                        .expect("job move")
-                        .remove(&record.job_id)
-                }) {
-                    record.exec_id = None;
-                    return Err(DaemonError::MachineRequest {
-                        code: "job_move_remote".into(),
-                        message: "Queued job moved".into(),
-                    });
-                }
-                note_failed_end(self, record, output, &outcome)?;
-                return Ok(result_from_exit(record, outcome, stopped));
-            }
-        }
-    }
-
     pub(super) async fn run_remote_job(
         &self,
         record: &mut Record,
@@ -912,7 +865,7 @@ fn kept_worker_notice(record: &Record) -> &'static str {
     }
 }
 
-fn command_input(
+pub(super) fn command_input(
     request: &RunJobRequest,
     values: &BTreeMap<String, Zeroizing<String>>,
     job_id: &str,
@@ -998,7 +951,7 @@ fn uncollected_stop(
 }
 /// A command that ended without an exit status says why in its output, so the job never ends
 /// with no exit code and no reason.
-fn note_failed_end(
+pub(super) fn note_failed_end(
     state: &KernelRuntimeState,
     record: &Record,
     output: &mut Output,
@@ -1017,7 +970,11 @@ pub(super) fn failed_end_notice(exit: &ExecOutcome) -> Option<String> {
         _ => None,
     }
 }
-fn result_from_exit(record: &Record, exit: ExecOutcome, stopped: Option<JobOutcome>) -> JobResult {
+pub(super) fn result_from_exit(
+    record: &Record,
+    exit: ExecOutcome,
+    stopped: Option<JobOutcome>,
+) -> JobResult {
     let mut result = failed(record, String::new());
     let signaled = matches!(&exit, ExecOutcome::Signaled { .. });
     let memory_limited = matches!(&exit, ExecOutcome::MemoryLimit { .. });
@@ -1035,16 +992,4 @@ fn result_from_exit(record: &Record, exit: ExecOutcome, stopped: Option<JobOutco
         JobOutcome::OutsideEnd
     });
     result
-}
-
-/// An output or persistence failure must not abandon the command's physical ownership.
-struct LocalExec {
-    service: crate::room_exec::RoomExecService,
-    room: String,
-    id: String,
-}
-impl Drop for LocalExec {
-    fn drop(&mut self) {
-        let _ = self.service.close(&self.room, &self.id);
-    }
 }

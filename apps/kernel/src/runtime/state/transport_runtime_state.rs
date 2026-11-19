@@ -469,6 +469,8 @@ impl KernelRuntimeState {
         let files = self.file_transfers.clone();
         let files_shutdown = tokio::spawn(async move { files.shutdown().await });
         crate::shutdown::stage("room execs");
+        self.shutdown_local_jobs(crate::hot_reload::handing_over())
+            .await;
         self.owned.room_execs.shutdown();
         crate::shutdown::stage("room terminals");
         self.owned.room_terminals.shutdown();

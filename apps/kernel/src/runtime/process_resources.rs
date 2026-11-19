@@ -65,7 +65,7 @@ mod cgroup;
 /// Processes of one domain the memory controller killed, and the limit that
 /// bound it: the smallest `memory.max` from the domain up, else its peak use
 /// (0 when the host reports neither).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OomKill {
     pub kills: u64,
     pub bytes: u64,

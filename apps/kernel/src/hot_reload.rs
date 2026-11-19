@@ -11,7 +11,7 @@ use crate::config::ListenPort;
 use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -20,12 +20,15 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::room_terminal::{RoomTerminalService, TerminalHandover};
+use crate::runtime::state::LocalJobHandover;
+
+mod job_state_file;
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
 /// This includes the persisted terminal records used to restore the handed-over PTYs;
 /// TerminalScope records cannot restore the earlier session-only records.
-pub const HANDOVER_FORMAT: u32 = 16;
+pub const HANDOVER_FORMAT: u32 = 17;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -41,6 +44,7 @@ struct Handover {
     // Processes agents watch keep their wakes: the next program supervises the
     // same processes again, from the pipes handed over with them.
     watched: Vec<crate::runtime::state::WatchedHandover>,
+    local_jobs: Vec<LocalJobHandover>,
     // Commands whose admission stopped them for room stay stopped, listed and
     // startable: the next program's admission is told which they are.
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
@@ -67,6 +71,7 @@ impl Handover {
             attachments: Vec::new(),
             released_jobs: Vec::new(),
             watched: Vec::new(),
+            local_jobs: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
             revoked_reach_runs: Vec::new(),
@@ -87,6 +92,7 @@ impl Handover {
                     .iter()
                     .flat_map(|watched| watched.fds().iter().copied()),
             )
+            .chain(self.local_jobs.iter().flat_map(LocalJobHandover::fds))
             .chain(self.credentials_fd)
             .chain(self.vault_fd)
             .chain(self.listeners.values().copied())
@@ -223,6 +229,7 @@ static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>
     Mutex::new(Vec::new());
 static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
     Mutex::new(Vec::new());
+static RECEIVED_LOCAL_JOBS: Mutex<Vec<LocalJobHandover>> = Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -301,6 +308,9 @@ pub fn receive() {
             set_close_on_exec(*fd, true);
         }
     }
+    for fd in handover.local_jobs.iter().flat_map(LocalJobHandover::fds) {
+        set_close_on_exec(fd, true);
+    }
     let mut handover = handover;
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
@@ -317,6 +327,7 @@ pub fn receive() {
     *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
+    *lock(&RECEIVED_LOCAL_JOBS) = std::mem::take(&mut handover.local_jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -780,6 +791,7 @@ impl PreparedForTests {
             kernel: None,
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
+            local_job_guards: Vec::new(),
         });
         Self
     }
@@ -841,6 +853,59 @@ pub(crate) fn hand_over_watched(watched: Vec<crate::runtime::state::WatchedProce
             prepared.watched_resources.extend(transfer.resources);
         }
     }
+}
+
+pub(crate) fn hand_over_local_job(
+    job_id: String,
+    wake_id: String,
+    exec: crate::room_exec::JobExecHandover,
+    pipes: Vec<OwnedFd>,
+    guard: Option<crate::room_exec::JobExecGuard>,
+    log: OwnedFd,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let state = job_state_file::write(body)?;
+    let mut prepared = lock(&PREPARED);
+    let prepared = prepared
+        .as_mut()
+        .ok_or_else(|| std::io::Error::other("the kernel reload is no longer prepared"))?;
+    prepared.handover.local_jobs.push(LocalJobHandover::new(
+        job_id,
+        wake_id,
+        exec,
+        state.as_raw_fd(),
+        log.as_raw_fd(),
+    ));
+    prepared.masters.extend(pipes);
+    prepared.masters.push(state);
+    prepared.masters.push(log);
+    prepared.local_job_guards.extend(guard);
+    Ok(())
+}
+
+pub(crate) fn local_job_wakes() -> Vec<String> {
+    lock(&RECEIVED_LOCAL_JOBS)
+        .iter()
+        .map(|job| job.wake_id().to_string())
+        .collect()
+}
+
+pub(crate) fn take_local_job(id: &str) -> Option<LocalJobHandover> {
+    let mut jobs = lock(&RECEIVED_LOCAL_JOBS);
+    let index = jobs.iter().position(|job| job.id() == id)?;
+    Some(jobs.swap_remove(index))
+}
+
+pub(crate) fn discard_unclaimed_local_jobs() {
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_LOCAL_JOBS));
+    for job in jobs {
+        job.discard();
+    }
+}
+
+pub(crate) fn read_local_job_state(fd: i32) -> std::io::Result<zeroize::Zeroizing<Vec<u8>>> {
+    // The previous program named this descriptor for this job alone.
+    job_state_file::read(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// Keeps the users' focus and grants for the next program.
@@ -939,6 +1004,7 @@ struct Prepared {
     kernel: Option<Box<dyn std::any::Any + Send>>,
     path: PathBuf,
     offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
+    local_job_guards: Vec<crate::room_exec::JobExecGuard>,
 }
 
 impl Prepared {
@@ -951,6 +1017,7 @@ impl Prepared {
             kernel: None,
             path,
             offered_ptys: BTreeMap::new(),
+            local_job_guards: Vec::new(),
         }
     }
 }
@@ -1096,6 +1163,13 @@ fn replace_program() -> Option<String> {
                 .watched
                 .iter()
                 .map(crate::runtime::state::WatchedHandover::pid),
+        )
+        .chain(
+            prepared
+                .handover
+                .local_jobs
+                .iter()
+                .filter_map(LocalJobHandover::pid),
         )
         .collect();
     end_children_except(&kept);
