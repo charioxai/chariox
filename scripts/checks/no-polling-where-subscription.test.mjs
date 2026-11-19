@@ -32,9 +32,9 @@ test('a timer given a reading function of the same file by name is red', () => {
   red('async function refresh() {\n  state = await client.send({ GetSessionState: { session_id: id } })\n}\nexport function watch() {\n  setInterval(refresh, 1000)\n}\n', /room-view\.ts:5: setInterval re-reads GetSessionState \(through refresh\)/)
 })
 
-test('a timer or helper that only handles a reading function, without running it, passes', () => {
+test('a timer or helper that only handles a reading function, or calls a property of the same name, passes', () => {
   const r = makeRepo({
-    [FILE]: 'function refresh() {\n  return client.getSessionState(id)\n}\nfunction forget() {\n  pending.delete(refresh)\n}\nexport function watch() {\n  setInterval(() => pending.delete(refresh), 1000)\n  setInterval(() => forget(), 1000)\n}\n',
+    [FILE]: 'function refresh() {\n  return client.getSessionState(id)\n}\nfunction forget() {\n  pending.delete(refresh)\n}\nexport function watch() {\n  setInterval(() => pending.delete(refresh), 1000)\n  setInterval(() => forget(), 1000)\n  setInterval(() => cache.refresh(), 1000)\n  setInterval(() => cache?.refresh(), 1000)\n}\n',
   })
   assert.equal(r.run(check.name).status, 0)
   r.dispose()

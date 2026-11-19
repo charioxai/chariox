@@ -16,7 +16,8 @@ const LOOP = /\b(?:while\s*\([^)]*\)|for\s*\(\s*;\s*;\s*\))\s*\{/g
 const PACING = /\bawait\s+(?:delay|sleep|setTimeout|new\s+Promise\s*\(\s*(?:\(\s*)?\w*\s*\)?\s*=>\s*setTimeout)\b/
 const FUNCTION = /\b(?:function\s*\*?\s*(\w+)\s*\([^)]*\)[^{]*|(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]*)?=>\s*)\{/g
 
-const calls = (name, flags) => new RegExp(`\\b${name}\\s*\\(`, flags)
+// A call of the same-file function, not of a property that shares its name (other.refresh()).
+const calls = (name, flags) => new RegExp(`(?<![.\\w$])${name}\\s*\\(`, flags)
 // A timer handed a function by name runs it each tick: setInterval(refresh, 1000).
 const NAMED_CALLBACK = /^\(\s*(\w+)\s*[,)]/
 
