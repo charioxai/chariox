@@ -58,6 +58,36 @@ pub(super) fn notification_notice(title: &str, source: &str, sequence: u64) -> S
     )
 }
 
+/// The lines of one prompt that delivers several occurrences of one subscription,
+/// oldest first; each occurrence stays in its own inbox row.
+pub(super) fn coalesced_notification_notice(
+    notifications: &[crate::session::QueuedNotification],
+) -> String {
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = format!(
+        "{} notifications arrived while you were busy:",
+        notifications.len()
+    );
+    for notification in notifications {
+        text.push_str(&format!(
+            "\n- {} (from {}), inbox event {}",
+            one_line(&notification.title),
+            one_line(&notification.source),
+            notification.sequence
+        ));
+    }
+    let first = notifications
+        .iter()
+        .map(|notification| notification.sequence)
+        .min()
+        .unwrap_or(0);
+    text.push_str(&format!(
+        "\nRead them with chariox.events.inbox after {}, then chariox.events.ack each one you handled.",
+        first.saturating_sub(1)
+    ));
+    text
+}
+
 /// The prompt of a sub-agent whose parent sent it a message: the parent's text,
 /// labelled with who sent it and which inbox row carries it. The parent speaks
 /// for the sub-agent's own chain of command, so the text is the task.

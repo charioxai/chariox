@@ -5,7 +5,9 @@ pub use super::prompt_queue::{
     AgentPromptState, PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect,
     PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
 };
-pub(crate) use super::prompt_queue::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
+pub(crate) use super::prompt_queue::{
+    DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification,
+};
 pub use super::queued_metaagent_task::{QueuedMetaagentTask, SkillIntent};
 pub use super::runtime_interactions::{
     HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,

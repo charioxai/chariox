@@ -238,6 +238,9 @@ pub(crate) struct DurablePromptPrivateState {
     /// answer it after the restart.
     #[serde(default, skip_serializing_if = "is_false_bool")]
     question_wait_stopped: bool,
+    /// The occurrences this queued notification prompt delivers, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queued_notifications: Vec<QueuedNotification>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -265,6 +268,16 @@ struct PromptPrivateMetadata {
     recovery_phase: Option<DurablePromptDeliveryPhase>,
     local_steer_submitted: bool,
     question_wait_stopped: bool,
+    queued_notifications: Vec<QueuedNotification>,
+}
+
+/// One notification occurrence a queued prompt delivers: what happened, where it
+/// came from, and the agent's inbox row that holds it in full.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct QueuedNotification {
+    pub(crate) title: String,
+    pub(crate) source: String,
+    pub(crate) sequence: u64,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -315,6 +328,7 @@ impl DurablePromptPrivateState {
             remote_steer_uncertainty,
             local_steer_submitted: metadata.local_steer_submitted,
             question_wait_stopped: metadata.question_wait_stopped,
+            queued_notifications: metadata.queued_notifications,
         })
     }
 }
@@ -605,6 +619,41 @@ impl PromptQueueItem {
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
             .agent_trigger_id = Some(trigger_id.into());
         self
+    }
+
+    pub(crate) fn with_queued_notification(mut self, notification: QueuedNotification) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .queued_notifications = vec![notification];
+        self
+    }
+
+    /// The notification occurrences this prompt delivers, oldest first.
+    pub(crate) fn queued_notifications(&self) -> &[QueuedNotification] {
+        self.private_metadata
+            .as_deref()
+            .map_or(&[], |metadata| metadata.queued_notifications.as_slice())
+    }
+
+    /// Adds one more occurrence of the same subscription to this queued prompt: its text
+    /// becomes `text` and it now expires with the newest occurrence.
+    pub(crate) fn join_queued_notification(
+        &mut self,
+        notification: QueuedNotification,
+        deadline_ms: u64,
+        text: String,
+    ) {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.queued_notifications.push(notification);
+        metadata.notification_deadline_ms = Some(
+            metadata
+                .notification_deadline_ms
+                .map_or(deadline_ms, |deadline| deadline.max(deadline_ms)),
+        );
+        self.prompt = text;
+        self.updated_at_ms = crate::session::unix_epoch_ms();
     }
 
     pub(crate) fn with_durable_operation(
@@ -1115,6 +1164,7 @@ impl PromptQueueItem {
             recovery_phase: private.recovery_phase,
             local_steer_submitted: private.local_steer_submitted,
             question_wait_stopped: private.question_wait_stopped,
+            queued_notifications: private.queued_notifications.clone(),
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }
