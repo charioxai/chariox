@@ -90,7 +90,7 @@ pub(super) struct CaptureArgs {
 #[derive(serde::Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Extract {
-    /// The whole output or file, trimmed.
+    /// The whole output or file (see `stored_text`).
     #[default]
     #[serde(alias = "whole")]
     Stdout,
@@ -111,7 +111,7 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host","use_binding"],"properties":{
             "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
@@ -522,12 +522,12 @@ pub(super) fn extract(
     let text = std::str::from_utf8(stdout)
         .map_err(|_| error("the output is not UTF-8 text; nothing was stored"))?;
     let value = match how {
-        Extract::Stdout => Zeroizing::new(text.trim().to_string()),
+        Extract::Stdout => stored_text(text),
         Extract::Json { pointer } => {
             let json: serde_json::Value = serde_json::from_str(text)
                 .map_err(|_| error("the output is not JSON; nothing was stored"))?;
             match json.pointer(pointer) {
-                Some(serde_json::Value::String(value)) => Zeroizing::new(value.trim().to_string()),
+                Some(serde_json::Value::String(value)) => stored_text(value),
                 Some(serde_json::Value::Number(value)) => Zeroizing::new(value.to_string()),
                 Some(_) => return Err(error(
                     "the JSON pointer names an object, array, boolean or null; nothing was stored",
@@ -543,12 +543,7 @@ pub(super) fn extract(
             let captures = pattern
                 .and_then(|p| p.captures(text))
                 .ok_or_else(|| error("the pattern matched nothing; nothing was stored"))?;
-            Zeroizing::new(
-                captures
-                    .get(*group)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            )
+            stored_text(captures.get(*group).map_or("", |m| m.as_str()))
         }
     };
     if value.is_empty() {
@@ -560,6 +555,21 @@ pub(super) fn extract(
         ));
     }
     Ok(value)
+}
+
+/// A one-line value (a token printed with `echo`) loses its surrounding whitespace and line
+/// ending. A multi-line value (a private key, a certificate) is a text file whose final line
+/// ending belongs to it: OpenSSH refuses a key without it, so it is stored exactly.
+pub(super) fn stored_text(value: &str) -> Zeroizing<String> {
+    let trimmed = value.trim();
+    Zeroizing::new(
+        if trimmed.contains('\n') {
+            value
+        } else {
+            trimmed
+        }
+        .to_string(),
+    )
 }
 
 /// The tail of a failed command's stderr, sanitized; stdout is never shown.

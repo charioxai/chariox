@@ -6,7 +6,7 @@
 //! it asked for are its own action (UX-first rule), so nothing is scrubbed.
 use super::capture::{
     capture_binding_schema, captured_handle, check_capture_request, committed, extract,
-    extract_pattern, service_host, Captured, Extract,
+    extract_pattern, service_host, stored_text, Captured, Extract,
 };
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -47,7 +47,7 @@ struct WriteFileArgs {
 pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_FILE.into(),
-        description: "store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the source service. use_binding declares one exact command environment, stdin or workspace file destination. Retrying with the same request_id returns the same credential.".into(),
+        description: "store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the source service. use_binding declares one exact command environment, stdin or workspace file destination. Retrying with the same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","path","host","use_binding"],"properties":{
             "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
@@ -160,7 +160,9 @@ impl KernelRuntimeState {
                         error(format!("stored as {handle}, but the selected JSON value is missing; capture the current file with a new request_id"))
                     })?;
                     let unchanged = match selected {
-                        serde_json::Value::String(value) => value.trim() == secret.as_str(),
+                        serde_json::Value::String(value) => {
+                            stored_text(value).as_str() == secret.as_str()
+                        }
                         serde_json::Value::Number(value) => value.to_string() == secret.as_str(),
                         _ => false,
                     };
