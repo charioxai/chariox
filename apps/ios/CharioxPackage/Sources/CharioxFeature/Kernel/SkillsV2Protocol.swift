@@ -481,7 +481,8 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
     }
     case nativeDetails(NativeDetailsPayload)
     public struct NativeDetailsPayload: Codable, Equatable, Sendable {
-        public var agent_id: String
+        /// Nil for a skill an installed provider lists with no run.
+        public var agent_id: String?
         public var selection: SkillSelection
     }
     case loads(LoadsPayload)

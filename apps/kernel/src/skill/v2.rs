@@ -326,8 +326,10 @@ pub enum SkillsV2Request {
         agent_id: String,
         refresh: bool,
     },
+    /// `agent_id` names the focused agent whose run lists the skill; it is null for a
+    /// skill an installed provider lists with no run (an `installed:` execution id).
     NativeDetails {
-        agent_id: String,
+        agent_id: Option<String>,
         selection: SkillSelection,
     },
     Loads {

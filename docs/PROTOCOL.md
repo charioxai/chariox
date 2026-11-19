@@ -8036,6 +8036,14 @@ source-bound selections alongside the ordinary prompt/attachment identities.
 A native selection includes kernel entry ID, provider, account, execution place
 and inventory revision; no client skill path or body is accepted.
 
+`catalog` lists, besides the focused agent's run, the skills of every installed
+provider for the Project with no run (local 1060): Claude's skill folders, and
+Codex `skills/list` and OpenCode `/skill` on the managed account server, each
+under the provider's default account. Their execution id is
+`installed:<provider>:<kernel id>:<Project id>`, so `native_details` (its
+`agent_id` is null then) and an `install` from that selection list the same
+skills again; a run still owns turn delivery. Only the owner imports them.
+
 `resolve_repository` (the home owner from Skills, or an agent through
 `chariox.manage_skills` action `resolve_repository`) fetches a public git
 repository with the machine's `git` and answers its current commit and every

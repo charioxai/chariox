@@ -398,7 +398,9 @@ mod details;
 pub use details::{NativeSkillDetails, NativeSkillProvenance};
 mod execution;
 pub(crate) use execution::capture_launch_skill_environment;
-pub use execution::{inventory_for_run, NativeSkillDiscoveryRequest};
+pub use execution::{
+    inventory_for_binding, inventory_for_run, NativeSkillDiscoveryRequest, ProviderListing,
+};
 mod roots;
 pub use roots::filesystem_skill_candidates;
 
