@@ -851,3 +851,80 @@ async fn a_messages_own_background_command_holds_only_its_own_task() {
     sweep(&team).await;
     assert_eq!(message_task().state, ExecutionState::Done);
 }
+
+// Review 5968870730 P2-2: two held tasks on one run. The call of the one that is not first ends,
+// and Claude's notification turn for it starts in the same batch: that turn runs under the task
+// whose call ended, and its tools act for that task.
+#[tokio::test]
+async fn a_notification_turn_runs_under_the_held_task_whose_call_ended_in_its_batch() {
+    let team = child_with_a_call_running("background-hold-two-held").await;
+    let message_prompt = status_message(&team, false).await;
+    let mut launched = lifecycle("claude_background_launched");
+    launched["id"] = "message-job".into();
+    apply(&team, vec![tool_chunk(&launched)]).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let message_task = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &message_prompt)
+        .unwrap()
+        .unwrap();
+    assert_eq!(message_task.state, ExecutionState::Working);
+    assert!(working(&team));
+    assert!(
+        message_task.task_id < team.task.task_id,
+        "the fixture needs the original task to be the second one held"
+    );
+
+    // The original task's call ends and Claude's turn about it starts, in one batch.
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                chunks: vec![
+                    ended_at(crate::session::unix_epoch_ms()),
+                    text_chunk("the server exited with code 0"),
+                ],
+                provider_own_turn_running: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let running = team
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .expect("the notification turn runs");
+    assert_eq!(running.id(), team.child_prompt.id());
+    let token = team
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&team.child_run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    team.runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.inbox",
+            serde_json::json!({"task_id": team.task.task_id, "origin_prompt_id": team.child_prompt.id()}),
+        )
+        .await
+        .expect("the turn acts for the task whose call ended");
+}

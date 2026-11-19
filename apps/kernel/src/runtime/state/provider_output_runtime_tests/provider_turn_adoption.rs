@@ -237,23 +237,21 @@ async fn child_with_a_settling_prompt(label: &str) -> Team {
     team
 }
 
-// Review 5968062224 P2-2: Claude starts its own turn right after the prompt's result, before
-// the kernel settles that prompt. The start was refused and lost; it is adopted after the settle.
+// Review 5968062224 P2-2 and 5968870730 P2-1: Claude starts its own turn right after the prompt's
+// result, before the kernel settled that prompt. The start was lost; then its output was kept
+// under the preceding turn. That prompt settles at once, and the own turn is adopted with its own
+// task and history boundary: the parent reads the own turn's answer in its finish.
 #[tokio::test]
-async fn an_own_turn_that_starts_while_the_prompt_before_it_settles_is_adopted_after_the_settle() {
+async fn an_own_turn_that_starts_while_the_prompt_before_it_settles_is_adopted_with_its_own_answer()
+{
     let team = child_with_a_settling_prompt("own-turn-while-settling").await;
     apply(&team, own_turn_start()).await;
     assert_eq!(
-        active_prompt(&team).unwrap().id(),
-        team.child_prompt.id(),
-        "the own turn never displaces the settling prompt"
-    );
-    settle_after_quiet(&team).await;
-    assert_eq!(
         task_of(&team, team.child_prompt.id()),
-        Some(ExecutionState::Done)
+        Some(ExecutionState::Done),
+        "the prompt before the own turn settled"
     );
-    let adopted = active_prompt(&team).expect("the own turn is adopted after the settle");
+    let adopted = active_prompt(&team).expect("the own turn is adopted");
     assert_ne!(adopted.id(), team.child_prompt.id());
     assert_eq!(adopted.status(), crate::session::PromptStatus::Running);
     let task = team
@@ -272,12 +270,37 @@ async fn an_own_turn_that_starts_while_the_prompt_before_it_settles_is_adopted_a
     settle_after_quiet(&team).await;
     assert!(active_prompt(&team).is_none());
     assert_eq!(task_of(&team, adopted.id()), Some(ExecutionState::Done));
+    let finished = child_finished(&team);
+    let excerpt_of = |task_id: &str| {
+        finished
+            .iter()
+            .find(|event| {
+                event.payload["task_id"] == task_id
+                    || event.payload["public_answer"]["task_id"] == task_id
+            })
+            .map(|event| {
+                event.payload["public_answer"]["excerpt"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+    };
+    let own = excerpt_of(&task.task_id).expect("the parent hears the own turn's finish");
+    assert!(
+        own.contains("the background command finished"),
+        "{own:?} in {finished:?}"
+    );
+    let before = excerpt_of(&team.task.task_id).unwrap_or_default();
+    assert!(
+        !before.contains("the background command finished"),
+        "the own turn's output is not the preceding turn's answer: {before:?}"
+    );
 }
 
-// The own turn can end before the prompt before it settles: nothing is adopted after the
-// settle, so no turn is left running that the sweep would later end as interrupted.
+// The own turn can start and end right after the prompt's result: nothing is left running that
+// the sweep would later end as interrupted.
 #[tokio::test]
-async fn an_own_turn_that_ends_before_the_prompt_before_it_settles_leaves_no_turn() {
+async fn an_own_turn_right_after_a_prompt_leaves_no_turn_behind() {
     let team = child_with_a_settling_prompt("own-turn-ends-while-settling").await;
     apply(&team, own_turn_start()).await;
     apply(&team, own_turn_end()).await;
@@ -289,6 +312,8 @@ async fn an_own_turn_that_ends_before_the_prompt_before_it_settles_leaves_no_tur
         .durable_state_store
         .agent_tasks(Some(&team.room), Some(&team.child))
         .unwrap();
-    assert_eq!(tasks.len(), 1, "{tasks:?}");
-    assert_eq!(tasks[0].state, ExecutionState::Done);
+    assert!(
+        tasks.iter().all(|task| task.state == ExecutionState::Done),
+        "{tasks:?}"
+    );
 }
