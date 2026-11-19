@@ -3,13 +3,15 @@ use super::{catalog::failure, resolver::metadata_context, v2::SkillProjection};
 use crate::error::DaemonError;
 use serde_json::{json, Value};
 
-fn rendered(revision: u64, rows: &[Value], next: Option<&str>) -> Value {
-    json!({"kind":"page","revision":revision,"skills":rows,"next_cursor":next})
+/// `project_id` is the agent's own Project, the scope it names for Project changes.
+fn rendered(revision: u64, project_id: &str, rows: &[Value], next: Option<&str>) -> Value {
+    json!({"kind":"page","revision":revision,"project_id":project_id,"skills":rows,"next_cursor":next})
 }
 /// The cursor advances by rows actually emitted, including when a requested page
 /// is shortened. This private tool view does not alter human catalog/Details DTOs.
 pub(crate) fn page(
     revision: u64,
+    project_id: &str,
     skills: &[SkillProjection],
     next: Option<&str>,
     cursor: Option<&str>,
@@ -39,7 +41,7 @@ pub(crate) fn page(
         }
     };
     let fits = |rows: &[Value]| {
-        rendered(revision, rows, next_for(rows.len()).as_deref())
+        rendered(revision, project_id, rows, next_for(rows.len()).as_deref())
             .to_string()
             .len() as u64
             <= budget
@@ -82,7 +84,12 @@ pub(crate) fn page(
     if (!skills.is_empty() && rows.is_empty()) || !fits(&rows) {
         return Err(failure("skill metadata budget is too small for a discovery page; increase skills.metadata_budget_percent or select the skill explicitly"));
     }
-    Ok(rendered(revision, &rows, next_for(rows.len()).as_deref()))
+    Ok(rendered(
+        revision,
+        project_id,
+        &rows,
+        next_for(rows.len()).as_deref(),
+    ))
 }
 
 #[cfg(test)]
@@ -126,6 +133,7 @@ mod tests {
             );
             let result = page(
                 7,
+                "project-p",
                 &entries,
                 next.as_deref(),
                 cursor.as_deref(),
@@ -134,6 +142,8 @@ mod tests {
             )
             .unwrap();
             assert!(result.to_string().len() <= 2000);
+            // SV-15: the agent names its own Project scope with this ID.
+            assert_eq!(result["project_id"], "project-p");
             let rows = result["skills"].as_array().unwrap();
             assert!(!rows.is_empty());
             for row in rows {
@@ -159,6 +169,7 @@ mod tests {
         entry.skill.short_description = Some("é \"quoted\" \\ path examples ".repeat(20));
         let result = page(
             3,
+            "project-p",
             std::slice::from_ref(&entry),
             None,
             None,
@@ -180,13 +191,15 @@ mod tests {
             result
         );
         assert!(
-            page(3, &[entry], None, None, Some(8192), 0.1).is_err(),
+            page(3, "project-p", &[entry], None, None, Some(8192), 0.1).is_err(),
             "never emit a non-progressing undersized page"
         );
-        assert!(page(3, &[], None, Some("2:0"), Some(8192), 1.0).is_err());
-        assert!(page(3, &[], None, None, None, 1.0).unwrap()["skills"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(page(3, "project-p", &[], None, Some("2:0"), Some(8192), 1.0).is_err());
+        assert!(
+            page(3, "project-p", &[], None, None, None, 1.0).unwrap()["skills"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

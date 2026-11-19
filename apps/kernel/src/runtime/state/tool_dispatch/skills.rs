@@ -149,6 +149,7 @@ impl KernelRuntimeState {
             };
             crate::skill::model_metadata::page(
                 revision,
+                session.project_id(),
                 &skills,
                 next_cursor.as_deref(),
                 discovery_cursor.as_deref(),
