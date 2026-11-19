@@ -99,11 +99,11 @@ impl KernelRuntimeOwnedState {
                 .collect(),
         );
         session.set_queued_agent_messages(self.queued_agent_messages_of(session_id)?);
-        session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
-            self.durable_state_store
-                .agent_wakes(Some(session_id), None)?,
+        session.set_agent_wakes(self.durable_state_store.agent_visible_wakes(
+            session_id,
+            None,
             crate::session::unix_epoch_ms(),
-        ));
+        )?);
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }

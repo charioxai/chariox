@@ -37,6 +37,8 @@ pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);
     CREATE INDEX IF NOT EXISTS agent_wakes_room ON agent_wakes(room_id);
+    CREATE INDEX IF NOT EXISTS agent_wakes_room_armed ON agent_wakes(room_id)
+        WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling');
     CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));
     CREATE INDEX IF NOT EXISTS agent_wakes_live_task ON agent_wakes(task_id)
         WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running');")
@@ -99,6 +101,51 @@ impl DurableKernelStateStore {
     #[cfg(test)]
     pub(crate) fn last_wake_read_sorts_for_test() -> i32 {
         WAKE_READ_SORTS.with(std::cell::Cell::get)
+    }
+
+    /// Select the existing visible history window before copying or decoding commands.
+    pub(crate) fn agent_visible_wakes(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+        now: u64,
+    ) -> Result<Vec<AgentWake>, DaemonError> {
+        let filter = if agent.is_some() {
+            "room_id=?1 AND agent_id=?2"
+        } else {
+            "room_id=?1"
+        };
+        let time = if agent.is_some() { "?3" } else { "?2" };
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&room];
+        if agent.is_some() {
+            values.push(&agent);
+        }
+        values.push(&now);
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.visible_wakes")?;
+            let mut query = db.prepare_cached(&format!(
+                "WITH finished AS (
+                    SELECT rowid FROM agent_wakes WHERE {filter}
+                    AND json_extract(payload,'$.state') NOT IN ('scheduled','starting','running','cancelling')
+                    AND coalesce(json_extract(payload,'$.last_fired_at_ms'),json_extract(payload,'$.created_at_ms')) > {time}-86400000
+                    ORDER BY rowid DESC LIMIT 64
+                ), visible AS (
+                    SELECT rowid FROM agent_wakes INDEXED BY agent_wakes_room_armed WHERE {filter}
+                    AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')
+                    UNION ALL SELECT rowid FROM finished
+                ) SELECT payload FROM agent_wakes WHERE rowid IN (SELECT rowid FROM visible) ORDER BY rowid"
+            )).map_err(sql)?;
+            let rows = query
+                .query_map(rusqlite::params_from_iter(values), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(sql)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+        };
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
     }
 
     pub(crate) fn agent_wakes(

@@ -1260,3 +1260,5 @@ async fn an_idle_session_lane_holds_little() {
         "a Room kept {per_room} bytes after its first command"
     );
 }
+
+mod wake_history;
