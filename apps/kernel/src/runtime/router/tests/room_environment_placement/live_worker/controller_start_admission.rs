@@ -218,7 +218,7 @@ async fn capture_failure_recovers() {
         assert!(
             matches!(error, DaemonError::RelayTransport {
             operation: "read relay peer response", ref code, ref message, ..
-        } if code == "transport_error" && message.contains("failed with viewport_apply_failed:")),
+        } if code == "browser_controller_failed" && message.contains("failed with viewport_apply_failed:")),
             "{error}"
         );
         assert_eq!(
