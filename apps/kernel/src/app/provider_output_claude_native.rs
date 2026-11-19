@@ -426,7 +426,7 @@ fn acknowledge_claude_headless_steering_enqueue(
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     fn note_compaction_hook(
-        &self,
+        &mut self,
         session_id: &str,
         provider_run_id: &str,
         context_file: &str,
