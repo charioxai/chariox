@@ -10,7 +10,9 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
-use super::claude::{claude_args_with_execution_config, materialize_runtime_claude_mcp_config};
+use super::claude::{
+    claude_args_with_execution_config, materialize_runtime_claude_mcp_config, CLAUDE_START_BUDGET,
+};
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
@@ -163,6 +165,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_prompt_message: None,
             turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
+            runtime_tools_unavailable: None,
             next_turn_number: 1,
             result_number: 1,
             emitted_text_by_block: BTreeMap::new(),
@@ -241,7 +244,11 @@ pub(crate) fn submit_claude_prompt(
         );
         state.active_turn_id = adopted.turn_id;
         state.active_prompt_message = adopted.prompt_message;
-        state.turn_watchdog.begin(Instant::now());
+        state.turn_watchdog.adopt(
+            adopted.start,
+            Instant::now(),
+            crate::session::unix_epoch_ms(),
+        );
         state.output.release();
         return Ok(());
     }
@@ -309,6 +316,9 @@ pub(crate) fn drain_claude_events(
                 state.turn_watchdog.record_runtime_message(Instant::now());
                 handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
+                if end_turn_without_runtime_tools(state, &mut batch) {
+                    break;
+                }
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
                 state.turn_watchdog.record_runtime_message(Instant::now());
@@ -391,6 +401,34 @@ pub(crate) fn drain_claude_events(
     Ok(batch)
 }
 
+/// A turn must not run without the agent's Chariox tools: it would end as a
+/// success without the work its tools do. The next prompt starts a new Claude
+/// process, which connects again.
+fn end_turn_without_runtime_tools(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+) -> bool {
+    if state.active_turn_id.is_none() {
+        return false;
+    }
+    let Some(status) = state.runtime_tools_unavailable.take() else {
+        return false;
+    };
+    stop_child(&mut state.child);
+    clear_active_claude_turn(state);
+    let reason = format!(
+        "Claude Code could not connect to this kernel's Chariox tools (status: {status}), so the turn was stopped before it ran without them. A new Claude process connects again; if this repeats, the kernel is overloaded."
+    );
+    batch.terminal_failure = Some(reason.clone());
+    batch.turn_outcome = Some(super::TurnOutcome::new(
+        super::TurnOutcomeKind::Other,
+        true,
+        &reason,
+    ));
+    batch.prompt_completed = true;
+    true
+}
+
 fn apply_claude_stderr(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
@@ -440,6 +478,22 @@ fn apply_claude_turn_stall_policy(
                 "Claude Code stopped emitting runtime events; the active turn was ended after its bounded recovery attempt"
                     .to_string(),
             );
+            batch.prompt_completed = true;
+            Ok(())
+        }
+        ClaudeTurnStallAction::FailStart => {
+            stop_child(&mut state.child);
+            clear_active_claude_turn(state);
+            let reason = format!(
+                "Claude Code did not finish starting within {} s: it had not connected this kernel's Chariox tools or reported its start. The turn was stopped; send the request again to start a new Claude process. If this repeats, the kernel is overloaded.",
+                CLAUDE_START_BUDGET.as_secs()
+            );
+            batch.terminal_failure = Some(reason.clone());
+            batch.turn_outcome = Some(super::TurnOutcome::new(
+                super::TurnOutcomeKind::Other,
+                true,
+                &reason,
+            ));
             batch.prompt_completed = true;
             Ok(())
         }
@@ -610,6 +664,8 @@ fn restart_claude_runtime(
         .take();
     release_detached_jobs(run, state, identity);
     stop_child(&mut state.child);
+    state.runtime_tools_unavailable = None;
+    state.turn_watchdog.record_process_spawn();
     // A new process may start a new conversation: it needs the run base again.
     state.delivered_hidden_base = None;
     let base_args = claude_args_with_execution_config(
@@ -827,6 +883,7 @@ mod tests {
                 active_prompt_message: None,
                 turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
+                runtime_tools_unavailable: None,
                 next_turn_number: 1,
                 result_number: 1,
                 emitted_text_by_block: Default::default(),
@@ -997,6 +1054,81 @@ mod tests {
         );
     }
 
+    fn stall_test_run(id: &str) -> RuntimeProviderRun {
+        RuntimeProviderRun::new(
+            id,
+            &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        )
+    }
+
+    #[test]
+    fn a_new_process_connecting_its_tools_past_the_stall_timeout_keeps_its_turn() {
+        let (mut state, mut batch) = parser_state();
+        let run = stall_test_run("run-slow-tool-start");
+        let Some(silent_since) = std::time::Instant::now()
+            .checked_sub(super::claude_turn_stall_timeout() + std::time::Duration::from_secs(1))
+        else {
+            return;
+        };
+        state.turn_watchdog.begin(silent_since);
+
+        super::apply_claude_turn_stall_policy(&run, &mut state, &mut batch)
+            .expect("stall policy should run");
+
+        assert_eq!(state.active_turn_id.as_deref(), Some("turn-1"));
+        assert!(batch.chunks.is_empty(), "the turn must not be restarted");
+        assert!(!batch.prompt_completed);
+        assert!(batch.terminal_failure.is_none());
+    }
+
+    #[test]
+    fn a_start_phase_past_its_budget_ends_the_turn_saying_so() {
+        let (mut state, mut batch) = parser_state();
+        let run = stall_test_run("run-never-started");
+        let Some(waiting_since) = std::time::Instant::now()
+            .checked_sub(super::CLAUDE_START_BUDGET + std::time::Duration::from_secs(1))
+        else {
+            return;
+        };
+        state.turn_watchdog.begin(waiting_since);
+
+        super::apply_claude_turn_stall_policy(&run, &mut state, &mut batch)
+            .expect("stall policy should run");
+
+        assert!(batch.prompt_completed);
+        assert!(state.active_turn_id.is_none());
+        assert!(
+            batch.chunks.is_empty(),
+            "a start past its budget is not restarted"
+        );
+        let outcome = batch
+            .turn_outcome
+            .expect("the kernel names why the turn ended");
+        assert!(outcome.retryable);
+        assert!(
+            outcome
+                .reason
+                .contains("did not finish starting within 120 s"),
+            "{}",
+            outcome.reason
+        );
+        assert_eq!(
+            batch.terminal_failure.as_deref(),
+            Some(outcome.reason.as_str())
+        );
+    }
+
     #[test]
     fn a_runtime_tool_call_in_flight_is_not_a_turn_stall() {
         let (mut state, mut batch) = parser_state();
@@ -1021,6 +1153,7 @@ mod tests {
         else {
             return;
         };
+        state.turn_watchdog.record_process_init();
         state.turn_watchdog.begin(stalled_since);
         assert_ne!(
             state
@@ -1193,6 +1326,159 @@ cat >/dev/null
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Claude starts a turn even when the Chariox MCP server did not answer in
+    // time; that turn must end failed with a reason, never as a success.
+    #[cfg(unix)]
+    // A hot reload while Claude still connects its tools keeps the turn's
+    // start phase: no early restart and no fresh start budget.
+    #[test]
+    fn a_hot_reload_keeps_a_starting_turn_s_start_deadline() {
+        let worktree = crate::test_support::TestWorktree::new("claude-reload-start");
+        let run = RuntimeProviderRun::new(
+            "provider-run-reload-start",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                // Still connecting its tools: it reads the prompt and says nothing.
+                pty_args: vec![
+                    "-c".to_string(),
+                    "cat >/dev/null".to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "use your tools",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let stall = super::claude_turn_stall_timeout();
+        let Some(delivered) =
+            std::time::Instant::now().checked_sub(stall + std::time::Duration::from_secs(1))
+        else {
+            super::stop_child(&mut binding.state.child);
+            return;
+        };
+        binding.state.turn_watchdog.begin(delivered);
+
+        let handover =
+            super::hand_over_claude_runtime(binding.state).expect("a running turn is handed over");
+        // The next program reads the handover from a file.
+        let handover: super::ClaudeHandover =
+            serde_json::from_str(&serde_json::to_string(&handover).unwrap()).unwrap();
+        crate::hot_reload::adopt_claude_for_tests(run.id(), handover);
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let mut batch = ProviderPromptSignalBatch::default();
+        let policy = super::apply_claude_turn_stall_policy(&run, &mut binding.state, &mut batch);
+        let still_starting = binding.state.active_turn_id.is_some() && batch.chunks.is_empty();
+        let deadline = binding.state.turn_watchdog.action(
+            std::time::Instant::now() + super::CLAUDE_START_BUDGET - stall,
+            stall,
+        );
+        super::stop_child(&mut binding.state.child);
+
+        policy.expect("stall policy should run");
+        assert!(
+            still_starting,
+            "a starting turn must not be restarted after a hot reload"
+        );
+        assert_eq!(
+            deadline,
+            super::watchdog::ClaudeTurnStallAction::FailStart,
+            "60 s after the reload the budget counted from the delivery has run out: neither a restart nor a fresh budget"
+        );
+    }
+
+    #[test]
+    fn a_turn_whose_chariox_tools_did_not_connect_ends_failed() {
+        let worktree = crate::test_support::TestWorktree::new("claude-tools-missing");
+        let run = RuntimeProviderRun::new(
+            "provider-run-tools-missing",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    r#"
+while IFS= read -r line; do
+  uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+  printf '{"type":"system","subtype":"init","session_id":"s","mcp_servers":[{"name":"chariox","status":"failed","source":"dynamic"}]}\n'
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"done without tools","user_message_uuids":["%s"]}\n' "$uuid"
+done
+"#
+                    .to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "use your tools",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let batch = loop {
+            let batch = super::drain_claude_events(&run, &mut binding.state).unwrap();
+            if batch.prompt_completed {
+                break batch;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the turn should settle"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let failure = batch
+            .terminal_failure
+            .expect("a turn without its Chariox tools must end failed");
+        assert!(
+            failure.contains("could not connect to this kernel's Chariox tools (status: failed)"),
+            "{failure}"
+        );
+        let outcome = batch
+            .turn_outcome
+            .expect("the kernel names why the turn ended");
+        assert!(outcome.retryable && outcome.notice().ends_with("Send the request again."));
+        assert!(
+            outcome.reason.contains("Chariox tools"),
+            "{}",
+            outcome.reason
+        );
+        assert!(
+            batch.completions.is_empty(),
+            "the tool-less turn must not complete as an answer"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while binding.state.child.try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the process without tools must stop so the next prompt starts a connected one"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[cfg(unix)]
