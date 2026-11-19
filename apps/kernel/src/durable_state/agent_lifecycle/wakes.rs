@@ -27,12 +27,16 @@ const SUMMARY_LIMIT: usize = 512;
 const DETAIL_LIMIT: usize = 8_192;
 
 #[cfg(test)]
-thread_local! { static WAITING_WAKE_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
+thread_local! {
+    static WAITING_WAKE_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    static WAKE_READ_SORTS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     super::wake_receipts::initialize(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);
+    CREATE INDEX IF NOT EXISTS agent_wakes_room ON agent_wakes(room_id);
     CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));
     CREATE INDEX IF NOT EXISTS agent_wakes_live_task ON agent_wakes(task_id)
         WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running');")
@@ -92,12 +96,17 @@ impl DurableKernelStateStore {
         WAITING_WAKE_STEPS.with(std::cell::Cell::get)
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_wake_read_sorts_for_test() -> i32 {
+        WAKE_READ_SORTS.with(std::cell::Cell::get)
+    }
+
     pub(crate) fn agent_wakes(
         &self,
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
-        // Literal filters, as for tasks, so the (room, agent) index serves a Room's read.
+        // Literal filters keep each scope on its ordered index.
         let (filter, values) = match (room, agent) {
             (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
             (Some(room), None) => ("room_id=?1", vec![room]),
@@ -116,7 +125,10 @@ impl DurableKernelStateStore {
                     r.get::<_, String>(0)
                 })
                 .map_err(sql)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+            let payloads = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
+            #[cfg(test)]
+            WAKE_READ_SORTS.with(|sorts| sorts.set(q.get_status(rusqlite::StatementStatus::Sort)));
+            payloads
         };
         payloads
             .into_iter()

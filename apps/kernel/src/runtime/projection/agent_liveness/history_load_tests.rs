@@ -112,3 +112,19 @@ fn a_finished_wakes_old_payload_cannot_hide_the_current_wait() {
         AgentWaitKind::Timer
     );
 }
+
+#[test]
+fn room_wake_reads_do_not_sort_retained_command_payloads() {
+    let root = TestTempDir::new("room-wake-read-order");
+    let store = waiting_store(&root);
+    seed_finished_wakes(&root, false);
+    let wakes = store.agent_wakes(Some("room"), None).unwrap();
+    assert_eq!(wakes.len(), 2049);
+    assert_eq!(
+        DurableKernelStateStore::last_wake_read_sorts_for_test(),
+        0,
+        "sorting retained command payloads spills to disk while holding the shared reader"
+    );
+    assert_eq!(wakes[0].id, "live");
+    assert_eq!(wakes.last().unwrap().id, "old-2047");
+}
