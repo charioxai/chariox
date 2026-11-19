@@ -614,10 +614,10 @@ impl KernelRuntimeState {
                 "this kernel is not signed in to the Cloud account of this room's owner, so it cannot reach agents on other kernels",
             ));
         };
-        let authority = crate::session::effective_agent_execution_config_in_tree(
+        let authority = self.owned.agent_store.effective_execution_config(
             &session,
             sender,
-            &self.session_agents(sender.session_id()),
+            &self.owned.session_store,
         );
         Ok(PeerAgentCaller {
             owner,

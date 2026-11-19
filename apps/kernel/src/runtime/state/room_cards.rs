@@ -51,14 +51,14 @@ impl KernelRuntimeOwnedState {
                     && !interaction.choices().iter().any(crate::session::RuntimeInteractionChoice::requires_passkey) => {}
             _ => return Err(denied("this card is owner-only; secrets, passkeys, payments and owner verification must be answered by the person")),
         }
-        let agents = self.agent_store.get_session_agents(source.id());
-        if !self.ancestor_can_hold(source, caller, &agents) {
+        if !self.ancestor_can_hold(source, caller) {
             return Err(denied(
                 "your current authority requires the owner's answer to this card",
             ));
         }
-        let mine =
-            crate::session::effective_agent_execution_config_in_tree(source, caller, &agents);
+        let mine = self
+            .agent_store
+            .effective_execution_config(source, caller, &self.session_store);
         if let Some(subject) = interaction
             .agent_id()
             .or_else(|| interaction.related_agent_id())
@@ -69,7 +69,8 @@ impl KernelRuntimeOwnedState {
                 .find(|agent| agent.id() == subject)
                 .ok_or_else(|| denied("the asking agent is unavailable"))?;
             let theirs =
-                crate::session::effective_agent_execution_config_in_tree(target, subject, &agents);
+                self.agent_store
+                    .effective_execution_config(target, subject, &self.session_store);
             if !mine.permission_level.permits(theirs.permission_level)
                 || !mine.mode.permits(theirs.mode)
             {

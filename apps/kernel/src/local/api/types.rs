@@ -610,4 +610,5 @@ pub use workspace::*;
 /// reading the context).
 /// An event subscription's `like` copies the follows of an earlier live grant of the same owner.
 /// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1082;

@@ -95,9 +95,9 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
     ) -> Result<AgentSettingsView, DaemonError> {
         let session = self.session_store.get_session(agent.session_id())?;
-        let agents = self.agent_store.get_session_agents(agent.session_id());
         let limit =
-            crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
+            self.agent_store
+                .effective_execution_config(&session, agent, &self.session_store);
         let owner = crate::account_profile::provider_account_authority_owner_user_id(
             &self.config_projection.snapshot(),
             agent.owner_user_id(),

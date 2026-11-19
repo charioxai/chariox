@@ -71,6 +71,25 @@ test("AO-UI-03 a node finishing while its panel is focused keeps the panel and t
   assert.deepEqual(controller.panels().map(p => [p.id, p.word, p.dimmed]), [["a1", "running", false], ["a2", "done", true], ["a3", "waiting", false]])
 })
 
+test("the view moves to the live cross-Room child when the local child is deleted", () => {
+  const { controller } = make()
+  const local = node("local", "room", "running", 1)
+  const crossRoom = node("cross-room", "room", "running", 2, {
+    room_id: "destination", room_alias: "Research", started_by: "Planner",
+  })
+  controller.apply(tree(1, [local, crossRoom]))
+  controller.chooseRow("local")
+  assert.equal(controller.focusedPanelId, local.agent_id)
+
+  controller.apply(tree(2, [crossRoom]))
+
+  assert.equal(controller.viewOpen, true)
+  assert.equal(controller.focusedPanelId, crossRoom.agent_id)
+  assert.deepEqual(controller.panels().map(({ id, roomId, word }) => ({ id, roomId, word })), [
+    { id: crossRoom.agent_id, roomId: "destination", word: "running" },
+  ])
+})
+
 test("AO-UI-03 the last live sub-agent ending closes the view; the finished rows stay on the card", async () => {
   const { controller } = make({ room: three(1) })
   await controller.refresh("room"); controller.chooseRow("a1")

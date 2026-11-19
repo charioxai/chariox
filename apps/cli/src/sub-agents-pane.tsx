@@ -26,7 +26,11 @@ export function SubAgentsPane(props: SubAgentsPaneProps) {
         const active = () => controller().focusedPanelId === panel.id
         return <box ref={value => { boxes.set(panel.id, value) }} flexDirection="row" justifyContent="space-between" paddingLeft={panel.depth * 2} border={true}
           borderColor={active() ? theme.primary : theme.border} onMouseDown={() => props.onFocus(panel.id)}>
-          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.name}</text>
+          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{[
+            panel.name,
+            panel.startedBy && `Started by ${panel.startedBy}`,
+            panel.roomName ?? panel.roomId,
+          ].filter(Boolean).join(" · ")}</text>
           <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.word}</text>
         </box>
       }}</For>

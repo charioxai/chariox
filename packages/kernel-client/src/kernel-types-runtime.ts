@@ -539,7 +539,7 @@ export type AgentMoveStatus = { target_ref?: string | null } & (
 
 export type AgentInstance = {
   /** The agent that controls this one and everything below it; only the user changes it. */
-  parent_agent_id?: { agent_id: string } | null
+  parent_agent_id?: { agent_id: string; room_id?: string; started_by?: string } | null
   /** The parent's command id of the spawn that created this agent. */
   spawn_key?: string | null
   id: string
@@ -732,6 +732,9 @@ export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ende
 export interface AgentTreeNode {
   agent_id: string
   parent_agent_id: string | null
+  room_id?: string
+  room_alias?: string
+  started_by?: string
   kernel_id: string | null
   alias: string | null
   provider: string

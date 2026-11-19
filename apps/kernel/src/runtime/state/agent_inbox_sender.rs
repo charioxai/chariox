@@ -1,7 +1,7 @@
 //! Who sent an inbox event, as far as the agent tree tells: the relation the reader sees next
 //! to each event and the fixed kernel sentence that says what it may do with the payload.
 //! No agent can claim more: the relation comes from the tree edge, never from the payload.
-use crate::agent::{authority_limit, AgentInstance};
+use crate::agent::AgentInstance;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SenderRelation {
@@ -20,21 +20,17 @@ impl SenderRelation {
     pub(super) fn of(
         reader: &AgentInstance,
         sender: Option<&AgentInstance>,
-        agents: &[AgentInstance],
+        is_ancestor: impl Fn(&str, &AgentInstance) -> bool,
     ) -> Self {
         let Some(sender) = sender else {
             return Self::Source;
         };
-        let above = authority_limit::ancestors(reader, agents);
-        if let Some(position) = above.iter().position(|agent| agent.id() == sender.id()) {
+        if is_ancestor(sender.id(), reader) {
             return Self::Ancestor {
-                direct: position == 0,
+                direct: reader.parent_agent_id() == Some(sender.id()),
             };
         }
-        if authority_limit::ancestors(sender, agents)
-            .iter()
-            .any(|agent| agent.id() == reader.id())
-        {
+        if is_ancestor(reader.id(), sender) {
             return Self::Descendant;
         }
         Self::Peer
@@ -113,7 +109,11 @@ mod tests {
     fn relation(reader: &str, sender: &str) -> SenderRelation {
         let agents = tree();
         let find = |id: &str| agents.iter().find(|a| a.id() == id).unwrap();
-        SenderRelation::of(find(reader), Some(find(sender)), &agents)
+        SenderRelation::of(find(reader), Some(find(sender)), |id, agent| {
+            crate::agent::authority_limit::ancestors(agent, &agents)
+                .iter()
+                .any(|ancestor| ancestor.id() == id)
+        })
     }
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
         let agents = tree();
         let reader = agents.iter().find(|a| a.id() == "mid").unwrap();
         assert_eq!(
-            SenderRelation::of(reader, None, &agents),
+            SenderRelation::of(reader, None, |_, _| unreachable!()),
             SenderRelation::Source
         );
     }

@@ -8,7 +8,7 @@ use crate::provider::TurnOutcome;
 
 impl KernelRuntimeState {
     /// Records `child_finished` for the parent of the agent whose task just ended and
-    /// delivers it. A child with no live parent in its room tells nobody.
+    /// delivers it. A child with no live parent tells nobody.
     pub(super) async fn announce_child_finished(
         &self,
         task: &AgentTaskExecution,
@@ -23,7 +23,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let parent = match self.owned.agent_store.get_agent(parent_id) {
-            Ok(parent) if parent.session_id() == task.room_id && !parent.archived() => parent,
+            Ok(parent) if !parent.archived() => parent,
             _ => return Ok(()),
         };
         let deadline_reached = self
@@ -50,7 +50,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let mut event = ledger::occurrence(
-            &task.room_id,
+            parent.session_id(),
             parent.id(),
             child.id(),
             &format!("child-finished-{}", task.task_id),
@@ -73,7 +73,21 @@ impl KernelRuntimeState {
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::Occur(event))?;
-        Box::pin(self.deliver_agent_inbox(&task.room_id, parent.id())).await
+        if parent.session_id() != task.room_id {
+            // The delegate registration belongs to the parent Room. Its original receipt stays
+            // with the child's task in its own Room.
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::SourceOutcome {
+                    room: parent.session_id().into(),
+                    source: task.task_id.clone(),
+                    occurrence: format!("task-terminal-{}", task.task_id),
+                    now: crate::session::unix_epoch_ms(),
+                    public_answer: public_answer.cloned(),
+                    success: task.state == ExecutionState::Done,
+                })?;
+        }
+        Box::pin(self.deliver_agent_inbox(parent.session_id(), parent.id())).await
     }
 }
 

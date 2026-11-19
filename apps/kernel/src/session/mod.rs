@@ -47,6 +47,7 @@ mod workflow_scheduling;
 mod workflow_turns;
 mod workspace_links;
 
+pub(crate) use agent_config::effective_agent_execution_config_with_parents;
 pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_config_in_tree,
     effective_agent_execution_mode, effective_agent_extension_registration_authority,

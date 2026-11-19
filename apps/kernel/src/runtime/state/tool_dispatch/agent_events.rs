@@ -273,7 +273,9 @@ impl KernelRuntimeState {
                         agents.iter().find(|a| a.id() == followed),
                     ) {
                         (Some(me), Some(other)) if other.id() != actor => {
-                            SenderRelation::of(me, Some(other), &agents) == SenderRelation::Peer
+                            SenderRelation::of(me, Some(other), |id, target| {
+                                self.owned.agent_store.is_ancestor(id, target)
+                            }) == SenderRelation::Peer
                         }
                         _ => false,
                     }

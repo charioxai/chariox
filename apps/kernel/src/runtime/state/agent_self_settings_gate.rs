@@ -56,14 +56,18 @@ impl KernelRuntimeState {
         }
         let owned = &self.owned;
         let session = owned.session_store.get_session(target.session_id())?;
-        let agents = owned.agent_store.get_session_agents(target.session_id());
         let current =
-            crate::session::effective_agent_execution_config_in_tree(&session, target, &agents);
+            owned
+                .agent_store
+                .effective_execution_config(&session, target, &owned.session_store);
         let mut cap_agent = target.clone();
         cap_agent.set_execution_mode_override(None);
         cap_agent.set_permission_level_override(None);
-        let cap =
-            crate::session::effective_agent_execution_config_in_tree(&session, &cap_agent, &agents);
+        let cap = owned.agent_store.effective_execution_config(
+            &session,
+            &cap_agent,
+            &owned.session_store,
+        );
         let allowed = target.self_settings();
         let mut needed = Vec::new();
         if let Some(provider) = requested

@@ -112,10 +112,11 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &crate::session::RuntimeSession,
         ancestor: &crate::agent::AgentInstance,
-        agents: &[crate::agent::AgentInstance],
     ) -> bool {
         if ancestor.archived()
-            || crate::session::effective_agent_execution_config_in_tree(session, ancestor, agents)
+            || self
+                .agent_store
+                .effective_execution_config(session, ancestor, &self.session_store)
                 .permission_level
                 == AgentPermissionLevel::Required
             || session
@@ -161,7 +162,7 @@ impl KernelRuntimeOwnedState {
         };
         ancestors(start, &agents)
             .into_iter()
-            .find(|ancestor| self.ancestor_can_hold(session, ancestor, &agents))
+            .find(|ancestor| self.ancestor_can_hold(session, ancestor))
             .map_or(DecisionHolder::User, |ancestor| {
                 DecisionHolder::Agent(ancestor.id().to_owned())
             })
@@ -181,8 +182,7 @@ impl KernelRuntimeOwnedState {
                 .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
                 .is_some_and(|asker| {
                     ancestors(asker, &agents).into_iter().any(|ancestor| {
-                        ancestor.id() == holder
-                            && self.ancestor_can_hold(session, ancestor, &agents)
+                        ancestor.id() == holder && self.ancestor_can_hold(session, ancestor)
                     })
                 })
     }
@@ -521,9 +521,9 @@ impl KernelRuntimeOwnedState {
                 subject_agent(&interaction)
                     .and_then(|asker| agents.iter().find(|a| a.id() == asker))
                     .is_some_and(|asker| {
-                        ancestors(asker, &agents).iter().any(|a| {
-                            a.id() == holder && self.ancestor_can_hold(&session, a, &agents)
-                        })
+                        ancestors(asker, &agents)
+                            .iter()
+                            .any(|a| a.id() == holder && self.ancestor_can_hold(&session, a))
                     })
             };
             let rehanded = match pending.holder.clone() {
@@ -743,8 +743,7 @@ impl KernelRuntimeOwnedState {
                     .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
                     .is_some_and(|asker| {
                         ancestors(asker, &agents).iter().any(|ancestor| {
-                            ancestor.id() == holder
-                                && self.ancestor_can_hold(session, ancestor, &agents)
+                            ancestor.id() == holder && self.ancestor_can_hold(session, ancestor)
                         })
                     });
                 if !may_still_hold {
@@ -801,7 +800,7 @@ impl KernelRuntimeOwnedState {
             .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
             .and_then(|asker| {
                 ancestors(asker, &agents).into_iter().find(|ancestor| {
-                    self.ancestor_can_hold(&session, ancestor, &agents)
+                    self.ancestor_can_hold(&session, ancestor)
                         && !self.turn_is_settled(session_id, ancestor.id())
                 })
             })

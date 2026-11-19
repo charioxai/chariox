@@ -631,17 +631,20 @@ impl KernelRuntimeState {
         &self,
         request: &crate::agent::CreateAgentRequest,
     ) -> Result<(), DaemonError> {
-        let (Some(parent), Some(directory)) = (
-            request.parent_agent_id.as_ref(),
-            request.worktree_id.as_deref(),
-        ) else {
+        let Some(edge) = request.parent_agent_id.as_ref() else {
             return Ok(());
         };
-        let Ok(parent) = self.owned.agent_store.get_agent(parent.agent_id()) else {
-            return Ok(());
-        };
-        let session = self.owned.session_store.get_session(&request.session_id)?;
-        crate::agent::authority_limit::check_directory(&parent, &session, directory)
+        let parent = self.owned.agent_store.get_agent(edge.agent_id())?;
+        let source = self.owned.session_store.get_session(parent.session_id())?;
+        if parent.session_id() != request.session_id {
+            let target = self.owned.session_store.get_session(&request.session_id)?;
+            for directory in [target.workspace_id(), target.worktree_id()] {
+                crate::agent::authority_limit::check_directory(&parent, &source, directory)?;
+            }
+        } else if let Some(directory) = request.worktree_id.as_deref() {
+            crate::agent::authority_limit::check_directory(&parent, &source, directory)?;
+        }
+        Ok(())
     }
 
     /// The checkout made for a spawn that failed before any agent was registered leaves nothing

@@ -7,6 +7,9 @@ export type SubAgentWord = "running" | "waiting" | "needs you" | "done"
 export interface SubAgentRow {
   readonly id: string
   readonly name: string
+  readonly roomId?: string
+  readonly roomName?: string
+  readonly startedBy?: string
   readonly word: SubAgentWord
   /** Finished: shown dimmed until the parent's task ends and the kernel drops it. */
   readonly dimmed: boolean
@@ -44,6 +47,8 @@ export function subAgentRows(tree: AgentTree): readonly SubAgentRow[] {
     return {
       id: node.agent_id,
       name: node.alias ?? node.agent_id,
+      ...(node.room_id ? { roomId: node.room_id, roomName: node.room_alias } : {}),
+      ...(node.started_by ? { startedBy: node.started_by } : {}),
       word: base === "waiting" && node.needs_user === true ? "needs you" : base,
       dimmed: base === "done",
       depth,

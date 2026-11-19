@@ -59,10 +59,10 @@ impl KernelRuntimeOwnedState {
                 let effective_config = session
                     .as_ref()
                     .map(|session| {
-                        crate::session::effective_agent_execution_config_in_tree(
+                        self.agent_store.effective_execution_config(
                             session,
                             &agent,
-                            &self.agent_store.get_session_agents(&request.session_id),
+                            &self.session_store,
                         )
                     })
                     .unwrap_or_default();
@@ -264,11 +264,10 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
         let effective_config = match agent.as_ref() {
-            Some(agent) => crate::session::effective_agent_execution_config_in_tree(
-                &session,
-                agent,
-                &self.agent_store.get_session_agents(session.id()),
-            ),
+            Some(agent) => {
+                self.agent_store
+                    .effective_execution_config(&session, agent, &self.session_store)
+            }
             None => crate::session::effective_agent_execution_config(&session, None),
         };
         if request.execution_mode.is_none() {

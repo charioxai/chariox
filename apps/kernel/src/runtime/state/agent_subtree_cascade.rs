@@ -127,11 +127,20 @@ impl KernelRuntimeState {
             .iter()
             .map(|agent| agent.id().to_owned())
             .collect::<std::collections::HashSet<_>>();
-        for orphan in agents.iter().filter(|agent| {
-            agent
-                .parent_agent_id()
-                .is_some_and(|parent| !known.contains(parent) && self.deletion_recorded(parent))
-        }) {
+        for orphan in
+            agents.iter().filter(|agent| {
+                agent.parent_agent_id().is_some_and(|parent| {
+                    (!known.contains(parent) && self.deletion_recorded(parent))
+                    || agent.parent_room_id().is_some_and(|room| {
+                        matches!(
+                            self.owned.session_store.get_session(room),
+                            Ok(session) if session.status() == crate::session::SessionStatus::Ended
+                        ) || self.owned.session_store.session_owner_user_id(room).is_none()
+                        // The parent Room was retired or deleted by the time this pass ran.
+                    })
+                })
+            })
+        {
             ended += self.end_retained(orphan).await;
         }
         ended

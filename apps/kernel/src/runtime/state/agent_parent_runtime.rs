@@ -95,18 +95,19 @@ impl KernelRuntimeOwnedState {
                         agent_id: parent_id.to_owned(),
                     });
                 }
-                crate::agent::authority_limit::check_placement(agent, parent, &agents)
+                let tree = self.agent_store.list_agents();
+                crate::agent::authority_limit::check_placement(agent, parent, &tree)
                     .map_err(crate::runtime::room_tool_admission::denied)?;
             }
             // A sub-agent made a room agent counts toward the room's limit, as a new one does.
-            None if agent.is_sub_agent() => {
+            None if !agent.is_room_agent() => {
                 let max_agents = self
                     .session_store
                     .get_session(&request.session_id)?
                     .max_agents();
                 let room_agents = agents
                     .iter()
-                    .filter(|other| !other.archived() && !other.is_sub_agent())
+                    .filter(|other| !other.archived() && other.is_room_agent())
                     .count();
                 if room_agents >= max_agents as usize {
                     return Err(DaemonError::AgentLimitReached {

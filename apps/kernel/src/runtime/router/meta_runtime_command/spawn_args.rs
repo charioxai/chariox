@@ -416,13 +416,11 @@ pub(super) fn parse_meta_agent_spawn_args(
                 "--slice",
                 slice_ref.is_some() || slice_create.is_some() || slice_display_mode.is_some(),
             ),
-            ("--deadline", deadline.is_some()),
             ("--max-context", max_context_tokens.is_some()),
-            ("--command-id", command_id.is_some() && kernel_ref.is_none()),
         ];
         if let Some((option, _)) = unsupported.iter().find(|(_, given)| *given) {
             return Err(meta_command_error(format!(
-                "usage: agent spawn --room does not accept {option}; a peer starts in the target room's own folder on its kernel, and only its owner sets a deadline"
+                "usage: agent spawn --room does not accept {option}; the agent starts in the target Room’s folder"
             )));
         }
     }

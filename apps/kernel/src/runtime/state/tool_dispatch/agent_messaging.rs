@@ -23,7 +23,13 @@ impl KernelRuntimeState {
                 "agents": agents
                     .iter()
                     .map(|agent| {
-                        session_agent_description(session, requester, agent, &agents, &activity)
+                        session_agent_description(
+                            session,
+                            requester,
+                            agent,
+                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
+                            &activity,
+                        )
                     })
                     .collect::<Vec<_>>(),
             }),
@@ -54,7 +60,13 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "session_id": session.id(),
-                    "agent": session_agent_description(session, requester, agent, &agents, &activity),
+                    "agent": session_agent_description(
+                            session,
+                            requester,
+                            agent,
+                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
+                            &activity,
+                        ),
                 }),
             },
             Err(message) => agent_message_failure(message),
@@ -524,11 +536,9 @@ fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
-    agents: &[crate::agent::AgentInstance],
+    effective: crate::session::EffectiveAgentExecutionConfig,
     activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
 ) -> serde_json::Value {
-    let effective =
-        crate::session::effective_agent_execution_config_in_tree(session, agent, agents);
     let location = agent.remote_execution().map_or_else(
         || serde_json::json!({ "kind": "local" }),
         |remote| {
@@ -574,6 +584,7 @@ fn session_agent_description(
         // agent is never an unexplained one.
         "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
         "parent_agent_id": agent.parent_agent_id(),
+        "parent_room_id": agent.parent_room_id(),
         "visible_in_freeform": agent.visible_in_freeform(),
         "location": location,
         "extensions": {

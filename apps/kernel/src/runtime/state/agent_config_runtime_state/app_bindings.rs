@@ -699,12 +699,12 @@ impl KernelRuntimeState {
             return Ok(Some(permit));
         }
         if target.has_extension_grant(ExtensionKind::App, installation_id)
-            || !crate::session::effective_agent_user_authority(
-                &session,
-                Some(&agent),
-                &self.owned.agent_store.get_session_agents(session.id()),
-            )
-            .requires_approval()
+            || self
+                .owned
+                .agent_store
+                .effective_execution_config(&session, &agent, &self.owned.session_store)
+                .permission_level
+                .is_yolo()
             || self
                 .sudo_task_authorizes_agent(session.id(), agent.id())
                 .await
