@@ -51,7 +51,7 @@ impl WakeDriver for JobDriver {
             watch::channel(record.placement == JobPlacement::Local && wake.state == "cancelling");
         {
             let mut live = self.live.lock().expect("job live");
-            if live.contains_key(&wake.id) {
+            if record.placement == JobPlacement::Local && live.contains_key(&wake.id) {
                 return Recovery::Reattached;
             }
             live.insert(wake.id.clone(), cancel);
