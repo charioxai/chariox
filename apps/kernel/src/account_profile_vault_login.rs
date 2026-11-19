@@ -265,13 +265,30 @@ impl ProviderAccountProfileRegistry {
                 ));
             }
             let mut next = document.clone();
+            // The home's default login becomes the machine's default, as a file login does;
+            // otherwise the machine's own signed-out default stays the one its agents use.
+            let previous_default_profile_id = login
+                .profile
+                .is_default
+                .then(|| {
+                    next.profiles.iter_mut().find(|stored| {
+                        stored.public.owner_user_id == owner_user_id
+                            && stored.public.provider == provider
+                            && stored.public.is_default
+                    })
+                })
+                .flatten()
+                .map(|previous| {
+                    previous.public.is_default = false;
+                    previous.public.profile_id.clone()
+                });
             let mut public = new_public_profile(
                 owner_user_id,
                 provider,
                 profile_id,
                 &login.profile.label,
                 ProviderAccountProfileOrigin::CharioxCreated,
-                false,
+                login.profile.is_default,
             );
             public.auth_state = ProviderAccountAuthState::Authenticated;
             public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
@@ -289,7 +306,7 @@ impl ProviderAccountProfileRegistry {
                     package_sha256: package_sha256.to_string(),
                     materialization_sha256: materialization_sha256.clone(),
                     replaced_profile: None,
-                    previous_default_profile_id: None,
+                    previous_default_profile_id,
                     vault_login: true,
                 }),
                 transferred_from: None,
@@ -373,6 +390,19 @@ impl ProviderAccountProfileRegistry {
         )?;
         let mut next = document.clone();
         let removed = next.profiles.remove(index);
+        if let Some(previous) = binding
+            .previous_default_profile_id
+            .as_deref()
+            .and_then(|id| {
+                next.profiles.iter_mut().find(|stored| {
+                    stored.public.owner_user_id == owner_user_id
+                        && stored.public.provider == provider
+                        && stored.public.profile_id == id
+                })
+            })
+        {
+            previous.public.is_default = true;
+        }
         self.persist_locked(&next)?;
         *document = next;
         drop(document);
