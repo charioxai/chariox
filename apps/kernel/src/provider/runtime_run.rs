@@ -550,6 +550,12 @@ impl RuntimeProviderRun {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_started_at_ms_for_test(mut self, at_ms: u64) -> Self {
+        self.started_at_ms = at_ms;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_last_output_at_ms_for_test(mut self, at_ms: u64) -> Self {
         self.last_output_at_ms = at_ms;
         self
@@ -798,6 +804,19 @@ impl RuntimeProviderRun {
 
     pub fn started_at_ms(&self) -> u64 {
         self.started_at_ms
+    }
+
+    /// Strict start order: the start time, then the allocation number of the
+    /// id, then the id, so of two runs started in one millisecond exactly one
+    /// is the later.
+    pub(crate) fn start_order(&self) -> (u64, Option<u64>, &str) {
+        (
+            self.started_at_ms,
+            self.id
+                .strip_prefix("provider-run-")
+                .and_then(|number| number.parse().ok()),
+            &self.id,
+        )
     }
 
     pub fn last_activity_at_ms(&self) -> u64 {

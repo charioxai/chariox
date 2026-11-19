@@ -505,10 +505,9 @@ impl ProviderProcessServiceStore {
     /// later one has replaced cannot hold it.
     pub(crate) fn agent_started_a_later_run(&self, run: &RuntimeProviderRun) -> bool {
         self.read().runs.values().any(|other| {
-            other.id() != run.id()
-                && other.session_id() == run.session_id()
+            other.session_id() == run.session_id()
                 && other.agent_instance_id() == run.agent_instance_id()
-                && other.started_at_ms() >= run.started_at_ms()
+                && other.start_order() > run.start_order()
         })
     }
 
