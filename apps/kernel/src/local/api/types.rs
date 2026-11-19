@@ -597,4 +597,4 @@ pub use workspace::*;
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
 /// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1073;

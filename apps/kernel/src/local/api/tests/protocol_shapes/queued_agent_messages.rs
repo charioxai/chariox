@@ -50,6 +50,6 @@ fn queued_agent_messages_protocol_1012_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "335cdd6d33f022cd0beb78c5f675f87adbaa44611cc36596cf9b62ce78bddf43"
+        "ae553e2912db7813f19b4672bdf0248ddacecf5f0bf0389aae0fd06c025b7cf9"
     );
 }
