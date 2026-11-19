@@ -3522,6 +3522,94 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
     assert_eq!(inbox[1].prompt_id, inbox[0].prompt_id);
 }
 
+// Interrupted delivery belongs to the kernel's retry, never an owner decision.
+#[tokio::test]
+async fn a02_r6_interrupted_delivery_retries_without_an_owner_interaction() {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r6-late-receipt");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "late-accepted",
+            "message",
+            serde_json::json!({}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            prompt: "late-prompt".into(),
+            target: Some("old-turn".into()),
+            run: Some("old-run".into()),
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
+            through: 0,
+        })
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
+    let retry = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
+    assert_eq!(retry.len(), 1, "recovery must retain the same inbox event");
+    assert_eq!(retry[0].sequence, e.sequence);
+    assert_eq!(retry[0].state, "pending");
+    assert!(retry[0].prompt_id.is_none());
+    assert!(retry[0].target_prompt_id.is_none());
+    assert!(retry[0].provider_run_id.is_none());
+    assert!(
+        store
+            .agent_lifecycle(Operation::Receipt {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                sequence: e.sequence,
+                state: "accepted".into(),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .is_err(),
+        "a receipt for the interrupted attempt must not settle its pending retry"
+    );
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
+    assert_eq!(
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap(),
+        retry
+    );
+    assert!(
+        store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .is_empty(),
+        "delivery recovery must not manufacture provider work"
+    );
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .is_empty(),
+        "delivery recovery must not manufacture an owner choice"
+    );
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: deletion wakes a bound Goal source promptly.
 #[tokio::test]
 async fn a12_destroyed_bound_goal_source_reconciles_without_periodic_poll() {
