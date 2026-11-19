@@ -65,7 +65,9 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     const status = ended as { state: string; outcome?: { reason: string; exit_code?: number | null; signal?: string | null } }
     if (status.outcome?.reason === "program_exited") {
       if (typeof status.outcome.exit_code === "number") { failed = false; return status.outcome.exit_code }
-      if (status.outcome.signal) { failed = false; return 128 }
+      const signal = Number(status.outcome.signal)
+      if (Number.isInteger(signal) && signal > 0 && signal <= 127) { failed = false; return 128 + signal }
+      throw new CommandFailure("exec_failed", "the kernel did not report the terminating signal number; update the kernel and retry")
     }
     throw new CommandFailure("exec_failed", `the command did not exit normally (${(status.outcome as { reason?: string } | undefined)?.reason ?? status.state})`)
   } finally {

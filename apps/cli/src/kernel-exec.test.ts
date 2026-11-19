@@ -53,6 +53,20 @@ test("a command killed by a signal is not reported as success", async () => {
   await assert.rejects(runKernelExec({ command: ["x"], timeoutSeconds: 30 }, killed, sink().stream), (error: unknown) => error instanceof CommandFailure && error.code === "exec_failed")
 })
 
+for (const [signal, expected] of [["2", 130], ["9", 137], ["15", 143]] as const) {
+  test(`a command terminated by signal ${signal} returns ${expected}`, async () => {
+    const { sent, send } = kernel("", 0)
+    const signalled = async (body: any) => {
+      const reply: any = await send(body)
+      const waited = reply.RoomTerminal?.result?.waited
+      if (waited) waited.terminal.status = { state: "ended", outcome: { reason: "program_exited", exit_code: null, signal } }
+      return reply
+    }
+    assert.equal(await runKernelExec({ command: ["sh"], timeoutSeconds: 30 }, signalled, sink().stream), expected)
+    assert.equal(sent.at(-1).KernelTerminal.operation.operation, "close")
+  })
+}
+
 test("--directory goes with open only; wait, read and close carry none, and the terminal is closed", async () => {
   const { sent, send } = kernel("/tmp\r\n", 0)
   const out = sink()
