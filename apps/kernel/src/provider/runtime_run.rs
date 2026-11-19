@@ -419,6 +419,11 @@ impl RuntimeProviderRun {
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
     }
+    #[cfg(test)]
+    pub(crate) fn with_pty_env(mut self, pty_env: BTreeMap<String, String>) -> Self {
+        self.pty_env = pty_env;
+        self
+    }
 
     pub(crate) fn requested_provider_env_remove(&self) -> Option<&[String]> {
         self.requested_provider_env_remove.as_deref()

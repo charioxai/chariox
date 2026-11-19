@@ -155,8 +155,56 @@ pub(super) struct ClaudeNativeTuiFiles {
     pub(super) permission_response_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) usage_file: PathBuf,
+    /// Only for a provider terminal: its agent pane on Claude's own surfaces.
+    pub(super) terminal_pane: Option<ClaudeTerminalPaneFiles>,
     mcp_config_file: Option<PathBuf>,
 }
+
+/// What Claude's own terminal shows of its agent pane and reports back
+/// (docs/PROTOCOL.md section 3.3.2.1). The kernel writes the status lines; the
+/// status line command writes the model and effort, the hook the permission mode.
+pub(super) struct ClaudeTerminalPaneFiles {
+    pub(super) status_file: PathBuf,
+    pub(super) model_file: PathBuf,
+    pub(super) mode_file: PathBuf,
+}
+
+impl ClaudeTerminalPaneFiles {
+    pub(super) fn env(&self) -> [(String, String); 3] {
+        [
+            (CLAUDE_PANE_STATUS_FILE_ENV, &self.status_file),
+            (CLAUDE_TERMINAL_MODEL_FILE_ENV, &self.model_file),
+            (CLAUDE_TERMINAL_MODE_FILE_ENV, &self.mode_file),
+        ]
+        .map(|(name, path)| (name.to_string(), path.display().to_string()))
+    }
+}
+
+/// The card behind Claude's own permission dialog in a native run: that dialog is its
+/// terminal face, so the terminal's pane adapter opens no second one for it.
+pub(crate) fn claude_native_permission_interaction_id(
+    provider_run_id: &str,
+    request_id: &str,
+) -> String {
+    format!(
+        "{}{request_id}",
+        claude_native_permission_prefix(provider_run_id)
+    )
+}
+
+pub(crate) fn is_claude_native_permission(interaction_id: &str, provider_run_id: &str) -> bool {
+    interaction_id.starts_with(&claude_native_permission_prefix(provider_run_id))
+}
+
+fn claude_native_permission_prefix(provider_run_id: &str) -> String {
+    format!("claude-native-permission-{provider_run_id}-")
+}
+
+pub(crate) const CLAUDE_PANE_STATUS_FILE_ENV: &str = "CHARIOX_CLAUDE_PANE_STATUS_FILE";
+pub(crate) const CLAUDE_TERMINAL_MODEL_FILE_ENV: &str = "CHARIOX_CLAUDE_TERMINAL_MODEL_FILE";
+pub(crate) const CLAUDE_TERMINAL_MODE_FILE_ENV: &str = "CHARIOX_CLAUDE_TERMINAL_MODE_FILE";
+/// Seconds between status line refreshes while Claude is idle.
+const CLAUDE_PANE_STATUS_REFRESH_SECS: u64 = 2;
 
 impl ClaudeNativeTuiFiles {
     pub(super) fn materialize_mcp_config(
@@ -188,6 +236,13 @@ pub(super) fn prepare_claude_native_tui_files(
     let hook_handler_file = root.path().join("hook-handler.mjs");
     let usage_capture = materialize_claude_usage_capture(&root)?;
     let usage_file = usage_capture.usage_file().to_path_buf();
+    let terminal_pane = (!request.client_interface.is_chariox()
+        && request.provider != super::catalog::CLAUDE_HEADLESS_PROVIDER_ID)
+        .then(|| ClaudeTerminalPaneFiles {
+            status_file: root.path().join("pane-status.txt"),
+            model_file: root.path().join("terminal-model.json"),
+            mode_file: root.path().join("terminal-mode"),
+        });
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
@@ -233,6 +288,13 @@ pub(super) fn prepare_claude_native_tui_files(
             })
         })
         .collect::<Vec<_>>();
+    let mut status_line = serde_json::json!({
+        "type": "command",
+        "command": usage_capture.command()
+    });
+    if terminal_pane.is_some() {
+        status_line["refreshInterval"] = CLAUDE_PANE_STATUS_REFRESH_SECS.into();
+    }
     let settings = serde_json::json!({
         "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
             == AgentPermissionLevel::Yolo,
@@ -245,10 +307,7 @@ pub(super) fn prepare_claude_native_tui_files(
             // Claude must not cancel the hook before its own decision wait.
             "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command, "timeout": CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS }] }]
         },
-        "statusLine": {
-            "type": "command",
-            "command": usage_capture.command()
-        },
+        "statusLine": status_line,
         // A command waiting for room still counts against the Bash tool's
         // timeout (2 minutes by default): give it the time a queued build needs.
         "env": {
@@ -273,6 +332,7 @@ pub(super) fn prepare_claude_native_tui_files(
         permission_response_dir,
         settings_file,
         usage_file,
+        terminal_pane,
         mcp_config_file: None,
     })
 }
@@ -1227,6 +1287,88 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--resume", "claude-session-1"]));
+    }
+
+    #[test]
+    fn a_provider_terminal_shows_its_pane_and_reports_its_settings_and_headless_runs_do_not() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let run = |command: &str, env: &[(String, String)], input: &[u8]| {
+            let mut child = crate::process_spawn::command("/bin/sh")
+                .args(["-c", command])
+                .envs(env.iter().map(|(name, value)| (name, value)))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("the command should start");
+            child
+                .stdin
+                .take()
+                .expect("stdin should be piped")
+                .write_all(input)
+                .expect("input should write");
+            let output = child.wait_with_output().expect("the command should finish");
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).expect("output is text")
+        };
+        let settings_of = |files: &super::ClaudeNativeTuiFiles| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&files.settings_file).unwrap()).unwrap()
+        };
+        let headless = prepare_claude_native_tui_files(&LaunchProviderRequest::new(
+            "session-headless",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        ))
+        .unwrap();
+        assert!(
+            headless.terminal_pane.is_none(),
+            "nobody sees a headless terminal"
+        );
+        assert!(settings_of(&headless)["statusLine"]
+            .get("refreshInterval")
+            .is_none());
+
+        let terminal = prepare_claude_native_tui_files(
+            &LaunchProviderRequest::new("session-pane", "claude", "claude", "default", "sonnet")
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+        )
+        .unwrap();
+        let settings = settings_of(&terminal);
+        assert_eq!(settings["statusLine"]["refreshInterval"], 2);
+        let pane = terminal
+            .terminal_pane
+            .as_ref()
+            .expect("a terminal has a pane");
+        let env = pane.env();
+        fs::write(&pane.status_file, "Room · claude-1\nWorking").unwrap();
+        let shown = run(
+            settings["statusLine"]["command"].as_str().unwrap(),
+            &env,
+            br#"{"model":{"id":"claude-opus-5-5"},"effort":{"level":"high"},"context_window":{}}"#,
+        );
+        assert_eq!(shown, "Room · claude-1\nWorking");
+        let reported: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&pane.model_file).unwrap()).unwrap();
+        assert_eq!(
+            reported,
+            serde_json::json!({ "model": "claude-opus-5-5", "effort": "high" })
+        );
+
+        run(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap(),
+            &env,
+            br#"{"hook_event_name":"Stop","session_id":"s","permission_mode":"plan"}"#,
+        );
+        assert_eq!(fs::read_to_string(&pane.mode_file).unwrap(), "plan");
     }
 
     #[test]
