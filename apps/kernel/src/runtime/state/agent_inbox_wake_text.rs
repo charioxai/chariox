@@ -46,45 +46,108 @@ pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> 
     )
 }
 
-/// The one line a notification's prompt carries: what happened and where to read it. The
-/// occurrence itself stays in the inbox row `sequence`, behind the tool that marks it untrusted.
-pub(super) fn notification_notice(title: &str, source: &str, sequence: u64) -> String {
-    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+/// The inbox commit records arrival independently of any delivery attempt.
+pub(super) fn arrival_suffix(arrived_at_ms: Option<u64>) -> String {
+    arrived_at_ms
+        .and_then(|ms| i64::try_from(ms).ok())
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|at| {
+            format!(
+                ", arrived {}",
+                at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The occurrence stays in its inbox row, behind the tool that marks it untrusted.
+pub(super) fn notification_notice(notification: &crate::session::QueuedNotification) -> String {
     format!(
-        "Notification: {} (from {}). Read it with chariox.events.inbox after {}, then chariox.events.ack it.",
-        one_line(title),
-        one_line(source),
-        sequence.saturating_sub(1)
+        "Notification: {} (from {}), inbox event {}{}. Read it with chariox.events.inbox after {}, then chariox.events.ack it.",
+        one_line(&notification.title),
+        one_line(&notification.source),
+        notification.sequence,
+        arrival_suffix(notification.arrived_at_ms),
+        notification.sequence.saturating_sub(1),
     )
 }
 
-/// The lines of one prompt that delivers several occurrences of one subscription,
-/// oldest first; each occurrence stays in its own inbox row.
 pub(super) fn coalesced_notification_notice(
     notifications: &[crate::session::QueuedNotification],
 ) -> String {
-    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut text = format!(
-        "{} notifications arrived while you were busy:",
-        notifications.len()
-    );
-    for notification in notifications {
-        text.push_str(&format!(
-            "\n- {} (from {}), inbox event {}",
-            one_line(&notification.title),
-            one_line(&notification.source),
-            notification.sequence
-        ));
-    }
-    let first = notifications
+    notification_batch(notifications, &[])
+}
+
+pub(super) fn notification_batch(
+    notifications: &[crate::session::QueuedNotification],
+    wakes: &[InboxEvent],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut ordered = notifications.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|row| row.sequence);
+    let first = ordered.first().expect("notification batch is nonempty");
+    let shared = first.batch_instruction.as_deref().filter(|instruction| {
+        ordered
+            .iter()
+            .all(|row| row.batch_instruction.as_deref() == Some(*instruction))
+    });
+    let mut text = shared.map_or_else(String::new, |instruction| format!("{instruction}\n\n"));
+    let _ = write!(text, "{} new messages:", ordered.len() + wakes.len());
+    let mut lines = ordered
         .iter()
-        .map(|notification| notification.sequence)
-        .min()
-        .unwrap_or(0);
-    text.push_str(&format!(
-        "\nRead them with chariox.events.inbox after {}, then chariox.events.ack each one you handled.",
-        first.saturating_sub(1)
-    ));
+        .map(|notification| {
+            (
+                notification.sequence,
+                format!(
+                    "{} (from {}), inbox event {}{}",
+                    one_line(&notification.title),
+                    one_line(&notification.source),
+                    notification.sequence,
+                    arrival_suffix(notification.arrived_at_ms),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.extend(wakes.iter().map(|wake| {
+        let source = one_line(&wake.source_id)
+            .chars()
+            .take(100)
+            .collect::<String>();
+        (
+            wake.sequence,
+            format!(
+                "{} (from {source}), inbox event {}{}",
+                kind_label(&wake.kind),
+                wake.sequence,
+                arrival_suffix(wake.arrived_at_ms),
+            ),
+        )
+    }));
+    lines.sort_by_key(|(sequence, _)| *sequence);
+    let after = lines[0].0.saturating_sub(1);
+    for (_, line) in lines {
+        let _ = write!(text, "\n- {line}");
+    }
+    if shared.is_none() {
+        for notification in ordered.iter().copied() {
+            if let Some(instruction) = notification.batch_instruction.as_deref() {
+                let _ = write!(
+                    text,
+                    "\n\nInstructions for inbox event {}:\n{instruction}",
+                    notification.sequence
+                );
+            }
+        }
+    }
+    let _ = write!(
+        text,
+        "\nRead them with chariox.events.inbox after {after}, then chariox.events.ack each one you handled."
+    );
     text
 }
 

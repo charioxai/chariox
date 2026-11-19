@@ -1544,8 +1544,7 @@ impl PromptStateOwner {
         true
     }
 
-    /// Joins one more occurrence of a notification trigger to the agent's queued
-    /// prompt of that trigger, under the queue lock, so several occurrences cost one
+    /// Joins a queue-mode occurrence to the agent's waiting notification prompt, under the queue lock, so several occurrences cost one
     /// turn. Only a prompt that is still waiting joins: never the running prompt, a
     /// prompt being steered, or a person's or agent's prompt. Returns the prompt and
     /// whether it changed; an occurrence it already carries leaves it as it is.
@@ -1553,7 +1552,6 @@ impl PromptStateOwner {
         &self,
         session: &RuntimeSession,
         agent_id: &str,
-        trigger_id: &str,
         notification: crate::session::QueuedNotification,
         deadline_ms: u64,
         render: impl FnOnce(&[crate::session::QueuedNotification]) -> String,
@@ -1565,9 +1563,11 @@ impl PromptStateOwner {
         let state = owner.ensure_agent_state(session, agent_id);
         let queued = state.queued_prompts.iter_mut().find(|queued| {
             queued.prompt_origin() == crate::session::PromptOrigin::Notification
-                && queued.agent_trigger_id() == Some(trigger_id)
                 && queued.status() == PromptStatus::Queued
-                && !queued.queued_notifications().is_empty()
+                && queued
+                    .queued_notifications()
+                    .first()
+                    .is_some_and(|lead| lead.batch_instruction.is_some())
                 && !queued.remote_steer_reserved()
                 && !queued.local_steer_submitted()
         })?;

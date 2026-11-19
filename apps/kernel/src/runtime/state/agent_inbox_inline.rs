@@ -1,7 +1,7 @@
 //! The wake prompt carries the text of the events it wakes the agent for, so an
 //! agent that can act on them does not open its inbox first. What does not fit
 //! stays in the inbox behind the counts-and-kinds pointer.
-use super::agent_inbox_wake_text::{kind_label, wake_text};
+use super::agent_inbox_wake_text::{arrival_suffix, kind_label, wake_text};
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, InboxEvent};
 
@@ -58,9 +58,10 @@ impl KernelRuntimeState {
             let text = body(event);
             let sender = self.event_sender(room, &reader, &agents, event);
             let mut block = format!(
-                "Event {} ({}). {}",
+                "Event {} ({}{}). {}",
                 event.sequence,
                 kind_label(&event.kind),
+                arrival_suffix(event.arrived_at_ms),
                 sender.relation.guidance(&sender.name)
             );
             if event.kind == "message" {

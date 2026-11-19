@@ -297,6 +297,8 @@ impl KernelRuntimeState {
         };
         let view = serde_json::json!({
             "sequence": event.sequence,
+            "arrived_at_ms": event.arrived_at_ms,
+            "state": event.state,
             "kind": event.kind,
             "urgent": event.urgent,
             "needs_answer": self.decision_open(room, event),

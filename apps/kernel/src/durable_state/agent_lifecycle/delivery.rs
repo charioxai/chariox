@@ -713,6 +713,31 @@ impl WakeSlot {
     }
 }
 
+pub(super) fn admit_promoted_wakes(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+    sequences: &[u64],
+) -> Result<(), DaemonError> {
+    let now = crate::session::unix_epoch_ms();
+    let mut slot = WakeSlot::new(live_tasks(tx, room, agent)?);
+    for sequence in sequences {
+        let mut event = get_event(tx, room, agent, *sequence)?;
+        if event.state != "pending"
+            || event.kind == "message"
+            || event.reply_requested
+            || !slot.take(&event)
+        {
+            return Err(error(
+                "inbox event changed before the notification batch was admitted",
+            ));
+        }
+        admit(tx, &mut event, prompt, None, None, now)?;
+    }
+    Ok(())
+}
+
 /// Admits one pending row to the attempt: it takes the prompt, and the task
 /// whose wait it wakes keeps that wait until provider I/O.
 fn admit(
