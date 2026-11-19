@@ -362,6 +362,7 @@ pub fn unlock_chariox_encrypted_vault(
                 key,
                 expires_at_ms,
                 single_use: lease == VaultUnlockLease::SingleUse,
+                held_by: None,
             },
         );
     Ok(CharioxVaultUnlockStatus {
@@ -401,6 +402,7 @@ pub fn unlock_existing_chariox_encrypted_vault(
                 key,
                 expires_at_ms,
                 single_use: lease == VaultUnlockLease::SingleUse,
+                held_by: None,
             },
         );
     Ok(Some(CharioxVaultUnlockStatus {
@@ -639,6 +641,7 @@ pub fn extend_chariox_encrypted_vault(
         VaultUnlockLease::KernelShutdown => None,
     };
     vault.single_use = lease == VaultUnlockLease::SingleUse;
+    vault.held_by = None;
     Ok(CharioxVaultUnlockStatus {
         awaiting_passphrase: false,
         path,
@@ -685,17 +688,43 @@ pub fn chariox_vault_single_use_unlocked(path: impl AsRef<Path>) -> Result<bool,
 
 /// Transfer relocking to the operation guard once. Nested Vault use within
 /// that operation must not close the Vault before the outer operation ends.
+/// `holder` names who took it: only its own uses may share the open Vault.
 pub(crate) fn take_chariox_vault_single_use_unlock(
     path: impl AsRef<Path>,
+    holder: &str,
 ) -> Result<bool, DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     let mut unlocked = unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     let now_ms = crate::session::unix_epoch_ms();
-    Ok(unlocked
-        .get_mut(&path)
-        .is_some_and(|vault| !vault.is_expired(now_ms) && std::mem::take(&mut vault.single_use)))
+    Ok(unlocked.get_mut(&path).is_some_and(|vault| {
+        let taken = !vault.is_expired(now_ms) && std::mem::take(&mut vault.single_use);
+        if taken {
+            vault.held_by = Some(holder.to_owned());
+        }
+        taken
+    }))
+}
+
+/// Whether the Vault is open only for the operation of another holder than `holder` (any
+/// holder when `None`) that took its single-use unlock, so this use may not use it.
+pub(crate) fn chariox_vault_held_for_another(
+    path: impl AsRef<Path>,
+    holder: Option<&str>,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    Ok(unlocked.get(&path).is_some_and(|vault| {
+        !vault.is_expired(now_ms)
+            && vault
+                .held_by
+                .as_deref()
+                .is_some_and(|held_by| Some(held_by) != holder)
+    }))
 }
 
 pub fn chariox_encrypted_vault_status(
@@ -791,6 +820,7 @@ pub(crate) fn adopt_vault_unlocks(body: &[u8]) -> Result<usize, DaemonError> {
                 key,
                 expires_at_ms: (expires_at_ms != u64::MAX).then_some(expires_at_ms),
                 single_use,
+                held_by: None,
             },
         ));
     }
@@ -1738,6 +1768,7 @@ fn remember_transferred_vault_key(
                 key,
                 expires_at_ms: None,
                 single_use: false,
+                held_by: None,
             },
         );
     Ok(())
@@ -2066,6 +2097,8 @@ struct UnlockedVault {
     key: Zeroizing<[u8; KEY_LEN]>,
     expires_at_ms: Option<u64>,
     single_use: bool,
+    /// Who took a single-use unlock: the Vault is open for that holder's operation only.
+    held_by: Option<String>,
 }
 
 impl UnlockedVault {
@@ -2156,6 +2189,7 @@ mod tests {
                     key: Zeroizing::new([42; KEY_LEN]),
                     expires_at_ms: Some(0),
                     single_use: false,
+                    held_by: None,
                 },
             );
             let result = extend_chariox_encrypted_vault(&path, lease);
@@ -2240,7 +2274,7 @@ mod tests {
         let extended =
             extend_chariox_encrypted_vault(&minutes, VaultUnlockLease::SingleUse).unwrap();
         assert_eq!(serde_json::to_value(extended).unwrap()["single_use"], true);
-        assert!(take_chariox_vault_single_use_unlock(&single).unwrap());
+        assert!(take_chariox_vault_single_use_unlock(&single, "test").unwrap());
         assert!(wire(&single).get("single_use").is_none());
         lock_chariox_encrypted_vault(&single).unwrap();
         lock_chariox_encrypted_vault(&minutes).unwrap();
@@ -2284,6 +2318,7 @@ mod tests {
                 key: Zeroizing::new([42; KEY_LEN]),
                 expires_at_ms: None,
                 single_use: false,
+                held_by: None,
             },
         );
         let result = extend_chariox_encrypted_vault(&path, VaultUnlockLease::TtlMinutes(30));

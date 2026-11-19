@@ -596,17 +596,10 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
 #[tokio::test]
 async fn declined_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once() {
     crate::test_support::isolated_env_test!();
-    refused_vault_wake_start(false).await;
+    refused_vault_wake_start().await;
 }
 
-#[tokio::test]
-async fn timed_out_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once()
-{
-    crate::test_support::isolated_env_test!();
-    refused_vault_wake_start(true).await;
-}
-
-async fn refused_vault_wake_start(timed_out: bool) {
+async fn refused_vault_wake_start() {
     let _env = crate::env_lock::lock();
     let private = crate::test_support::TestWorktree::new("pcd11-vault-refused-state");
     std::env::set_var("CHARIOX_HOME", private.path());
@@ -766,17 +759,10 @@ async fn refused_vault_wake_start(timed_out: bool) {
         "submitting",
         "a visible owner wait is not unconfirmed provider I/O"
     );
-    if timed_out {
-        f.runtime
-            .timeout_runtime_interaction(&f.room, &card)
-            .await
-            .unwrap();
-    } else {
-        f.runtime
-            .owned
-            .resolve_runtime_interaction(&f.room, &card, "cancel", None, Some(&owner), true)
-            .unwrap();
-    }
+    f.runtime
+        .owned
+        .resolve_runtime_interaction(&f.room, &card, "cancel", None, Some(&owner), true)
+        .unwrap();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(10), delivery)
             .await
@@ -787,11 +773,7 @@ async fn refused_vault_wake_start(timed_out: bool) {
     let blocked = f.task(&task.task_id);
     assert_eq!(blocked.state, ExecutionState::Blocked);
     assert!(
-        blocked.reason.contains(if timed_out {
-            "Vault unlock timed out"
-        } else {
-            "Vault unlock was declined"
-        }),
+        blocked.reason.contains("Vault unlock was declined"),
         "{}",
         blocked.reason
     );

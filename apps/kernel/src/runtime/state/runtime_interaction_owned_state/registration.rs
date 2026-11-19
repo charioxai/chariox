@@ -114,6 +114,12 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        // The Vault unlock card belongs to the Room, not to the turn that first needed the
+        // Vault: it keeps waiting for the person after that turn ends.
+        let vault_unlock_card = interaction
+            .choices()
+            .iter()
+            .any(|choice| choice.vault_unlock().is_some());
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
@@ -121,9 +127,11 @@ impl KernelRuntimeOwnedState {
             owner != session.owner_user_id()
                 || kernel_operation_owner.is_some()
                 || interaction.agent_id().is_none()
-                || !interaction
-                    .timeout_sec()
-                    .is_some_and(|seconds| (1..=3600).contains(&seconds))
+                || !match interaction.timeout_sec() {
+                    Some(seconds) => (1..=3600).contains(&seconds),
+                    // The Vault unlock card waits for as long as the person needs.
+                    None => vault_unlock_card,
+                }
         }) {
             return Err(interaction_error("Invalid terminal credential prompt"));
         }
@@ -287,7 +295,7 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         let agent_lifetime = lifetime_agent.map(|agent_id| {
-            if interaction.asking_task_id().is_some() {
+            if interaction.asking_task_id().is_some() || vault_unlock_card {
                 return super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),
                     prompt_id: None,

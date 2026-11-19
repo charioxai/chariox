@@ -28,10 +28,6 @@ impl KernelRuntimeOwnedState {
                 code: "vault_unlock_declined",
                 ..
             } => "The Vault unlock was declined",
-            DaemonError::VaultUnlock {
-                code: "vault_unlock_timed_out",
-                ..
-            } => "The Vault unlock timed out",
             _ => return Ok(()),
         };
         for task in self

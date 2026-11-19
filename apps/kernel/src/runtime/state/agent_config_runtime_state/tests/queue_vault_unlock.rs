@@ -1,5 +1,6 @@
-//! An expired, declined or cancelled Vault unlock ends the queued prompt that asked for it;
-//! it never leaves the agent idle behind a prompt that nobody can start.
+//! A queued prompt that needs the locked Vault waits on the Room's unlock card for as long as the
+//! person needs; a cancelled unlock ends it, so the agent never sits idle behind a prompt that
+//! nobody can start.
 use super::*;
 
 /// An agent whose launch needs a locked Vault: its Project holds a secret and the Vault is
@@ -118,57 +119,90 @@ fn assert_queue_ended_idle(
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_timed_out_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on() {
+async fn an_unanswered_vault_unlock_keeps_the_queued_prompts_waiting_on_its_card() {
     let (_root, app, runtime, session_id, agent_id) =
-        two_queued_prompts_behind_a_locked_vault("queue-vault-unlock-timeout").await;
-    // Nobody answers either unlock card: each prompt asks once and times out.
-    let started = runtime
-        .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
-        .await;
-    assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
+        two_queued_prompts_behind_a_locked_vault("queue-vault-unlock-waits").await;
+    let promotion = runtime.advance_project_queued_prompt_after_settlement(&session_id, &agent_id);
+    tokio::pin!(promotion);
+    tokio::select! {
+        started = &mut promotion => panic!("the queue must wait for the person: {started:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)) => {}
+    }
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let cards = session
+        .active_interactions()
+        .iter()
+        .filter(|card| card.id().starts_with("vault-unlock-"))
+        .collect::<Vec<_>>();
+    assert_eq!(cards.len(), 1, "one unlock card waits in the Room");
+    assert_eq!(cards[0].timeout_sec(), None);
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none());
+    assert_eq!(
+        queued
+            .iter()
+            .map(|prompt| prompt.prompt())
+            .collect::<Vec<_>>(),
+        vec!["first request", "second request"]
+    );
     drop(app);
+}
+
+/// The owner cancels each unlock card as it appears, `count` times.
+async fn cancel_unlock_cards(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    count: usize,
+) {
+    let owner = runtime
+        .owned
+        .session_store
+        .get_session(session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    let mut cancelled = 0;
+    while cancelled < count {
+        let card = runtime
+            .owned
+            .session_store
+            .get_session(session_id)
+            .unwrap()
+            .active_interaction_for_agent(agent_id)
+            .map(|card| card.id().to_string());
+        match card {
+            Some(card) => {
+                runtime
+                    .resolve_terminal_runtime_interaction(
+                        session_id,
+                        &card,
+                        "cancel",
+                        None,
+                        Some(&owner),
+                    )
+                    .await
+                    .unwrap();
+                cancelled += 1;
+            }
+            None => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
+        }
+    }
 }
 
 #[tokio::test]
 async fn a_cancelled_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on() {
     let (_root, app, runtime, session_id, agent_id) =
         two_queued_prompts_behind_a_locked_vault("queue-vault-unlock-cancel").await;
-    let owner = runtime
-        .owned
-        .session_store
-        .get_session(&session_id)
-        .unwrap()
-        .owner_user_id()
-        .to_string();
     // The owner cancels each unlock card as it appears.
-    let cancel_cards = async {
-        let mut cancelled = 0;
-        while cancelled < 2 {
-            let card = runtime
-                .owned
-                .session_store
-                .get_session(&session_id)
-                .unwrap()
-                .active_interaction_for_agent(&agent_id)
-                .map(|card| card.id().to_string());
-            match card {
-                Some(card) => {
-                    runtime
-                        .resolve_terminal_runtime_interaction(
-                            &session_id,
-                            &card,
-                            "cancel",
-                            None,
-                            Some(&owner),
-                        )
-                        .await
-                        .unwrap();
-                    cancelled += 1;
-                }
-                None => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
-            }
-        }
-    };
+    let cancel_cards = cancel_unlock_cards(&runtime, &session_id, &agent_id, 2);
     let (started, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         tokio::join!(
             runtime.advance_project_queued_prompt_after_settlement(&session_id, &agent_id),
@@ -181,8 +215,8 @@ async fn a_cancelled_vault_unlock_ends_the_queued_prompt_and_the_queue_moves_on(
     drop(app);
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_timed_out_vault_unlock_fails_the_workflow_run_whose_step_was_queued() {
+#[tokio::test]
+async fn a_cancelled_vault_unlock_fails_the_workflow_run_whose_step_was_queued() {
     let (_root, app, runtime, session_id, agent_id) =
         agent_behind_a_locked_vault("queue-vault-unlock-workflow").await;
     let (run_id, node_run_id) = {
@@ -232,10 +266,15 @@ async fn a_timed_out_vault_unlock_fails_the_workflow_run_whose_step_was_queued()
         .with_workflow_context(&run_id, &node_run_id)],
     );
 
-    // Nobody answers the unlock card: the step's prompt ends, and the run it served with it.
-    let started = runtime
-        .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
-        .await;
+    // The owner cancels the unlock card: the step's prompt ends, and the run it served with it.
+    let (started, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(
+            runtime.advance_project_queued_prompt_after_settlement(&session_id, &agent_id),
+            cancel_unlock_cards(&runtime, &session_id, &agent_id, 1)
+        )
+    })
+    .await
+    .expect("a cancelled unlock ends the step, not waits");
 
     assert_queue_ended_idle(&runtime, &session_id, &agent_id, started);
     let session = runtime
@@ -251,7 +290,7 @@ async fn a_timed_out_vault_unlock_fails_the_workflow_run_whose_step_was_queued()
     assert_eq!(
         run.status(),
         crate::session::WorkflowRunStatus::Failed,
-        "a workflow step that waited on an unlock nobody gave must fail its run, not hang"
+        "a workflow step whose unlock was cancelled fails its run, not hangs"
     );
     drop(app);
 }

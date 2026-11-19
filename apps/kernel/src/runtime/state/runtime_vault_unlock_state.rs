@@ -1,5 +1,5 @@
 use super::vault_unlock_requests::{
-    notify_vault_unlocked, vault_unlock_notifications, vault_unlock_session_request_lock,
+    notify_vault_unlocked, room_unlock, vault_unlock_notifications, RoomUnlock, RoomUnlockEnd,
     VaultUnlockWait,
 };
 use super::*;
@@ -59,13 +59,20 @@ impl VaultUnlockGuard {
         }
     }
 
-    fn for_existing_unlock(path: std::path::PathBuf) -> Result<Self, DaemonError> {
+    /// The open Vault for this operation of `holder`; `None` when it is open only for another
+    /// holder's operation that took its single-use ("once") unlock.
+    fn for_existing_unlock(
+        path: std::path::PathBuf,
+        holder: &str,
+    ) -> Result<Option<Self>, DaemonError> {
         // A client "once" unlock belongs to the next operation, including an
         // agent call resumed by another window's unlock notification.
-        if crate::secret::take_chariox_vault_single_use_unlock(&path)? {
-            Ok(Self::unlocked_for_operation(path))
+        if crate::secret::take_chariox_vault_single_use_unlock(&path, holder)? {
+            Ok(Some(Self::unlocked_for_operation(path)))
+        } else if crate::secret::chariox_vault_held_for_another(&path, Some(holder))? {
+            Ok(None)
         } else {
-            Ok(Self::unlocked_until_expiry(path))
+            Ok(Some(Self::unlocked_until_expiry(path)))
         }
     }
 
@@ -75,15 +82,6 @@ impl VaultUnlockGuard {
             lock_on_drop: false,
             unlocked_via: None,
         }
-    }
-
-    fn unlocked_elsewhere(
-        path: std::path::PathBuf,
-        surface: crate::local::VaultUnlockSurface,
-    ) -> Result<Self, DaemonError> {
-        let mut guard = Self::for_existing_unlock(path)?;
-        guard.unlocked_via = Some(surface);
-        Ok(guard)
     }
 
     pub(super) fn unlocked_via(&self) -> Option<crate::local::VaultUnlockSurface> {
@@ -524,7 +522,11 @@ impl KernelRuntimeState {
     ) -> Result<VaultUnlockGuard, DaemonError> {
         if let Some(path) = self.client_single_use_unlock_path()? {
             // "Ask every time": the owner's client unlocked for this one operation.
-            return VaultUnlockGuard::for_existing_unlock(path);
+            if let Some(guard) =
+                VaultUnlockGuard::for_existing_unlock(path, agent_id.unwrap_or_default())?
+            {
+                return Ok(guard);
+            }
         }
         let Some((session_id, agent_id)) = self
             .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
@@ -604,7 +606,7 @@ impl KernelRuntimeState {
             .await?
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation,
-                message: "encrypted Chariox vault access requires an agent in the session so the unlock popup can be shown".to_string(),
+                message: "The Vault is locked and this Room has no agent to show its unlock card: unlock it from the Vault window, then try again.".to_string(),
             })
     }
 
@@ -624,49 +626,152 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// The one way a Vault use waits for a person. The Room's unlock card is a kernel wait that
+    /// lasts until the person answers it, cancels it or unlocks elsewhere; every use in the Room
+    /// joins it. The use itself waits only as long as its caller can (`vault_unlock_wait`), and
+    /// leaves the card open when it stops waiting.
     pub(super) async fn ensure_vault_unlocked_for_agent(
         &self,
         session_id: &str,
         agent_id: &str,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
-        let user_config = self.owned.config_projection.snapshot().user_config;
-        let vault_config = user_config.credential_vault;
+        let vault_config = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
         if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
             return Ok(VaultUnlockGuard::not_required());
         }
         let vault_path = expand_vault_path(&vault_config.path);
-        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return VaultUnlockGuard::for_existing_unlock(vault_path);
+        let deadline = vault_unlock_wait(operation).map(|wait| tokio::time::Instant::now() + wait);
+        // The card belongs to the Room; the turn that asked keeps its own lifetime, so a use
+        // whose turn ended while it waited does not go on after the unlock.
+        let asking_turn = self.active_turn(session_id, agent_id);
+        let mut unlocked_via = None;
+        loop {
+            if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+                if let Some(mut guard) =
+                    VaultUnlockGuard::for_existing_unlock(vault_path.clone(), agent_id)?
+                {
+                    guard.unlocked_via = unlocked_via;
+                    return Ok(guard);
+                }
+            }
+            let mut end = match room_unlock(&vault_path, session_id) {
+                RoomUnlock::Joined(end) => end,
+                RoomUnlock::Opened(sender, end) => {
+                    let state = self.clone();
+                    let (session_id, agent_id) = (session_id.to_owned(), agent_id.to_owned());
+                    let (vault_path, vault_config) = (vault_path.clone(), vault_config.clone());
+                    tokio::spawn(async move {
+                        let ended = match Box::pin(state.hold_vault_unlock_card(
+                            &session_id,
+                            &agent_id,
+                            operation,
+                            &vault_path,
+                            &vault_config,
+                        ))
+                        .await
+                        {
+                            Ok(via) => RoomUnlockEnd::Unlocked(via),
+                            Err(error) => RoomUnlockEnd::Refused(std::sync::Arc::new(error)),
+                        };
+                        sender.send_replace(Some(ended));
+                    });
+                    end
+                }
+            };
+            let ended = end.wait_for(Option::is_some);
+            let ended = match deadline {
+                None => ended.await,
+                Some(deadline) => tokio::select! {
+                    biased;
+                    ended = ended => ended,
+                    () = tokio::time::sleep_until(deadline) => {
+                        return Err(vault_unlock_card_open(operation));
+                    }
+                },
+            };
+            let ended = ended.map_err(|_| DaemonError::LocalTransport {
+                operation,
+                message: "the Vault unlock card ended without an answer".into(),
+            })?;
+            match (*ended).clone() {
+                Some(RoomUnlockEnd::Unlocked(via)) => {
+                    if turn_ended(&asking_turn, &self.active_turn(session_id, agent_id)) {
+                        return Err(DaemonError::LocalTransport {
+                            operation,
+                            message: "the turn that needed the Vault ended while it waited for the unlock".into(),
+                        });
+                    }
+                    unlocked_via = via;
+                }
+                Some(RoomUnlockEnd::Refused(error)) => {
+                    return Err(refusal_for_waiter(&error, operation))
+                }
+                None => unreachable!("wait_for returns an ended card"),
+            }
         }
-        // The Room queue and passphrase retries share the provider tool's budget.
-        // No card may outlive the call that is waiting for it.
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(vault_unlock_card_seconds(operation));
-        let session_request_lock = vault_unlock_session_request_lock(&vault_path, session_id);
-        let _dedupe_guard = tokio::select! {
-            biased;
-            _ = tokio::time::sleep_until(deadline) => return Err(vault_unlock_timed_out()),
-            guard = session_request_lock.lock() => guard,
-        };
-        let mut unlocks = vault_unlock_notifications(&vault_path);
-        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return VaultUnlockGuard::for_existing_unlock(vault_path);
-        }
+    }
 
+    /// The agent's turn: its running prompt and its running provider run, when it has them. A
+    /// prompt being cancelled is no longer the turn, as for a card bound to that turn.
+    fn active_turn(&self, session_id: &str, agent_id: &str) -> (Option<String>, Option<String>) {
+        let prompt = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .filter(|prompt| {
+                matches!(
+                    prompt.status(),
+                    crate::session::PromptStatus::Running
+                        | crate::session::PromptStatus::Dispatching
+                )
+            })
+            .map(|prompt| prompt.id().to_owned());
+        let run = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+            .map(|run| run.id().to_owned());
+        (prompt, run)
+    }
+
+    /// The Room's unlock card, from its first question to the unlock: a wrong passphrase asks
+    /// again in the same card, and a person unlocking elsewhere ends it, naming that window. It
+    /// has no deadline.
+    async fn hold_vault_unlock_card(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        operation: &'static str,
+        vault_path: &std::path::Path,
+        vault_config: &crate::config::UserCredentialVaultConfig,
+    ) -> Result<Option<crate::local::VaultUnlockSurface>, DaemonError> {
+        let mut unlocks = vault_unlock_notifications(vault_path);
+        if vault_open_to_every_use(vault_path)? {
+            return Ok(None);
+        }
         let mut problem: Option<String> = None;
-        // One card serves every attempt; it closes with this call, whichever way it ends.
+        // One card serves every attempt; it closes with this wait, whichever way it ends.
         let card_id = format!("vault-unlock-{}-{}", agent_id, rand::random::<u64>());
         let mut card: Option<CloseInteractionOnDrop> = None;
-        let (status, lock_after_operation) = loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+        loop {
             let mut interaction = vault_passphrase_interaction(
                 &self.vault_requester(session_id, agent_id),
                 agent_id,
                 &card_id,
-                &vault_config,
-                seconds.max(1),
+                vault_config,
             );
             if let Some(problem) = problem.as_deref() {
                 interaction = interaction.showing_problem(problem);
@@ -676,31 +781,33 @@ impl KernelRuntimeState {
                     session_id,
                     interaction.clone(),
                     operation,
-                    &vault_path,
+                    vault_path,
                     &mut unlocks,
-                    deadline,
                     &mut card,
                 )
                 .await?
             {
                 VaultUnlockWait::Answered(resolution) => resolution,
-                VaultUnlockWait::UnlockedElsewhere(surface) => {
-                    return VaultUnlockGuard::unlocked_elsewhere(vault_path.clone(), surface);
-                }
+                VaultUnlockWait::UnlockedElsewhere(surface) => return Ok(Some(surface)),
             };
             let (passphrase, duration) = vault_unlock_answer(&interaction, resolution, operation)?;
-            let lease = duration.lease(&vault_config, true);
-            let lock_after_operation = lease == crate::secret::VaultUnlockLease::Operation;
+            // "Just this once" belongs to the next use, whichever of the waiting uses takes it.
+            let lease = match duration.lease(vault_config, true) {
+                crate::secret::VaultUnlockLease::Operation => {
+                    crate::secret::VaultUnlockLease::SingleUse
+                }
+                lease => lease,
+            };
             // Human input must never hold the mutation lock across sessions.
-            let unlock_request_lock = vault_unlock_request_lock(&vault_path);
+            let unlock_request_lock = vault_unlock_request_lock(vault_path);
             let _mutation = unlock_request_lock.lock().await;
-            if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+            if vault_open_to_every_use(vault_path)? {
                 self.owned.settle_vault_unlocked(
                     session_id,
                     &card_id,
                     crate::local::VaultUnlockSurface::Card,
                 )?;
-                return VaultUnlockGuard::for_existing_unlock(vault_path.clone());
+                return Ok(None);
             }
             let owner = self
                 .owned
@@ -709,7 +816,7 @@ impl KernelRuntimeState {
                 .owner_user_id()
                 .to_owned();
             let status = match self
-                .unlock_vault_counted(&owner, &vault_path, passphrase.as_str(), lease, true)
+                .unlock_vault_counted(&owner, vault_path, passphrase.as_str(), lease, true)
                 .await
             {
                 Ok(status) => status,
@@ -728,27 +835,22 @@ impl KernelRuntimeState {
                 &card_id,
                 crate::local::VaultUnlockSurface::Card,
             )?;
-            break (status, lock_after_operation);
-        };
-        crate::logging::info_with_fields(
-            "credential_vault",
-            "Chariox vault unlocked",
-            serde_json::json!({
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "operation": operation,
-                "path": status.path.display().to_string(),
-                "expires_at_ms": status.expires_at_ms,
-                "lock_after_operation": lock_after_operation,
-            }),
-        );
-        if !lock_after_operation {
-            notify_vault_unlocked(&vault_path, crate::local::VaultUnlockSurface::Card);
-        }
-        if lock_after_operation {
-            Ok(VaultUnlockGuard::unlocked_for_operation(vault_path))
-        } else {
-            Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path))
+            crate::logging::info_with_fields(
+                "credential_vault",
+                "Chariox vault unlocked",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "operation": operation,
+                    "path": status.path.display().to_string(),
+                    "expires_at_ms": status.expires_at_ms,
+                    "single_use": lease == crate::secret::VaultUnlockLease::SingleUse,
+                }),
+            );
+            if lease != crate::secret::VaultUnlockLease::SingleUse {
+                notify_vault_unlocked(vault_path, crate::local::VaultUnlockSurface::Card);
+            }
+            return Ok(None);
         }
     }
 
@@ -914,10 +1016,16 @@ impl KernelRuntimeState {
     }
 }
 
-/// A person has to find and fill the card; the waiting tool call is cut by the provider
-/// at 300 s, so the kernel ends the card itself just before that with a clear error.
-const VAULT_UNLOCK_TOOL_CARD_SECONDS: u64 = 280;
-const VAULT_UNLOCK_LAUNCH_CARD_SECONDS: u64 = 60;
+/// The provider cuts an agent's tool call at 300 s; the call stops waiting on the card just
+/// before that, and the card stays open for the person.
+const VAULT_UNLOCK_TOOL_WAIT: std::time::Duration = std::time::Duration::from_secs(280);
+/// A launch or recovery a person may be watching ends quickly with the card left open.
+const VAULT_UNLOCK_LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// A prompt submit never waits for a person: it opens the card and queues the prompt.
+pub(super) const VAULT_ADMIT_PROMPT: &str = "admit prompt";
+/// A queued prompt's start waits on the card for as long as the person needs.
+pub(super) const VAULT_START_QUEUED_PROMPT: &str = "start queued prompt";
+const VAULT_UNLOCK_CARD_OPEN: &str = "vault_unlock_card_open";
 const VAULT_PASSPHRASE_CHANGE: &str = "credential_vault_change_passphrase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -976,21 +1084,80 @@ fn vault_passphrase_change_interaction(
     )
 }
 
-/// A launch must end quickly with retry guidance; an agent's tool call can wait for a person.
-fn vault_unlock_card_seconds(operation: &str) -> u64 {
-    let agent_tool = operation.starts_with("runtime_tool_")
+/// The asking turn ended when its prompt or its provider run is no longer the agent's; a turn
+/// that started while the use waited (none was running when it asked) is not an end.
+fn turn_ended(
+    asking: &(Option<String>, Option<String>),
+    now: &(Option<String>, Option<String>),
+) -> bool {
+    (asking.0.is_some() && asking.0 != now.0) || (asking.1.is_some() && asking.1 != now.1)
+}
+
+fn is_agent_vault_tool(operation: &str) -> bool {
+    operation.starts_with("runtime_tool_")
+        || operation.starts_with("vault_")
         || matches!(
             operation,
-            "vault_generate"
-                | "credential_vault_manage"
+            "credential_vault_manage"
                 | "kernel_browser_paste_secret"
-                | "vault_capture_browser"
                 | "web_bot_auth"
-        );
-    if agent_tool {
-        VAULT_UNLOCK_TOOL_CARD_SECONDS
+                | "agent_auth_register"
+                | "agent_auth_store"
+        )
+}
+
+/// The Vault is open, and not only for one operation's "once" unlock.
+pub(super) fn vault_open_to_every_use(path: &std::path::Path) -> Result<bool, DaemonError> {
+    Ok(
+        crate::secret::chariox_encrypted_vault_status(path)?.unlocked
+            && !crate::secret::chariox_vault_held_for_another(path, None)?,
+    )
+}
+
+/// How long a Vault use waits on the Room's unlock card; `None` waits until it ends.
+fn vault_unlock_wait(operation: &str) -> Option<std::time::Duration> {
+    match operation {
+        VAULT_START_QUEUED_PROMPT => None,
+        VAULT_ADMIT_PROMPT => Some(std::time::Duration::ZERO),
+        tool if is_agent_vault_tool(tool) => Some(VAULT_UNLOCK_TOOL_WAIT),
+        _ => Some(VAULT_UNLOCK_LAUNCH_WAIT),
+    }
+}
+
+/// A use that stopped waiting while the Room's unlock card stays open for the person.
+fn vault_unlock_card_open(operation: &str) -> DaemonError {
+    let next = if is_agent_vault_tool(operation) {
+        "call this tool again once the Vault is unlocked"
     } else {
-        VAULT_UNLOCK_LAUNCH_CARD_SECONDS
+        "try again once the Vault is unlocked"
+    };
+    DaemonError::VaultUnlock {
+        code: VAULT_UNLOCK_CARD_OPEN,
+        message: format!("The Vault is locked. The unlock card is open in this Room: {next}."),
+        retryable: true,
+    }
+}
+
+pub(super) fn is_vault_unlock_card_open(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::VaultUnlock { code, .. } if *code == VAULT_UNLOCK_CARD_OPEN)
+}
+
+/// Every use that waited on a card gets the reason it ended without an unlock.
+fn refusal_for_waiter(error: &DaemonError, operation: &'static str) -> DaemonError {
+    match *error {
+        DaemonError::VaultUnlock {
+            code,
+            ref message,
+            retryable,
+        } => DaemonError::VaultUnlock {
+            code,
+            message: message.clone(),
+            retryable,
+        },
+        ref other => DaemonError::LocalTransport {
+            operation,
+            message: other.to_string(),
+        },
     }
 }
 
@@ -1022,7 +1189,6 @@ fn vault_passphrase_interaction(
     agent_id: &str,
     id: &str,
     config: &crate::config::UserCredentialVaultConfig,
-    seconds: u64,
 ) -> crate::session::RuntimeInteraction {
     let options = crate::local::VaultUnlockOptions::for_config(config);
     let mut choices = options
@@ -1067,17 +1233,9 @@ fn vault_passphrase_interaction(
             Some(1),
             Some(512),
         )),
-        Some(seconds),
+        None,
         None,
     )
-}
-
-fn vault_unlock_timed_out() -> DaemonError {
-    DaemonError::VaultUnlock {
-        code: "vault_unlock_timed_out",
-        message: "Chariox vault unlock timed out. Retry to unlock the vault.".into(),
-        retryable: false,
-    }
 }
 
 /// The passphrase and duration the owner answered a Vault unlock question with.
@@ -1111,13 +1269,21 @@ fn vault_unlock_answer(
         None => None,
     };
     match (resolution.status, duration, resolution.reply) {
-        ("timed_out", ..) => Err(vault_unlock_timed_out()),
         ("answered", Some(duration), Some(passphrase)) => {
             Ok((zeroize::Zeroizing::new(passphrase), duration))
         }
+        // The kernel withdrew the card (it is stopping, or the Room ended): nobody declined, so
+        // what waited on it stays to ask again.
+        ("timed_out", ..) => Err(DaemonError::VaultUnlock {
+            code: "vault_unlock_card_closed",
+            message: "The Vault unlock card closed without an answer.".into(),
+            retryable: true,
+        }),
         (_, None, _) => Err(DaemonError::VaultUnlock {
             code: "vault_unlock_declined",
-            message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".into(),
+            message:
+                "The Vault unlock was cancelled: unlock it from the Vault window, then try again."
+                    .into(),
             retryable: false,
         }),
         _ => Err(DaemonError::LocalTransport {
@@ -1371,7 +1537,6 @@ mod tests {
             agent.id(),
             "vault-unlock-test",
             &config.user_config.credential_vault,
-            60,
         );
         let answer = state
             .create_terminal_credential_interaction(session.id(), card.clone())
@@ -1403,6 +1568,372 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    // An agent's Vault tool waits on the card for the whole tool budget. When nobody answers in
+    // time the card stays open in the Room; the call says so, and the card still unlocks later.
+    #[tokio::test(start_paused = true)]
+    async fn a_vault_tool_waits_its_budget_and_leaves_the_card_open_for_the_person() {
+        let workspace = crate::test_support::TestWorktree::new("vault-tool-budget");
+        let private_state = crate::test_support::TestWorktree::new("vault-tool-budget-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Ttl;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let card_of = |state: &KernelRuntimeState| {
+            state
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .active_interaction_for_agent(agent.id())
+                .cloned()
+        };
+        for operation in ["vault_use_env", "vault_write_file", "vault_copy"] {
+            let call = state.ensure_vault_unlocked_for_agent(session.id(), agent.id(), operation);
+            tokio::pin!(call);
+            tokio::select! {
+                result = &mut call => panic!("{operation} must wait for the person: {:?}", result.err()),
+                () = tokio::time::sleep(std::time::Duration::from_secs(61)) => {},
+            }
+            assert!(card_of(&state).is_some(), "{operation} shows the card");
+            let refusal = tokio::time::timeout(std::time::Duration::from_secs(230), &mut call)
+                .await
+                .expect("the call ends within its tool budget")
+                .err()
+                .expect("an unanswered unlock does not open the Vault");
+            let message = refusal.to_string();
+            assert!(
+                message.contains("The Vault is locked")
+                    && message.contains("unlock card is open in this Room")
+                    && message.contains("again"),
+                "{operation}: {message}"
+            );
+            assert!(
+                card_of(&state).is_some(),
+                "{operation} leaves the card open"
+            );
+        }
+        // One card served all three calls, and it still unlocks the Vault.
+        let card = card_of(&state).unwrap();
+        state
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                card.id(),
+                "passphrase",
+                Some("test passphrase"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !crate::secret::chariox_encrypted_vault_status(&path)
+                .unwrap()
+                .unlocked
+                || card_of(&state).is_some()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the open card unlocks the Vault after its callers gave up");
+        let _ = state
+            .ensure_vault_unlocked_for_agent(session.id(), agent.id(), "vault_use_env")
+            .await
+            .expect("the next call finds the Vault unlocked");
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // The kernel withdrawing the card (it stops, or the Room ends) is not the person's cancel:
+    // what waited on the card stays to ask again.
+    #[test]
+    fn a_withdrawn_unlock_card_is_not_a_cancel() {
+        let card = unlock_card(crate::config::CredentialVaultUnlockPolicy::Ttl);
+        let withdrawn = super::super::PendingInteractionResolution {
+            status: "timed_out",
+            choice_id: None,
+            reply: None,
+        };
+        assert!(matches!(
+            vault_unlock_answer(&card, withdrawn, "test"),
+            Err(DaemonError::VaultUnlock {
+                code: "vault_unlock_card_closed",
+                retryable: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            vault_unlock_answer(&card, resolution(Some("cancel"), None), "test"),
+            Err(DaemonError::VaultUnlock {
+                code: "vault_unlock_declined",
+                ..
+            })
+        ));
+    }
+
+    // The card belongs to the Room, not to the turn that first needed the Vault: the end of that
+    // turn leaves it waiting for the person.
+    #[tokio::test]
+    async fn the_unlock_card_outlives_the_turn_that_raised_it() {
+        let workspace = crate::test_support::TestWorktree::new("vault-card-turn");
+        let private_state = crate::test_support::TestWorktree::new("vault-card-turn-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let room = state.owned.session_store.get_session(session.id()).unwrap();
+        state
+            .owned
+            .prompt_state_owner
+            .submit_prepared_prompt(
+                &room,
+                crate::session::PromptQueueItem::new(
+                    "turn-needing-the-vault",
+                    "attachment-1",
+                    agent.id(),
+                    "use the Vault",
+                    crate::session::PromptStatus::Running,
+                ),
+                false,
+            )
+            .unwrap();
+        let (active, queued) = state
+            .owned
+            .prompt_state_owner
+            .state_parts(&room, agent.id());
+        assert!(active.is_some(), "the agent is in a turn");
+        state
+            .owned
+            .mirror_prompt_owner_agent_state(session.id(), agent.id(), active, queued)
+            .unwrap();
+        let call = {
+            let (state, session_id, agent_id) = (
+                state.clone(),
+                session.id().to_owned(),
+                agent.id().to_owned(),
+            );
+            tokio::spawn(async move {
+                state
+                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "vault_use_env")
+                    .await
+                    .map(drop)
+            })
+        };
+        let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(card) = state
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap()
+                    .active_interaction_for_agent(agent.id())
+                    .cloned()
+                {
+                    return card;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the use raises the Room's card");
+        let lifetime = state
+            .owned
+            .pending_interactions
+            .write()
+            .get(card.id())
+            .and_then(|pending| pending.agent_lifetime.clone())
+            .expect("the card names its agent");
+        assert_eq!(
+            (
+                lifetime.prompt_id,
+                lifetime.provider_run_id,
+                lifetime.native_turn_id
+            ),
+            (None, None, None),
+            "the card is not bound to the agent's turn"
+        );
+        call.abort();
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // Vault "ask every time": two Rooms each have an agent start waiting on its own unlock
+    // card. A "just this once" unlock serves exactly one of those starts, whether the owner
+    // answers one card or unlocks once from a window; the other Room's card stays open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_once_unlock_serves_one_room_and_leaves_the_other_rooms_card_open() {
+        let workspace_a = crate::test_support::TestWorktree::new("vault-once-room-a");
+        let workspace_b = crate::test_support::TestWorktree::new("vault-once-room-b");
+        let private_state = crate::test_support::TestWorktree::new("vault-once-rooms-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Always;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (room_a, agent_a) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace_a.session_request())
+            .unwrap();
+        let (room_b, agent_b) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace_b.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let owner = room_a.owner_user_id().to_owned();
+        let rooms = [
+            (room_a.id().to_owned(), agent_a.id().to_owned()),
+            (room_b.id().to_owned(), agent_b.id().to_owned()),
+        ];
+        // An agent start in a Room that needs the Vault.
+        let start = |room: usize| {
+            let state = state.clone();
+            let (session_id, agent_id) = rooms[room].clone();
+            tokio::spawn(async move {
+                state
+                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "launch provider")
+                    .await
+            })
+        };
+        let card = |room: usize| {
+            let (session_id, agent_id) = &rooms[room];
+            state
+                .owned
+                .session_store
+                .get_session(session_id)
+                .unwrap()
+                .active_interaction_for_agent(agent_id)
+                .map(|card| card.id().to_owned())
+        };
+        let open_card = |room: usize| async move {
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                loop {
+                    if let Some(id) = card(room) {
+                        return id;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the Room shows its unlock card")
+        };
+        let settle = || tokio::time::sleep(std::time::Duration::from_millis(500));
+        let mut wrong = Vec::new();
+
+        // 1. The owner answers Room A's card with "Just this once".
+        let mut starts = [start(0), start(1)];
+        let card_a = open_card(0).await;
+        open_card(1).await;
+        state
+            .resolve_terminal_runtime_interaction(
+                &rooms[0].0,
+                &card_a,
+                "unlock_once",
+                Some("test passphrase"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .unwrap();
+        let guard_a = tokio::time::timeout(std::time::Duration::from_secs(20), &mut starts[0])
+            .await
+            .expect("Room A's start goes on after its card is answered")
+            .unwrap()
+            .expect("Room A's start has the Vault");
+        settle().await;
+        if starts[1].is_finished() {
+            wrong.push("card answer: Room A's \"once\" let Room B's start go on too".to_owned());
+        }
+        if card(1).is_none() {
+            wrong.push("card answer: Room A's \"once\" closed Room B's card".to_owned());
+        }
+        drop(guard_a);
+        settle().await;
+        if starts[1].is_finished() {
+            starts[1] = start(1);
+        }
+
+        // 2. Both Rooms wait again; the owner unlocks once from a window (the staging probe's
+        //    `UnlockCredentialVault { duration: once, surface: terminal }`).
+        starts[0] = start(0);
+        open_card(0).await;
+        open_card(1).await;
+        state
+            .unlock_credential_vault_for_owner(
+                &owner,
+                crate::local::UnlockCredentialVaultRequest {
+                    passphrase: crate::local::VaultPassphrase::new("test passphrase"),
+                    duration: crate::local::VaultUnlockDuration::Once,
+                    surface: crate::local::VaultUnlockSurface::Terminal,
+                },
+            )
+            .await
+            .unwrap();
+        settle().await;
+        let still_asking = (0..2).filter(|&room| card(room).is_some()).count();
+        let mut waiting = Vec::new();
+        let mut went_on = 0;
+        for (room, start) in starts.into_iter().enumerate() {
+            if start.is_finished() {
+                // The guard of a start that has the Vault stays held until both are counted.
+                waiting.push((room, None, Some(start.await.unwrap())));
+            } else {
+                waiting.push((room, Some(start), None));
+            }
+        }
+        for (_, _, result) in &waiting {
+            if matches!(result, Some(Ok(_))) {
+                went_on += 1;
+            }
+        }
+        if (went_on, still_asking) != (1, 1) {
+            wrong.push(format!(
+                "window unlock: one \"once\" unlock gave the Vault to {went_on} of 2 Rooms' \
+                 starts and left {still_asking} of 2 cards open (expected 1 and 1)"
+            ));
+        }
+
+        for (room, start, result) in waiting {
+            drop(result);
+            let Some(start) = start else { continue };
+            if let Some(id) = card(room) {
+                let _ = state
+                    .resolve_terminal_runtime_interaction(
+                        &rooms[room].0,
+                        &id,
+                        "cancel",
+                        None,
+                        Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                    )
+                    .await;
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(20), start).await;
+        }
+        let _ = crate::secret::lock_chariox_encrypted_vault(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
     // PCD-04: a wrong passphrase asks again in a card that says so; the agent's operation waits and then goes on.
     #[tokio::test(start_paused = true)]
     async fn a_wrong_passphrase_asks_again_instead_of_failing_the_agents_operation() {
@@ -1410,7 +1941,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_wrong_passphrase_keeps_the_original_tool_deadline() {
+    async fn a_wrong_passphrase_keeps_the_card_open_past_the_tool_budget() {
         wrong_passphrase_retry(true).await;
     }
 
@@ -1573,7 +2104,6 @@ mod tests {
             agent.id(),
             "vault-unlock-test",
             &config,
-            60,
         );
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let waiting = state.await_vault_interaction_until(
@@ -1614,22 +2144,21 @@ mod tests {
         );
     }
 
-    // MP-08 / MP-09 / MP-10 / MP-11: queue time belongs to the waiting call.
-    #[tokio::test(start_paused = true)]
-    async fn a_queued_vault_unlock_card_gets_only_the_calls_remaining_budget() {
-        queued_vault_unlock(false).await;
+    // Two agents of one Room need the locked Vault: the second joins the first one's card, and
+    // the card's end answers both.
+    #[tokio::test]
+    async fn a_second_use_in_the_room_joins_the_open_card() {
+        joined_vault_unlock(true).await;
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_queued_vault_unlock_times_out_without_acquiring_the_room_lock() {
-        queued_vault_unlock(true).await;
+    #[tokio::test]
+    async fn a_cancelled_card_refuses_every_use_that_joined_it() {
+        joined_vault_unlock(false).await;
     }
 
-    // Two agents share one Room queue. Keep the first waiter under test control
-    // so the second must expire even if the lock holder has not been scheduled.
-    async fn queued_vault_unlock(hold_lock_past_deadline: bool) {
-        let workspace = crate::test_support::TestWorktree::new("vault-room-queue");
-        let private_state = crate::test_support::TestWorktree::new("vault-room-queue-state");
+    async fn joined_vault_unlock(unlock: bool) {
+        let workspace = crate::test_support::TestWorktree::new("vault-room-join");
+        let private_state = crate::test_support::TestWorktree::new("vault-room-join-state");
         let path = private_state.path().join("vault.json");
         crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
         crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
@@ -1649,136 +2178,90 @@ mod tests {
             .unwrap();
         let state =
             super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
-        let first =
-            state.ensure_vault_unlocked_for_agent(session.id(), first_agent.id(), "vault_generate");
-        tokio::pin!(first);
-        let next_card = |agent_id: String| {
+        let cards = || {
+            state
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .filter(|card| card.id().starts_with("vault-unlock-"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let use_vault = |agent_id: String| {
             let state = state.clone();
             let session_id = session.id().to_owned();
-            async move {
-                tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                    loop {
-                        if let Some(card) = state
-                            .owned
-                            .session_store
-                            .get_session(&session_id)
-                            .unwrap()
-                            .active_interaction_for_agent(&agent_id)
-                            .cloned()
-                        {
-                            return card;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                    }
-                })
-                .await
-                .expect("the agent has an unlock card")
-            }
-        };
-        let first_card = tokio::select! {
-            result = &mut first => panic!("first agent must wait: {:?}", result.err()),
-            card = next_card(first_agent.id().to_owned()) => card,
-        };
-        let second = state.ensure_vault_unlocked_for_agent(
-            session.id(),
-            second_agent.id(),
-            "vault_generate",
-        );
-        tokio::pin!(second);
-        let started = tokio::time::Instant::now();
-        tokio::select! {
-            result = &mut second => panic!("second agent must queue: {:?}", result.err()),
-            () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {},
-        }
-        assert!(state
-            .owned
-            .session_store
-            .get_session(session.id())
-            .unwrap()
-            .active_interaction_for_agent(second_agent.id())
-            .is_none());
-        let second_card = if hold_lock_past_deadline {
-            tokio::time::advance(std::time::Duration::from_secs(281)).await;
-            None
-        } else {
-            tokio::time::advance(std::time::Duration::from_secs(200)).await;
-            state
-                .resolve_terminal_runtime_interaction(
-                    session.id(),
-                    first_card.id(),
-                    "cancel",
-                    None,
-                    Some(crate::session::DEFAULT_LOCAL_USER_ID),
-                )
-                .await
-                .unwrap();
-            assert!(matches!(
-                first.as_mut().await,
-                Err(DaemonError::VaultUnlock {
-                    code: "vault_unlock_declined",
-                    ..
-                })
-            ));
-            let card = tokio::select! {
-                result = &mut second => panic!("second agent must await its card: {:?}", result.err()),
-                card = next_card(second_agent.id().to_owned()) => card,
-            };
-            assert!(
-                card.timeout_sec().unwrap() <= 80,
-                "queue time must count against the original tool budget, got {:?}",
-                card.timeout_sec()
-            );
-            Some(card)
-        };
-        let result = tokio::time::timeout_at(
-            started + std::time::Duration::from_secs(282),
-            second.as_mut(),
-        )
-        .await
-        .expect("queued agent settles on its own deadline");
-        assert!(matches!(
-            result,
-            Err(DaemonError::VaultUnlock {
-                code: "vault_unlock_timed_out",
-                ..
-            })
-        ));
-        assert!(state
-            .owned
-            .session_store
-            .get_session(session.id())
-            .unwrap()
-            .active_interaction_for_agent(second_agent.id())
-            .is_none());
-        if hold_lock_past_deadline {
-            assert!(matches!(
-                first.await,
-                Err(DaemonError::VaultUnlock {
-                    code: "vault_unlock_timed_out",
-                    ..
-                })
-            ));
-        }
-        if let Some(card) = second_card {
-            assert!(
+            tokio::spawn(async move {
                 state
-                    .resolve_terminal_runtime_interaction(
-                        session.id(),
-                        card.id(),
-                        "unlock_kernel",
-                        Some("test passphrase"),
-                        Some(crate::session::DEFAULT_LOCAL_USER_ID),
-                    )
+                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "vault_generate")
                     .await
-                    .is_err(),
-                "a late answer must not revive the queued call"
-            );
-        }
-        assert!(
-            !crate::secret::chariox_encrypted_vault_status(&path)
-                .unwrap()
-                .unlocked
+                    .map(drop)
+            })
+        };
+        let first = use_vault(first_agent.id().to_owned());
+        let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(card) = cards().into_iter().next() {
+                    return card;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first use raises the Room's card");
+        let second = use_vault(second_agent.id().to_owned());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            cards()
+                .iter()
+                .map(|card| card.id().to_owned())
+                .collect::<Vec<_>>(),
+            vec![card.id().to_owned()],
+            "the second use joins the open card"
         );
+        assert!(!first.is_finished() && !second.is_finished());
+        let (choice, reply) = if unlock {
+            ("passphrase", Some("test passphrase"))
+        } else {
+            ("cancel", None)
+        };
+        state
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                card.id(),
+                choice,
+                reply,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .unwrap();
+        for call in [first, second] {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), call)
+                .await
+                .expect("the card's end answers every use that joined it")
+                .unwrap();
+            if unlock {
+                result.expect("both uses go on after the unlock");
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(DaemonError::VaultUnlock {
+                        code: "vault_unlock_declined",
+                        ..
+                    })
+                ));
+            }
+        }
+        assert!(cards().is_empty());
+        assert_eq!(
+            crate::secret::chariox_encrypted_vault_status(&path)
+                .unwrap()
+                .unlocked,
+            unlock
+        );
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -1878,47 +2361,29 @@ mod tests {
         );
         assert!(!asking.is_finished(), "the agent's operation still waits");
         if expire {
-            assert!(
-                again.timeout_sec().unwrap() <= 80,
-                "the replacement gets only the original budget's remainder"
-            );
             let result =
                 tokio::time::timeout_at(started + std::time::Duration::from_secs(281), asking)
                     .await
                     .expect("the operation settles before its provider tool deadline")
                     .unwrap();
-            assert!(matches!(
-                result,
-                Err(DaemonError::VaultUnlock {
-                    code: "vault_unlock_timed_out",
-                    ..
-                })
-            ));
-            assert!(state
-                .owned
-                .session_store
-                .get_session(&session_id)
-                .unwrap()
-                .active_interaction_for_agent(&agent_id)
-                .is_none());
             assert!(
-                !crate::secret::chariox_encrypted_vault_status(&path)
+                matches!(&result, Err(error) if is_vault_unlock_card_open(error)),
+                "{result:?}"
+            );
+            let open = next_card(true).await;
+            assert_eq!(open.id(), first.id(), "the card stays open for the person");
+            answer(&open, "test passphrase").await;
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                while !crate::secret::chariox_encrypted_vault_status(&path)
                     .unwrap()
                     .unlocked
-            );
-            assert!(
-                state
-                    .resolve_terminal_runtime_interaction(
-                        &session_id,
-                        again.id(),
-                        "unlock_kernel",
-                        Some("test passphrase"),
-                        Some(crate::session::DEFAULT_LOCAL_USER_ID)
-                    )
-                    .await
-                    .is_err(),
-                "a late answer cannot resume the expired operation"
-            );
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("a later answer still unlocks the Vault");
+            crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
             std::fs::remove_file(&path).unwrap();
             return;
         }
@@ -2007,7 +2472,6 @@ mod tests {
             "agent-1",
             "vault-unlock-test",
             &config,
-            60,
         )
     }
 
@@ -2172,7 +2636,6 @@ mod tests {
                     agent_id,
                     "vault-unlock-test",
                     &crate::config::UserCredentialVaultConfig::default(),
-                    60,
                 ),
                 vault_manage_interaction(&requester, agent_id),
             ];
@@ -2288,7 +2751,7 @@ mod tests {
         assert!(matches!(
             error,
             DaemonError::LocalTransport { message, .. }
-                if message.contains("requires an agent in the session")
+                if message.contains("no agent to show its unlock card")
         ));
         let _ = std::fs::remove_dir_all(root);
     }
