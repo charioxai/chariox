@@ -33,6 +33,7 @@ export type ManagedContextLaunchTarget = {
         /** One per carried Project, in the order of the plan. */
         readonly projects: readonly {
           readonly projectId: string
+          readonly copyOrigin?: { readonly kernelId: string; readonly projectId: string }
           readonly destinationRoot: string
           readonly primaryRepositoryId: string
           readonly repositories: readonly {

@@ -69,6 +69,8 @@ pub enum ManagedContextDevelopmentLaunchTarget {
 pub struct ManagedContextProjectLaunchTarget {
     #[serde(alias = "project_id")]
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_origin: Option<crate::session::ProjectCopyOrigin>,
     #[serde(alias = "destination_root")]
     pub destination_root: String,
     #[serde(alias = "primary_repository_id")]

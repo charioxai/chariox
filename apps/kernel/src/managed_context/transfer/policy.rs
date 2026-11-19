@@ -343,11 +343,16 @@ fn validate_project_launch_target(
 ) -> Result<(), DaemonError> {
     let crate::local::ManagedContextProjectLaunchTarget {
         project_id,
+        copy_origin,
         destination_root,
         primary_repository_id,
         repositories,
     } = project;
     validate_identifier(project_id, "launch target project")?;
+    if let Some(origin) = copy_origin {
+        validate_identifier(&origin.kernel_id, "copy source kernel")?;
+        validate_identifier(&origin.project_id, "copy source Project")?;
+    }
     validate_identifier(primary_repository_id, "launch target primary repository")?;
     validate_destination(Path::new(destination_root))?;
     if repositories.is_empty() {

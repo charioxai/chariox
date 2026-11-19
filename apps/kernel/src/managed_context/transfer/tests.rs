@@ -2050,6 +2050,7 @@ fn large_launch_target(context_id: &str) -> crate::local::ManagedContextLaunchTa
         plan_digest: format!("sha256:{}", sha256_bytes(context_id.as_bytes())),
         development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
             projects: vec![crate::local::ManagedContextProjectLaunchTarget {
+                copy_origin: None,
                 project_id: "project-1".to_string(),
                 destination_root: destination_root.display().to_string(),
                 primary_repository_id: repositories[0].repository_id.clone(),
@@ -2534,6 +2535,7 @@ fn a_copy_of_two_projects_registers_and_removes_both_target_projects() {
     let runtime = harness.runtime_state();
     let project =
         |project_id: &str, folder: &str| crate::local::ManagedContextProjectLaunchTarget {
+            copy_origin: None,
             project_id: project_id.to_string(),
             destination_root: format!("/managed/{folder}"),
             primary_repository_id: format!("repository-{folder}"),
@@ -2581,6 +2583,7 @@ fn a_copy_of_two_projects_registers_none_when_the_second_conflicts() {
     let runtime = harness.runtime_state();
     let project =
         |project_id: &str, folder: &str| crate::local::ManagedContextProjectLaunchTarget {
+            copy_origin: None,
             project_id: project_id.to_string(),
             destination_root: format!("/managed/{folder}"),
             primary_repository_id: format!("repository-{folder}"),

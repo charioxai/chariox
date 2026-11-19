@@ -79,7 +79,8 @@ pub use room_setup::{
 };
 pub(crate) use room_setup_store::RoomSetupStore;
 pub use runtime_project::{
-    RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
+    ProjectCopyOrigin, RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus,
+    SessionProjectSelection,
 };
 pub(crate) use runtime_session::DurableWorkflowHotState;
 pub use service::{

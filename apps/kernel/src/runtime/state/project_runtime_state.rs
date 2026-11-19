@@ -379,6 +379,7 @@ fn managed_context_project(
 ) -> Result<crate::session::RuntimeProject, DaemonError> {
     let crate::local::ManagedContextProjectLaunchTarget {
         project_id,
+        copy_origin,
         repositories,
         ..
     } = target;
@@ -422,6 +423,7 @@ fn managed_context_project(
         crate::session::RuntimeProjectKind::Named,
     );
     project.replace_workspace_ids(workspace_ids);
+    project.set_copy_origin(copy_origin.clone());
     Ok(project)
 }
 
@@ -566,6 +568,7 @@ fn install_managed_context_project(
             || existing.kind() != project.kind()
             || existing.status() != crate::session::RuntimeProjectStatus::Active
             || existing.workspace_ids() != project.workspace_ids()
+            || existing.copy_origin() != project.copy_origin()
         {
             return Err(managed_context_project_error(format!(
                 "managed context Project `{}` conflicts with existing kernel state",
@@ -674,6 +677,7 @@ mod tests {
         *projects = ids
             .iter()
             .map(|id| crate::local::ManagedContextProjectLaunchTarget {
+                copy_origin: None,
                 project_id: (*id).to_string(),
                 ..template.clone()
             })
@@ -902,6 +906,7 @@ mod tests {
             plan_digest: "sha256:plan".to_string(),
             development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
                 projects: vec![crate::local::ManagedContextProjectLaunchTarget {
+                copy_origin: None,
                 project_id: "project-1".to_string(),
                 destination_root: "/managed/context-1".to_string(),
                 primary_repository_id: "repository-primary".to_string(),

@@ -136,6 +136,7 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
                 plan_digest: status.plan_digest,
                 development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
                     projects: vec![crate::local::ManagedContextProjectLaunchTarget {
+                        copy_origin: None,
                         project_id: "project-1".to_string(),
                         destination_root: "/managed/context".to_string(),
                         primary_repository_id: "repository-1".to_string(),
@@ -450,4 +451,20 @@ fn local_daemon_owner_managed_event_connection_selection_shape_is_versioned() {
         "kind": "selected", "connection_ids": ["connection-a"]
     });
     assert!(serde_json::from_value::<ManagedContextPlanBinding>(misspelled).is_err());
+}
+
+#[test]
+fn copied_project_launch_target_keeps_its_origin() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let wire = include_bytes!("project-copy-origin.json");
+    let fixture: serde_json::Value = serde_json::from_slice(wire).unwrap();
+    let response: LocalDaemonResponse = serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), fixture);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(wire)),
+        "e757dac783c157467e97f46d8a8d76cc1687c9307a4b006d180c873cb94adae1"
+    );
 }
