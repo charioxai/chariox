@@ -217,7 +217,7 @@ fn terminal_operation(
 /// may simply run again on a retry. Everything else is state-changing and goes
 /// through the ledger.
 pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
-    use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
+    use crate::local::RoomTerminalOperation;
     // A terminal is read by listing, a snapshot, an offset or a wait; typing, opening,
     // resizing and closing change it, so a retried `input` never types twice.
     if let Some(operation) = terminal_operation(request) {
