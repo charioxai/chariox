@@ -118,10 +118,22 @@ export function cssImports(text) {
   return { layers, imports: out };
 }
 
+// A data: URL's body as the browser reads it (Fetch's data: URL processor): the fragment is not part of it, and a `%` not
+// followed by two hex digits stays a `%` (angular.dev's mask SVG holds `width='100%'`, which decodeURIComponent refuses).
 function dataUrlBytes(url) {
-  const match = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(url);
+  const match = /^data:([^,#]*?)(;\s*base64\s*)?,([^#]*)/is.exec(url);
   if (!match) return null;
-  try { return match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8'); } catch { return null; }
+  const bytes = percentDecode(match[3]);
+  return match[2] ? Buffer.from(bytes.toString('latin1').replace(/[\t\n\f\r ]/g, ''), 'base64') : bytes;
+}
+function percentDecode(text) {
+  const input = Buffer.from(text, 'utf8'), out = Buffer.alloc(input.length), hex = byte => byte >= 0x30 && byte <= 0x39 || byte >= 0x41 && byte <= 0x46 || byte >= 0x61 && byte <= 0x66;
+  let length = 0;
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === 0x25 && i + 2 < input.length && hex(input[i + 1]) && hex(input[i + 2])) { out[length++] = parseInt(input.toString('latin1', i + 1, i + 3), 16); i += 2; }
+    else out[length++] = input[i];
+  }
+  return out.subarray(0, length);
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.

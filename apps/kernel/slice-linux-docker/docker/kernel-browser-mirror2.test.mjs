@@ -248,6 +248,28 @@ test('MP-10: resources travel in 4-aligned slices within the packet budget (64 K
   for (const [key, url] of [['r1', 'https://x/a.png'], ['r2', 'https://x/b.png'], ['r3', 'https://x/big.png']]) assert.equal(whole.get(key), bodies[url].toString('base64'), key);
 });
 
+// browserfidelity r12 (angular.dev): a data: URL decodes as the browser decodes it (Fetch's percent-decode, without the fragment),
+// so an SVG mask holding `width='100%'` reaches the viewer; the URLs are the observer's (`new URL(raw).href`).
+test('MP-10: a data: resource travels as the bytes the browser decodes from it (a bare %, %XX bytes, no fragment, base64)', async () => {
+  const raw = [
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><rect width='100%' height='100%'/></svg>",
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><defs><pattern id='p'/></defs><rect width='100%' fill='url(%23p)'/></svg>",
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><rect fill='url(#p)'/></svg>",
+    "data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg'><text>%E2%9C%93 \u2713 50%25</text></svg>",
+    'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnLz4=#frag',
+  ].map(url => new URL(url).href);
+  const mirror = new Mirror2({ host: {} }), world = { connection: { send: async () => { throw new Error('a data: URL is never fetched'); } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
+  mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [], all: [] } : expression.includes('loadedCount') ? 1 : [];
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: 0 };
+  mirror.register(stream, { resources: raw.map((url, i) => ({ key: `r${i + 1}`, url, kind: 'image' })) });
+  const delivered = new Map();
+  for (let i = 0; i < 5 && delivered.size < raw.length; i++) for (const r of await mirror.materialize(world, stream, null)) delivered.set(r.key, r.data_base64);
+  for (const [i, url] of raw.entries()) {
+    const browser = Buffer.from(await (await fetch(url)).arrayBuffer()).toString('base64');
+    assert.equal(delivered.get(`r${i + 1}`), browser, `${url.slice(0, 90)}: the browser's bytes`);
+  }
+});
+
 test('MP-10: while the view moves a large near image travels as a preview, even mid-slices; its exact slices continue once settled', async () => {
   const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(400_000 - 8, 7)]);
   const world = { connection: { send: async method => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: [{ url: 'https://x/big.png' }] } } : { base64Encoded: true, content: png.toString('base64') } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
