@@ -62,7 +62,7 @@ impl<'a> KernelAgentService<'a> {
             };
             let target_agent_id = peeked.target_agent_id().to_string();
             let owner = self.app.prompt_state_owner();
-            if let Some(reason) = owner.provider_launch_wait() {
+            if let Some(reason) = owner.queued_provider_launch_wait(&peeked) {
                 let session = self.app.sessions.get_session(session_id)?;
                 if owner.note_provider_launch_wait(&session, &target_agent_id, peeked.id(), &reason)
                 {

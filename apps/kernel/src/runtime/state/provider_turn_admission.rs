@@ -31,7 +31,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         head: &PromptQueueItem,
     ) -> Result<bool, DaemonError> {
-        let Some(reason) = self.prompt_state_owner.provider_launch_wait() else {
+        let Some(reason) = self.prompt_state_owner.queued_provider_launch_wait(head) else {
             return Ok(false);
         };
         if self
@@ -101,6 +101,9 @@ impl KernelRuntimeState {
                     memory_available_since = None;
                     false
                 };
+                self.owned
+                    .prompt_state_owner
+                    .set_held_provider_turns_ready(resume_local);
                 for (session_id, agent_id) in
                     self.owned.prompt_state_owner.provider_launch_waiters()
                 {
@@ -266,6 +269,10 @@ mod tests {
             };
             assert_eq!(serde_json::to_value(prompt).unwrap()["launch_wait"], WAIT);
         }
+        state
+            .recover_queue_head_after_restart(session.id(), agent.id())
+            .unwrap();
+        owner.set_provider_launch_wait(None);
         state
             .recover_queue_head_after_restart(session.id(), agent.id())
             .unwrap();

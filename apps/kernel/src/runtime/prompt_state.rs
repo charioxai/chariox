@@ -233,8 +233,14 @@ pub(crate) const TARGET_BUSY_MESSAGE: &str =
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
     delivery_settlement_claims: Arc<StdMutex<BTreeSet<PromptStateKey>>>,
-    provider_launch_wait: Arc<std::sync::RwLock<Option<String>>>,
+    provider_launch_admission: Arc<std::sync::RwLock<ProviderLaunchAdmission>>,
     has_provider_launch_waiters: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct ProviderLaunchAdmission {
+    wait: Option<String>,
+    held_turns_ready: bool,
 }
 
 pub(crate) struct PromptDeliverySettlementClaim {
@@ -262,17 +268,40 @@ struct PromptStateOwnerState {
 
 impl PromptStateOwner {
     pub(crate) fn provider_launch_wait(&self) -> Option<String> {
-        self.provider_launch_wait
+        self.provider_launch_admission
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wait
             .clone()
     }
 
     pub(crate) fn set_provider_launch_wait(&self, wait: Option<String>) {
-        *self
-            .provider_launch_wait
+        let mut admission = self
+            .provider_launch_admission
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = wait;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.wait = wait;
+        admission.held_turns_ready = false;
+    }
+
+    pub(crate) fn set_held_provider_turns_ready(&self, ready: bool) {
+        let mut admission = self
+            .provider_launch_admission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.held_turns_ready = ready && admission.wait.is_none();
+    }
+
+    pub(crate) fn queued_provider_launch_wait(&self, prompt: &PromptQueueItem) -> Option<String> {
+        let admission = self
+            .provider_launch_admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission
+            .wait
+            .as_deref()
+            .or_else(|| prompt.launch_wait().filter(|_| !admission.held_turns_ready))
+            .map(str::to_owned)
     }
 
     /// Only queues with a durable resource wait are retried by the resource scheduler.

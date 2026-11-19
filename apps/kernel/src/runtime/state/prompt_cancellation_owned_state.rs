@@ -262,7 +262,8 @@ impl KernelRuntimeOwnedState {
             ) {
                 // The async caller may have inspected a different head. Defer the
                 // exact workflow turn we would activate until its provider is prepared.
-                if next_prompt.workflow_run_id().is_some()
+                if self.hold_queued_provider_turn(&session, agent_id, next_prompt)?
+                    || next_prompt.workflow_run_id().is_some()
                     || crate::scheduler::runtime::is_workflow_prompt_attachment(
                         next_prompt.source_attachment_id(),
                     )
