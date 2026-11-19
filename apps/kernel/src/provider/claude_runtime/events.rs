@@ -44,6 +44,7 @@ fn apply_system_message(
         state.delivered_hidden_base = None;
     }
     if value.get("subtype").and_then(Value::as_str) == Some("init") {
+        state.turn_watchdog.record_process_init();
         state.runtime_tools_unavailable = runtime_tools_status(value)
             .filter(|status| *status != "connected")
             .map(str::to_string);

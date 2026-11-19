@@ -49,12 +49,17 @@ const CLAUDE_ENV_OVERRIDE: &str = "CHARIOX_CLAUDE_BIN";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
+/// The one bound of a Claude start phase, headless and terminal alike: a
+/// start that has not ended within it (anything but an owner-answerable card,
+/// which waits as long as the card) fails the turn, naming why.
+pub(crate) const CLAUDE_START_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 /// Claude Code waits this long for its MCP servers before a turn starts (30 s
-/// by default), as Codex does with `startup_timeout_sec`. A busy kernel then
-/// still hands the turn its Chariox tools; a turn that starts without them is
-/// ended by the runtime (`claude_runtime::events`).
+/// by default), as Codex does with `startup_timeout_sec`. It stays inside the
+/// start budget, so a server that never answers ends the start with Claude's
+/// own `init` status (`claude_runtime::events`) rather than the budget.
 const CLAUDE_MCP_STARTUP_TIMEOUT_ENV: &str = "MCP_TIMEOUT";
-const CLAUDE_MCP_STARTUP_TIMEOUT_MS: u64 = 90_000;
+const CLAUDE_MCP_STARTUP_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(CLAUDE_START_BUDGET.as_secs() - 30);
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
@@ -569,7 +574,7 @@ fn claude_process_env(request: &LaunchProviderRequest) -> BTreeMap<String, Strin
         (CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string()),
         (
             CLAUDE_MCP_STARTUP_TIMEOUT_ENV.to_string(),
-            CLAUDE_MCP_STARTUP_TIMEOUT_MS.to_string(),
+            CLAUDE_MCP_STARTUP_TIMEOUT.as_millis().to_string(),
         ),
     ]);
     env.extend(request.provider_account_env.clone());

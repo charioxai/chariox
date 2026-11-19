@@ -1,17 +1,23 @@
-// FT-01 / FT-02: a provider turn never runs without the agent's Chariox tools.
+// FT-01 / FT-02 / FT-03: a provider turn never runs without the agent's Chariox tools.
 // FT-01: on a kernel busy with --ballast idle Claude runs and a tool-catalog churn, the first turns of
 // --agents workers, submitted at once, all call a Chariox tool and succeed.
 // FT-02: Claude's Chariox MCP server is pointed at a listener that never answers (CHARIOX_CLAUDE_BIN wrapper,
 // MCP_TIMEOUT=5000); the turn must end failed and say why. An old kernel shows it ending as a success.
+// FT-03: the same wrapper points it at a proxy that holds each new Claude process's connections for --hold-s
+// (70 s), past the 60 s turn stall timeout but inside the kernel's start budget, then forwards them to the kernel.
+// The turn must call a Chariox tool and complete with no restart. An old kernel restarts Claude at 60 s and fails.
+// FT-04: --ballast Claude runs, idle after one short turn, each hold their MCP notification stream open while the tool catalog changes
+// every 100 ms; the kernel must keep answering (a kernel RPC and a new MCP connection, probed every 100 ms) as it
+// does with no changes. Reports latency percentiles and the kernel's CPU per catalog change, quiet vs churning.
 // node scripts/drills/first-turn-tools.mjs --cell ft01|ft02 --kernel-binary <kernel>
 //   --state-root <~/.chariox/dev/task> --workspace-root <outside-checkout> --evidence-dir <outside-checkout>
-//   [--agents 8 --ballast 12] (ft01) [--claude-bin /root/.local/bin/claude] (ft02)
+//   [--agents 8 --ballast 12] (ft01) [--ballast 48 --phase-s 40] (ft04) [--claude-bin /root/.local/bin/claude] (ft02, ft03) [--hold-s 70] (ft03)
 // CLAUDE_TOKEN_FILE holds the Claude login, stored in the drill kernel's Vault and never printed.
 // Results come from kernel RPCs and events only, never from the kernel's state files.
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, rmSync } from "node:fs"
-import { createServer } from "node:net"
+import { connect, createServer } from "node:net"
 import { resolve, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -24,10 +30,13 @@ for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process
 const need = key => { const v = flags.get(key); if (typeof v !== "string") throw new Error(`${key} is required`); return resolve(v) }
 const count = (key, fallback, min) => { const n = Number(flags.get(key) ?? fallback); if (!Number.isSafeInteger(n) || n < min) throw new Error(`${key} must be an integer of at least ${min}`); return n }
 const cell = flags.get("--cell")
-if (!["ft01", "ft02"].includes(cell)) throw new Error("--cell must be ft01 or ft02")
+if (!["ft01", "ft02", "ft03", "ft04"].includes(cell)) throw new Error("--cell must be ft01, ft02, ft03 or ft04")
 const binary = need("--kernel-binary"), stateRoot = need("--state-root"), evidence = need("--evidence-dir"), workspaceRoot = need("--workspace-root")
-const agents = cell === "ft01" ? count("--agents", 8, 1) : 1, ballast = cell === "ft01" ? count("--ballast", 12, 0) : 0
+const agents = cell === "ft01" ? count("--agents", 8, 1) : cell === "ft04" ? 0 : 1
+const ballast = cell === "ft01" ? count("--ballast", 12, 0) : cell === "ft04" ? count("--ballast", 48, 1) : 0
+const phaseMs = count("--phase-s", 40, 5) * 1000
 const claudeBin = resolve(flags.get("--claude-bin") ?? "/root/.local/bin/claude")
+const holdMs = count("--hold-s", 70, 1) * 1000
 const model = "claude-haiku-5-5"
 const tokenFile = process.env.CLAUDE_TOKEN_FILE
 if (!tokenFile) throw new Error("CLAUDE_TOKEN_FILE is required for Claude product enrollment")
@@ -82,10 +91,11 @@ async function stop(child) {
   }
   note("process-exit", { pid: child.pid, code: child.exitCode, signal: child.signalCode })
 }
-// FT-02: the kernel's Chariox MCP server reaches Claude only through --mcp-config; the wrapper points
-// it at a listener that takes the connection and never answers, then execs the real Claude.
+// FT-02 / FT-03: the kernel's Chariox MCP server reaches Claude only through --mcp-config; the wrapper
+// points it at the drill's listener, records each provider Claude start (one with --mcp-config), then execs
+// the real Claude.
 function writeClaudeWrapper(port) {
-  const wrapper = join(root, "claude-wrapper.sh"), log = join(evidence, "wrapper.log")
+  const wrapper = join(root, "claude-wrapper.sh"), log = join(evidence, "wrapper.log"), starts = join(root, "claude-starts")
   const rewrite = `const fs=require("fs");const [src,out,port,log]=process.argv.slice(1);const c=JSON.parse(fs.readFileSync(src,"utf8"));const s=c.mcpServers&&c.mcpServers.chariox;if(s){const u=new URL(s.url);u.host="127.0.0.1:"+port;s.url=u.toString();fs.appendFileSync(log,"rewrote chariox url to 127.0.0.1:"+port+"\\n")}fs.writeFileSync(out,JSON.stringify(c),{mode:0o600})`
   writeFileSync(wrapper, `#!/bin/bash
 args=()
@@ -93,14 +103,33 @@ while [ $# -gt 0 ]; do
   if [ "$1" = --mcp-config ] && [ $# -gt 1 ]; then
     out=$(mktemp '${join(root, "tmp")}/ft02-mcp-XXXXXX') || exit 1
     node -e '${rewrite}' "$2" "$out" ${port} '${log}' || exit 1
+    date +%s%3N >> '${starts}'
     args+=("$1" "$out"); shift 2; continue
   fi
   args+=("$1"); shift
 done
-export MCP_TIMEOUT=5000
-exec '${claudeBin}' "\${args[@]}"
+${cell === "ft02" ? "export MCP_TIMEOUT=5000\n" : ""}exec '${claudeBin}' "\${args[@]}"
 `, { mode: 0o700 })
-  return { wrapper, log }
+  return { wrapper, log, starts }
+}
+// FT-03: every connection waits until --hold-s after the latest Claude start, then reaches the kernel.
+function slowProxy(kernelPort, starts) {
+  return createServer(socket => {
+    held.add(socket)
+    socket.on("error", () => {})
+    socket.on("close", () => held.delete(socket))
+    socket.pause()
+    const started = existsSync(starts) ? Number(readFileSync(starts, "utf8").trim().split("\n").at(-1)) : Date.now()
+    setTimeout(() => {
+      if (socket.destroyed) return
+      const upstream = connect(kernelPort, "127.0.0.1")
+      held.add(upstream)
+      upstream.on("error", () => socket.destroy())
+      upstream.on("close", () => { held.delete(upstream); socket.destroy() })
+      socket.on("close", () => upstream.destroy())
+      upstream.on("connect", () => { socket.pipe(upstream); upstream.pipe(socket); socket.resume() })
+    }, Math.max(0, started + holdMs - Date.now()))
+  })
 }
 const toolPayload = text => { try { return JSON.parse(text) } catch { try { return JSON.parse(text.slice(text.indexOf("\n") + 1)) } catch { return null } } }
 // Every tool call of a turn, from its outline: one blob per call (preview holds `tool`) or an inline entry.
@@ -118,6 +147,70 @@ function answerText(w) {
 const prompt = marker => `Call the Chariox tool chariox.room_overview (MCP name mcp__chariox__chariox_room_overview; if it is not loaded, load it first with ToolSearch query "select:mcp__chariox__chariox_room_overview"). Then answer with exactly one line: ${marker} <the room id it reported>. Do nothing else.`
 
 let client, rpc, room, churnLoop, churning = false, deaf
+const percentile = (values, p) => { const sorted = [...values].sort((a, b) => a - b); return sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] * 10) / 10 : null }
+const summary = values => ({ n: values.length, p50: percentile(values, 0.5), p95: percentile(values, 0.95), p99: percentile(values, 0.99), max: percentile(values, 1) })
+const kernelCpuS = pid => { const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" "); return (Number(fields[11]) + Number(fields[12])) / 100 }
+function streamCount(port) {
+  const out = spawnSync("ss", ["-Htn", "state", "established", `( sport = :${port} )`], { encoding: "utf8" }).stdout ?? ""
+  return out.split("\n").filter(Boolean).length
+}
+async function mcpProbe(port) {
+  const started = performance.now()
+  return await new Promise(r => {
+    const socket = connect(port, "127.0.0.1", () => socket.write("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"))
+    const done = () => { socket.destroy(); r(performance.now() - started) }
+    socket.once("data", done)
+    socket.on("error", done)
+    socket.setTimeout(30000, done)
+  })
+}
+// One phase: probes every 100 ms; with churn, a catalog change hint every 100 ms meanwhile.
+async function phase(name, mcpPort, targets, churn) {
+  const kernelPid = children[0].pid, rpcMs = [], mcpMs = []
+  let changes = 0, changeError = null, running = true
+  const cpu0 = kernelCpuS(kernelPid), t = performance.now()
+  const changer = churn ? (async () => {
+    while (running) {
+      try { await rpc({ RevokeAgentExtension: { agent_ref: targets[changes % targets.length], kind: "script", name: "ft-churn" } }); changes++ } catch (error) { changeError = redact(error.message); return }
+      await delay(100)
+    }
+  })() : null
+  const end = Date.now() + phaseMs
+  while (Date.now() < end) {
+    const [rpcLatency, mcpLatency] = await Promise.all([
+      (async () => { const s = performance.now(); await rpc({ RelayStatus: null }); return performance.now() - s })(),
+      mcpProbe(mcpPort),
+    ])
+    rpcMs.push(rpcLatency); mcpMs.push(mcpLatency)
+    await delay(100)
+  }
+  running = false
+  await changer
+  const elapsedS = (performance.now() - t) / 1000, cpuS = kernelCpuS(kernelPid) - cpu0
+  const result = { name, seconds: Math.round(elapsedS), streams: streamCount(mcpPort), changes, change_error: changeError, kernel_rpc_ms: summary(rpcMs), new_mcp_connection_ms: summary(mcpMs),
+    kernel_cpu_s_per_s: Math.round(cpuS / elapsedS * 100) / 100, kernel_cpu_ms_per_change: changes ? Math.round(cpuS * 1000 / changes) : null }
+  note(`phase-${name}`, result)
+  return result
+}
+async function measureStall(ballastIds, mcpPort, attachment) {
+  // A Claude run connects its Chariox tools with its first turn and keeps the stream open after it.
+  const runs = ballastIds.map(id => ({ id }))
+  for (const r of runs) {
+    const outcome = (await rpc(submitPromptRequest(room, attachment, r.id, "Answer with exactly one word: OK. Do nothing else.", []))).PromptSubmitted.outcome
+    r.promptId = Object.values(outcome)[0].prompt.id
+  }
+  await until(async () => { await readTurns(runs); return runs.every(r => r.turn && r.turn.lifecycle !== "open") }, "ballast first turns settle", 360000)
+  note("ballast-turns", { completed: runs.filter(r => r.turn.lifecycle === "completed").length, of: runs.length })
+  await until(() => streamCount(mcpPort) >= ballastIds.length, `${ballastIds.length} MCP connections`, 180000).catch(() => {})
+  note("streams-open", { established: streamCount(mcpPort), ballast: ballastIds.length })
+  await delay(5000)
+  const quiet = await phase("quiet", mcpPort, ballastIds, false)
+  const churn = await phase("churn", mcpPort, ballastIds, true)
+  check("FT-04-streams-open", quiet.streams >= ballastIds.length, { streams: quiet.streams, ballast: ballastIds.length })
+  check("FT-04-changes-applied", churn.changes > 0 && !churn.change_error, { changes: churn.changes, error: churn.change_error })
+  check("FT-04-kernel-answers-while-catalog-changes", churn.kernel_rpc_ms.max < 1000 && churn.new_mcp_connection_ms.max < 1000, { quiet, churn })
+}
+
 async function readTurns(workers) {
   const outline = (await rpc({ GetSessionHistoryOutline: { session_id: room, agent_ids: workers.map(w => w.id), latest_prompt_count: 3, include_prefetched_content: true } })).SessionHistoryOutline
   for (const w of workers) {
@@ -130,17 +223,21 @@ async function readTurns(workers) {
 async function main() {
   note("binary", { kernel_sha256: createHash("sha256").update(readFileSync(binary)).digest("hex"), cell, agents, ballast })
   const extra = {}
-  let wrapperLog
-  if (cell === "ft02") {
-    deaf = createServer(socket => { held.add(socket); socket.on("error", () => {}); socket.on("close", () => held.delete(socket)) })
+  let wrapperLog, claudeStarts
+  const ports = []
+  for (let i = 0; i < 4; i++) ports.push(await freePort())
+  if (cell === "ft02" || cell === "ft03") {
+    const starts = join(root, "claude-starts")
+    deaf = cell === "ft02"
+      ? createServer(socket => { held.add(socket); socket.on("error", () => {}); socket.on("close", () => held.delete(socket)) })
+      : slowProxy(ports[1], starts)
     await new Promise(r => deaf.listen(0, "127.0.0.1", r))
     const written = writeClaudeWrapper(deaf.address().port)
     extra.CHARIOX_CLAUDE_BIN = written.wrapper
     wrapperLog = written.log
-    note("deaf-listener", { port: deaf.address().port, claude_bin: claudeBin })
+    claudeStarts = written.starts
+    note(cell === "ft02" ? "deaf-listener" : "slow-proxy", { port: deaf.address().port, claude_bin: claudeBin, hold_ms: cell === "ft03" ? holdMs : null })
   }
-  const ports = []
-  for (let i = 0; i < 4; i++) ports.push(await freePort())
   for (const sub of ["chariox", "home", "tmp", "logs", "history", "config", "cache", "state"]) mkdirSync(join(root, sub), { recursive: true, mode: 0o700 })
   writeFileSync(join(root, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[workflow]\nsession_default_max_agents = ${agents + ballast + 4}\n[state]\npath = "${root}/chariox/state.db"\n`, { mode: 0o600 })
   const kernelEnv = { ...env, HOME: join(root, "home"), TMPDIR: join(root, "tmp"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state"),
@@ -174,6 +271,7 @@ async function main() {
     ballastIds.push(id)
   }
   note("room-ready", { room, ballast: ballastIds.length })
+  if (cell === "ft04") return measureStall(ballastIds, ports[1], attachment)
   // Revoking a script grant always fires the kernel's tool-catalog change hint, which recomputes
   // every running run's catalog; it needs no registered script.
   const churn = { changes: 0, error: null }
@@ -215,6 +313,12 @@ async function main() {
   if (cell === "ft01") {
     for (const { w, chariox, row } of rows) check(`FT-01-worker-${w.i}`, row.lifecycle === "completed" && row.outcome?.kind === "completed" && row.marker && chariox.length > 0, row)
     check("FT-01-churn", churn.changes > 0 && !churn.error, churn)
+  } else if (cell === "ft03") {
+    const { w, chariox, row } = rows[0]
+    const starts = existsSync(claudeStarts) ? readFileSync(claudeStarts, "utf8").trim().split("\n").length : 0
+    check("FT-03-wrapper-used", existsSync(wrapperLog) && readFileSync(wrapperLog, "utf8").includes("rewrote chariox url"), { log: existsSync(wrapperLog) ? readFileSync(wrapperLog, "utf8").slice(0, 300) : null })
+    check("FT-03-one-claude-start", starts === 1, { claude_starts: starts })
+    check("FT-03-turn-completed-with-tools", row.lifecycle === "completed" && row.outcome?.kind === "completed" && row.marker && chariox.length > 0 && row.first_chariox_call_ms >= holdMs - 15000, { ...row, hold_ms: holdMs, prompt: w.promptId })
   } else {
     const { row } = rows[0]
     check("FT-02-wrapper-used", existsSync(wrapperLog) && readFileSync(wrapperLog, "utf8").includes("rewrote chariox url"), { log: existsSync(wrapperLog) ? readFileSync(wrapperLog, "utf8").slice(0, 300) : null })
