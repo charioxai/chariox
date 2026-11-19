@@ -388,9 +388,10 @@ fn compact_provider_error_snippet(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLAUDE_ROOT_YOLO_REFUSAL, classify_provider_substitutable_failure_text,
+        classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
         claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
+        CLAUDE_ROOT_YOLO_REFUSAL,
     };
     use crate::provider::ProviderRunTermination;
 
@@ -461,10 +462,11 @@ mod tests {
 
     #[test]
     fn classifier_ignores_non_provider_text() {
-        assert!(
-            classify_provider_terminal_failure_text("dev-stub", "unsupported model gpt-5.2-codex")
-                .is_none()
-        );
+        assert!(classify_provider_terminal_failure_text(
+            "dev-stub",
+            "unsupported model gpt-5.2-codex"
+        )
+        .is_none());
         assert!(
             classify_provider_terminal_failure_text("codex", "normal assistant output").is_none()
         );
@@ -501,13 +503,11 @@ mod tests {
             "an unrelated framed line must not lend error provenance to another line"
         );
 
-        assert!(
-            classify_provider_terminal_failure_output_text(
-                "codex",
-                "Error: HTTP 400 Bad Request: unsupported model gpt-5.2-codex",
-            )
-            .is_some()
-        );
+        assert!(classify_provider_terminal_failure_output_text(
+            "codex",
+            "Error: HTTP 400 Bad Request: unsupported model gpt-5.2-codex",
+        )
+        .is_some());
     }
 
     #[test]
@@ -575,14 +575,12 @@ mod tests {
             );
         }
         for event_name in ["Stop", "SessionEnd", "assistant"] {
-            assert!(
-                claude_native_stop_failure(&serde_json::json!({
-                    "hook_event_name": event_name,
-                    "error": "rate_limit",
-                    "last_assistant_message": "You've hit your session limit"
-                }))
-                .is_none()
-            );
+            assert!(claude_native_stop_failure(&serde_json::json!({
+                "hook_event_name": event_name,
+                "error": "rate_limit",
+                "last_assistant_message": "You've hit your session limit"
+            }))
+            .is_none());
         }
         let failure = claude_native_stop_failure(&serde_json::json!({
             "hook_event_name": "StopFailure", "error": "rate_limit"
@@ -625,13 +623,11 @@ mod tests {
                 Some(failure.clone())
             );
         }
-        assert!(
-            classify_provider_substitutable_failure_text(
-                "claude",
-                &format!("The reviewer said: {failure}")
-            )
-            .is_none()
-        );
+        assert!(classify_provider_substitutable_failure_text(
+            "claude",
+            &format!("The reviewer said: {failure}")
+        )
+        .is_none());
         assert!(
             classify_provider_terminal_failure_output_text(
                 "claude",
@@ -654,21 +650,17 @@ mod tests {
 
         assert!(failure.contains("resource limit"));
         assert!(failure.contains("don't have usage credits"));
-        assert!(
-            classify_provider_substitutable_failure_text(
-                "claude",
-                "Fable 5 now uses usage credits. You don't have usage credits yet."
-            )
-            .is_some()
-        );
+        assert!(classify_provider_substitutable_failure_text(
+            "claude",
+            "Fable 5 now uses usage credits. You don't have usage credits yet."
+        )
+        .is_some());
 
-        assert!(
-            classify_provider_terminal_failure_text(
-                "claude",
-                "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
-            )
-            .is_some()
-        );
+        assert!(classify_provider_terminal_failure_text(
+            "claude",
+            "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
+        )
+        .is_some());
     }
 
     #[test]
@@ -709,13 +701,11 @@ mod tests {
                     .is_none()
             );
         }
-        assert!(
-            classify_provider_terminal_failure_output_text(
-                "claude",
-                &format!("Review the message: {CLAUDE_ROOT_YOLO_REFUSAL}")
-            )
-            .is_none()
-        );
+        assert!(classify_provider_terminal_failure_output_text(
+            "claude",
+            &format!("Review the message: {CLAUDE_ROOT_YOLO_REFUSAL}")
+        )
+        .is_none());
     }
 
     #[test]
@@ -734,20 +724,16 @@ mod tests {
 
     #[test]
     fn substitute_classifier_ignores_model_auth_and_network_errors() {
-        assert!(
-            classify_provider_substitutable_failure_text(
-                "codex",
-                "HTTP 400 Bad Request: unsupported model gpt-5.2-codex"
-            )
-            .is_none()
-        );
-        assert!(
-            classify_provider_substitutable_failure_text(
-                "opencode",
-                "Authentication required. Please login."
-            )
-            .is_none()
-        );
+        assert!(classify_provider_substitutable_failure_text(
+            "codex",
+            "HTTP 400 Bad Request: unsupported model gpt-5.2-codex"
+        )
+        .is_none());
+        assert!(classify_provider_substitutable_failure_text(
+            "opencode",
+            "Authentication required. Please login."
+        )
+        .is_none());
         assert!(
             classify_provider_substitutable_failure_text("codex", "connection refused").is_none()
         );

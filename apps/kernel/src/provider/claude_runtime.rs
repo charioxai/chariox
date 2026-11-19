@@ -11,7 +11,7 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::claude::{
-    CLAUDE_START_BUDGET, claude_args_with_execution_config, materialize_runtime_claude_mcp_config,
+    claude_args_with_execution_config, materialize_runtime_claude_mcp_config, CLAUDE_START_BUDGET,
 };
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
@@ -33,11 +33,11 @@ mod runtime_tool_wait;
 mod session_restart;
 mod state;
 mod task_notification;
-pub(crate) use task_notification::{BackgroundTaskEnd, finished_background_task};
+pub(crate) use task_notification::{finished_background_task, BackgroundTaskEnd};
 mod tool_transcript;
 pub(crate) use tool_transcript::{
-    RESULT_IMAGE_FILE_BYTES, bounded_result, bounded_result_images, ended_task_of_result,
-    ends_background_commands, launched_task_id, launches_background_task,
+    bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
+    launched_task_id, launches_background_task, RESULT_IMAGE_FILE_BYTES,
 };
 pub(crate) mod usage;
 mod watchdog;
@@ -46,9 +46,9 @@ use events::apply_claude_message;
 pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
-use process::{ClaudeRuntimeMessage, spawn_claude_child, stop_child, write_json_line};
+use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
-    ClaudeRuntimeToolWait, begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending,
+    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
 };
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
@@ -875,10 +875,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch, apply_claude_stderr,
-        claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
-        initialize_claude_runtime, input::claude_user_content, new_claude_session_id,
-        restart_claude_runtime, submit_claude_prompt, write_claude_hidden_context,
+        apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
+        handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
+        new_claude_session_id, restart_claude_runtime, submit_claude_prompt,
+        write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -1366,13 +1366,11 @@ cat >/dev/null
         restart_claude_runtime(&yolo_run, &mut binding.state, "test required restart")
             .expect("Required selection should restart the provider child");
         let trace_contents = wait_for_trace_lines(&trace, 4);
-        assert!(
-            trace_contents
-                .lines()
-                .last()
-                .unwrap()
-                .ends_with("\tmarker:")
-        );
+        assert!(trace_contents
+            .lines()
+            .last()
+            .unwrap()
+            .ends_with("\tmarker:"));
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
@@ -1670,13 +1668,11 @@ done
             .to_path_buf();
 
         assert!(config_path.is_file());
-        assert!(
-            binding
-                .state
-                .args
-                .iter()
-                .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers"))
-        );
+        assert!(binding
+            .state
+            .args
+            .iter()
+            .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers")));
         #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&config_path)
@@ -1686,11 +1682,9 @@ done
                 & 0o777,
             0o600
         );
-        assert!(
-            std::fs::read_to_string(&config_path)
-                .expect("config should be readable by the kernel")
-                .contains("Bearer runtime-bearer-token")
-        );
+        assert!(std::fs::read_to_string(&config_path)
+            .expect("config should be readable by the kernel")
+            .contains("Bearer runtime-bearer-token"));
 
         restart_claude_runtime(&run, &mut binding.state, "test_claude_restart")
             .expect("Claude runtime should restart");
@@ -2775,12 +2769,10 @@ done
         let content = claude_user_content("read this", &[attachment]);
 
         assert_eq!(content[0]["text"], "read this");
-        assert!(
-            content[1]["text"]
-                .as_str()
-                .expect("attachment should render as text")
-                .contains("attached marker")
-        );
+        assert!(content[1]["text"]
+            .as_str()
+            .expect("attachment should render as text")
+            .contains("attached marker"));
     }
 
     #[test]
@@ -2795,12 +2787,10 @@ done
         let content = claude_user_content("", &[attachment]);
 
         assert_eq!(content.len(), 1);
-        assert!(
-            content[0]["text"]
-                .as_str()
-                .expect("opaque attachment should render as reference")
-                .contains("archive.bin")
-        );
+        assert!(content[0]["text"]
+            .as_str()
+            .expect("opaque attachment should render as reference")
+            .contains("archive.bin"));
     }
 }
 
