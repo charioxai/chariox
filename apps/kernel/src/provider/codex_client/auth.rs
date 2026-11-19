@@ -67,20 +67,6 @@ struct CodexAccount {
     email: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct CodexLoginStartResponse {
-    #[serde(rename = "type")]
-    login_kind: String,
-    #[serde(rename = "loginId", default)]
-    login_id: Option<String>,
-    #[serde(rename = "authUrl", default)]
-    auth_url: Option<String>,
-    #[serde(rename = "verificationUrl", default)]
-    verification_url: Option<String>,
-    #[serde(rename = "userCode", default)]
-    user_code: Option<String>,
-}
-
 impl CodexClient {
     pub fn auth_status(&self, account_profile: &str) -> Result<ProviderAuthStatus, DaemonError> {
         let mut socket = self.connect_initialized()?;
@@ -101,26 +87,6 @@ impl CodexClient {
             plan: response.plan_type,
             login_hint: Some("Run /provider login codex to authenticate Codex.".to_string()),
             detected_version: codex_version().ok(),
-        })
-    }
-
-    pub fn start_login(&self, account_profile: &str) -> Result<ProviderLoginStart, DaemonError> {
-        let mut socket = self.connect_initialized()?;
-        let mut next_request_id = 1;
-        let response: CodexLoginStartResponse = self.send_request(
-            &mut socket,
-            &mut next_request_id,
-            "account/login/start",
-            json!({ "type": "chatgptDeviceCode" }),
-        )?;
-        Ok(ProviderLoginStart {
-            provider: "codex".to_string(),
-            account_profile: account_profile.to_string(),
-            login_kind: response.login_kind,
-            login_id: response.login_id,
-            auth_url: response.auth_url,
-            verification_url: response.verification_url,
-            user_code: response.user_code,
         })
     }
 

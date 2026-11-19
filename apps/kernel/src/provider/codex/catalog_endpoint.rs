@@ -117,6 +117,15 @@ pub(crate) fn invalidate_codex_account_endpoint(owner_user_id: &str, account_pro
     }
 }
 
+pub(crate) fn retain_codex_account_login(
+    owner: &str,
+    profile: &str,
+) -> Result<std::sync::Arc<()>, DaemonError> {
+    CODEX_ACCOUNT_ENDPOINTS
+        .get_or_init(|| AccountEndpoints::new("codex.catalog"))
+        .retain_login(format!("{owner}\0{profile}"))
+}
+
 pub(crate) fn shutdown_codex_account_endpoints() {
     if let Some(endpoints) = CODEX_ACCOUNT_ENDPOINTS.get() {
         endpoints.shutdown();

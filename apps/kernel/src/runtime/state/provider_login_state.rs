@@ -248,6 +248,7 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     /// The Vault value typed into this login. It is kept only to cut it out of
     /// the screen and to refuse a second entry; it ends with the login.
     pub typed_secret: Option<Zeroizing<String>>,
+    pub codex_device_login: Option<Arc<Mutex<crate::provider::CodexDeviceLogin>>>,
     pub serial: Arc<tokio::sync::Mutex<()>>,
     pub code_submitted: bool,
     pub message: Option<String>,
@@ -332,6 +333,7 @@ impl ProviderLoginProcessRecord {
         if state != ProviderLoginProcessState::Running {
             self.mask_pending_secret_tail();
             self.typed_secret = None;
+            self.codex_device_login = None;
             if let Some(login) = self.setup_token.as_mut() {
                 if login.vault_prompt.take().is_some() {
                     self.message = None;
@@ -923,6 +925,7 @@ mod tests {
             setup_token: None,
             vault_origin: None,
             typed_secret: None,
+            codex_device_login: None,
             serial: Arc::new(tokio::sync::Mutex::new(())),
             code_submitted: false,
             message: None,

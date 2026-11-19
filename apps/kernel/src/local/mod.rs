@@ -19,8 +19,8 @@ pub use api::{
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 pub use api::{
     GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
-    PersonInboxNotice, PersonInboxOrigin, PersonInboxPriority, SetInboxCardStateRequest,
-    SetInboxMuteRequest,
+    PersonInboxNotice, PersonInboxNoticeAction, PersonInboxOrigin, PersonInboxPriority,
+    SetInboxCardStateRequest, SetInboxMuteRequest,
 };
 pub use api::{
     GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,

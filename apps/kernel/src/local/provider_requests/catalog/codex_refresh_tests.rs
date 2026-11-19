@@ -74,6 +74,33 @@ fn account_endpoint_child() {
                 {
                     break;
                 }
+                if request["method"] == "account/login/start" {
+                    if let Some(approval) = std::env::var_os("CTXFIX_ACCOUNT_LOGIN_COMPLETE") {
+                        let _ = socket.send(tokio_tungstenite::tungstenite::Message::Text(
+                            serde_json::json!({"method":"account/login/completed", "params":{
+                                "loginId":"another-attempt", "success":true
+                            }})
+                            .to_string()
+                            .into(),
+                        ));
+                        while !PathBuf::from(&approval).exists() {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        std::fs::write(
+                            PathBuf::from(std::env::var_os("CODEX_HOME").unwrap())
+                                .join("auth.json"),
+                            r#"{"tokens":{"access_token":"synthetic-accepted-login-new-device"}}"#,
+                        )
+                        .unwrap();
+                        let _ = socket.send(tokio_tungstenite::tungstenite::Message::Text(
+                            serde_json::json!({"method":"account/login/completed", "params":{
+                                "loginId":"synthetic-pending", "success":true
+                            }})
+                            .to_string()
+                            .into(),
+                        ));
+                    }
+                }
             }
         });
     }

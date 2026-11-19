@@ -12,6 +12,7 @@ pub(super) struct ManagedAccountEndpoint {
     pub endpoint: String,
     pub child: Child,
     credential_revision: Option<String>,
+    pending_login: std::sync::Weak<()>,
     #[cfg(target_os = "linux")]
     processes: crate::runtime::owned_process_signals::OwnedProcessHandles,
     #[cfg(target_os = "linux")]
@@ -39,6 +40,7 @@ impl ManagedAccountEndpoint {
             endpoint,
             child,
             credential_revision: None,
+            pending_login: Default::default(),
             #[cfg(target_os = "linux")]
             processes: Default::default(),
             #[cfg(target_os = "linux")]
@@ -99,6 +101,10 @@ type Reply<T> = SyncSender<Result<T, DaemonError>>;
 type Launch = Box<dyn FnOnce() -> Result<ManagedAccountEndpoint, DaemonError> + Send>;
 
 enum Command {
+    RetainLogin {
+        key: String,
+        reply: Reply<std::sync::Arc<()>>,
+    },
     Ensure {
         key: String,
         scope: String,
@@ -131,6 +137,9 @@ pub(super) struct AccountEndpoints {
 const REPLY_LIMIT: Duration = Duration::from_secs(30);
 
 impl AccountEndpoints {
+    pub fn retain_login(&self, key: String) -> Result<std::sync::Arc<()>, DaemonError> {
+        self.request(|reply| Command::RetainLogin { key, reply })
+    }
     pub fn new(name: &'static str) -> Self {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::Builder::new()
@@ -226,6 +235,21 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             }
         }
         match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(Command::RetainLogin { key, reply }) => {
+                let scope = aliases.get(&key).cloned().unwrap_or(key);
+                let result = endpoints
+                    .get_mut(&scope)
+                    .map(|endpoint| {
+                        let lease = std::sync::Arc::new(());
+                        endpoint.pending_login = std::sync::Arc::downgrade(&lease);
+                        lease
+                    })
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "retain_account_login",
+                        message: "The account helper stopped; start sign-in again".into(),
+                    });
+                let _ = reply.send(result);
+            }
             Ok(Command::Ensure {
                 key,
                 scope,
@@ -312,7 +336,12 @@ fn ensure(
     let (key, credential_revision) = identity;
     let _watch = stall_watchdog::watch(name, "ensure");
     if let Some(endpoint) = endpoints.remove(&key) {
-        if endpoint.credential_revision == credential_revision && healthy(&endpoint.endpoint) {
+        // A device challenge belongs to this helper. Let it finish before a
+        // file revision retires the helper; its completion is the login proof.
+        if (endpoint.credential_revision == credential_revision
+            || endpoint.pending_login.strong_count() > 0)
+            && healthy(&endpoint.endpoint)
+        {
             let address = endpoint.endpoint.clone();
             endpoints.insert(key, endpoint);
             return Ok(address);

@@ -2,9 +2,7 @@ use base64::Engine as _;
 use rand::{distributions::Alphanumeric, Rng};
 
 use crate::error::DaemonError;
-use crate::local::provider_requests::{
-    logout_provider_response, provider_auth_status_response, start_provider_login_response,
-};
+use crate::local::provider_requests::{logout_provider_response, provider_auth_status_response};
 use crate::local::{
     CancelProviderLoginRequest, GetProviderAuthStatusRequest, GetProviderLoginStatusRequest,
     LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest, ProviderLoginProcessState,
@@ -304,6 +302,7 @@ async fn start_terminal_provider_auth(
             None
         },
         typed_secret: None,
+        codex_device_login: None,
         serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         code_submitted: false,
         message: None,
@@ -444,6 +443,42 @@ pub(crate) async fn execute_get_provider_login_status_request(
         });
     }
     if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
+        let session = record.codex_device_login.clone().ok_or_else(|| {
+            provider_login_error(
+                "The Codex device sign-in is no longer connected; start sign-in again",
+            )
+        })?;
+        let completion = tokio::task::spawn_blocking(move || {
+            session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .poll_completion()
+        })
+        .await
+        .map_err(|error| provider_auth_task_error("observe Codex device sign-in", error))?;
+        match completion {
+            Ok(None) => {
+                return Ok(LocalDaemonResponse::ProviderLoginStatus {
+                    login: record.status(),
+                })
+            }
+            Ok(Some(true)) => {}
+            Ok(Some(false)) | Err(_) => {
+                runtime_state.provider_login_process_store().set_message(
+                    owner_user_id,
+                    &request.login_id,
+                    "Codex could not complete this device sign-in; start sign-in again.",
+                    now_ms,
+                )?;
+                let login = runtime_state.provider_login_process_store().set_state(
+                    owner_user_id,
+                    &request.login_id,
+                    ProviderLoginProcessState::Failed,
+                    now_ms,
+                )?;
+                return Ok(LocalDaemonResponse::ProviderLoginStatus { login });
+            }
+        }
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
         let profile_id = record.account_profile.clone();
@@ -959,11 +994,23 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
         });
     }
     let owner = owner_user_id.to_string();
-    let response = tokio::task::spawn_blocking(move || {
-        start_provider_login_response(&registry, &owner, request)
+    let session = tokio::task::spawn_blocking(move || {
+        let environment = registry.resolve_environment(&owner, "codex", &profile.profile_id)?;
+        let endpoint = crate::provider::ensure_codex_account_endpoint(
+            &owner,
+            &profile.profile_id,
+            environment,
+        )?;
+        let helper = crate::provider::retain_codex_account_login(&owner, &profile.profile_id)?;
+        crate::provider::CodexClient::new("provider-login", endpoint)?
+            .start_device_login(&profile.profile_id, helper)
     })
     .await
     .map_err(|error| provider_auth_task_error("start provider login", error))??;
+    let response = LocalDaemonResponse::ProviderLoginStarted {
+        login: session.start.clone(),
+    };
+    let session = std::sync::Arc::new(std::sync::Mutex::new(session));
     if let LocalDaemonResponse::ProviderLoginStarted { login } = &response {
         if let Some(login_id) = login.login_id.as_deref() {
             let now_ms = crate::session::unix_epoch_ms();
@@ -982,6 +1029,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
                     setup_token: None,
                     vault_origin: None,
                     typed_secret: None,
+                    codex_device_login: Some(session),
                     serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     code_submitted: false,
                     message: None,

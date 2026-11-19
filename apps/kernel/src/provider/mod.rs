@@ -119,11 +119,12 @@ pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
 pub(crate) use codex::{
-    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, retain_codex_account_login,
     shutdown_codex_account_endpoints,
 };
 #[cfg(test)]
 pub(crate) use codex_client::test_codex_connect;
+pub(crate) use codex_client::CodexDeviceLogin;
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
