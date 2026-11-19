@@ -319,14 +319,11 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("opencode") => {
-            let status = opencode_auth_status(&profile.profile_id, &environment)?;
+            let go = opencode_go_usage(&environment, crate::session::unix_epoch_ms());
+            let services = observed_opencode_services(&environment, &go);
+            let status = opencode_auth_status(&profile.profile_id, &environment, &services)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
-            registry.update_services(
-                owner_user_id,
-                "opencode",
-                &profile.profile_id,
-                inspect_opencode_services(&environment),
-            )?;
+            registry.update_services(owner_user_id, "opencode", &profile.profile_id, services)?;
             Ok(status)
         }
         _ => Err(unsupported_auth_provider(
@@ -424,8 +421,7 @@ fn refresh_provider_account_profile_observation(
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
-    let opencode_services =
-        (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
+    let mut opencode_services = None;
     let (status, usage) = match provider_family {
         Some("codex") => {
             // The official app-server caches its login at startup. An explicit
@@ -467,10 +463,17 @@ fn refresh_provider_account_profile_observation(
                 .reconciled_freshness(crate::session::unix_epoch_ms());
             (status, usage)
         }
-        Some("opencode") => (
-            opencode_auth_status(&profile.profile_id, &environment)?,
-            opencode_usage_snapshot(&profile.profile_id, &environment),
-        ),
+        Some("opencode") => {
+            let observed_at_ms = crate::session::unix_epoch_ms();
+            let go = opencode_go_usage(&environment, observed_at_ms);
+            let services = observed_opencode_services(&environment, &go);
+            let status = opencode_auth_status(&profile.profile_id, &environment, &services)?;
+            opencode_services = Some(services);
+            (
+                status,
+                opencode_usage_snapshot(&profile.profile_id, &environment, go, observed_at_ms),
+            )
+        }
         _ => {
             return Err(unsupported_auth_provider(
                 "refresh provider account",
@@ -690,6 +693,7 @@ fn bounded_output(
 fn opencode_auth_status(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
+    services: &[crate::account_profile::ProviderAccountService],
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
     // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
@@ -718,15 +722,26 @@ fn opencode_auth_status(
         });
     }
     let credential_inspection = inspect_opencode_credentials(environment);
-    let has_credentials = credential_inspection == OpenCodeCredentialInspection::Valid;
+    use crate::account_profile::ProviderAccountAuthState;
+    let auth_state = if services
+        .iter()
+        .any(|service| service.auth_state == ProviderAccountAuthState::Authenticated)
+    {
+        "authenticated"
+    } else {
+        match services
+            .iter()
+            .find(|service| service.service_id == "opencode-go")
+            .map(|service| service.auth_state)
+        {
+            Some(ProviderAccountAuthState::Unknown) => "unknown",
+            Some(ProviderAccountAuthState::Error) => "error",
+            _ => "not_logged_in",
+        }
+    };
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
-        auth_state: if has_credentials {
-            "authenticated"
-        } else {
-            "not_logged_in"
-        }
-        .to_string(),
+        auth_state: auth_state.to_string(),
         account_profile: account_profile.to_string(),
         // A generic phrase is not an account identity. Treating it as one
         // would collapse distinct OpenCode profiles during duplicate checks.
@@ -747,13 +762,14 @@ fn opencode_auth_status(
 fn opencode_usage_snapshot(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
+    go_usage: OpenCodeGoUsage,
+    observed_at_ms: u64,
 ) -> crate::account_profile::ProviderAccountUsageSnapshot {
     use crate::account_profile::{
         ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
         ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
         ProviderAccountUsageSnapshot,
     };
-    let observed_at_ms = crate::session::unix_epoch_ms();
     let mut meters = Vec::new();
     let local_stats = resolve_opencode_executable().ok().and_then(|executable| {
         let mut command = crate::provider::managed_isolated_utility_command(
@@ -817,7 +833,6 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
-    let go_usage = opencode_go_usage(environment, observed_at_ms);
     if let OpenCodeGoUsage::Available(go_meters) = &go_usage {
         let mut combined = go_meters.clone();
         combined.extend(meters);
@@ -841,17 +856,21 @@ fn opencode_usage_snapshot(
         source: match go_usage {
             OpenCodeGoUsage::Available(_) => "opencode.go_usage".to_string(),
             OpenCodeGoUsage::NotEntitled => "opencode.go_not_entitled".to_string(),
-            OpenCodeGoUsage::Unavailable => "opencode.local_stats".to_string(),
+            OpenCodeGoUsage::Rejected => "opencode.go_key_rejected".to_string(),
+            _ => "opencode.local_stats".to_string(),
         },
-        management_url: Some("https://opencode.ai/zen".to_string()),
+        management_url: None,
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum OpenCodeGoUsage {
     Available(Vec<crate::account_profile::ProviderAccountUsageMeter>),
+    VerifiedWithoutMeters,
+    Rejected,
     NotEntitled,
     Unavailable,
+    MissingKey,
 }
 
 fn opencode_go_usage(
@@ -859,8 +878,14 @@ fn opencode_go_usage(
     observed_at_ms: u64,
 ) -> OpenCodeGoUsage {
     let Some(key) = opencode_provider_api_key(environment, "opencode-go") else {
-        return OpenCodeGoUsage::Unavailable;
+        return OpenCodeGoUsage::MissingKey;
     };
+    #[cfg(test)]
+    match std::env::var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS").as_deref() {
+        Ok("200") => return OpenCodeGoUsage::VerifiedWithoutMeters,
+        Ok("401") => return OpenCodeGoUsage::Rejected,
+        _ => {}
+    }
     let response = crate::outbound_dial::agent_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -876,9 +901,10 @@ fn opencode_go_usage(
         {
             Some(value) => opencode_go_usage_from_value(&value, observed_at_ms)
                 .map(OpenCodeGoUsage::Available)
-                .unwrap_or(OpenCodeGoUsage::Unavailable),
-            None => OpenCodeGoUsage::Unavailable,
+                .unwrap_or(OpenCodeGoUsage::VerifiedWithoutMeters),
+            None => OpenCodeGoUsage::VerifiedWithoutMeters,
         },
+        Err(ureq::Error::Status(401, _)) => OpenCodeGoUsage::Rejected,
         Err(ureq::Error::Status(403, response)) => {
             let body = response
                 .into_string()
@@ -948,6 +974,29 @@ fn inspect_opencode_credentials(
     } else {
         OpenCodeCredentialInspection::NotObserved
     }
+}
+
+fn observed_opencode_services(
+    environment: &BTreeMap<String, String>,
+    go: &OpenCodeGoUsage,
+) -> Vec<crate::account_profile::ProviderAccountService> {
+    use crate::account_profile::ProviderAccountAuthState;
+    let mut services = inspect_opencode_services(environment);
+    if let Some(go_service) = services
+        .iter_mut()
+        .find(|service| service.service_id == "opencode-go")
+    {
+        go_service.auth_state = match go {
+            OpenCodeGoUsage::Available(_) | OpenCodeGoUsage::VerifiedWithoutMeters => {
+                ProviderAccountAuthState::Authenticated
+            }
+            OpenCodeGoUsage::Rejected
+            | OpenCodeGoUsage::NotEntitled
+            | OpenCodeGoUsage::MissingKey => ProviderAccountAuthState::Error,
+            OpenCodeGoUsage::Unavailable => ProviderAccountAuthState::Unknown,
+        };
+    }
+    services
 }
 
 fn inspect_opencode_services(

@@ -83,6 +83,7 @@ impl Fixture {
             "CHARIOX_HOME",
             "CHARIOX_LOG_DIR",
             "CHARIOX_OPENCODE_BIN",
+            "CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS",
             "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
         ];
         let environment = names
@@ -97,6 +98,7 @@ impl Fixture {
         std::fs::write(&binary, program).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::env::set_var("CHARIOX_OPENCODE_BIN", &binary);
+        std::env::set_var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS", "200");
         let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
         config.user_config.credential_vault.backend = backend;
         if backend == crate::config::CredentialVaultBackend::CharioxEncrypted {
@@ -309,6 +311,33 @@ async fn an_entry_bound_to_opencode_ai_signs_the_login_in_and_stays_off_the_scre
         );
         let _ = std::fs::remove_file(fixture.root.join("received"));
     }
+}
+
+#[tokio::test]
+async fn a_go_key_rejected_by_the_provider_does_not_complete_vault_login() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new(crate::config::CredentialVaultBackend::ProcessMemory);
+    std::env::set_var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS", "401");
+    let entry = fixture.owner_entry(OPENCODE_SITE).await;
+    let login_id = fixture.start("opencode_go_api_key").await;
+    fixture.vault_entry(&login_id, &entry).await.unwrap();
+    let status = fixture.until_finished(&login_id).await;
+    assert_ne!(status.state, ProviderLoginProcessState::Succeeded);
+    let profile = fixture
+        .router
+        .provider_account_profiles
+        .get("local", "opencode", &fixture.profile)
+        .unwrap();
+    assert_eq!(
+        profile.auth_state,
+        crate::account_profile::ProviderAccountAuthState::Error
+    );
+    assert_eq!(
+        profile.usage.management_url.as_deref(),
+        Some("https://opencode.ai/console/go")
+    );
+    assert!(!screen(&status).contains(KEY));
 }
 
 #[tokio::test]
