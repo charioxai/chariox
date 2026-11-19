@@ -86,3 +86,67 @@ async fn offload_job_after_a_restart_waits_for_its_output_log_instead_of_giving_
         serde_json::json!(["target/first.bin", "target/second.bin"])
     );
 }
+
+#[tokio::test]
+async fn offload_job_output_stays_bounded_and_says_why_when_its_log_keeps_failing() {
+    // About 8 MiB of lines, more than the pending-output bound, while the disk stays full.
+    let mut job = prepared(
+        "mkdir -p target; printf one > target/first.bin; seq 96000 | sed 's/$/: a build line that the full disk cannot keep, padded to a realistic width/'; echo last-line",
+        &["target/*.bin"],
+    )
+    .await;
+    job.outage
+        .cut
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let log = job_state_path(&job.state, &format!("{}/output.log", job.record.job_id));
+    std::fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink("/dev/full", &log).unwrap();
+    let release = super::cleanup_tests::service(
+        &job.state,
+        vec![
+            ("job_started", 200, super::cleanup_tests::machine("ready")),
+            ("get", 200, super::cleanup_tests::machine("deleted")),
+        ],
+    )
+    .await;
+    let mut output = super::execute::Output::new(&job.state, &job.record).unwrap();
+    let (_cancel, mut cancelled) = watch::channel(false);
+    let result = tokio::time::timeout(Duration::from_secs(240), async {
+        let result = job
+            .state
+            .run_remote_job(
+                &mut job.record,
+                &job.machine,
+                &BTreeMap::new(),
+                &mut output,
+                &mut cancelled,
+            )
+            .await;
+        job.state
+            .complete_remote_job(&mut job.record, &mut output, result, false)
+            .await
+    })
+    .await
+    .expect("the job never ended")
+    .unwrap();
+    std::fs::remove_file(&log).unwrap();
+    assert!(
+        output.pending_bytes() <= 1024 * 1024,
+        "{} bytes of output are still held in memory",
+        output.pending_bytes()
+    );
+    assert_eq!(result.outcome, JobOutcome::Completed);
+    assert_eq!(result.files_back, vec!["target/first.bin".to_string()]);
+    let tail = result.output_tail.trim_end();
+    assert!(
+        tail.ends_with(
+            "last-line\n[96001 lines of job output were not kept in the log: No space left on device (os error 28)]"
+        ),
+        "{}",
+        &tail[tail.len().saturating_sub(300)..]
+    );
+    tokio::time::timeout(Duration::from_secs(10), release)
+        .await
+        .expect("the worker was not released once the command ended")
+        .unwrap();
+}

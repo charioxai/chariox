@@ -14,6 +14,8 @@ pub(super) struct Output {
     file: std::fs::File,
     pub(super) log: String,
     discarding_line: bool,
+    /// Lines the log could not keep since its last successful write, and why.
+    unkept: Option<(usize, String)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -21,6 +23,7 @@ pub(super) struct OutputCheckpoint {
     pending: Vec<u8>,
     tail: String,
     discarding_line: bool,
+    unkept: Option<(usize, String)>,
 }
 
 impl Output {
@@ -52,6 +55,7 @@ impl Output {
             file,
             log: path.to_string_lossy().into_owned(),
             discarding_line: false,
+            unkept: None,
         })
     }
 
@@ -60,6 +64,7 @@ impl Output {
             pending: std::mem::take(&mut self.pending),
             tail: std::mem::take(&mut self.tail),
             discarding_line: self.discarding_line,
+            unkept: self.unkept.take(),
         }
     }
 
@@ -75,6 +80,7 @@ impl Output {
             file,
             log: Self::path(state, record).to_string_lossy().into_owned(),
             discarding_line: checkpoint.discarding_line,
+            unkept: checkpoint.unkept,
         }
     }
 
@@ -82,6 +88,8 @@ impl Output {
         self.file.try_clone().map(Into::into)
     }
 
+    /// Every complete line reaches the tail and the pending buffer stays bounded even while the log
+    /// cannot be written; the first failed log write is returned once the bytes are processed.
     fn push(
         &mut self,
         state: &KernelRuntimeState,
@@ -103,6 +111,7 @@ impl Output {
             bytes
         };
         self.pending.extend_from_slice(bytes);
+        let mut kept = Ok(());
         while let Some(end) = self
             .pending
             .iter()
@@ -122,27 +131,67 @@ impl Output {
                 .scrub(room, text)
                 .unwrap_or_else(|_| "[sensitive job output withheld]".into());
             text.push('\n');
-            self.tail.push_str(&text);
-            if self.tail.len() > TAIL_BYTES {
-                let mut start = self.tail.len() - TAIL_BYTES;
-                while !self.tail.is_char_boundary(start) {
-                    start += 1;
-                }
-                self.tail.drain(..start);
-            }
-            self.file
-                .write_all(text.as_bytes())
-                .map_err(|e| ledger::error(format!("Cannot keep job output: {e}")))?;
+            self.add_to_tail(&text);
+            kept = kept.and(self.keep(&text));
         }
         // A producer cannot consume unbounded memory with one unterminated line.
         if self.pending.len() > 1024 * 1024 {
             self.pending.clear();
             self.discarding_line = true;
-            self.file
-                .write_all(b"[job output line withheld: over 1 MiB]\n")
-                .map_err(|e| ledger::error(e.to_string()))?;
+            kept = kept.and(self.keep("[job output line withheld: over 1 MiB]\n"));
         }
-        Ok(())
+        kept
+    }
+    fn add_to_tail(&mut self, text: &str) {
+        self.tail.push_str(text);
+        if self.tail.len() > TAIL_BYTES {
+            let mut start = self.tail.len() - TAIL_BYTES;
+            while !self.tail.is_char_boundary(start) {
+                start += 1;
+            }
+            self.tail.drain(..start);
+        }
+    }
+    /// Writes one line to the log. A line the log cannot take stays only in the tail; the tail
+    /// says when the log first fails, and the log marks the gap once it takes lines again.
+    fn keep(&mut self, text: &str) -> Result<(), DaemonError> {
+        let line = match &self.unkept {
+            Some((count, reason)) => {
+                format!("[{count} lines of job output not kept: {reason}]\n{text}")
+            }
+            None => text.to_owned(),
+        };
+        match self.file.write_all(line.as_bytes()) {
+            Ok(()) => {
+                self.unkept = None;
+                Ok(())
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                match &mut self.unkept {
+                    Some((count, _)) => *count += 1,
+                    None => {
+                        self.add_to_tail(&format!(
+                            "[job output log not kept: {reason}; lines from here on may be missing from the log]\n"
+                        ));
+                        self.unkept = Some((1, reason.clone()));
+                    }
+                }
+                Err(ledger::error(format!("Cannot keep job output: {reason}")))
+            }
+        }
+    }
+    /// Flushes the log; when lines are missing from it, the tail ends with how many and why.
+    fn close(&mut self) -> Result<(), DaemonError> {
+        let flushed = self.file.flush().map_err(|e| ledger::error(e.to_string()));
+        if let Some((count, reason)) = &self.unkept {
+            let notice =
+                format!("[{count} lines of job output were not kept in the log: {reason}]\n");
+            if !self.tail.ends_with(&notice) {
+                self.add_to_tail(&notice);
+            }
+        }
+        flushed
     }
     /// Writes a notice of the kernel's own. A line the producer left unfinished ends first and the
     /// discard of an over-long line stops, so the notice is neither joined to it nor swallowed.
@@ -153,8 +202,8 @@ impl Output {
         text: &str,
     ) -> Result<(), DaemonError> {
         self.discarding_line = false;
-        self.push(state, room, &[], true)?;
-        self.push(state, room, text.as_bytes(), true)
+        let pending = self.push(state, room, &[], true);
+        pending.and(self.push(state, room, text.as_bytes(), true))
     }
     pub(super) fn page(
         &mut self,
@@ -162,6 +211,7 @@ impl Output {
         room: &str,
         page: &ExecOutput,
     ) -> Result<(), DaemonError> {
+        let mut kept = Ok(());
         for chunk in &page.chunks {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&chunk.data_base64)
@@ -170,15 +220,19 @@ impl Output {
             if chunk.stream == ExecStream::Stderr
                 && bytes.as_slice() == OUTPUT_LOSS_NOTICE.as_bytes()
             {
-                self.notice(state, room, OUTPUT_LOSS_NOTICE)?;
+                kept = kept.and(self.notice(state, room, OUTPUT_LOSS_NOTICE));
             } else {
-                self.push(state, room, &bytes, false)?;
+                kept = kept.and(self.push(state, room, &bytes, false));
             }
         }
         if page.outcome.is_some() {
-            self.push(state, room, &[], true)?;
+            kept = kept.and(self.push(state, room, &[], true));
         }
-        Ok(())
+        kept
+    }
+    #[cfg(test)]
+    pub(super) fn pending_bytes(&self) -> usize {
+        self.pending.len()
     }
 }
 
@@ -312,7 +366,7 @@ impl KernelRuntimeState {
                 failed(&record, "Job failed; see the protected output log".into())
             })
         });
-        output.file.flush().ok();
+        output.close().ok();
         let config = self.owned.config_projection.snapshot();
         let artifact = crate::artifacts::OperationalArtifactStore::open(
             config.operational_artifact_root(),
@@ -571,10 +625,7 @@ impl KernelRuntimeState {
             }
             failed(record, "Job failed; see the protected output log".into())
         });
-        output
-            .file
-            .flush()
-            .map_err(|e| ledger::error(e.to_string()))?;
+        output.close()?;
         result.output_tail = output.tail.clone();
         result.log = output.log.clone();
         result.duration_ms = crate::session::unix_epoch_ms()
