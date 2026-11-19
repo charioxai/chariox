@@ -1341,6 +1341,26 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
+    /// Makes `prompt` the agent's running turn only while the agent has no prompt at all, active or
+    /// queued: a turn the provider started on its own never displaces or overtakes a kernel prompt.
+    pub(crate) fn adopt_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        mut prompt: PromptQueueItem,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, prompt.target_agent_id());
+        if state.active_prompt.is_some() || !state.queued_prompts.is_empty() {
+            return false;
+        }
+        prompt.set_status(PromptStatus::Running);
+        state.set_active_prompt(Some(prompt));
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn activate_prompt(
         &self,

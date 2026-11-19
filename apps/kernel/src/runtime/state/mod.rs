@@ -751,6 +751,7 @@ mod leased_mid_turn_settings_tests;
 #[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
+mod provider_turn_adoption;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod terminal_subscription_runtime;
