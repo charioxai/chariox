@@ -1034,6 +1034,10 @@ impl KernelRuntimeOwnedState {
         let room = session.id();
         let store = &self.durable_state_store;
         let tasks = store.agent_tasks(Some(room), Some(agent))?;
+        let can_resume_task = tasks
+            .iter()
+            .find(|task| task.prompt_id == started.id())
+            .is_none_or(ledger::AgentTaskExecution::is_unstarted_prompt_task);
         let mut protected = Vec::new();
         for task in &tasks {
             if task.pending_prompt_id.is_some()
@@ -1049,6 +1053,10 @@ impl KernelRuntimeOwnedState {
                 && !event.reply_requested
                 && matches!(wake_disposition(event, &tasks), WakeDisposition::Deliver)
                 && !protected.iter().any(|task| names_task(event, task))
+                && (can_resume_task
+                    || !tasks.iter().any(|task| {
+                        task.state == ExecutionState::Waiting && names_task(event, &task.task_id)
+                    }))
         };
         let Some(lead) = store.agent_delivery_front(room, agent)?.filter(eligible) else {
             return Ok(started);
