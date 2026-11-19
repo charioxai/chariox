@@ -369,7 +369,10 @@ fn supervise(
             }
             match owned.lock().map(|mut c| c.poll()) {
                 Ok(Ok(Some(status))) => {
-                    signalled = status.signal();
+                    // Every watched process is launched through `command`, so
+                    // its leader is the sandbox that confines it.
+                    signalled =
+                        crate::provider::state_confinement::confined_program_signal(&status);
                     break Some(
                         status
                             .code()

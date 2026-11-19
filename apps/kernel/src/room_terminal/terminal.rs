@@ -276,8 +276,16 @@ impl Terminal {
             return false;
         }
         match (&self.run_id, self.shell_pid) {
-            (Some(run_id), Some(shell_pid)) => {
-                pty.foreground_process_group(run_id).ok().flatten() == Some(shell_pid)
+            (Some(run_id), Some(leader)) => {
+                // An agent's shell runs inside the sandbox that leads its terminal.
+                let shell = match self.record.opened_by {
+                    super::TerminalActor::Agent(_) => u32::try_from(leader)
+                        .ok()
+                        .and_then(crate::provider::state_confinement::confined_program)
+                        .and_then(|pid| i32::try_from(pid).ok()),
+                    super::TerminalActor::User => Some(leader),
+                };
+                shell.is_some() && pty.foreground_process_group(run_id).ok().flatten() == shell
             }
             _ => true,
         }

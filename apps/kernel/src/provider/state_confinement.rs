@@ -282,6 +282,19 @@ pub(crate) fn confinement_prefix_len(args: &[String]) -> Option<usize> {
     platform::prefix_len(args)
 }
 
+/// The process that runs the program of a confined launch led by `leader`,
+/// once it has started.
+pub(crate) fn confined_program(leader: u32) -> Option<u32> {
+    platform::confined_program(leader)
+}
+
+/// The signal that ended the program of a confined launch, read from its
+/// leader's exit status.
+#[cfg(unix)]
+pub(crate) fn confined_program_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    platform::confined_program_signal(status)
+}
+
 /// Exactly the declared secret folders that exist now, by their real paths.
 fn secrets() -> Secrets {
     let mut folders = home_secret_folders()
@@ -336,7 +349,29 @@ mod platform {
     use crate::error::DaemonError;
     use crate::runtime::bounded_process::BoundedCommandExt as _;
 
-    static WORKING_BUBBLEWRAP: OnceLock<PathBuf> = OnceLock::new();
+    /// Bubblewrap, the setpriv that ends the program with it, and the env that
+    /// keeps the stop signals for the program.
+    struct Sandbox {
+        bubblewrap: PathBuf,
+        setpriv: PathBuf,
+        env: PathBuf,
+    }
+
+    static WORKING_SANDBOX: OnceLock<Sandbox> = OnceLock::new();
+
+    /// Bubblewrap loses its --die-with-parent for the program it starts, so
+    /// setpriv sets the program's parent-death signal itself. The kernel stops
+    /// a confined process by stopping its sandbox; the program must not
+    /// outlive it.
+    const PROGRAM_DEATH: [&str; 3] = ["--pdeathsig", "KILL", "--"];
+
+    /// Bubblewrap shares its program's session and process group, and it dies
+    /// of the signals that ask a program to stop. A Stop's Ctrl-C, a hang-up
+    /// or a SIGTERM to the session would end the sandbox, and with it the
+    /// program at once, instead of letting the program handle them. Bubblewrap
+    /// ignores them; the program gets them back. A SIGKILL ends both.
+    const SANDBOX_SIGNALS: [&str; 2] = ["--ignore-signal=HUP,INT,QUIT,TERM", "--"];
+    const PROGRAM_SIGNALS: [&str; 2] = ["--default-signal=HUP,INT,QUIT,TERM", "--"];
 
     /// Each secret folder is covered by an empty read-only one. The agent's
     /// own paths inside a covered folder are mounted back.
@@ -347,8 +382,14 @@ mod platform {
         own: &[PathBuf],
         shared: &[PathBuf],
     ) -> Result<(String, Vec<String>), DaemonError> {
-        let bubblewrap = working_bubblewrap()?;
-        let mut wrapped = vec!["--dev-bind".to_string(), "/".to_string(), "/".to_string()];
+        let sandbox = working_sandbox()?;
+        let mut wrapped = SANDBOX_SIGNALS.map(str::to_string).to_vec();
+        wrapped.extend([
+            path_arg(&sandbox.bubblewrap),
+            "--dev-bind".to_string(),
+            "/".to_string(),
+            "/".to_string(),
+        ]);
         for folder in &secrets.folders {
             wrapped.extend(["--tmpfs".to_string(), path_arg(folder)]);
         }
@@ -367,56 +408,115 @@ mod platform {
             STATE_CONFINEMENT_MARKER_ENV.to_string(),
             "1".to_string(),
             "--".to_string(),
-            program,
+            path_arg(&sandbox.setpriv),
         ]);
+        wrapped.extend(PROGRAM_DEATH.map(str::to_string));
+        wrapped.push(path_arg(&sandbox.env));
+        wrapped.extend(PROGRAM_SIGNALS.map(str::to_string));
+        wrapped.push(program);
         wrapped.extend(args);
-        Ok((bubblewrap.display().to_string(), wrapped))
+        Ok((path_arg(&sandbox.env), wrapped))
     }
 
     pub(super) fn prefix_len(args: &[String]) -> Option<usize> {
-        let separator = args.iter().position(|arg| arg == "--")?;
-        args[..separator]
-            .windows(2)
-            .any(|window| window == ["--setenv", STATE_CONFINEMENT_MARKER_ENV])
-            .then_some(separator + 2)
-            .filter(|end| *end <= args.len())
+        let separator = args
+            .windows(4)
+            .position(|window| window == ["--setenv", STATE_CONFINEMENT_MARKER_ENV, "1", "--"])?
+            + 3;
+        let death = separator + 2;
+        let signals = death + PROGRAM_DEATH.len() + 1;
+        let program = signals + PROGRAM_SIGNALS.len();
+        (args.get(death..death + PROGRAM_DEATH.len())? == PROGRAM_DEATH
+            && args.get(signals..program)? == PROGRAM_SIGNALS
+            && program < args.len())
+        .then_some(program + 1)
+    }
+
+    /// Bubblewrap stays the leader and runs the program as its only child.
+    pub(super) fn confined_program(leader: u32) -> Option<u32> {
+        let children =
+            std::fs::read_to_string(format!("/proc/{leader}/task/{leader}/children")).ok()?;
+        let mut children = children.split_whitespace();
+        match (children.next(), children.next()) {
+            (Some(program), None) => program.parse().ok(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn confined_program_signal(status: &std::process::ExitStatus) -> Option<i32> {
+        use std::os::unix::process::ExitStatusExt as _;
+        // Bubblewrap cannot re-raise its program's signal n and exits 128 + n
+        // instead, so a program that exits 129..=192 itself is named as that
+        // signal too: the convention a shell's $? follows.
+        status.signal().or_else(|| {
+            status
+                .code()
+                .map(|code| code - 128)
+                .filter(|signal| (1..=libc::SIGRTMAX()).contains(signal))
+        })
     }
 
     fn path_arg(path: &Path) -> String {
         path.display().to_string()
     }
 
-    /// Bubblewrap from PATH, once it has made a namespace on this machine.
-    fn working_bubblewrap() -> Result<&'static PathBuf, DaemonError> {
-        if let Some(path) = WORKING_BUBBLEWRAP.get() {
-            return Ok(path);
-        }
-        let path = std::env::var_os("PATH")
+    fn on_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os("PATH")
             .into_iter()
             .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-            .map(|directory| directory.join("bwrap"))
+            .map(|directory| directory.join(name))
             .find(|candidate| candidate.is_file())
-            .ok_or_else(|| {
-                confinement_error(
-                    "agents run inside Bubblewrap so they cannot read the kernel's secrets, and bwrap is not installed; install bubblewrap (apt install bubblewrap, dnf install bubblewrap) and retry",
-                )
-            })?;
-        let output = crate::process_spawn::command(&path)
+    }
+
+    /// Bubblewrap, setpriv and env from PATH, once they have run a program in
+    /// a namespace on this machine.
+    fn working_sandbox() -> Result<&'static Sandbox, DaemonError> {
+        if let Some(sandbox) = WORKING_SANDBOX.get() {
+            return Ok(sandbox);
+        }
+        let bubblewrap = on_path("bwrap").ok_or_else(|| {
+            confinement_error(
+                "agents run inside Bubblewrap so they cannot read the kernel's secrets, and bwrap is not installed; install bubblewrap (apt install bubblewrap, dnf install bubblewrap) and retry",
+            )
+        })?;
+        let setpriv = on_path("setpriv").ok_or_else(|| {
+            confinement_error(
+                "agents run inside Bubblewrap and end with it through setpriv, which is not installed; install util-linux (apt install util-linux, dnf install util-linux-core) and retry",
+            )
+        })?;
+        let env = on_path("env").ok_or_else(|| {
+            confinement_error(
+                "agents run inside Bubblewrap and get their stop signals through env, which is not installed; install coreutils 8.31 or later and retry",
+            )
+        })?;
+        let output = crate::process_spawn::command(&env)
+            .args(SANDBOX_SIGNALS)
+            .arg(&bubblewrap)
             .args(["--dev-bind", "/", "/", "--"])
-            .arg(&path)
+            .arg(&setpriv)
+            .args(PROGRAM_DEATH)
+            .arg(&env)
+            .args(PROGRAM_SIGNALS)
+            .arg(&bubblewrap)
             .arg("--version")
             .bounded_output()
             .map_err(|error| {
-                confinement_error(format!("could not run {}: {error}", path.display()))
+                confinement_error(format!("could not run {}: {error}", bubblewrap.display()))
             })?;
         if !output.status.success() {
             return Err(confinement_error(format!(
-                "agents run inside Bubblewrap so they cannot read the kernel's secrets, and {} cannot make a mount namespace here ({}); allow unprivileged user namespaces for bwrap or run the kernel as root, then retry",
-                path.display(),
+                "agents run inside Bubblewrap so they cannot read the kernel's secrets, and {} with {} and {} cannot run a program in a mount namespace here ({}); allow unprivileged user namespaces for bwrap (or run the kernel as root) and use coreutils 8.31 or later, then retry",
+                bubblewrap.display(),
+                setpriv.display(),
+                env.display(),
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(WORKING_BUBBLEWRAP.get_or_init(|| path))
+        Ok(WORKING_SANDBOX.get_or_init(|| Sandbox {
+            bubblewrap,
+            setpriv,
+            env,
+        }))
     }
 }
 
@@ -469,6 +569,16 @@ mod platform {
         (args.len() >= 3 && args[0] == "-p" && args[1].starts_with(PROFILE_HEADER)).then_some(3)
     }
 
+    /// sandbox-exec becomes the program it confines.
+    pub(super) fn confined_program(leader: u32) -> Option<u32> {
+        Some(leader)
+    }
+
+    pub(super) fn confined_program_signal(status: &std::process::ExitStatus) -> Option<i32> {
+        use std::os::unix::process::ExitStatusExt as _;
+        status.signal()
+    }
+
     fn escaped(path: &Path) -> String {
         let mut escaped = String::new();
         for character in path.display().to_string().chars() {
@@ -501,6 +611,15 @@ mod platform {
     }
 
     pub(super) fn prefix_len(_args: &[String]) -> Option<usize> {
+        None
+    }
+
+    pub(super) fn confined_program(_leader: u32) -> Option<u32> {
+        None
+    }
+
+    #[cfg(unix)]
+    pub(super) fn confined_program_signal(_status: &std::process::ExitStatus) -> Option<i32> {
         None
     }
 }
