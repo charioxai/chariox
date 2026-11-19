@@ -18,6 +18,7 @@ const SUBSTITUTABLE_PREFIX: &str = "Provider reported a substitutable resource l
 #[serde(rename_all = "snake_case")]
 pub enum TurnOutcomeKind {
     Completed,
+    AnsweredInTurn,
     Cancelled,
     /// The kernel restarted while the turn ran and could not resume it.
     InterruptedByRestart,
@@ -36,6 +37,7 @@ impl TurnOutcomeKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Completed => "completed",
+            Self::AnsweredInTurn => "answered in another turn",
             Self::Cancelled => "cancelled",
             Self::InterruptedByRestart => "interrupted by restart",
             Self::Unknown => "unknown",
@@ -57,12 +59,24 @@ pub struct TurnOutcome {
     pub reason: String,
     /// A later attempt may succeed without anyone changing anything.
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered_in_turn: Option<AnsweredTurnReceipt>,
+}
+
+/// The one answering turn, shared by delivery receipts and transcript navigation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnsweredTurnReceipt {
+    pub session_id: String,
+    pub agent_id: String,
+    pub prompt_id: String,
+    pub task_id: String,
 }
 
 impl TurnOutcomeKind {
     fn headline(self) -> &'static str {
         match self {
             Self::Completed => "Turn completed",
+            Self::AnsweredInTurn => "Answered in another turn",
             Self::Cancelled => "Turn cancelled",
             Self::InterruptedByRestart => "Interrupted by a restart",
             Self::Unknown => "Turn ended",
@@ -77,6 +91,14 @@ impl TurnOutcomeKind {
 }
 
 impl TurnOutcome {
+    pub fn answered_in_turn(receipt: AnsweredTurnReceipt) -> Self {
+        Self {
+            kind: TurnOutcomeKind::AnsweredInTurn,
+            reason: String::new(),
+            retryable: false,
+            answered_in_turn: Some(receipt),
+        }
+    }
     /// One line for event summaries, such as `overloaded, retryable`.
     pub fn summary(&self) -> String {
         let retry = if self.retryable {
@@ -121,14 +143,18 @@ impl TurnOutcome {
     pub fn is_error(&self) -> bool {
         !matches!(
             self.kind,
-            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled
+            TurnOutcomeKind::Completed
+                | TurnOutcomeKind::AnsweredInTurn
+                | TurnOutcomeKind::Cancelled
         )
     }
 
     /// How a turn that ends with this outcome is settled: a turn a person
     /// stopped is cancelled, not failed.
     pub(crate) fn settlement_status(&self) -> crate::git_observer::CompletedTurnSettlementStatus {
-        if self.is_error() {
+        if self.kind == TurnOutcomeKind::AnsweredInTurn {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        } else if self.is_error() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Cancelled
@@ -140,6 +166,7 @@ impl TurnOutcome {
             kind,
             retryable,
             reason: reason.to_string(),
+            answered_in_turn: None,
         }
     }
 
@@ -147,7 +174,7 @@ impl TurnOutcome {
     /// what to change before sending the request again.
     fn recovery(&self) -> &'static str {
         match (self.kind, self.retryable) {
-            (TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled, _) => "",
+            (TurnOutcomeKind::Completed | TurnOutcomeKind::AnsweredInTurn | TurnOutcomeKind::Cancelled, _) => "",
             (TurnOutcomeKind::InterruptedByRestart, _) => {
                 "The kernel restarted while this turn was running; send the request again and the agent continues the same conversation."
             }
@@ -216,7 +243,9 @@ impl TurnOutcome {
     /// Provider diagnostics stay in logs except for Claude's bounded usage-limit detail.
     pub(crate) fn provider_failure(kind: TurnOutcomeKind, retryable: bool) -> Self {
         let reason = match kind {
-            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled => "",
+            TurnOutcomeKind::Completed
+            | TurnOutcomeKind::AnsweredInTurn
+            | TurnOutcomeKind::Cancelled => "",
             TurnOutcomeKind::InterruptedByRestart => "The kernel restarted during this turn.",
             TurnOutcomeKind::Overloaded => "The provider is at capacity.",
             TurnOutcomeKind::UsageLimit => "The provider's usage limit was reached.",

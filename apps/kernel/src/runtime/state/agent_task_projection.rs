@@ -91,6 +91,9 @@ impl KernelRuntimeOwnedState {
         if task.state != ExecutionState::Done {
             return Ok(None);
         }
+        if self.background_answer_target(task)?.is_some() {
+            return Ok(None);
+        }
         if let Some(goal) = &task.goal {
             return Ok(Some(
                 serde_json::json!({"goal_id":goal.id,"task_id":task.task_id,"excerpt":goal.final_answer,"evidence":goal.evidence}),

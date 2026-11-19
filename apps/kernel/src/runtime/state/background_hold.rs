@@ -133,6 +133,10 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
+        if self.background_answer_target(&task)?.is_some() {
+            self.background_holds.release(&task.task_id);
+            return Ok(false);
+        }
         let plain = task.state == ExecutionState::Working
             && task.goal.is_none()
             && task.wait.is_none()
@@ -166,6 +170,23 @@ impl KernelRuntimeOwnedState {
         let Some(held) = self.background_holds.get(&task.task_id) else {
             return Ok(false);
         };
+        if self.background_answer_target(task)?.is_some() {
+            return Ok(true);
+        }
+        if let Some(answer) = self.durable_state_store.answer_turn(&task.task_id)? {
+            if self
+                .durable_state_store
+                .agent_task(&answer.turn.task_id)?
+                .is_some_and(|target| {
+                    !matches!(
+                        target.state,
+                        ExecutionState::Done | ExecutionState::Cancelled
+                    )
+                })
+            {
+                return Ok(false);
+            }
+        }
         // Its notification turn runs, waiting for adoption behind another prompt: the turn's end
         // releases it, after the output that answers it is in history.
         if self.prompt_state_owner.provider_turn_pending_for_held(

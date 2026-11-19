@@ -19,8 +19,21 @@ pub(super) fn apply_claude_message(
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return;
     };
-    if super::finished_background_task(&value).is_some() {
+    if let Some(notification) = super::finished_background_task(&value) {
         state.background_notification_pending = true;
+        if matches!(kind, "user" | "queue-operation")
+            && state.active_turn_id.is_some()
+            && !state.own_turn
+        {
+            batch
+                .background_notifications
+                .push(super::super::ProviderBackgroundNotification {
+                    tool_use_id: notification.tool_use_id.map(str::to_string),
+                    task_id: notification.task_id.map(str::to_string),
+                });
+            // Claude has already consumed this notification in the prompt's turn.
+            state.background_notification_pending = false;
+        }
     }
     match kind {
         "system" => apply_system_message(state, &value, batch),

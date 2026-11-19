@@ -90,6 +90,7 @@ async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause(
     let expected = TurnOutcome {
         kind: TurnOutcomeKind::Overloaded,
         retryable: true,
+        answered_in_turn: None,
         reason: "The provider is at capacity.".to_string(),
     };
     assert_eq!(followed_error_failure(&turn), Some(expected.clone()));

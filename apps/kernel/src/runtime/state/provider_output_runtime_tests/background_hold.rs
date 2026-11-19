@@ -1570,3 +1570,88 @@ async fn wait_for_prompt_delivery(team: &Team, message_prompt: &str) {
     .await
     .expect("the queued prompt must pass through the provider write and receipt");
 }
+
+// Claude can consume a background notification inside the already-open prompt turn:
+// no new init/result boundary exists, so its one answer stays with that prompt.
+#[tokio::test]
+async fn a_merged_notification_settles_its_held_delivery_by_the_answer_turn_receipt() {
+    let team = child_with_a_call_running("background-held-answer-turn-receipt").await;
+    let message_prompt = status_message(&team, false).await;
+    wait_for_prompt_delivery(&team, &message_prompt).await;
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                background_notifications: vec![crate::provider::ProviderBackgroundNotification {
+                    tool_use_id: Some("toolu_bg".into()),
+                    task_id: Some("b1".into()),
+                }],
+                chunks: vec![
+                    ended_at(crate::session::unix_epoch_ms()),
+                    text_chunk("the one combined answer"),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    apply_own_turn(&team, ProviderOwnTurnSignal::None, true, Vec::new()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, false, false, true)
+        .await
+        .unwrap();
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    let held = events
+        .iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        held.len(),
+        1,
+        "the original delivery must settle exactly once: {events:?}"
+    );
+    assert_eq!(
+        held[0].payload["outcome"]["kind"], "answered_in_turn",
+        "a merged delivery points to its answering turn, not an invented second answer: {events:?}"
+    );
+    let answer_task = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &message_prompt)
+        .unwrap()
+        .unwrap();
+    let target = &held[0].payload["outcome"]["answered_in_turn"];
+    assert_eq!(target["task_id"], answer_task.task_id);
+    assert_eq!(target["prompt_id"], message_prompt);
+    assert_eq!(target["agent_id"], team.child);
+    assert_eq!(target["session_id"], team.room);
+    assert!(
+        held[0].payload["public_answer"].is_null(),
+        "the reference must not copy the combined answer"
+    );
+    let answers = events
+        .iter()
+        .filter(|event| event.payload["child_task_id"] == answer_task.task_id)
+        .collect::<Vec<_>>();
+    assert_eq!(answers.len(), 1, "one answer receipt: {events:?}");
+    assert!(answers[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap()
+        .contains("the one combined answer"));
+    sweep(&team).await;
+    assert_eq!(
+        child_finished(&team)
+            .iter()
+            .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+            .count(),
+        1
+    );
+}

@@ -222,19 +222,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
 /// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
-/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger; 449 carries the
-/// options a notification source declares and the options and `once` a subscription picks, lets a slice agent
-/// resolve a Vault value for its own workspace (`workspace` injection) and capture into, generate in, copy within
-/// and remove from the home Vault (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of
-/// `InvokeHomeCredentialTool`), and has the relay admit a kernel registration only with the kernel identity key's
-/// signature over the connection's challenge (`DaemonRegister.proof`), and carries the confirmation card's `input`
-/// in `app_confirmation`; it carries `TrashMachineFiles` and `RestoreMachineTrash` (answered `MachineFilesTrashed` and
-/// `MachineTrashRestored`) between kernels of one owner, and `scope` on the terminal summary a worker answers a Room
-/// terminal request with (`session_id` stays for a Room's terminal), and the Skills v2 transfer manifest and leased
-/// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
-/// The receiving agent’s deadline refusal is carried in the encrypted peer response.
-/// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2132,6 +2121,7 @@ mod tests {
             failure: Some(crate::provider::TurnOutcome {
                 kind: crate::provider::TurnOutcomeKind::UsageLimit,
                 retryable: false,
+                answered_in_turn: None,
                 reason: "You've hit your usage limit.".into(),
             }),
         };

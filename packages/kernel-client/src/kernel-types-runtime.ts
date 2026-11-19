@@ -118,6 +118,7 @@ export type ProviderRunTermination = {
  */
 export type TurnOutcomeKind =
   | "completed"
+  | "answered_in_turn"
   | "cancelled"
   | "interrupted_by_restart"
   | "overloaded"
@@ -128,11 +129,17 @@ export type TurnOutcomeKind =
   | "other"
   | "unknown"
 
+export type AnsweredTurnReceipt = {
+  session_id: string
+  agent_id: string
+  prompt_id: string
+  task_id: string
+}
+
 export type TurnOutcome = {
-  kind: TurnOutcomeKind
   retryable: boolean
   reason: string
-}
+} & ({ kind: Exclude<TurnOutcomeKind, "answered_in_turn"> } | { kind: "answered_in_turn"; answered_in_turn: AnsweredTurnReceipt })
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
 

@@ -1181,7 +1181,10 @@ impl OperationalHistoryStore {
             ),
         ]);
         let outcome = match status {
-            "completed" => crate::provider::TurnOutcome::completed(),
+            "completed" => failure
+                .filter(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn)
+                .cloned()
+                .unwrap_or_else(crate::provider::TurnOutcome::completed),
             "cancelled" => crate::provider::TurnOutcome::cancelled(),
             _ => crate::provider::TurnOutcome::settled(
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
