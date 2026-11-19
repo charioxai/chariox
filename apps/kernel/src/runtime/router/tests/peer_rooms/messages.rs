@@ -4,7 +4,7 @@ use super::*;
 fn a_request_read_by_a_busy_peer_does_not_reply_with_that_turns_answer() {
     run_peer_test("peer-room-unrelated-answer", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
-        {
+        let receiver_prompt = {
             let app = rooms.app.lock().await;
             let session = app.sessions().get_session(&rooms.peer_room).unwrap();
             let prompt = session.active_prompt_for_agent(rooms.peer.id()).unwrap();
@@ -22,7 +22,8 @@ fn a_request_read_by_a_busy_peer_does_not_reply_with_that_turns_answer() {
                     now: crate::session::unix_epoch_ms(),
                 })
                 .unwrap();
-        }
+            prompt.id().to_owned()
+        };
         let sent = rooms
             .send(serde_json::json!({
                 "agent": "peer",
@@ -54,16 +55,26 @@ fn a_request_read_by_a_busy_peer_does_not_reply_with_that_turns_answer() {
             )
             .await
             .unwrap();
-        runtime
-            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), false)
-            .await
+        // Feed the writer the provider's unrelated turn result on its own source.
+        let app = rooms.app.lock().await;
+        let store = app.durable_state_store();
+        store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::SourceOutcome {
+                    room: rooms.peer_room.clone(),
+                    source: receiver_prompt.clone(),
+                    occurrence: format!("task-terminal-{receiver_prompt}"),
+                    success: true,
+                    public_answer: Some(serde_json::json!({
+                        "prompt_id": receiver_prompt,
+                        "excerpt": "Answer to topic Y."
+                    })),
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )
             .unwrap();
         let source = format!("agent-event-{}-{sequence}", rooms.peer.id());
-        let inbox = rooms
-            .app
-            .lock()
-            .await
-            .durable_state_store()
+        let inbox = store
             .agent_inbox(&rooms.home, rooms.sender.id(), 0)
             .unwrap();
         let replies: Vec<_> = inbox
