@@ -614,4 +614,5 @@ pub use workspace::*;
 /// Copied Project launch targets carry their source kernel and Project for Environment import.
 /// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
 /// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
+/// A requested reply has an explicit no-answer outcome when handled during independent work.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

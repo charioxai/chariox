@@ -853,6 +853,19 @@ pub(crate) enum ReplyOutcome {
         delegate_id: String,
         reason: DelegateGoneReason,
     },
+    NoAnswer {
+        agent_id: String,
+        reason: String,
+    },
+}
+impl ReplyOutcome {
+    pub(super) fn no_answer(agent: &str) -> serde_json::Value {
+        serde_json::to_value(Self::NoAnswer {
+            agent_id: agent.into(),
+            reason: "No answer to this request. It arrived during another task.".into(),
+        })
+        .expect("reply outcome is serializable")
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

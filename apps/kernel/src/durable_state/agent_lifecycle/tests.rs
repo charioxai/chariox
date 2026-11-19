@@ -1375,7 +1375,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
 }
 
 #[test]
-fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
+fn a02_steered_request_settles_once_after_late_exact_acceptance() {
     let f = Fixture::new();
     f.begin("p");
     f.apply(Operation::Begin {
@@ -1414,31 +1414,15 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         work: None,
         through: 0,
     });
-    let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
+    f.apply(Operation::MarkShown {
         room: "room".into(),
         agent: "child".into(),
-        prompt: "q".into(),
-        run: "child-run".into(),
-        has_answer: false,
-        cancelled: false,
-        now: 3,
-    }) else {
-        panic!()
-    };
-    assert!(correction);
-    let corrected = task.pending_prompt_id.unwrap();
-    f.apply(Operation::Begin {
-        owner: "owner".into(),
-        room: "room".into(),
-        agent: "child".into(),
-        prompt: corrected.clone(),
-        run: Some("child-run".into()),
-        now: 4,
+        sequences: vec![event.sequence],
     });
     f.apply(Operation::Settle {
         room: "room".into(),
         agent: "child".into(),
-        prompt: corrected,
+        prompt: "q".into(),
         run: "child-run".into(),
         has_answer: true,
         cancelled: false,
@@ -1463,9 +1447,10 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
     });
     let reply = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].kind, "source_lost");
     assert_eq!(
-        reply[0].payload["public_answer"]["excerpt"],
-        "verified result"
+        reply[0].payload["public_answer"],
+        ReplyOutcome::no_answer("child")
     );
     f.apply(Operation::Ack {
         room: "room".into(),

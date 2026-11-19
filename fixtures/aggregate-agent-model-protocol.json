@@ -166,6 +166,11 @@
       "kind": "delegate_gone",
       "delegate_id": "helper",
       "reason": "source_lost"
+    },
+    {
+      "kind": "no_answer",
+      "agent_id": "peer",
+      "reason": "No answer to this request. It arrived during another task."
     }
   ]
 }

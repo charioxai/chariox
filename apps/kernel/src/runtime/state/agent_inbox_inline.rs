@@ -10,7 +10,7 @@ const BODY_LIMIT: usize = 2_000;
 /// All quoted text of one wake never exceeds this many characters.
 const TEXT_LIMIT: usize = 6_000;
 const REPLY_RULE: &str =
-    "Your final answer of this turn goes back to the sender; do not send a separate message.";
+    "If this request started your turn, your final answer goes back to the sender.";
 
 pub(super) struct InlineWake {
     pub text: String,
@@ -62,7 +62,7 @@ impl KernelRuntimeState {
                 kind_label(&event.kind),
                 sender.relation.guidance(&sender.name)
             );
-            if event.kind == "message" {
+            if event.kind == "message" && !event.reply_requested {
                 if let Some(route) = sender.reply_route(room, event) {
                     block.push_str(&format!(
                         " To answer it, call chariox.send_agent_message with {route}."
