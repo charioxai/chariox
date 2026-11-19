@@ -18,6 +18,8 @@ pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
     )
 }
+/// The longest one wait holds a request; the CLI refuses a longer `--timeout` before sending it.
+const MAX_WAIT_MS: u64 = 540_000;
 /// Notification sources reach a grant's own part only, through the gateway.
 pub(crate) fn source_not_available() -> DaemonError {
     crate::durable_state::agent_lifecycle::outside::refused("source not available")
@@ -153,14 +155,73 @@ impl KernelRuntimeState {
         &self,
         id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let part = self.outside_store().outside_part(id)?.ok_or_else(|| {
-            crate::durable_state::agent_lifecycle::outside::refused(
-                "no event subscription; run chariox events subscribe first",
-            )
-        })?;
-        let mut subscription = part.subscription();
+        // A grant that has not subscribed yet follows nothing; it is told so, not refused.
+        let mut subscription = match self.outside_store().outside_part(id)? {
+            Some(part) => part.subscription(),
+            None => EventSubscription {
+                subscription_id: id.into(),
+                targets: Vec::new(),
+                sources: Vec::new(),
+                kernels: Vec::new(),
+                acknowledged_cursor: 0,
+                ended: None,
+            },
+        };
         subscription.sources = self.followed_notification_sources(id)?;
         Ok(LocalDaemonResponse::EventSubscription { subscription })
+    }
+    /// How many targets and notification sources the inbox `id` follows; zero before it subscribed.
+    pub(crate) fn outside_follow_count(&self, id: &str) -> Result<usize, DaemonError> {
+        let targets = self
+            .outside_store()
+            .outside_part(id)?
+            .map_or(0, |part| part.targets.len());
+        Ok(targets + self.followed_notification_sources(id)?.len())
+    }
+    /// The targets an earlier live grant of the same owner follows, for `grant` to take over.
+    /// Another owner's grant, an ended or unknown one and one that follows nothing answer alike
+    /// where the answer would otherwise tell who holds what: the caller is sent to follow by hand.
+    pub(crate) fn takeover_targets(
+        &self,
+        grant: &str,
+        like: &str,
+    ) -> Result<Vec<EventTarget>, DaemonError> {
+        use crate::durable_state::agent_lifecycle::outside::refused;
+        if like == grant {
+            return Err(refused(
+                "--like names an earlier grant, not the one you hold",
+            ));
+        }
+        let mine = self.event_source_owner(grant);
+        if mine.is_none() || self.event_source_owner(like) != mine {
+            return Err(refused(
+                "no live grant of yours has that id: its follows ended with it. Follow the targets with chariox events subscribe --kernel K --session S [--agent A] (chariox access list shows your live grants)",
+            ));
+        }
+        match self.outside_store().outside_part(like)? {
+            Some(part) if !part.targets.is_empty() && part.ended.is_none() => Ok(part.targets),
+            _ => Err(refused(
+                "that grant follows no targets to take over: follow them with chariox events subscribe --kernel K --session S [--agent A]",
+            )),
+        }
+    }
+    /// A wait or a list on an inbox that follows nothing and holds nothing unread would only answer
+    /// empty, for the whole timeout or for ever: refuse it at once and say how to follow. An ended
+    /// inbox still answers with its ending, and unread records are still read.
+    pub(crate) fn refuse_when_following_nothing(&self, id: &str) -> Result<(), DaemonError> {
+        let store = self.outside_store();
+        let ended = store
+            .outside_part(id)?
+            .is_some_and(|part| part.ended.is_some());
+        if ended || self.outside_follow_count(id)? > 0 {
+            return Ok(());
+        }
+        match store.outside_list(id, None, 1)? {
+            Ok(unread) if unread.events.is_empty() => {
+                Err(crate::durable_state::agent_lifecycle::outside::follows_nothing())
+            }
+            _ => Ok(()),
+        }
     }
     fn outside_list_response(
         &self,
@@ -185,8 +246,8 @@ impl KernelRuntimeState {
         grant: Option<&str>,
         lifetime: Option<&crate::runtime::command::TerminalLifetime>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms.min(900_000));
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(request.timeout_ms.min(MAX_WAIT_MS));
         loop {
             if lifetime.is_some_and(|lifetime| !lifetime.is_live()) {
                 return Err(crate::durable_state::agent_lifecycle::outside::refused(

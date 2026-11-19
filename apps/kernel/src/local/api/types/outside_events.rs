@@ -18,6 +18,10 @@ pub struct SubscribeEventsRequest {
     /// occurrences reach the grant's own event stream; nothing else can receive them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
+    /// Protocol 1069: take over the targets an earlier live grant of the same owner follows.
+    /// Sent alone, with no `targets` or `sources`; following them again changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

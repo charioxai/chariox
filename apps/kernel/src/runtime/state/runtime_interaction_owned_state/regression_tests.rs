@@ -32,6 +32,7 @@ impl Fixture {
                         agent_id: None,
                     }],
                     sources: Vec::new(),
+                    like: None,
                 }),
             )
             .unwrap();

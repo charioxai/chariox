@@ -2091,6 +2091,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                         agent_id: Some(remote_agent_id.clone()),
                     }],
                     sources: Vec::new(),
+                    like: None,
                 }),
             )
             .unwrap();

@@ -7,7 +7,7 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 import type { EventQuestion, EventsBatch, OutsideEvent } from "@chariox/kernel-client/kernel-types"
 import { respondToInteractionRequest } from "./ipc-requests.js"
-import { followSource, listSources, unfollowSource } from "./events-command.js"
+import { followSource, listSources, MAX_WAIT_SECONDS, unfollowSource } from "./events-command.js"
 
 const TOOL = "chariox_next_choice"
 const NEXT_NOTIFICATION = "chariox_next_notification"
@@ -15,7 +15,6 @@ const LIST_SOURCES = "chariox_notification_sources"
 const FOLLOW_SOURCE = "chariox_follow_notification_source"
 const UNFOLLOW_SOURCE = "chariox_unfollow_notification_source"
 const DEFAULT_WAIT_SECONDS = 540
-const MAX_WAIT_SECONDS = 900
 const REPLY = "reply"
 const PAGE = 100
 // An idle wait holds the inbox reader, so it lasts one short slice and another call's read or acknowledgement is never held for long.

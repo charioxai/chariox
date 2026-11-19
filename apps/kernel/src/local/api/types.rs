@@ -596,5 +596,7 @@ pub use workspace::*;
 /// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
-/// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// agent's inbox while its prompt carries one line; `SubscribeEvents.like` takes over the targets an earlier live
+/// grant of the same owner follows, and `KernelAccessStatus.follows` counts what a grant's subscription follows
+/// (zero for a new grant).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1069;
