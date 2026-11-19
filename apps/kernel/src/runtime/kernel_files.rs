@@ -29,14 +29,14 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
-fn fail(code: &str, message: impl Into<String>) -> DaemonError {
+pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
         message: message.into(),
     }
 }
 
-fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+pub(super) fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
     match error.kind() {
         std::io::ErrorKind::NotFound => fail(
             "file_not_found",
@@ -58,7 +58,7 @@ fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
 
 /// `~/x` becomes the kernel user's home; anything else must be absolute. The kernel's own state
 /// and the Vault are not files of the machine as far as this service goes.
-fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
+pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
     let resolved = match path.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
             .map(PathBuf::from)

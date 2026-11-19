@@ -597,4 +597,6 @@ pub use workspace::*;
 /// for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room resolve to the model id.
 /// the reply to `RespondToInteraction` is a small acknowledgement (`InteractionResponded` carries `interaction_id`,
 /// `choice_id` and `outcome`, no longer the Room `session`; clients read the Room from its events).
+/// Local 1032 (provisional): `TrashKernelFiles` moves files and folders to the machine's own trash and `RestoreKernelTrash` puts them
+/// back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`; docs/PROTOCOL.md, "Move to Trash").
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

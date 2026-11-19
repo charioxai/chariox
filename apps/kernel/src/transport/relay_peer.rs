@@ -231,6 +231,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 450 has the relay admit a kernel registration only with the kernel identity key's signature over the
 /// connection's challenge (`DaemonRegister.proof`); 449 is taken by another lane.
 /// 449 carries the confirmation card's `input` in `app_confirmation`.
+/// Peer 449 (provisional) carries local 1032 between kernels of one owner: `TrashMachineFiles` and `RestoreMachineTrash`
+/// with their answers `MachineFilesTrashed` and `MachineTrashRestored`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -1173,6 +1175,15 @@ pub enum RelayPeerRequest {
         #[serde(default)]
         expect_revision: Option<String>,
     },
+    /// Moves these files and folders to this machine's own trash; the answer is `MachineFilesTrashed`.
+    TrashMachineFiles {
+        paths: Vec<String>,
+    },
+    /// Puts trashed items back at their original paths, never over something there; the answer is
+    /// `MachineTrashRestored`.
+    RestoreMachineTrash {
+        items: Vec<crate::local::TrashedKernelFile>,
+    },
     /// A file transfer whose destination is this machine, started by another kernel of the owner.
     StartFileTransfer {
         request: crate::local::StartFileTransferRequest,
@@ -1705,6 +1716,14 @@ pub enum RelayPeerResponse {
         truncated: bool,
     },
     MachinePathDeleted,
+    MachineFilesTrashed {
+        trashed: Vec<crate::local::TrashedKernelFile>,
+        failed: Vec<crate::local::KernelFileFailure>,
+    },
+    MachineTrashRestored {
+        restored: Vec<String>,
+        failed: Vec<crate::local::KernelFileFailure>,
+    },
     MachineFilesWatched {
         created: bool,
     },

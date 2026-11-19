@@ -732,6 +732,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
+        | LocalDaemonRequest::TrashKernelFiles(_)
+        | LocalDaemonRequest::RestoreKernelTrash(_)
         | LocalDaemonRequest::StartFileTransfer(_)
         | LocalDaemonRequest::GetFileTransfer(_)
         | LocalDaemonRequest::ListFileTransfers

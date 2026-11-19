@@ -13,6 +13,8 @@ mod state_guard;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, target_os = "linux"))]
+mod trash_volume_tests;
 
 pub(crate) use jobs::{Interrupted, TransferJobs};
 pub(crate) use place::Machine;

@@ -230,6 +230,8 @@ response_policies! {
         KernelDirectoryListed,
         KernelFileChunk,
         KernelFileWritten,
+        KernelFilesTrashed,
+        KernelTrashRestored,
         FileTransfer,
         FileTransfers,
         RoomBrowserArtifact,

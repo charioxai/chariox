@@ -56,6 +56,10 @@ pub enum LocalDaemonResponse {
     KernelFileStat { stat: KernelFileStat, },
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
     KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
+    /// Protocol 1032: what moved to the trash, and what could not (at least one item moved).
+    KernelFilesTrashed { trashed: Vec<TrashedKernelFile>, failed: Vec<KernelFileFailure>, },
+    /// Protocol 1032: what was put back (its original path), and what could not (at least one item came back).
+    KernelTrashRestored { restored: Vec<String>, failed: Vec<KernelFileFailure>, },
     KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     FileTransfer { job: FileTransferJob, },
     FileTransfers { jobs: Vec<FileTransferJob>, },
