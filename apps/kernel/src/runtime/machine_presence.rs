@@ -16,6 +16,8 @@
 //! | missed past 30 days | `reconcile` | -> forgotten | a_machine_offline_for_thirty_days_is_forgotten |
 //! | Remove | `DaemonConfig::forget_remote_machine`, then the projection removal after the save, under the registry; raises the removal generation | -> Removed; Pending if it connects again | relay_client: a_remove_during_a_disconnected_pass_is_not_undone |
 //! | live pass in flight + Remove | `publish_live` compare and set on the removal generation | the stale pass does not publish and runs again | relay_client: a_live_pass_overtaken_by_remove_does_not_publish_the_old_approval |
+//! | Cloud no longer links the machine (Remove unlinks it) | live pass: `gone_machines`, two directory reads, under the registry | remembered -> forgotten on every kernel, not only the one asked | projection: a_machine_neither_of_the_last_two_directory_reads_links_is_gone |
+//! | a client asks for the list while it is stale | `projected_remote_machines_response` renews it before answering | the answer is what the relay lists now | relay_client: a_machine_list_asked_for_after_it_went_stale_is_the_live_one |
 //! | Approve | `DaemonConfig::approve_remote_machine`, then `approve_machine` on the projection | trust only: Pending -> Approved; presence, kernels and their protocols kept | relay_client: a_remote_kernel_lists_the_protocol_it_registered_with |
 use crate::config::PersistedMachineRegistration;
 use crate::local::{

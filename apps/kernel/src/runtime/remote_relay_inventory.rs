@@ -13,18 +13,48 @@ use crate::runtime::projection::{
 use crate::transport::relay_client::{refresh_remote_inventory_projection, RelayClientState};
 
 const REMOTE_RELAY_INVENTORY_REFRESH_COOLDOWN_MS: u64 = 1_000;
+/// How long an answer on a stale machine list waits for its renewal.
+const STALE_LIST_RENEWAL_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub(crate) async fn projected_remote_machines_response(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    request_remote_relay_inventory_projection_refresh(
-        relay_state,
-        config_projection,
-        remote_relay_inventory_projection.clone(),
-    )
-    .await;
+    // A kernel no client follows keeps the list it made when it connected: a client that just
+    // made it the source of its machine list would miss every machine that joined since.
+    // Connected, a stale list is renewed before the answer, which fails (the client asks again)
+    // rather than guess.
+    let stale_after_ms = config_projection
+        .snapshot()
+        .relay_heartbeat_ms
+        .saturating_mul(2)
+        .max(1_000);
+    let stale = !remote_relay_inventory_projection
+        .is_fresh(crate::session::unix_epoch_ms(), stale_after_ms);
+    if stale && relay_state.read().await.connected() {
+        tokio::time::timeout(
+            STALE_LIST_RENEWAL_WAIT,
+            refresh_remote_inventory_projection(
+                config_projection,
+                remote_relay_inventory_projection.clone(),
+                Some(relay_state),
+            ),
+        )
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "list remote machines",
+            message: "the relay has not answered which machines are connected yet; ask again"
+                .to_string(),
+        })??;
+    } else {
+        request_remote_relay_inventory_projection_refresh(
+            relay_state,
+            config_projection,
+            remote_relay_inventory_projection.clone(),
+        )
+        .await;
+    }
     let crate::local::RemoteMachineInventory {
         machines,
         offline_machines,

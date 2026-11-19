@@ -71,6 +71,9 @@ pub(crate) async fn visible_targets(
 pub(crate) struct VisibleDirectory {
     pub(crate) online: std::collections::BTreeSet<String>,
     pub(crate) linked: std::collections::BTreeSet<String>,
+    /// The machines of the linked kernels; None when a linked target names no machine, so the
+    /// read cannot tell which machines the account still has.
+    pub(crate) linked_machines: Option<std::collections::BTreeSet<String>>,
 }
 
 pub(crate) async fn visible_directory(
@@ -85,6 +88,7 @@ pub(crate) async fn visible_directory(
             Ok(VisibleDirectory {
                 online: cloud_directory_discovery_targets(&directory)?,
                 linked: cloud_directory_linked_targets(&directory),
+                linked_machines: cloud_directory_linked_machines(&directory),
             })
         });
     let key = format!(
@@ -132,6 +136,27 @@ fn cloud_directory_linked_targets(
         .collect()
 }
 
+/// The machines of every kernel the account still links (see `cloud_directory_linked_targets`).
+fn cloud_directory_linked_machines(
+    directory: &serde_json::Value,
+) -> Option<std::collections::BTreeSet<String>> {
+    directory
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| {
+            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
+        })
+        .map(|target| {
+            target
+                .get("machineId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 fn cloud_directory_discovery_targets(
     directory: &serde_json::Value,
 ) -> Result<std::collections::BTreeSet<String>, DaemonError> {
@@ -159,6 +184,25 @@ fn cloud_directory_discovery_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_directory_links_the_machines_of_every_kernel_not_revoked() {
+        let linked = cloud_directory_linked_machines(&serde_json::json!({
+            "targets": [
+                {"daemonId": "a", "machineId": "m-a", "status": "ONLINE"},
+                {"daemonId": "b", "machineId": "m-b", "status": "OFFLINE"},
+                {"daemonId": "c", "machineId": "m-c", "status": "REVOKED"}
+            ]
+        }));
+        assert_eq!(linked, Some(["m-a".to_string(), "m-b".to_string()].into()));
+        assert_eq!(
+            cloud_directory_linked_machines(&serde_json::json!({
+                "targets": [{"daemonId": "a", "status": "ONLINE"}]
+            })),
+            None,
+            "a linked kernel that names no machine leaves the read unable to tell"
+        );
+    }
+
     #[test]
     fn cloud_directory_excludes_inactive_siblings_from_discovery_grants() {
         let targets = cloud_directory_discovery_targets(&serde_json::json!({

@@ -34,6 +34,8 @@ struct RemoteRelayInventoryProjectionState {
     appeared_kernels: std::collections::BTreeSet<String>,
     /// The kernels the owner's Cloud directory still linked on its last two reads, oldest first.
     directory_reads: std::collections::VecDeque<std::collections::BTreeSet<String>>,
+    /// The machines those reads linked, same order; None for a read that could not tell.
+    machine_directory_reads: std::collections::VecDeque<Option<std::collections::BTreeSet<String>>>,
     /// The removal generation: raised by every Remove while the registry is held, so a live pass
     /// that started before a Remove does not publish (`publish_live`).
     registry_revision: u64,
@@ -69,6 +71,47 @@ impl RemoteRelayInventoryProjectionStore {
         while state.directory_reads.len() > 2 {
             state.directory_reads.pop_front();
         }
+    }
+
+    /// The machines the same read of the owner's Cloud directory linked; see `gone_machines`.
+    pub(crate) fn record_directory_machines(
+        &self,
+        linked: Option<std::collections::BTreeSet<String>>,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.machine_directory_reads.push_back(linked);
+        while state.machine_directory_reads.len() > 2 {
+            state.machine_directory_reads.pop_front();
+        }
+    }
+
+    /// The machines among `machines` that neither of the last two reads of the directory linked:
+    /// removed from the account (Remove unlinks them in Cloud), not merely offline. The same
+    /// two-read rule as `gone_kernels`; a read that could not tell decides nothing.
+    pub(crate) fn gone_machines<'a>(
+        &self,
+        machines: impl IntoIterator<Item = &'a String>,
+    ) -> std::collections::BTreeSet<String> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reads: Option<Vec<&std::collections::BTreeSet<String>>> = state
+            .machine_directory_reads
+            .iter()
+            .map(Option::as_ref)
+            .collect();
+        let Some(reads) = reads.filter(|reads| reads.len() == 2) else {
+            return std::collections::BTreeSet::new();
+        };
+        machines
+            .into_iter()
+            .filter(|machine| reads.iter().all(|linked| !linked.contains(*machine)))
+            .cloned()
+            .collect()
     }
 
     /// Whether two reads of the directory exist, so a kernel can be told gone.
@@ -302,6 +345,7 @@ impl RemoteRelayInventoryProjectionStore {
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
         state.directory_reads.clear();
+        state.machine_directory_reads.clear();
     }
 }
 
@@ -366,6 +410,33 @@ mod tests {
         assert!(
             projection.gone_kernels(&watched).is_empty(),
             "a kernel listed again in either of the last two reads stays"
+        );
+    }
+
+    // Remove unlinks a machine in Cloud; every kernel that remembers it forgets it once two
+    // consecutive directory reads omit it. One read is not two, and a read that names a linked
+    // kernel without its machine decides nothing.
+    #[test]
+    fn a_machine_neither_of_the_last_two_directory_reads_links_is_gone() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let remembered = kernels(&["kept", "removed"]);
+        projection.record_directory_machines(Some(kernels(&["kept"])));
+        assert!(
+            projection.gone_machines(&remembered).is_empty(),
+            "one read is not two"
+        );
+        projection.record_directory_machines(Some(kernels(&["kept"])));
+        assert_eq!(projection.gone_machines(&remembered), kernels(&["removed"]));
+        projection.record_directory_machines(None);
+        assert!(
+            projection.gone_machines(&remembered).is_empty(),
+            "a read that could not tell decides nothing"
+        );
+        projection.record_directory_machines(Some(kernels(&["kept", "removed"])));
+        projection.record_directory_machines(Some(kernels(&["kept"])));
+        assert!(
+            projection.gone_machines(&remembered).is_empty(),
+            "a machine either of the last two reads links stays"
         );
     }
 

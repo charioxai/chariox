@@ -174,6 +174,10 @@ pub(crate) async fn refresh_remote_inventory_projection(
             if projection.registry_revision() != started_revision {
                 return false;
             }
+            // Membership is the account's: a machine Cloud no longer links (Remove unlinks it)
+            // is forgotten by every kernel that remembers it, not only the one that was asked.
+            let unlinked = projection.gone_machines(registry.iter().map(|entry| &entry.machine_id));
+            registry.retain(|entry| !unlinked.contains(&entry.machine_id));
             let inventory = machine_presence::reconcile(
                 registry,
                 listed,
@@ -213,6 +217,7 @@ async fn live_pass(
         let directory = relay_discovery::authorization::visible_directory(profile).await?;
         if let Some(directory) = &directory {
             projection.record_directory_read(directory.linked.clone());
+            projection.record_directory_machines(directory.linked_machines.clone());
         }
         directory.map(|directory| directory.online)
     } else {
