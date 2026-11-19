@@ -153,6 +153,65 @@ mod tests {
 
     const WAIT: &str = "Waiting for memory on builder";
 
+    #[test]
+    fn existing_provider_backlog_puts_people_first_when_memory_becomes_short() {
+        let harness = LocalRouterTestHarness::new();
+        let LocalDaemonResponse::SessionCreated { session, agent, .. } = harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("provider-existing-backlog"),
+            ))
+            .unwrap()
+        else {
+            panic!("expected a Room");
+        };
+        let runtime = harness.runtime_state();
+        let owner = &runtime.owned.prompt_state_owner;
+        let turn = |source: &str, text: &str| {
+            PromptQueueItem::new(text, "attachment-1", agent.id(), text, PromptStatus::Queued)
+                .with_source_attribution(source, crate::session::DEFAULT_LOCAL_USER_ID)
+        };
+        owner
+            .submit_prepared_prompt(&session, turn("agent:fixture", "active"), false)
+            .unwrap();
+        for (source, text) in [
+            ("agent:fixture", "automated one"),
+            ("terminal:person", "person one"),
+            ("agent:fixture", "automated two"),
+            ("terminal:person", "person two"),
+        ] {
+            owner
+                .submit_prepared_prompt(&session, turn(source, text), false)
+                .unwrap();
+        }
+        let head = owner.state_parts(&session, agent.id()).1[0].clone();
+        assert_eq!(head.prompt(), "automated one");
+        owner.set_provider_launch_wait(Some(WAIT.into()));
+        owner
+            .complete_active_prompt_only(&session, agent.id())
+            .unwrap();
+        assert!(runtime
+            .owned
+            .hold_queued_provider_turn(&session, agent.id(), &head)
+            .unwrap());
+
+        let persisted = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let queued = persisted.queued_prompts_for_agent(agent.id()).unwrap();
+        assert_eq!(
+            queued
+                .iter()
+                .map(PromptQueueItem::prompt)
+                .collect::<Vec<_>>(),
+            ["person one", "person two", "automated one", "automated two"],
+        );
+        assert!(queued
+            .iter()
+            .all(|prompt| prompt.launch_wait() == Some(WAIT)));
+    }
+
     #[tokio::test]
     async fn provider_turn_admission_for_a_leased_worker_waits_before_provider_launch() {
         use crate::transport::relay_peer::{
