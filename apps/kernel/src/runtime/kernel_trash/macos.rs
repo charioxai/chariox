@@ -1,8 +1,6 @@
 //! The macOS Trash: an item goes to the system trash through `NSFileManager trashItemAtURL`, which
 //! picks the right folder for the volume and keeps the name unique. It runs in `osascript` (JavaScript
 //! for Automation), so the kernel needs no Objective-C bindings and no Finder permission.
-// Built on every system so its path rules are tested here; only macOS runs the system call.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 use std::path::{Path, PathBuf};
 
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -37,7 +35,6 @@ pub(super) struct Trash {
 
 /// The mount point of the volume `path` is on, as the system reports it: a volume may be mounted at any
 /// folder, not only in `/Volumes`.
-#[cfg(target_os = "macos")]
 fn mount_point(path: &Path) -> std::io::Result<PathBuf> {
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -51,7 +48,6 @@ fn mount_point(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 impl Trash {
-    #[cfg(target_os = "macos")]
     pub(super) fn from_env() -> Result<Self, DaemonError> {
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             fail(
@@ -63,7 +59,6 @@ impl Trash {
         Ok(Self::new(home, unsafe { libc::geteuid() }))
     }
 
-    #[cfg(target_os = "macos")]
     pub(super) fn new(home: PathBuf, uid: u32) -> Self {
         Self::running(home, uid, OSASCRIPT.into(), Box::new(mount_point))
     }
@@ -166,21 +161,8 @@ fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), DaemonError> {
             .map_err(|_| fail("file_path_invalid", "A path holds a NUL byte."))
     };
     let (from_c, to_c) = (c(from)?, c(to)?);
-    #[cfg(target_os = "macos")]
     // SAFETY: both arguments are NUL-terminated strings that live through the call.
     let rc = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
-    #[cfg(not(target_os = "macos"))]
-    // SAFETY: both arguments are NUL-terminated strings that live through the call.
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            from_c.as_ptr(),
-            libc::AT_FDCWD,
-            to_c.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        ) as i32
-    };
     if rc == 0 {
         return Ok(());
     }

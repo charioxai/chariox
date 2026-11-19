@@ -17,7 +17,7 @@ use crate::machine_files::StateGuard;
 mod dir;
 #[cfg(not(target_os = "macos"))]
 mod freedesktop;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_os = "macos"))]
 use freedesktop as platform;
