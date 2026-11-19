@@ -8,8 +8,8 @@ use crate::app::DaemonApp;
 use crate::app::KernelPromptDispatch;
 use crate::error::DaemonError;
 use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderPromptSignalBatch, ProviderResumeState,
-    RuntimeProviderRun,
+    ContextCompaction, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::{
     unix_epoch_ms, PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice,
@@ -404,11 +404,36 @@ fn acknowledge_claude_headless_steering_enqueue(
 }
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
-    /// Claude's PreCompact hook: the row shows the compaction running until its summary settles it.
-    fn show_compaction_running(&self, session_id: &str, provider_run_id: &str, context_file: &str) {
+    fn note_compaction_hook(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        context_file: &str,
+        event_name: &str,
+        event: &Value,
+    ) {
         let mut cursor = load_claude_transcript_cursor(context_file);
-        let number = cursor.start_compaction();
+        let prompt_id = event.get("prompt_id").and_then(Value::as_str);
+        let (number, state) = match event_name {
+            "PreCompact" => (
+                cursor.start_compaction(prompt_id),
+                ContextCompaction::Running {
+                    started_at_ms: unix_epoch_ms(),
+                },
+            ),
+            "StopFailure" => (
+                cursor.fail_compaction(prompt_id),
+                ContextCompaction::Failed {
+                    reason: "Claude encountered an error before it finished compacting context."
+                        .into(),
+                },
+            ),
+            _ => return,
+        };
         save_claude_transcript_cursor(context_file, &cursor);
+        let Some(number) = number else {
+            return;
+        };
         ProviderOutputFanout::new(self.app).fan_out(
             session_id,
             provider_run_id,
@@ -418,11 +443,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 transcript::compaction_merge_key_suffix(number)
             )),
             self.app.attachments.list_session_attachment_ids(session_id),
-            crate::provider::ContextCompaction::Running {
-                started_at_ms: crate::session::unix_epoch_ms(),
-            }
-            .to_text()
-            .as_bytes(),
+            state.to_text().as_bytes(),
         );
     }
 
@@ -586,7 +607,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 continue;
             }
             if event_name == "PreCompact" {
-                self.show_compaction_running(session_id, provider_run_id, context_file);
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    event_name,
+                    &event,
+                );
                 continue;
             }
             if event_name == "CharioxContextDelivered" {
@@ -862,6 +889,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     }
                 }
             } else if event_name == "StopFailure" {
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    event_name,
+                    &event,
+                );
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
             } else if event_name == "SessionEnd"

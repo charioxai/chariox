@@ -4432,6 +4432,7 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert!(context.len() < 48_000, "{}", context.len());
 }
 
+mod compaction;
 mod workspace_scope;
 
 #[test]
