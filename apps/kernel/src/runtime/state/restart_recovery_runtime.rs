@@ -67,6 +67,8 @@ const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored afte
 const UNRECOVERABLE_PROMPT_VAULT_REASON: &str =
     "The prompt could not be restored after the restart because the Chariox Vault stayed locked";
 const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart: no provider session or transcript identified the interrupted turn";
+const UNTRACKED_PROVIDER_TURN_REASON: &str =
+    "The kernel restarted during a provider-started turn whose process was not handed over. Send the request again to continue the conversation";
 const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -913,7 +915,51 @@ impl KernelRuntimeState {
                             );
                         }
                     },
-                    None => summary.uncertain_local_prompts_preserved += 1,
+                    None => {
+                        #[cfg(unix)]
+                        let handed_over =
+                            crate::hot_reload::provider_handed_over(session.id(), agent_id);
+                        #[cfg(not(unix))]
+                        let handed_over = false;
+                        if handed_over {
+                            match self
+                                .redispatch_local_prompt(session.id(), agent_id, &prompt)
+                                .await
+                            {
+                                Ok(()) => summary.uncertain_original_redispatched += 1,
+                                Err(error) => {
+                                    summary.failed_reconciliations += 1;
+                                    summary.failed_local_prompts.push((
+                                        session.id().to_string(),
+                                        agent_id.to_string(),
+                                        prompt.id().to_string(),
+                                    ));
+                                    summary.note_vault_locked(session.id(), agent_id, &error);
+                                    log_restart_recovery_failure(
+                                        session.id(),
+                                        agent_id,
+                                        prompt.id(),
+                                        &error,
+                                    );
+                                }
+                            }
+                        } else {
+                            // An adopted notification has no kernel dispatch to recover. Its
+                            // old process cannot finish it after a cold restart.
+                            self.end_prompts_interrupted_by_restart(
+                                &mut summary,
+                                std::iter::once((
+                                    (
+                                        session.id().to_string(),
+                                        agent_id.to_string(),
+                                        prompt.id().to_string(),
+                                    ),
+                                    UNTRACKED_PROVIDER_TURN_REASON,
+                                )),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
         }
