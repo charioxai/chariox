@@ -26,22 +26,7 @@ pub(super) fn finish(
     {
         return Ok(false);
     }
-    // A source can have no obligation (an observation), or its obligation can
-    // already be cancelled. Its outcome still belongs to the waiting agent.
-    let unhandled: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_inbox i
-         WHERE i.room_id=?1 AND i.agent_id=?2
-         AND json_extract(i.payload,'$.kind') IN ('source_completed','source_lost','child_finished','peer_event')
-         AND json_extract(i.payload,'$.state') NOT IN ('handled','expired','failed')
-         AND (json_extract(i.payload,'$.payload.task_id')=?3
-              OR EXISTS(SELECT 1 FROM json_each(json_extract(i.payload,'$.payload.task_ids')) WHERE value=?3)
-              OR EXISTS(SELECT 1 FROM agent_registrations r WHERE r.task_id=?3
-                  AND r.id IN (SELECT value FROM json_each(?4))
-                  AND (r.source_id=i.source_id OR r.source_id=json_extract(i.payload,'$.payload.child_task_id')))))",
-        params![task.room_id, task.agent_id, task.task_id, encode(&wait.registration_ids)?],
-        |row| row.get(0),
-    ).map_err(sql)?;
-    if unhandled {
+    if unread_outcome(tx, task, wait)? {
         return Ok(false);
     }
     // A pending deadline/recheck is no longer work once the wait has ended.
@@ -76,4 +61,29 @@ pub(super) fn finish(
     task.wait = None;
     task.reason = RESOLVED_WAIT_REASON.into();
     Ok(true)
+}
+
+/// Whether an outcome of the wait's task or sources is still to be handled by the agent. A source
+/// can have no obligation (an observation), or its obligation can already be cancelled: its
+/// outcome still belongs to the waiting agent. The settlement of the wait and the sweep's recheck
+/// of an ended source both ask this, so a recheck never stands in for an outcome on its way.
+pub(super) fn unread_outcome(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    wait: &AgentWait,
+) -> Result<bool, DaemonError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_inbox i
+         WHERE i.room_id=?1 AND i.agent_id=?2
+         AND json_extract(i.payload,'$.kind') IN ('source_completed','source_lost','child_finished','peer_event')
+         AND json_extract(i.payload,'$.state') NOT IN ('handled','expired','failed')
+         AND (json_extract(i.payload,'$.payload.task_id')=?3
+              OR EXISTS(SELECT 1 FROM json_each(json_extract(i.payload,'$.payload.task_ids')) WHERE value=?3)
+              OR EXISTS(SELECT 1 FROM agent_registrations r WHERE r.task_id=?3
+                  AND r.id IN (SELECT value FROM json_each(?4))
+                  AND (r.source_id=i.source_id OR r.source_id=json_extract(i.payload,'$.payload.child_task_id')))))",
+        params![task.room_id, task.agent_id, task.task_id, encode(&wait.registration_ids)?],
+        |row| row.get(0),
+    )
+    .map_err(sql)
 }

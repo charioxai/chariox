@@ -338,6 +338,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else {
                         None
                     };
+                    let unread = match t.wait.as_ref() {
+                        Some(w) => super::settled_waits::unread_outcome(tx, &t, w)?,
+                        None => false,
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         let clock_rollback = now < w.last_checked_at_ms;
                         w.last_checked_at_ms = w.last_checked_at_ms.max(now);
@@ -345,7 +349,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .registration_ids
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
-                        let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                         let check_in = next_check_in.filter(|due| {
                             *due <= now
                                 && source_deadline.is_none_or(|deadline| deadline > now)
@@ -353,7 +356,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && now >= w.started_at_ms
                                 && !clock_rollback
                         });
-                        if (dead && unread == 0)
+                        if (dead && !unread)
                             || w.deadline_ms.is_some_and(|deadline| deadline <= now)
                             || now < w.started_at_ms
                             || clock_rollback

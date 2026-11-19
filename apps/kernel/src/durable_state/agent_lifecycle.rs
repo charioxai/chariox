@@ -69,6 +69,8 @@ mod transitions;
 mod types;
 pub(crate) use types::{DelegateGoneReason, ReplyOutcome};
 #[cfg(test)]
+mod wait_recheck_tests;
+#[cfg(test)]
 mod wake_tests;
 mod wakeable;
 mod wakes;
