@@ -332,21 +332,27 @@ async fn a_cross_room_childs_permission_goes_to_its_parent() {
         AgentPermissionLevel::Yolo,
     )
     .await;
-    let (destination, child) = {
+    let destination = {
         let mut app = t.app.lock().await;
-        let mut rooms = crate::app::KernelSessionService::new(&mut app);
-        let (destination, _) = rooms
+        crate::app::KernelSessionService::new(&mut app)
             .create_session(t._worktree.session_request().with_alias("destination"))
-            .unwrap();
-        let child = rooms
-            .spawn_agent(
-                crate::agent::CreateAgentRequest::new(destination.id(), "dev-stub")
-                    .with_parent_agent_id(&t.p),
-            )
-            .unwrap();
-        crate::test_support::admit_room_test_turn(&mut app, destination.id(), child.id());
-        (destination.id().to_owned(), child.id().to_owned())
+            .unwrap()
+            .0
     };
+    let destination = destination.id().to_owned();
+    let parent = t.runtime.owned.agent_store.get_agent(&t.p).unwrap();
+    let child = t
+        .runtime
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&destination, "dev-stub").with_parent(&parent),
+        )
+        .await
+        .unwrap();
+    let child = child.id().to_owned();
+    {
+        let mut app = t.app.lock().await;
+        crate::test_support::admit_room_test_turn(&mut app, &destination, &child);
+    }
     let mut answer = t
         .runtime
         .create_runtime_interaction(&destination, permission("perm-cross-room", &child))
