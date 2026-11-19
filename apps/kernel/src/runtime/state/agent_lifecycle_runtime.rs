@@ -558,13 +558,32 @@ impl KernelRuntimeState {
         let current = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(session, sender.id())
-            .ok_or_else(|| ledger::error("sender has no running turn"))?;
-        if current.id() != args.origin_prompt_id
-            || current.status() != crate::session::PromptStatus::Running
-        {
-            return Err(ledger::error("stale sender turn"));
-        }
+            .active_prompt_for_agent(session, sender.id());
+        let current = match current {
+            Some(current)
+                if current.id() == args.origin_prompt_id
+                    && current.status() == crate::session::PromptStatus::Running =>
+            {
+                current
+            }
+            other => {
+                let refusal = if other.is_none() {
+                    "sender has no running turn"
+                } else {
+                    "stale sender turn"
+                };
+                let tool_args = serde_json::json!({"origin_prompt_id": args.origin_prompt_id});
+                self.log_refused_turn_tool(
+                    session,
+                    sender.id(),
+                    None,
+                    "send_agent_message",
+                    &tool_args,
+                    refusal,
+                );
+                return Err(ledger::error(refusal));
+            }
+        };
         if let Some(kernel) = args.kernel.as_deref() {
             if let Some(kernel) = self.resolve_peer_kernel(kernel).await? {
                 return self

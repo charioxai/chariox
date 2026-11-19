@@ -1073,9 +1073,26 @@ async fn held_turn_pending_behind_a_message(label: &str) -> (Team, String) {
     (team, message_prompt)
 }
 
-// Transition T5 / H4: the message's prompt is written into the notification turn before it was
-// adopted (Claude folds it in; the batch reports no own turn). The held task's turn will not run
-// as its own: it finishes now, once, with its own answer.
+/// What history records as the message prompt's answer so far.
+fn message_answer(team: &Team, message_prompt: &str) -> String {
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.child))
+        .unwrap();
+    crate::runtime::state::agent_task_projection::task_public_outputs(
+        &entries,
+        message_prompt,
+        Some(&team.child_run),
+    )
+    .join("\n")
+}
+
+// Transition T5 / H4 (review 5971171601): the message's prompt is written into the notification
+// turn before it was adopted (Claude folds it in; the batch reports no own turn). The held task's
+// turn will not run as its own: it finishes now, once, with the notification output it streamed
+// while pending, and the message's answer is the message's alone.
 #[tokio::test]
 async fn a_prompt_written_into_a_pending_held_turn_finishes_the_held_task() {
     let (team, message_prompt) = held_turn_pending_behind_a_message("background-hold-folded").await;
@@ -1094,18 +1111,109 @@ async fn a_prompt_written_into_a_pending_held_turn_finishes_the_held_task() {
     let finishes = finishes_of_task(&team);
     assert_eq!(finishes.len(), 1, "{finishes:?}");
     assert!(finishes[0].contains("started the server"), "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0"),
+        "the finish carries the notification the pending turn streamed: {finishes:?}"
+    );
+    assert!(
+        !finishes[0].contains("status: the server is done"),
+        "the message's answer is not the held task's: {finishes:?}"
+    );
+    let answer = message_answer(&team, &message_prompt);
+    assert!(answer.contains("status: the server is done"), "{answer}");
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
     sweep(&team).await;
     assert_eq!(finishes_of_task(&team).len(), 1);
 }
 
-// Transition T6: the notification turn ends before it was adopted. The held task finishes at
-// that end.
+// Transition T6 (review 5971171601): the notification turn ends before it was adopted. The held
+// task finishes at that end, after the ending batch is in history: its one finish carries the
+// output of every batch of the turn, and the message's answer carries none of it.
 #[tokio::test]
 async fn a_pending_held_turn_that_ends_finishes_the_held_task() {
-    let (team, _) = held_turn_pending_behind_a_message("background-hold-pending-ended").await;
-    apply_own_turn(&team, ProviderOwnTurnSignal::Ended, true, Vec::new()).await;
+    let (team, message_prompt) =
+        held_turn_pending_behind_a_message("background-hold-pending-ended").await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk("the log shows a clean shutdown")],
+    )
+    .await;
     assert!(!working(&team), "the held task finished");
-    assert_eq!(finishes_of_task(&team).len(), 1);
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0")
+            && finishes[0].contains("the log shows a clean shutdown"),
+        "the finish carries the whole notification turn: {finishes:?}"
+    );
+    let answer = message_answer(&team, &message_prompt);
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
+}
+
+// Transition T9 still pending (review 5971171601): the notification turn starts and ends within
+// one batch while the message's prompt runs. The held task's finish carries that batch's text.
+#[tokio::test]
+async fn a_held_turn_that_starts_and_ends_behind_a_message_finishes_with_its_output() {
+    let team = child_with_a_call_running("background-hold-pending-one-batch").await;
+    let message_prompt = status_message(&team, false).await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::StartedAndEnded,
+        true,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    assert!(!working(&team), "the held task finished");
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0"),
+        "{finishes:?}"
+    );
+    let answer = message_answer(&team, &message_prompt);
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
+}
+
+// P8 (review 5971171601): the hold's grace runs out while the notification turn still streams,
+// pending behind the message. The sweep leaves the held task to the turn's end.
+#[tokio::test]
+async fn the_sweep_leaves_a_held_task_whose_notification_turn_waits_for_adoption() {
+    let (team, _) = held_turn_pending_behind_a_message("background-hold-pending-sweep").await;
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
+        .await
+        .unwrap();
+    assert!(
+        working(&team),
+        "the sweep released a held task whose turn still runs"
+    );
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk("the log shows a clean shutdown")],
+    )
+    .await;
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the log shows a clean shutdown"),
+        "{finishes:?}"
+    );
 }
 
 // Transitions T7 + H2 + H3 (review 5969266242-2): a status message's turn comes between the
