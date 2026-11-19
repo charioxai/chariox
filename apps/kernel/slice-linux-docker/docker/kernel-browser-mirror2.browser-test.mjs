@@ -93,10 +93,8 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   const linkId = first.ops.find(op => op.op === "children").children[0];
   await evaluate("render(['Ada Lovelace','Adam Smith'])");
   const second = await next(600);
-  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["attr", "text"], JSON.stringify(second.ops));
-  assert.deepEqual(second.ops.filter(op => op.op === "text").map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
-  // The links' new href values (what an href selector reads), never their URLs as an href.
-  assert.deepEqual(second.ops.filter(op => op.op === "attr").map(op => [op.name, op.value]).sort(), [["chariox-href", "/wiki/Ada Lovelace"], ["chariox-href", "/wiki/Adam Smith"]]);
+  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["text"], JSON.stringify(second.ops));
+  assert.deepEqual(second.ops.map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
   assert(JSON.stringify(second).length < 1500, "MP-10: one keystroke-sized delta");
   // One more item: only that item's records travel.
   await evaluate("render(['Ada','Adams','Adobe'])");
@@ -1055,6 +1053,30 @@ test("MP-10: a selector on a link's href value matches in the viewer as on the p
   assert.equal(op?.value, "/cookies", "MP-10: a changed href value reaches the viewer");
 }));
 
+// Mac decision 208104: the href values cost bytes on link-heavy pages (MDN +16 KB of 40 KB deflated), so they travel only
+// once a sheet of the document selects on them. A presence test (`a[href]`) and `:target` need no value.
+const plainLinks = '<style>a{color:rgb(0, 0, 0)} a[href]{text-decoration:none} :target{color:rgb(1, 2, 3)}</style><a id="c" href="/Cookie-Policy">c</a><a id="n" href="/news">n</a><svg><a id="s" href="/svg-link"><text>s</text></a></svg>';
+const hrefOps = packet => (packet.ops ?? []).filter(op => op.op === "attr" && op.name === "chariox-href");
+test("MP-10: a page whose sheets never select on an href value sends no link's href value", () => mirrored(plainLinks, async ({ next, evaluate }) => {
+  const snapshot = await next();
+  assert(rows(snapshot.nodes).some(row => row.tag === "a"), "the links are mirrored");
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-href"] !== undefined).map(row => row.attrs.id), [], "MP-10: no link carries its href value");
+  await evaluate("document.getElementById('n').setAttribute('href','/cookies');document.getElementById('n').textContent='m';true");
+  const later = []; for (let i = 0; i < 4 && !later.some(packet => packet.ops?.some(op => op.op === "text")); i++) later.push(await next(2000));
+  assert(later.some(packet => packet.ops?.some(op => op.op === "text")), "the edit arrived");
+  assert.deepEqual(later.flatMap(hrefOps), [], "MP-10: an href change sends no href value either");
+}));
+test("MP-10: a sheet added after first paint that selects on an href value sends the links already shown their values", () => mirrored(plainLinks, async ({ next, evaluate }) => {
+  const snapshot = await next(), ids = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row.id]));
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-href"] !== undefined), []);
+  await evaluate(`document.head.append(Object.assign(document.createElement("style"),{textContent:'a[href*="cookie" i]{color:rgb(4, 5, 6)}'}));true`);
+  const values = new Map(); for (let i = 0; i < 4 && values.size < 3; i++) for (const op of hrefOps(await next(2000))) values.set(op.id, op.value);
+  assert.deepEqual(Object.fromEntries(values), { [ids.get("c")]: "/Cookie-Policy", [ids.get("n")]: "/news", [ids.get("s")]: "/svg-link" }, "MP-10: every link already sent gets its href value");
+  await evaluate("const a=document.createElement('a');a.id='late';a.href='/later';document.body.append(a);true");
+  let added = null; for (let i = 0; i < 4 && !added; i++) added = (await next(2000)).ops?.filter(op => op.op === "children").flatMap(op => rows(op.nodes)).find(row => row.attrs?.id === "late") ?? null;
+  assert.equal(added?.attrs["chariox-href"], "/later", "MP-10: a link added afterwards carries its value");
+}));
+
 // Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
 const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
 test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
@@ -1262,10 +1284,8 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     // To a fragment, then removed: the key goes, the fragment travels as an attribute.
     await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
     const later = (await next(1000)).ops;
-    // An attribute op by its name: the href, then the value an href selector reads (see sanitizeMirrorCss).
-    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
-    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]]);
-    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null], ["chariox-href", null]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", null]]);
   }, {
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
@@ -1739,11 +1759,10 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     for (const banned of ["script", "onclick", "evil.test", "<image", "<a ", "javascript", "foreignObject", "animate", "<p>"]) assert(!text.includes(banned), `MP-10: ${banned} never travels`);
     await evaluate("u.setAttribute('href','/sprite.svg#other');true");
     let ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
-    assert.deepEqual(ops.map(named), [["href", "#other"], ["chariox-href", "/sprite.svg#other"]], "MP-10: the same file, another symbol");
+    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["attr", "#other"]], "MP-10: the same file, another symbol");
     await evaluate("u.setAttribute('href','#sym');true");
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]], "MP-10: a local reference drops the file");
+    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region

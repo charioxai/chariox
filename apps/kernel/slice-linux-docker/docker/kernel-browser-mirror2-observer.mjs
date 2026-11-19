@@ -208,6 +208,23 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
+    // A link's own href value travels (as `chariox-href`) only once a sheet of this document selects on it: the
+    // sanitizer's rewrite shows that, once per sheet it cleans. The links sent before then re-mark as href changes
+    // at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
+    let hrefValues = false, hrefStale = [];
+    const sheetCss = (text, base) => {
+      const out = sanitizeMirrorCss(text, base, resource);
+      if (!hrefValues && /\[\s*chariox-href\s*[~|^$*]?=/i.test(out)) {
+        hrefValues = true;
+        for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute('href')) hrefStale.push(node);
+        if (hrefStale.length) wake();
+      }
+      return out;
+    };
+    const markHrefStale = () => {
+      for (const node of hrefStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add('href'); }
+      hrefStale = [];
+    };
     const sheetText = (sheet, base, depth = 0, clean = null, keep = null, rejectLossy = false) => {
       let out = '', chunk = '';
       const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
@@ -294,7 +311,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
       // root's :host rules cannot be checked by a query.
       if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(text)) return text;
-      const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
+      const used = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at), usedBy(root));
       return used.length < text.length ? used : text;
     };
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
@@ -307,12 +324,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const copy = new CSSStyleSheet(); copy.replaceSync(text); return copy.cssRules.length >= own;
     };
     const css = (sheet, base) => {
-      const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), null, Boolean(sheet.href));
+      const text = sheetText(sheet, base, 0, (chunk, at) => sheetCss(chunk, at), null, Boolean(sheet.href));
       if (!LOSSY.test(text) && wholeCopy(sheet, text)) return text;
       if (sheet.href) throw new Error('incomplete CSSOM serialization');
       // An inline <style>: its own source text is not lossy.
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
-      return source ? sanitizeMirrorCss(source, base, resource) : text;
+      return source ? sheetCss(source, base) : text;
     };
     const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
@@ -517,7 +534,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
         // The value a stylesheet's href selector reads (see sanitizeMirrorCss), under the bounds of any other attribute.
         const own = node.getAttribute('href');
-        if (own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
+        if (hrefValues && own !== null && own.length <= 1024 && !/javascript:|url\s*\(/i.test(own)) attrs['chariox-href'] = own;
       }
       if (html && node.localName === 'img') { const { density } = imageChoice(node); if (density !== 1) attrs['chariox-density'] = String(density); }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
@@ -568,7 +585,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, resource)); } catch { sheets.push(''); } } return sheets; };
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base)); } catch { sheets.push(''); } } return sheets; };
     const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
@@ -906,6 +923,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const snapshot = (known = [], options = {}) => {
       retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null; viewerDensity = [1, 2].includes(options.density) ? options.density : 0;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
+      hrefStale = [];
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
       // local id range without walking the previous (possibly huge) document.
@@ -1005,6 +1023,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
       if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
+      markHrefStale();
       const urgent = records.length > 0 || Object.values(dirty).some(set => set.size > 0);
       if (!continuation) budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];
@@ -1050,7 +1069,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
             const keyed = node.namespaceURI === SVG && ['image', 'use'].includes(node.localName), key = keyed ? (node.localName === 'image' ? svgImageKey(node) : spriteKey(node)) : null;
             if (keyed) imageOp(node, id, ops, key);
             if (!key || node.localName === 'use') ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
-            ops.push({ op: 'attr', id, name: 'chariox-href', value: attrs['chariox-href'] ?? null });
+            if (hrefValues) ops.push({ op: 'attr', id, name: 'chariox-href', value: attrs['chariox-href'] ?? null });
             continue;
           }
           if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
@@ -1493,7 +1512,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || hrefStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -1504,7 +1523,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (changed()) return finish();
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
-    const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
+    const sanitize = (text, base) => sheetCss(String(text), String(base));
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();
