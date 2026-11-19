@@ -77,16 +77,7 @@ impl ProviderProcessService {
                 hook();
             }
         }
-        let mut launch_result = adapter.connect(&request)?;
-        // Everything the kernel starts for the agent writes its scratch in the agent's own folder.
-        if let Some(agent_id) = request.agent_id.as_deref() {
-            for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
-                launch_result
-                    .pty_env
-                    .entry(name.to_string())
-                    .or_insert(value);
-            }
-        }
+        let launch_result = adapter.connect(&request)?;
 
         crate::logging::info_with_fields(
             "daemon.provider",
