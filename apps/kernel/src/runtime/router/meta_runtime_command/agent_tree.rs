@@ -507,7 +507,16 @@ impl CommandRouter {
                     },
                 ) {
                     Ok(LocalDaemonResponse::AgentDeadline { deadline }) => deadline,
-                    _ => None,
+                    Ok(_) => unreachable!("get_agent_deadline always returns a deadline response"),
+                    Err(error) => return meta_command_failure_result(command, error),
+                };
+                let (state, failure) = match self.runtime_state.agent_inspection_status(
+                    agent,
+                    activity.get(agent.id()),
+                    deadline.as_ref(),
+                ) {
+                    Ok(status) => status,
+                    Err(error) => return meta_command_failure_result(command, error),
                 };
                 listed.push(serde_json::json!({
                     "id": agent.id(),
@@ -516,7 +525,8 @@ impl CommandRouter {
                     "parent": parent_id,
                     "room": agent.session_id(),
                     "depth": depth,
-                    "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
+                    "state": state,
+                    "failure": failure,
                     "is_processing": agent.is_processing(),
                     "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
                     "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),

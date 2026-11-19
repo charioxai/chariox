@@ -1279,7 +1279,7 @@ mod tests {
             ),
             (
                 json!({"message": "Model access denied", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}}),
-                Other, false, "Model access denied",
+                ModelRefused, false, "Model access denied",
             ),
             (
                 json!({"message": "OAuth refresh failed: invalid_grant", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 400}}}),
@@ -1319,7 +1319,13 @@ mod tests {
             assert!(error_text(error.clone()).contains(message));
             assert_eq!(
                 TurnOutcome::classify("codex", &error_text(error.clone())),
-                TurnOutcome::provider_failure(kind, retryable),
+                TurnOutcome {
+                    kind,
+                    retryable,
+                    reason: crate::provider::termination::sanitize_provider_failure_message(
+                        message
+                    ),
+                },
                 "{error}"
             );
         }
@@ -1334,11 +1340,11 @@ mod tests {
             ("sessionBudgetExceeded", UsageLimit, false),
             ("contextWindowExceeded", Other, false),
             ("invalidPrompt", Other, false),
-            ("modelNotFound", Other, false),
-            ("tooManyDenials", Other, false),
-            ("bioPolicy", Other, false),
-            ("cyberPolicy", Other, false),
-            ("misalignmentPolicyViolation", Other, false),
+            ("modelNotFound", ModelRefused, false),
+            ("tooManyDenials", ModelRefused, false),
+            ("bioPolicy", ModelRefused, false),
+            ("cyberPolicy", ModelRefused, false),
+            ("misalignmentPolicyViolation", ModelRefused, false),
             ("badRequest", Other, false),
             ("sandboxError", Other, false),
             ("threadRollbackFailed", Other, false),

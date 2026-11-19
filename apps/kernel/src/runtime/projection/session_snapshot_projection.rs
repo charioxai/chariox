@@ -11,7 +11,7 @@ use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession};
 
-pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 4;
+pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
@@ -35,6 +35,7 @@ pub enum AgentRuntimeStatus {
     Idle,
     Working,
     Error,
+    EndedDeadline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +209,7 @@ impl SessionSnapshotProjection {
                 completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id)
             },
         );
+        drop(prompt_activity);
         app.session_state_projection_store()
             .project_external_observed_activity(session.id(), &mut agent_activity);
         let processes = crate::runtime::process_resources::for_session(
@@ -221,6 +223,7 @@ impl SessionSnapshotProjection {
             &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
             &super::SourceLabels::of_session(&session),
         );
+        annotate_deadline_ends(&mut agent_activity, &app.durable_state_store(), session_id)?;
         Ok(Self {
             jobs: Vec::new(),
             disk_usage: Vec::new(),
@@ -236,6 +239,28 @@ impl SessionSnapshotProjection {
             agent_tree_revs: crate::agent::tree_rev::published_revs(session_id),
         })
     }
+}
+
+pub(crate) fn annotate_deadline_ends(
+    activity: &mut BTreeMap<String, AgentRuntimeActivity>,
+    store: &crate::durable_state::DurableKernelStateStore,
+    room: &str,
+) -> Result<(), DaemonError> {
+    for agent in store.stopped_deadline_agents(room)? {
+        if let Some(activity) = activity.get_mut(&agent) {
+            activity.status = AgentRuntimeStatus::EndedDeadline;
+            activity.busy = false;
+            activity.prompt_status = AgentPromptRuntimeStatus::None;
+            activity.active_turn = None;
+            activity.active_prompt_count = 0;
+            activity.queued_prompt_count = 0;
+            activity.queued_prompt_controls.clear();
+            activity.unread_idle_output = false;
+            activity.waiting = false;
+            activity.liveness = Default::default();
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn agent_activity_for_session_projection(

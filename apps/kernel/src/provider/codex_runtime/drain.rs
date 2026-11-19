@@ -84,6 +84,10 @@ pub fn drain_codex_events(
             account_rate_limits.push(rate_limits);
             continue;
         }
+        let stream_closed = matches!(
+            notification,
+            crate::provider::CodexNotification::StreamClosed { .. }
+        );
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -99,6 +103,12 @@ pub fn drain_codex_events(
             run.remote_extension_manifest(),
             run.working_directory().map(PathBuf::as_path),
         );
+        // A terminal error already ended this turn. A subsequent read can
+        // fail on a closed socket and discard the error we just received.
+        if stream_closed || (prompt_completed && terminal_failure.is_some()) {
+            drained_to_quiet = true;
+            break;
+        }
         // MP-08/MP-10/MP-11: a fresh utility owns one turn, with no successor.
         // Its exact terminal packet settles it before any later socket close
         // can discard the accepted result. Ordinary conversation drains still
@@ -247,6 +257,67 @@ mod tests {
 
     use super::super::state::CodexRuntimeState;
     use super::drain_codex_events;
+
+    #[test]
+    fn provider_failure_reason_distinguishes_stream_close_from_a_completed_turn() {
+        for completed in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let (sent_tx, sent_rx) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut socket = accept(stream).unwrap();
+                if completed {
+                    socket
+                        .send(Message::Text(
+                            json!({"method": "turn/completed",
+                        "params": {"turn": {"id":"turn","status":"completed"}}})
+                            .to_string()
+                            .into(),
+                        ))
+                        .unwrap();
+                }
+                socket.send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: "Upstream closed the response.".into(),
+                }))).unwrap();
+                sent_tx.send(()).unwrap();
+            });
+            let (socket, _) = connect(&endpoint).unwrap();
+            sent_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let run = RuntimeProviderRun::new(
+                "run",
+                &LaunchProviderRequest::new("session", "codex", "codex", "default", "default"),
+                ProviderLaunchResult {
+                    endpoint_mode: AgentEndpointMode::Managed,
+                    process_label: "stream-close fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: BTreeMap::new(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: Some(endpoint.clone()),
+                },
+            );
+            let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+            state.ephemeral = true;
+            state.active_turn_id = Some("turn".into());
+            let poll = drain_codex_events(&run, &mut state, None).unwrap();
+            assert!(poll.prompt_completed);
+            if completed {
+                assert!(poll.terminal_failure.is_none());
+            } else {
+                let failure = crate::provider::TurnOutcome::classify(
+                    "codex",
+                    &poll.terminal_failure.unwrap(),
+                );
+                assert_eq!(failure.kind.label(), "stream ended early");
+                assert_eq!(failure.reason, "Upstream closed the response.");
+            }
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn provusage_codex_wire_updates_keep_distinct_limits_in_one_poll() {

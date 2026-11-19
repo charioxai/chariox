@@ -184,7 +184,7 @@ fn ea2_75_exact_capacity_diagnostic_is_typed_and_kept_out_of_person_facing_text(
     server.join().unwrap();
     assert_eq!(failure.kind, TurnOutcomeKind::Overloaded);
     assert!(failure.retryable);
-    assert_eq!(failure.reason, "The provider is at capacity.");
+    assert!(failure.reason.contains("at capacity"), "{failure:?}");
     assert!(!failure.notice().contains(REFUSAL));
     assert!(failure.notice().contains("another model"));
 }

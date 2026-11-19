@@ -671,19 +671,24 @@ impl KernelRuntimeState {
         owned.provider_run_projection.update(provider_run);
         let terminal_failure = poll_result
             .terminal_failure
-            .as_deref()
-            .map(provider_prompt_dispatch_failure_notice);
-        // Typed from the harness's own error, before it is rendered into a
-        // bounded notice, so no client loses what the harness said.
-        let native_error = poll_result
-            .terminal_failure
+            .as_ref()
+            .map(|message| owned.scrub_room_provider_diagnostic(session_id, message.clone()));
+        // Scrub Room Vault values before bounding the native error or projecting it anywhere.
+        let native_error = terminal_failure
             .as_deref()
             .map(|message| provider_error_message(message).unwrap_or_else(|| message.to_string()));
-        let failure = poll_result.turn_outcome.clone().or_else(|| {
+        let terminal_failure = terminal_failure
+            .as_deref()
+            .map(provider_prompt_dispatch_failure_notice);
+        let mut failure = poll_result.turn_outcome.clone().or_else(|| {
             native_error
                 .as_deref()
                 .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message))
         });
+        if let Some(outcome) = failure.as_mut() {
+            outcome.reason = owned
+                .scrub_room_provider_diagnostic(session_id, std::mem::take(&mut outcome.reason));
+        }
         // Only adapter-protocol error frames set this provenance bit. PTY or
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
@@ -1055,15 +1060,15 @@ mod tests {
         .expect("the provider dialog should terminate the turn");
         let notice = provider_prompt_dispatch_failure_notice(&failure);
         assert_eq!(
-            crate::provider::provider_turn_failure_reason("claude", &notice, None),
+            crate::provider::TurnOutcome::classify("claude", &notice).reason,
             "You've hit your session limit · resets 10:40pm (Europe/Madrid)"
         );
         let codex = provider_prompt_dispatch_failure_notice(
             "Codex error [server_overloaded]: Selected model is at capacity.",
         );
         assert_eq!(
-            crate::provider::provider_turn_failure_reason("codex", &codex, None),
-            "The provider is at capacity"
+            crate::provider::TurnOutcome::classify("codex", &codex).reason,
+            "Selected model is at capacity."
         );
     }
 

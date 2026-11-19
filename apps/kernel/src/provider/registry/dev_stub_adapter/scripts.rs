@@ -37,6 +37,12 @@ pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "terminal-echo-a" | "terminal-echo-b" => Some(dev_stub_terminal_echo_script()),
         "model-source" | "workflow-test-idle" => Some(dev_stub_native_tui_idle_script()),
         "native-tui-idle" => Some(dev_stub_native_tui_idle_script()),
+        "provider-failure-stderr" => Some(
+            r#"stty -echo 2>/dev/null || true
+IFS= read -r _line
+printf '%s\n' 'Error: unsupported model for the failure fixture (ghp_notarealproviderfailurefixture12345)' >&2
+exit 17"#.to_string(),
+        ),
         "runtime-mcp-fixture" => Some(format!(
             "stty -echo -icanon 2>/dev/null || true; exec node -e {}",
             shell_single_quote(include_str!("runtime_mcp_fixture.cjs"))

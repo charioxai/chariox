@@ -508,10 +508,8 @@ impl DaemonApp {
                         .get_run(&provider_run_id)
                         .map(|run| run.adapter_key().to_string())
                         .unwrap_or_default();
-                    let reason = crate::agent::failed_request_reason(
-                        &adapter,
-                        &format!("Provider prompt dispatch failed: {error}"),
-                    );
+                    let failure = crate::terminal::provider_dispatch_failure(&adapter, &error);
+                    let reason = crate::agent::failed_request_reason(failure.as_ref());
                     if let Err(record_error) = self.agents.record_failed_request_durably(
                         &self.durable_state_store(),
                         &agent_id,

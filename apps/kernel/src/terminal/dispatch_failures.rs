@@ -127,7 +127,7 @@ mod tests {
         };
         assert_eq!(
             user_facing_dispatch_failure(&error),
-            "The provider is at capacity. Try again in a moment or choose another model."
+            "Selected model is at capacity. Please try a different model. Try again in a moment or choose another model."
         );
     }
 

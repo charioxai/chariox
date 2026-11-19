@@ -194,9 +194,14 @@ impl CodexClient {
                         Message::Text(text) => text.to_string(),
                         Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                         Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-                        Message::Close(_) => {
-                            return Ok(Some(CodexNotification::Error {
-                                message: "Codex app-server closed the websocket".to_string(),
+                        Message::Close(frame) => {
+                            let reason = frame
+                                .as_ref()
+                                .map(|frame| frame.reason.as_str())
+                                .filter(|reason| !reason.trim().is_empty())
+                                .unwrap_or("Codex closed its stream before the turn completed.");
+                            return Ok(Some(CodexNotification::StreamClosed {
+                                reason: reason.to_string(),
                             }));
                         }
                     };

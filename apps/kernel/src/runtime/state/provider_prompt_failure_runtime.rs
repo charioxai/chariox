@@ -70,7 +70,7 @@ impl KernelRuntimeState {
         message: &str,
         project_failure_output: bool,
         expected_prompt_id: Option<&str>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
+        mut provider_termination: Option<crate::provider::ProviderRunTermination>,
         failure_override: Option<crate::provider::TurnOutcome>,
     ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
@@ -106,6 +106,18 @@ impl KernelRuntimeState {
         {
             return Ok(false);
         }
+        if let Some(termination) = provider_termination.as_mut() {
+            termination.reason = owned.scrub_room_provider_diagnostic(
+                session_id,
+                std::mem::take(&mut termination.reason),
+            );
+            if let Some(outcome) = termination.failure.as_mut() {
+                outcome.reason = owned.scrub_room_provider_diagnostic(
+                    session_id,
+                    std::mem::take(&mut outcome.reason),
+                );
+            }
+        }
         if let Some(termination) = provider_termination.as_ref() {
             // Settle tools before failure clears activity or promotes a queued turn.
             owned.record_failed_provider_tools(session_id, provider_run_id, &agent_id, termination);
@@ -132,15 +144,17 @@ impl KernelRuntimeState {
         // termination evidence, such as a rejected dispatch, is typed from its
         // text but never becomes evidence of how the provider run ended. Login
         // recovery keeps the same failure for when it ends in a failed turn.
-        let failure = failure_override
+        let mut failure = failure_override
             .or_else(|| {
                 provider_termination
                     .as_ref()
                     .and_then(|termination| termination.failure.clone())
             })
             .unwrap_or_else(|| {
-                crate::provider::TurnOutcome::classify(provider_run.adapter_key(), message)
+                let message = owned.scrub_room_provider_diagnostic(session_id, message.to_string());
+                crate::provider::TurnOutcome::classify(provider_run.adapter_key(), &message)
             });
+        failure.reason = owned.scrub_room_provider_diagnostic(session_id, failure.reason);
         if self
             .try_provider_auth_recovery(&provider_run, message, failure.clone(), expected_prompt_id)
             .await?
@@ -161,7 +175,6 @@ impl KernelRuntimeState {
             record_diagnostic: expected_prompt_id.is_some()
                 && (provider_run.state() != crate::provider::ProviderRunState::Ended
                     || provider_run.terminal_diagnostic().is_none()),
-            termination: provider_termination.as_ref(),
         };
         let mut expected_active_prompt = None;
         let mut expected_completion = None;
@@ -369,10 +382,9 @@ impl KernelRuntimeState {
             owned.record_failed_request(
                 session_id,
                 provider_run_id,
-                provider_run.adapter_key(),
                 &agent_id,
                 &active_prompt,
-                message,
+                Some(&failure),
             );
         }
         if workflow_failed {
@@ -690,6 +702,14 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    pub(super) fn scrub_room_provider_diagnostic(&self, room: &str, diagnostic: String) -> String {
+        self.room_secret_observations
+            .scrub_runtime_result(room, diagnostic)
+            .unwrap_or_else(|_| "[redacted]".into())
+    }
+}
+
 /// One provider attempt at a turn that the provider failed.
 pub(super) struct FailedProviderAttempt<'a> {
     pub(super) provider_run: &'a crate::provider::RuntimeProviderRun,
@@ -701,7 +721,6 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) resume_notice: Option<String>,
     pub(super) project_failure_output: bool,
     pub(super) record_diagnostic: bool,
-    pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
