@@ -55,6 +55,25 @@ impl DurableKernelStateStore {
         owner: &str,
         installation: &str,
     ) -> Result<AppViewAssets, AppViewAssetsError> {
+        self.app_view_release(owner, installation, true)
+    }
+
+    /// The release a client that fetches its own signed view needs (generation, entry, panel):
+    /// the files stay where they are, so a view of any size opens.
+    pub(crate) fn app_view_release_without_files(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<AppViewAssets, AppViewAssetsError> {
+        self.app_view_release(owner, installation, false)
+    }
+
+    fn app_view_release(
+        &self,
+        owner: &str,
+        installation: &str,
+        with_files: bool,
+    ) -> Result<AppViewAssets, AppViewAssetsError> {
         let record =
             self.get_app_installation(owner, installation)
                 .map_err(|error| match error {
@@ -82,7 +101,7 @@ impl DurableKernelStateStore {
             .to_owned();
         let mut total = 0;
         let mut assets = Vec::new();
-        for (path, bytes) in verified.files() {
+        for (path, bytes) in verified.files().filter(|_| with_files) {
             let Some(path) = path.strip_prefix("ui/") else {
                 continue;
             };
@@ -184,6 +203,17 @@ mod tests {
             .assets
             .iter()
             .all(|a| !a.path.starts_with("runtime/") && !a.path.contains("..")));
+        let release = store
+            .app_view_release_without_files("alice", "installed")
+            .unwrap();
+        assert_eq!(
+            (release.generation, release.entry.as_str()),
+            (view.generation, "index.html")
+        );
+        assert!(
+            release.assets.is_empty(),
+            "a client that fetches its own view is not sent the files"
+        );
         assert_eq!(
             store.app_view_assets("bob", "installed").unwrap_err(),
             AppViewAssetsError::NotFound

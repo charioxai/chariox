@@ -108,11 +108,7 @@ impl SkillCatalogService {
                 path,
             } = source
             {
-                if !matches!(access, SkillSourceAccess::Owner) {
-                    return Err(failure(
-                        "repository changes are owner-initiated; ask the owner to review them from Skills",
-                    ));
-                }
+                access.repository_url(url)?;
                 let checkout = checkouts.get(&self.storage, url, revision)?;
                 source_revision = Some(checkout.revision.clone());
                 (checkout.package(path)?, Some(checkout.locator.clone()))

@@ -424,8 +424,8 @@ mod tests {
             return;
         }
         // Isolate /proc counts from other tests and always remove the fixture.
-        let root =
-            std::env::temp_dir().join(format!("chariox-shell-lifetime-{}", std::process::id()));
+        let _tmp = crate::test_support::TestTempDir::new("shell-lifetime");
+        let root = _tmp.join(format!("chariox-shell-lifetime-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
         struct Fixture(std::path::PathBuf);
         impl Drop for Fixture {
@@ -557,7 +557,8 @@ mod tests {
     #[test]
     fn runs_shell_command_in_requested_directory() {
         let service = ShellCommandService::new();
-        let temp_dir = std::env::temp_dir().join("chariox-shell-capability-test");
+        let _tmp = crate::test_support::TestTempDir::new("shell-capability-test");
+        let temp_dir = _tmp.join("chariox-shell-capability-test");
         fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
         let result = service
@@ -599,7 +600,8 @@ mod tests {
     #[test]
     fn rejects_working_directory_outside_worktree() {
         let service = ShellCommandService::new();
-        let worktree_root = std::env::temp_dir().join("chariox-shell-worktree-root");
+        let _tmp = crate::test_support::TestTempDir::new("shell-worktree-root");
+        let worktree_root = _tmp.join("chariox-shell-worktree-root");
         let outside_dir = std::env::temp_dir();
         fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
 

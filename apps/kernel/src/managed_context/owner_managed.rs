@@ -74,10 +74,16 @@ pub enum OwnerManagedKernelSelection {
 )]
 pub enum OwnerManagedDevelopmentSelection {
     Empty,
-    SourceProject {
-        project_id: String,
-        repositories: Vec<OwnerManagedRepositorySelection>,
+    SourceProjects {
+        projects: Vec<OwnerManagedSourceProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnerManagedSourceProject {
+    pub project_id: String,
+    pub repositories: Vec<OwnerManagedRepositorySelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,40 +127,44 @@ pub(crate) fn prepare_ticket(
     {
         return Err(admission_error("owner-managed source and destination must be distinct kernels in the same account realm"));
     }
-    if let OwnerManagedDevelopmentSelection::SourceProject {
-        project_id,
-        repositories,
-    } = &selection.context_selection.development_setup
+    if let OwnerManagedDevelopmentSelection::SourceProjects { projects } =
+        &selection.context_selection.development_setup
     {
-        // MP-08/MP-11: runtime Projects retain the authenticated user ID.
-        // `local` is accepted explicitly for Projects created before enrollment
-        // by this OS owner's local kernel, never as a credential-storage alias.
-        let project = runtime
-            .list_waiting_room_projects(&profile.user_id)
-            .into_iter()
-            .chain(runtime.list_waiting_room_projects("local"))
-            .find(|project| project.id() == project_id)
-            .ok_or_else(|| {
-                admission_error("selected source Project is unavailable to this owner")
-            })?;
-        if ![profile.user_id.as_str(), "local"].contains(&project.owner_user_id())
-            || project.archived_at_ms().is_some()
-            || repositories
-                .iter()
-                .any(|repository| !project.workspace_ids().contains(&repository.workspace_id))
+        for OwnerManagedSourceProject {
+            project_id,
+            repositories,
+        } in projects
         {
-            return Err(admission_error(
-                "selected source Workspace does not belong to the active Project",
-            ));
-        }
-        for repository in repositories {
-            super::outbound_service::resolve_repository_selection(
-                &super::development::DevelopmentSourceRepositoryBinding {
-                    role: repository.role,
-                    workspace_id: repository.workspace_id.clone(),
-                    worktree_id: repository.worktree_id.clone(),
-                },
-            )?;
+            // MP-08/MP-11: runtime Projects retain the authenticated user ID.
+            // `local` is accepted explicitly for Projects created before enrollment
+            // by this OS owner's local kernel, never as a credential-storage alias.
+            let project = runtime
+                .list_room_list_projects(&profile.user_id)
+                .into_iter()
+                .chain(runtime.list_room_list_projects("local"))
+                .find(|project| project.id() == project_id)
+                .ok_or_else(|| {
+                    admission_error("selected source Project is unavailable to this owner")
+                })?;
+            if ![profile.user_id.as_str(), "local"].contains(&project.owner_user_id())
+                || project.archived_at_ms().is_some()
+                || repositories
+                    .iter()
+                    .any(|repository| !project.workspace_ids().contains(&repository.workspace_id))
+            {
+                return Err(admission_error(
+                    "selected source Workspace does not belong to the active Project",
+                ));
+            }
+            for repository in repositories {
+                super::outbound_service::resolve_repository_selection(
+                    &super::development::DevelopmentSourceRepositoryBinding {
+                        role: repository.role,
+                        workspace_id: repository.workspace_id.clone(),
+                        worktree_id: repository.worktree_id.clone(),
+                    },
+                )?;
+            }
         }
     }
     let context_plan =

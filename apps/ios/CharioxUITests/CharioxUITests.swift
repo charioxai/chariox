@@ -6,7 +6,7 @@ final class CharioxUITests: XCTestCase {
     }
 
     @MainActor
-    func testWaitingRoomLaunches() throws {
+    func testRoomListLaunches() throws {
         let app = XCUIApplication()
         app.launch()
 

@@ -399,3 +399,48 @@ fn the_owner_revokes_unanswered_picks_and_unimported_grants() {
         Ok(RevokedFiles::default())
     );
 }
+
+#[test]
+fn a_cancel_ends_only_a_pick_that_is_still_unanswered() {
+    let fixture = Fixture::new();
+    let cancel = |owner: &str, installation: &str, id: &str| {
+        fixture.1.app_file_grant(FileGrantCommand::Cancel {
+            owner: owner.into(),
+            installation: installation.into(),
+            operation_id: id.into(),
+            now_ms: 20,
+        })
+    };
+    fixture.pick("waiting", false, 1_000);
+    fixture.pick("answered", false, 1_000);
+    let grants = fixture
+        .grant("alice", "answered", &["a.md"], 10)
+        .unwrap()
+        .unwrap()
+        .grants;
+    assert_eq!(cancel("mallory", "docs", "waiting"), Err("NOT_FOUND"));
+    assert_eq!(cancel("alice", "other", "waiting"), Err("NOT_FOUND"));
+    assert_eq!(cancel("alice", "docs", "missing"), Err("NOT_FOUND"));
+    assert_eq!(
+        cancel("alice", "docs", "waiting").unwrap().unwrap().state,
+        PickState::Expired
+    );
+    let kept = cancel("alice", "docs", "answered").unwrap().unwrap();
+    assert_eq!(
+        (kept.state, kept.grants),
+        (PickState::Granted, grants.clone())
+    );
+    assert_eq!(
+        fixture
+            .1
+            .claim_app_file_grant(FileGrantCommand::Claim {
+                owner: "alice".into(),
+                installation: "docs".into(),
+                grant_id: grants[0].clone(),
+                now_ms: 21,
+            })
+            .unwrap()
+            .contents,
+        b"# a.md"
+    );
+}

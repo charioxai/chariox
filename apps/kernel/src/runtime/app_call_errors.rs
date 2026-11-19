@@ -49,6 +49,16 @@ pub(crate) fn updating() -> (String, String) {
     owned(UPDATING)
 }
 
+/// An agent called, as a plain tool, an action the person must approve. The App never ran.
+pub(crate) fn needs_approval_path(tool: &str, installation: &str) -> (String, String) {
+    (
+        "USE_APP_VIEW_INVOKE".into(),
+        format!(
+            "{tool} needs the person's approval, which only the App's view can ask for: call chariox.app_view_invoke with view \"{installation}\" and action \"{tool}\" instead of this tool"
+        ),
+    )
+}
+
 /// The input breaks the tool's declared input schema; the App never ran.
 pub(crate) fn input_error(error: &impl std::fmt::Display) -> (String, String) {
     ("INVALID_INPUT".into(), error.to_string())

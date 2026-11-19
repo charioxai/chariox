@@ -67,7 +67,18 @@ pub(crate) async fn execute(
                 &ControlPlaneRequest::Capabilities {},
             ),
         )
-        .await?;
+        .await
+        // A Cloud code on an acquire's error is the service's answer to that acquire, and the
+        // refusal the agent reads names it. This answer is not about the acquire, so it passes on
+        // without its code.
+        .map_err(|error| DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: "control_plane_offer_unavailable".into(),
+            retryable: true,
+            message: format!(
+                "The connected service did not return its machine offer, so this try was not sent; retry it: {error}"
+            ),
+        })?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
             return Err(unavailable(
                 "control_plane_binding_invalid",
@@ -277,6 +288,8 @@ mod tests {
         let acquire = ControlPlaneRequest::Acquire {
             capability_revision: "forged".into(),
             request_id: "one".into(),
+            class_id: None,
+            region: None,
         };
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
@@ -297,6 +310,8 @@ mod tests {
         let request = ControlPlaneRequest::Acquire {
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
+            class_id: None,
+            region: None,
         };
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/cloud-contract/agent-acquire-request.json"

@@ -15,7 +15,7 @@ Add `chariox-shell` as a kernel-facing command shell independent from the TUI wh
 
 `chariox-shell` is a sibling app to the TUI CLI, not a TUI subcommand:
 
-- `apps/cli`: OpenTUI client, waiting room, panes, command center, and TUI-only commands.
+- `apps/cli`: OpenTUI client, Room list, panes, command center, and TUI-only commands.
 - `apps/shell`: standalone Chariox command REPL and script runner.
 - `packages/kernel-client`: shared kernel IPC client, request builders, kernel-facing runtime types, shell parser, and shell executor.
 
@@ -28,7 +28,7 @@ The shell may share kernel/domain code with the CLI, but it must not import TUI 
 - Stateful by default, explicit when needed: commands use current shell context unless an explicit `--session`, `--agent`, `--workflow`, or related ref is provided.
 - Scriptability without a language: v1 scripts are line-oriented Chariox commands with simple variables and stop-on-error behavior.
 - Structured results first: commands should return structured command results that can be rendered as text, table, JSON, or errors.
-- TUI-only behavior stays TUI-only: layout, waiting room, command-center, and pane controls are not kernel/domain shell commands.
+- TUI-only behavior stays TUI-only: layout, Room list, command-center, and pane controls are not kernel/domain shell commands.
 
 ## Command Classes
 

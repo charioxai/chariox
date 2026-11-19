@@ -36,6 +36,7 @@ fn held_writer_job(reject: bool) {
             cancellation.token.clone(),
             admission.clone().try_acquire_owned().unwrap(),
             &|_, _| Err(HttpError::ProtectedEffect),
+            &fixture.accounts(),
         )
         .unwrap();
     fixture.shutdown();

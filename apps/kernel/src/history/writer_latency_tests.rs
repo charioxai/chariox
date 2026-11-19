@@ -85,8 +85,15 @@ fn worker_progress_while_commit_is_held(force_blocked_worker: bool) -> bool {
         entered.send(()).unwrap();
         stalled.recv().unwrap();
         let projector = Arc::default();
-        commit_operational_history_batch(&mut connection, vec![first], &observed, &projector);
-        run_operational_history_writer(connection, receiver, observed, projector);
+        let revision = Arc::default();
+        commit_operational_history_batch(
+            &mut connection,
+            vec![first],
+            &observed,
+            &projector,
+            &revision,
+        );
+        run_operational_history_writer(connection, receiver, observed, projector, revision);
     });
     store.writer = Arc::new(OperationalHistoryWriter {
         sender: Mutex::new(Some(sender)),

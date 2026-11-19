@@ -212,14 +212,66 @@ def start(directory, *, port=None, display=None):
         raise
 
 
+SUPERVISE_POLL_SECONDS = 2
+SUPERVISE_RETRY_SECONDS = 6
+
+
+def lifecycle_lock(directory):
+    descriptor = os.open(directory / "lifecycle.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    lock = os.fdopen(descriptor, "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    return lock
+
+
+def restart_dead_streamer(directory, record):
+    """Start the streamer again on the dead one's port and display; keep its record on failure."""
+    try:
+        # A streamer this supervisor started earlier is its child and stays a zombie until reaped.
+        os.waitpid(record["pid"], os.WNOHANG)
+    except ChildProcessError:
+        pass
+    try:
+        start(directory, port=record["port"], display=record["display"])
+    except Exception as error:
+        write_state(directory, record)
+        print(f"Selkies restart failed: {error}", file=sys.stderr, flush=True)
+        return False
+    print("Selkies exited; restarted", file=sys.stderr, flush=True)
+    return True
+
+
+def supervise(directory):
+    """Keep the streamer running: restart it after it dies, and return once a stop removed its record.
+
+    Selkies is not a child of this process, so a death is found by its recorded identity, as
+    `owned_process` does for every other action. One supervisor runs per slice.
+    """
+    descriptor = os.open(directory / "supervisor.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "w") as supervisor_lock:
+        try:
+            fcntl.flock(supervisor_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        while True:
+            delay = SUPERVISE_POLL_SECONDS
+            with lifecycle_lock(directory):
+                record = read_state(directory)
+                if record is None:
+                    return
+                if owned_process(record) is None and not restart_dead_streamer(directory, record):
+                    delay = SUPERVISE_RETRY_SECONDS
+            time.sleep(delay)
+
+
 def main():
     allow_forced = sys.argv[1:] == ["stop", "--allow-forced"]
-    if not allow_forced and (len(sys.argv) != 2 or sys.argv[1] not in ("start", "status", "stop")):
-        raise ValueError("usage: slice-selkies.py start|status|stop [--allow-forced for stop only]")
+    if not allow_forced and (len(sys.argv) != 2 or sys.argv[1] not in ("start", "status", "stop", "supervise")):
+        raise ValueError("usage: slice-selkies.py start|status|stop|supervise [--allow-forced for stop only]")
     directory = state_directory()
-    descriptor = os.open(directory / "lifecycle.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    with os.fdopen(descriptor, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    if sys.argv[1:] == ["supervise"]:
+        supervise(directory)
+        return 0
+    with lifecycle_lock(directory) as lock:
         action = sys.argv[1]
         if action == "start":
             result = start(directory)

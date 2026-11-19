@@ -181,7 +181,7 @@ impl KernelRuntimeState {
                 .as_ref()
                 .is_some_and(|profile| profile.user_id == user)
     }
-    fn ensure_skill_project_visible(
+    pub(super) fn ensure_skill_project_visible(
         &self,
         project: Option<&str>,
         user: &str,
@@ -254,6 +254,19 @@ impl KernelRuntimeState {
                     "Import requires a source-bound From Provider entry",
                 ));
             };
+            if let Some(inventory) =
+                self.installed_skill_inventory_for(user, selection, mutation.expected_revision)
+            {
+                if origin.is_some() {
+                    return Err(skill_error("agents may import only their own execution-local provider skill; use the user Skills screen for another agent"));
+                }
+                let details = inventory?.details(selection)?;
+                sources.insert(
+                    index,
+                    verified_native_source(selection, details, &config.host_machine_id)?,
+                );
+                continue;
+            }
             let run_id = execution_id.strip_prefix(&prefix).ok_or_else(|| {
                 skill_error("native import must be resolved on the selected execution kernel")
             })?;
@@ -279,20 +292,9 @@ impl KernelRuntimeState {
                     "elapsed_ms": started.elapsed().as_millis() as u64,
                 }),
             );
-            let digest = details.manifest_digest.ok_or_else(|| {
-                skill_error("native source files are unavailable; refresh Details before importing")
-            })?;
-            let root = details
-                .root
-                .ok_or_else(|| skill_error("native source root is unavailable"))?;
             sources.insert(
                 index,
-                crate::skill::service::VerifiedNativeSkillSource {
-                    selection: selection.clone(),
-                    root,
-                    digest,
-                    source_machine: Some(config.host_machine_id.clone()),
-                },
+                verified_native_source(selection, details, &config.host_machine_id)?,
             );
         }
         Ok(sources)
@@ -339,24 +341,46 @@ impl KernelRuntimeState {
                 agent_id,
             } => {
                 self.ensure_skill_project_visible(project_id.as_deref(), user)?;
-                if let Some(id) = &agent_id {
-                    let agent = self.owned.agent_store.get_agent(id)?;
-                    let session = self.skill_agent_session(agent.session_id(), id, user)?;
-                    if project_id.as_deref() != Some(session.project_id()) {
-                        return Err(skill_error("focused agent Project changed; refresh Skills"));
+                let focused = match &agent_id {
+                    Some(id) => {
+                        let agent = self.owned.agent_store.get_agent(id)?;
+                        let session = self.skill_agent_session(agent.session_id(), id, user)?;
+                        if project_id.as_deref() != Some(session.project_id()) {
+                            return Err(skill_error(
+                                "focused agent Project changed; refresh Skills",
+                            ));
+                        }
+                        Some(agent)
                     }
-                }
-                let snapshot = service.storage.snapshot()?;
-                let native = match agent_id.as_deref() {
-                    Some(id) => self
-                        .agent_native_entries(id, snapshot.revision, false)?
-                        .map(|native| native.entries)
-                        .unwrap_or_default(),
-                    None => vec![],
+                    None => None,
                 };
+                let snapshot = service.storage.snapshot()?;
+                let run_native = match &focused {
+                    Some(agent) => self
+                        .agent_native_entries(agent.id(), snapshot.revision, false)?
+                        .map(|native| native.entries),
+                    None => None,
+                };
+                // Only the focused run decides how a skill reaches its turns; the
+                // installed providers below are listed, never delivered through.
+                let listed_by_run = run_native
+                    .as_ref()
+                    .and(focused.as_ref())
+                    .and_then(|agent| crate::provider::canonical_provider_family(agent.provider()));
+                let mut native = run_native.unwrap_or_default();
                 let revision = snapshot.revision;
                 let skills =
                     crate::skill::resolver::projections(&snapshot, project_id.as_deref(), &native);
+                // Every installed provider lists its skills with no run, except the one
+                // whose focused run already lists them.
+                if let Some(project_id) = project_id.as_deref() {
+                    native.extend(self.installed_native_entries(
+                        user,
+                        project_id,
+                        revision,
+                        listed_by_run,
+                    ));
+                }
                 let snapshot = service.storage.snapshot()?;
                 if snapshot.revision != revision {
                     return Err(skill_error("catalog changed; refresh Skills"));
@@ -418,17 +442,21 @@ impl KernelRuntimeState {
                 service.preview_review_with_source_access(user, &mutation, &native, access)
             }
             SkillsV2Request::ResolveRepository { url } => {
-                if origin.is_some() || !self.skills_host_owner(user) {
+                if !self.skills_host_owner(user) {
                     return Err(skill_error(
-                        "only the home kernel owner can import a repository, from Skills",
+                        "only the home kernel owner or their agents can import a repository",
                     ));
+                }
+                if origin.is_some() {
+                    crate::skill::source_access::SkillSourceAccess::Agent { workspace: None }
+                        .repository_url(&url)?;
                 }
                 service.resolve_repository(&url)
             }
             SkillsV2Request::ResolveRepositoryUpdate { package_id } => {
-                if origin.is_some() || !self.skills_host_owner(user) {
+                if !self.skills_host_owner(user) {
                     return Err(skill_error(
-                        "only the home kernel owner can update a repository package, from Skills",
+                        "only the home kernel owner or their agents can update a repository package",
                     ));
                 }
                 service.resolve_repository_update(&package_id)
@@ -630,6 +658,26 @@ impl KernelRuntimeState {
                 agent_id,
                 selection,
             } => {
+                let revision = service.storage.snapshot()?.revision;
+                if let Some(inventory) =
+                    self.installed_skill_inventory_for(user, &selection, revision)
+                {
+                    let details = super::skills_native_inventory::native_details(
+                        &inventory?,
+                        &selection,
+                        self.owned
+                            .config_projection
+                            .snapshot()
+                            .host_machine_id
+                            .clone(),
+                    )?;
+                    return Ok(SkillsV2Response::NativeDetails { details });
+                }
+                let agent_id = agent_id.ok_or_else(|| {
+                    skill_error(
+                        "focus the agent whose provider lists this skill and choose it again",
+                    )
+                })?;
                 let agent = self.owned.agent_store.get_agent(&agent_id)?;
                 self.skill_agent_session(agent.session_id(), &agent_id, user)?;
                 if agent.remote_execution().is_some() {
@@ -669,6 +717,26 @@ impl KernelRuntimeState {
         }
     }
 }
+/// An import source from a provider's listed skill: the files it lists, pinned by digest.
+fn verified_native_source(
+    selection: &SkillSelection,
+    details: crate::provider::skill_inventory::NativeSkillDetails,
+    host_machine_id: &str,
+) -> Result<crate::skill::service::VerifiedNativeSkillSource, DaemonError> {
+    let digest = details.manifest_digest.ok_or_else(|| {
+        skill_error("native source files are unavailable; refresh Details before importing")
+    })?;
+    let root = details
+        .root
+        .ok_or_else(|| skill_error("native source root is unavailable"))?;
+    Ok(crate::skill::service::VerifiedNativeSkillSource {
+        selection: selection.clone(),
+        root,
+        digest,
+        source_machine: Some(host_machine_id.to_string()),
+    })
+}
+
 fn verified_body(
     service: &SkillCatalogService,
     record: &SkillRecord,

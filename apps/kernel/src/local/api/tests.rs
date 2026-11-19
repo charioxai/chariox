@@ -33,27 +33,26 @@ use super::{
     CancelRoomEnvironmentActionRequest, CancelWorkflowRunRequest,
     CaptureScreenshotCapabilityRequest, CommitWorkspaceChangesRequest, CompletePromptRequest,
     CreateSessionInviteRequest, CreateTerminalPairingLinkRequest, CreateWorkflowEndpointRequest,
-    CreateWorkflowRequest, CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest,
-    CreateWorkspaceWorktreeRequest, CycleAgentFocusRequest, DeleteProjectRequest,
-    DeleteSessionRequest, DeleteWorkspaceWorktreeRequest, DestroyAgentRequest,
-    DetachFromSessionRequest, DetachWorkspaceLinkRequest, EditFileCapabilityRequest,
-    EndSessionRequest, ExportDebugBundleRequest, FocusAgentRequest, GetDaemonHealthRequest,
-    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
-    GetWaitingRoomInventoryRequest, GetWaitingRoomPublicSnapshotRequest, GetWorkflowRunRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
-    GetWorkspaceLiveSyncStatusRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, KernelClientConnection,
-    LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest, ListProjectsRequest,
-    ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
-    ListRoomEnvironmentActionHistoryRequest, ListSessionMembersRequest, ListSessionsRequest,
-    ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
+    CreateWorkflowRequest, CreateWorkspaceLinkRequest, CreateWorkspaceWorktreeRequest,
+    CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
+    DeleteWorkspaceWorktreeRequest, DestroyAgentRequest, DetachFromSessionRequest,
+    DetachWorkspaceLinkRequest, EditFileCapabilityRequest, EndSessionRequest,
+    ExportDebugBundleRequest, FocusAgentRequest, GetDaemonHealthRequest,
+    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetRoomListSnapshotRequest,
+    GetSessionStateRequest, GetWorkflowRunRequest, GetWorkspaceFileContentRequest,
+    GetWorkspaceGitOverviewRequest, GetWorkspaceLiveSyncStatusRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
+    KernelClientConnection, LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest,
+    ListProjectsRequest, ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionMembersRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
     ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     MaterializeWorkflowPublicationRequest, MoveAgentToLocalRequest,
     NativeProviderInteractionResolution, PauseWorkflowRunRequest, PollRuntimeNoticesRequest,
-    PushWorkspaceBranchRequest, QueryRecallRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, ReadRoomEnvironmentClipboardRequest,
-    ReleaseRoomEnvironmentInputRequest, RemoteMachineTrustStatus, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, RenameProjectRequest, RequestNativeProviderTurnInteractionRequest,
+    QueryRecallRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+    ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest,
+    RemoteMachineTrustStatus, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    RenameProjectRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResolveKernelClientConnectionRequest,
     ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
     RestoreProjectRequest, ResumeWorkflowRunRequest, RetryRoomEnvironmentRequest,
@@ -74,8 +73,8 @@ use super::{
     UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
     UpdateWorkflowNodeInstructionsRequest, UpdateWorkflowPromptQueueRequest, WorkflowDesignNode,
     WorkflowDesignOp, WorkflowDesignPoint, WorkflowPublicationSnapshot,
-    WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent, WorkspaceRepoFileEntry,
+    WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 mod agent_deadline_dispatch;
@@ -86,13 +85,14 @@ mod protocol_shapes;
 mod provider_prompt_runtime;
 mod remote_inventory;
 mod room_environment;
+mod room_list_projection;
 mod session_control;
 mod session_retirement_upgrade;
 mod session_state_history;
 mod session_view;
 mod session_worktree_paths;
+mod spawn_model_check;
 mod terminal_output;
-mod waiting_room_projection;
 mod workflow_definition_control;
 mod workflow_run_control;
 mod workspace_capabilities;

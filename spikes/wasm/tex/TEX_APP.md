@@ -4,9 +4,8 @@ MP-08 / MP-10 / MP-11 · research only · 2026-10-22
 
 **Planning update, 2026-10-22, 19:40–19:55 UTC:** Miguel fixed the example
 Apps as Excalidraw then Univer and said “let's leave any latex related app
-for later”. Typst is not planned now; the wrapped-binary kind is dropped.
-The [two-stage plan](../APPS_V2_PLAN.md) and [shape §7](../APPS_V2_SHAPE.md#7-wrapped-existing-binaries--reversed-on-2026-10-22)
-supersede this spike's earlier recommendations. Measurements and licence
+for later”. Typst is not planned now.
+The [two-stage plan](../APPS_V2_PLAN.md) supersedes this spike's earlier recommendations. Measurements and licence
 findings below remain research evidence, not a request to resume Apps.
 
 **Verdict: works with caveats technically; does not qualify as a first-party
@@ -199,10 +198,9 @@ remain integration work.
   Emscripten routes, like DuckDB in §7b. No full build was attempted for
   those alternatives. Their engine licences still need clearance; moving
   GPL/AGPL code into the view does not satisfy the first-party rule.
-- **Wrapped binary: dropped by Miguel, 10-22.** Not a planned App kind or
-  a route around the licence blocker. Existing programs can be driven through
-  Computer Use or other tools. An existing Overleaf CE server may still be
-  opened as a web page; its services and AGPL obligations stay external.
+- **Wrapped binary:** not a route around the licence blocker. An existing
+  Overleaf CE server may be opened as a web page; its services and AGPL
+  obligations stay external.
 
 ## Possible later LaTeX PRs — not in either stage
 
@@ -221,8 +219,8 @@ This is a planning estimate, not work authorised while Apps is paused.
 
 ## Later LaTeX questions
 
-Miguel has answered the scope question: LaTeX later, no Typst example now,
-no wrapped-binary App kind. Do not reopen those decisions.
+Miguel has answered the scope question: LaTeX later, no Typst example now.
+Do not reopen those decisions.
 
 1. Before any later LaTeX implementation, which acceptable engine licence
    route is available? Rewriting the UI alone is insufficient.

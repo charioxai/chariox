@@ -1,6 +1,6 @@
 # CLI Themes
 
-Chariox loads built-in themes and custom JSON themes into the same registry. The waiting room `Theme` row cycles every loaded theme with the left and right arrow keys, then persists the selected theme in `ui.theme`.
+Chariox loads built-in themes and custom JSON themes into the same registry. The Room list `Theme` row cycles every loaded theme with the left and right arrow keys, then persists the selected theme in `ui.theme`.
 
 ## Theme Locations
 
@@ -66,7 +66,7 @@ Native themes use Chariox token names. Missing colors fall back to the OpenCode 
 
 OpenCode TUI theme JSON files are supported directly. These are the files shaped like `opencode-dev/packages/opencode/src/cli/cmd/tui/context/theme/matrix.json`: colors live in `theme`, optional reusable colors live in `defs`, and `{ "dark": "...", "light": "..." }` variants are resolved using the dark value.
 
-OpenCode TUI files do not include an `id`; Chariox uses the JSON filename. For example, `~/.chariox/themes/neon-matrix.json` appears as `Neon Matrix` in the waiting room.
+OpenCode TUI files do not include an `id`; Chariox uses the JSON filename. For example, `~/.chariox/themes/neon-matrix.json` appears as `Neon Matrix` in the Room list.
 
 ```json
 {
@@ -116,4 +116,4 @@ OpenCode desktop theme JSON files are also supported. Chariox reads the `dark.pa
 }
 ```
 
-After saving a file, restart the CLI. The theme will appear in the waiting room.
+After saving a file, restart the CLI. The theme will appear in the Room list.

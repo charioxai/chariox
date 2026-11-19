@@ -109,6 +109,7 @@
     "path": "/v1/authorizations",
     "callers": [
       "apps/kernel/src/runtime/event_catalog_control.rs",
+      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
       "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
@@ -384,6 +385,7 @@
     "path": "/v1/resources/query",
     "callers": [
       "apps/kernel/src/runtime/event_catalog_control.rs",
+      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
       "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",

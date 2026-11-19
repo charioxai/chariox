@@ -16,9 +16,9 @@ import {
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
 import {
-  cycleWaitingRoomLaunchKernel,
-  cycleWaitingRoomLaunchMachine,
-} from "@chariox/kernel-client/waiting-room-runtime-placement"
+  cycleRoomListLaunchKernel,
+  cycleRoomListLaunchMachine,
+} from "@chariox/kernel-client/room-list-runtime-placement"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
@@ -107,10 +107,10 @@ export function cycleWaitingRoomFocusedValue(
     }
   }
   if (state.focus === "launch-machine") {
-    return context.normalizeState(cycleWaitingRoomLaunchMachine(state, remote, delta))
+    return context.normalizeState(cycleRoomListLaunchMachine(state, remote, delta))
   }
   if (state.focus === "launch-kernel") {
-    return context.normalizeState(cycleWaitingRoomLaunchKernel(state, remote, delta))
+    return context.normalizeState(cycleRoomListLaunchKernel(state, remote, delta))
   }
   if (state.focus === "managed-development") {
     return context.normalizeState(cycleManagedDevelopment(state))

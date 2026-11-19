@@ -77,6 +77,7 @@ pub(super) fn owner_action_source(
         name: "Agent needs your action".into(),
         display_name: "Agent needs your action".into(),
         exit_ordinal: 0,
+        options: Vec::new(),
     }
 }
 

@@ -106,3 +106,12 @@ export interface FetchOptions {
   connectionId?: string; operationId?: string;
 }
 export function fetch(url: string, init?: FetchOptions): Promise<AppResponse>;
+
+export interface ViewChange { seq: number; delta: unknown }
+export interface Feed {
+  /** Commit `tx` together with one change (at most 8 KiB) for `view_changes`; the feed keeps the last 128. */
+  transact(tx: Transaction, delta: unknown): Promise<{ revision: bigint; receipts: Receipt[] }>;
+  /** What the `view_changes` tool answers: `dropped` tells a reader that fell behind to read the state again. */
+  changes(input?: { since?: number }): Promise<{ latest: number; dropped: boolean; changes: ViewChange[] }>;
+}
+export function createFeed(store: Pick<typeof state, 'get' | 'transact'>): Feed;

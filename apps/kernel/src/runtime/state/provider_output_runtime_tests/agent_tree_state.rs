@@ -473,6 +473,44 @@ async fn a_node_reports_the_settings_it_runs_with_and_a_change_moves_the_revisio
     assert!(after.rev > before.rev, "{} > {}", after.rev, before.rev);
 }
 
+// A sub-agent is in no list of the Room's agents, so the stop of a usage limit reaches a client
+// with the child's node, and a change of the stop moves the revision followers are told about.
+#[tokio::test]
+async fn a_node_carries_the_usage_limit_stop_its_room_projection_does_not_list() {
+    let team = team_with("tree-usage-limit", None, true).await;
+    let before = read(&team);
+    assert!(before.nodes[0].usage_limit_stop.is_none());
+    let stop = crate::agent::UsageLimitStop {
+        prompt_id: "p".into(),
+        provider: "codex".into(),
+        account_profile: "default".into(),
+        account_label: "codex-1".into(),
+        stopped_at_ms: 3,
+        resumes_at_ms: Some(9),
+        refused: 0,
+        state: crate::agent::UsageLimitStopState::Asking,
+    };
+    team.runtime
+        .owned
+        .agent_store
+        .change_usage_limit_stop(&team.child, |_| Some(Some(stop.clone())))
+        .unwrap();
+    let after = read(&team);
+    assert_eq!(after.nodes[0].usage_limit_stop, Some(stop));
+    assert!(after.rev > before.rev, "{} > {}", after.rev, before.rev);
+    let listed = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap()
+        .redacted_for_user(USER);
+    assert!(
+        listed.agents().iter().all(|agent| agent.id() != team.child),
+        "the Room's projection keeps the child out, so the tree is where its stop is read"
+    );
+}
+
 // Landing 9 sub-panes: a list row shows what the prompt footer shows, so a node also reports the
 // account, workspace, worktree and the machine its agent runs on; a change moves the revision.
 #[tokio::test]

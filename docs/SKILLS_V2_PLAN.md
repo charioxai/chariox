@@ -137,15 +137,19 @@ into/out of them without copying skill bytes, changing IDs or losing provenance,
 state overrides or session load history. Moving into a package replaces prior
 membership atomically. Keep empty custom packages until explicitly removed.
 
-A **repository install** is owner-initiated from Skills (Web "Import a public
-repository", TUI `/skills repo <url>`): the kernel fetches the public git repository
+A **repository install** starts from Skills (Web "Import a public repository",
+TUI `/skills repo <url>`) or from an agent's `chariox.manage_skills`
+(`resolve_repository`, then the same reviewed batch): the kernel fetches the public git repository
 with `git`, lists every SKILL.md directory at its current commit, and the reviewed
 batch installs the checked members pinned to exactly that commit into one new package.
 The kernel records the commit as the members' and the package's `source_revision`
 and maps each upstream directory to the member's skill ID; no client label can
-attest a revision. Private or auth-required repositories are refused, and an agent
-cannot start a repository install. MP-08 / MP-10 / MP-11: the bounded kernel/TUI
-update path resolves a newer commit with `/skills repo-update <package>`, reviews
+attest a revision. Private or auth-required repositories are refused. An agent's
+repository must be a public https host (the boundary of agent downloads: no local
+path, no private network address); its publication follows the normal ask/yolo
+rule and its tool calls show in the Room. MP-08 / MP-10 / MP-11: the bounded kernel/TUI
+update path resolves a newer commit with `/skills repo-update <package>` (an agent:
+`manage_skills` `resolve_repository_update`), reviews
 changed/new/removed members, and publishes the pinned batch through normal confirmation.
 The Web update entry point remains outside this implementation. Members moved out
 and directories left unselected at install are skipped; invalid current members

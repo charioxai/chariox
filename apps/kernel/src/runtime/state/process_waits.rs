@@ -2,9 +2,11 @@
 //! row as an outside event.
 use super::process_wait_notices::Notice;
 use super::*;
+use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::local::{EventRefs, OutsideEventValue};
 use crate::runtime::process_resources::{
-    take_wait_events, SessionProcessOwner, SessionProcessState, WaitChange, WaitEvent,
+    take_scope_kills, take_wait_events, ScopeKill, SessionProcessOwner, SessionProcessState,
+    WaitChange,
 };
 
 impl KernelRuntimeState {
@@ -15,7 +17,7 @@ impl KernelRuntimeState {
 
     pub(super) fn deliver_process_waits_at(&self, now: std::time::Instant) {
         for event in take_wait_events() {
-            let Some((session_id, owner)) = self.process_wait_owner(&event) else {
+            let Some((session_id, owner)) = self.process_owner(&event.keys) else {
                 continue;
             };
             let (agent, terminal) = match owner {
@@ -66,6 +68,9 @@ impl KernelRuntimeState {
                 tracing::warn!(%error, "process wait event was not published");
             }
         }
+        for kill in take_scope_kills() {
+            self.tell_owner_of_scope_kill(&kill);
+        }
         let due = self
             .owned
             .process_wait_notices
@@ -106,7 +111,53 @@ impl KernelRuntimeState {
         }
     }
 
-    fn process_wait_owner(&self, event: &WaitEvent) -> Option<(String, SessionProcessOwner)> {
+    /// The memory controller killed a process of the agent's unit. The agent
+    /// owns it, so every process it waits on hears one occurrence now: a
+    /// home-made wait on a file that process would have written ends here
+    /// instead of at its deadline. Nothing is refused or stopped.
+    fn tell_owner_of_scope_kill(&self, kill: &ScopeKill) {
+        let Some((session_id, SessionProcessOwner::Agent(agent))) = self.process_owner(&kill.keys)
+        else {
+            return;
+        };
+        let store = &self.owned.durable_state_store;
+        let waiting = match store.agent_wakes(Some(&session_id), Some(&agent)) {
+            Ok(wakes) => wakes,
+            Err(error) => {
+                tracing::warn!(%error, "scope kill could not read the agent's waits");
+                return;
+            }
+        };
+        for wake in waiting
+            .into_iter()
+            .filter(|wake| wake.kind == "process" && wake.state == "running")
+        {
+            let occurred = store.agent_lifecycle(Operation::WakeOccurred {
+                occurrence: format!("{}-oom-{}", wake.id, kill.total),
+                id: wake.id,
+                kind: "scope_process_killed".into(),
+                payload: serde_json::json!({"reason": kill.reason}),
+                summary: Some(kill.reason.clone()),
+                end: None,
+                now: crate::session::unix_epoch_ms(),
+            });
+            match occurred {
+                Ok(Outcome::Wakes(wakes)) => {
+                    for wake in wakes {
+                        self.wake_notice(
+                            &wake,
+                            format!("Wake alert: a process of yours was killed: {}", kill.reason),
+                        );
+                        self.schedule_wake_delivery(&wake);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "scope kill was not delivered to the wait"),
+            }
+        }
+    }
+
+    fn process_owner(&self, keys: &[String]) -> Option<(String, SessionProcessOwner)> {
         self.owned
             .session_store
             .list_non_ended_sessions_including_hidden()
@@ -118,7 +169,7 @@ impl KernelRuntimeState {
                     &self.owned.room_terminals,
                 )
                 .into_iter()
-                .find(|(_, key)| event.keys.contains(key))
+                .find(|(_, key)| keys.contains(key))
                 .map(|(owner, _)| (session.id().to_string(), owner))
             })
     }

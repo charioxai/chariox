@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
@@ -527,11 +528,29 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
 // still has the content.
 test('a cross-origin stylesheet missing from the network buffer and the resource tree is read from its document frame',async()=>{
  const body='body{color:green}',asked=[];
- const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
  mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
- assert.deepEqual(asked,[['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+ assert.deepEqual(asked,[['Network.loadNetworkResource','F'],['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+});
+
+// transport5 (github.com sheets with `content: "⇛"`): a response without a charset decodes as Latin-1 in the frame's own text and
+// was read that way on most navigations (the network buffer had let go of it), so the same sheet had a different digest on
+// the next page and the viewer's retained copy never matched. The HTTP cache holds the exact bytes.
+test('a cross-origin stylesheet that left the network buffer is read as its exact bytes from the cache, not as the frame text',async()=>{
+ const exact='a::after{content:"\u21db"}',latin1=Buffer.from(exact,'utf8').toString('latin1'),asked=[];
+ const world={connection:{async send(method,params){asked.push(method);
+  if(method==='Network.loadNetworkResource')return {resource:{success:true,stream:'H',httpStatusCode:200}};
+  if(method==='IO.read')return {data:Buffer.from(exact,'utf8').toString('base64'),base64Encoded:true,eof:true};
+  if(method==='IO.close')return {};
+  if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/s.css'}]}};
+  if(method==='Page.getResourceContent')return {content:latin1,base64Encoded:false};
+  throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));return {css:sheets[0].text,parsed:[sheets[0].text],used:null}};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css'),exact);
+ assert(!asked.includes('Page.getResourceContent'),'the frame text is only the last resort');
 });
 
 // mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
@@ -579,6 +598,31 @@ test('MP-10 M2: first-packet font bytes use the completed response before the Pa
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address){assert.equal(actual,world);assert.equal(address,'https://public.example/font.woff2');return body}}}}});
  mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1'];const entry={key:'r1',url:'https://public.example/font.woff2',kind:'font',state:'new'};
  const out=await mirror.materializeWorld(world,[entry],0,262144,{issued:0,movedAt:0,loadedCount:1,resources:new Map([['r1',entry]])});assert.equal(out[0].mime_type,'font/woff2');assert.deepEqual(calls,[]);
+});
+
+// transport5 (bbc.com/news: 531 KB of fonts on every page of the site): a font the viewer retains from an earlier document
+// is named, not sent again. Only fonts: other resources keep their per-document delivery.
+test('MIRROR-P2: a font the viewer retains is sent by reference; other bytes and unknown fonts travel whole',async()=>{
+ const font=Buffer.alloc(48);font.write('wOF2');const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==','base64');
+ const id=bytes=>createHash('sha256').update(bytes).digest('hex');
+ const world={connection:{async send(){throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){return address.endsWith('.woff2')?font:image}}}}});
+ mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1','r2','r3'];
+ const due=()=>[{key:'r1',url:'https://public.example/a.woff2',kind:'font',state:'new'},{key:'r2',url:'https://public.example/b.png',kind:'image',state:'new'}];
+ const known={issued:0,movedAt:0,loadedCount:1,knownFonts:new Set([id(font).slice(0,24),id(image).slice(0,24)]),resources:new Map()};
+ const out=await mirror.materializeWorld(world,due(),0,262144,known);
+ assert.deepEqual(out.find(r=>r.key==='r1'),{key:'r1',resource_id:id(font),mime_type:'font/woff2',data_base64:'',retained:true});
+ assert.equal(out.find(r=>r.key==='r2').data_base64.length>0,true,'an image is never retained across documents');
+ const fresh=await mirror.materializeWorld(world,due(),0,262144,{issued:0,movedAt:0,loadedCount:1,knownFonts:new Set(),resources:new Map()});
+ assert.equal(fresh.find(r=>r.key==='r1').data_base64,font.toString('base64'),'a font the viewer does not retain travels whole');
+});
+
+test('MIRROR-P2: a reset credit lists the fonts the viewer retains and a malformed list is refused',async()=>{
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0},a='a'.repeat(24);mirror.packet=async()=>({sequence:1});
+ await mirror.next(stream,{after_sequence:0,known_fonts:[a]},'scope');assert.deepEqual([...stream.knownFonts],[a]);
+ await mirror.next(stream,{after_sequence:1},'scope');assert.deepEqual([...stream.knownFonts],[a],'an unchanged list is not repeated');
+ await mirror.next(stream,{after_sequence:0},'scope');assert.deepEqual([...stream.knownFonts],[],'a reset without a list means the viewer retains no font');
+ for(const known_fonts of [false,['not-a-digest'],Array(129).fill(a)]) await assert.rejects(mirror.next(stream,{known_fonts},'scope'),/invalid mirror font dictionary/);
 });
 
 // Review #1016 @f0ccdb5c2 P2 (protocol 530): mirrored undo/redo arrive as named mirror keys and resolve to the
@@ -660,6 +704,20 @@ test('MP-10 independent sheet bodies overlap in batches of at most four and reta
  assert.equal(peak,4);assert.deepEqual(ops.map(op=>op.id),sheets.map(sheet=>sheet.id));
 });
 
+// transport5 (github.com links one 330 KB sheet six times): a first paint prunes it against the same document each time, so one
+// read answers every link of the top document; a sheet in another root is pruned against that root and is read for itself.
+test('MIRROR-P2: a sheet the document links several times is read once for the first paint, per root otherwise',async()=>{
+ const mirror=new Mirror2({host:{}});const reads=[];
+ mirror.crossOriginSheet=async(_world,url,usedBy)=>{reads.push([url,usedBy]);return [`css:${url}`,`used:${usedBy}`];};
+ const sheets=[{id:'n1',url:'s.css',top:true},{id:'n2',url:'s.css',top:true},{id:'n3',url:'s.css'},{id:'n4',url:'t.css',top:true}];
+ const ops=await mirror.sheetOps({},sheets,true);
+ assert.deepEqual(reads.map(([url])=>url).sort(),['s.css','s.css','t.css'],'two top-document links of s.css share one read; the shadow-root link reads again');
+ assert.deepEqual(ops.map(op=>op.id),['n1','n2','n3','n4'],'every link keeps its own op');
+ assert.deepEqual(ops.filter(op=>op.css==='used:n1').map(op=>op.id),['n1','n2']);
+ reads.length=0;await mirror.sheetOps({},[{id:'n1',url:'s.css'},{id:'n2',url:'s.css'}]);
+ assert.equal(reads.length,1,'a later change carries the full text, the same for every root');
+});
+
 test('MP-08/MP-10/MP-11 native navigation preview precedes observer work and retires old input epochs', async () => {
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,issued:5,document_id:'old',resetAt:1};
  const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
@@ -676,6 +734,17 @@ test('MP-08/MP-10/MP-11 explicit handover flush ends older polls before a fresh 
  const stream={chain:Promise.resolve(),issued:2},mirror=new Mirror2({host:{}});let hurried=0;
  mirror.hurry=s=>{s.hurry=(s.hurry??0)+1;hurried++};mirror.packet=async(_s,c,_scope,_signal,deadline)=>{assert.equal(c.flush,true);assert(deadline<=Date.now());return{sequence:3}};
  await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0,flush:true},'scope');assert.equal(hurried,1);
+});
+
+test('MP-08/MP-10/MP-11 a navigation that commits during a credit moves that credit to the new document instead of failing it',async()=>{
+ const stream={chain:Promise.resolve(),issued:2},mirror=new Mirror2({host:{}}),moved=()=>Object.assign(new Error('browser mirror document retired'),{code:'stale_document_reference'});
+ const asked=[];mirror.packet=async()=>{asked.push(asked.length);if(asked.length<3)throw moved();return{sequence:3,reset:true,document_id:'D2'}};
+ const packet=await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0},'scope');
+ assert.deepEqual([packet.document_id,asked.length],['D2',3],'the credit went on with the new document within its own answer');
+ mirror.packet=async()=>{throw new Error('MP-11: stale mirror protection policy or subscription')};
+ await assert.rejects(mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:3,wait_ms:0},'scope'),/stale mirror protection policy/,'only a moved document is observed again');
+ const abort=new AbortController();abort.abort();mirror.packet=async()=>{throw moved()};
+ await assert.rejects(mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:3,wait_ms:0},'scope',{signal:abort.signal}),{code:'stale_document_reference'},'a cancelled credit does not loop');
 });
 
 test('MP-08/MP-10/MP-11 native preview follows a document transition, not initial attachment',async()=>{
@@ -759,6 +828,48 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
 });
 
+test('MIRROR-P3-FOLLOWUP the full text of every sheet a delta reports travels in steps of the packet budget, the rest on the quiet credits after', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let reported=false;
+ const sheet=id=>({op:'css',id,css:'x'.repeat(100_000)});
+ mirror.evaluate=async(_,expression)=>{if(expression.startsWith('m.snapshot'))return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};
+  const sheets=reported||expression!=='m.drain()'?[]:['a','b','c','d'].map(id=>({id,url:id+'.css'}));reported||=expression==='m.drain()';return {ops:[],changed:[],resources:[],sheets,scroll:[0,0],focused:null,selection:null,fragment:null};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ mirror.sheetOps=async(_world,reports=[])=>reports.map(report=>sheet(report.id));mirror.encode=async(_,packet)=>packet;
+ const credit=(after,wait_ms=0)=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms},'scope');
+ const css=packet=>(packet.ops??[]).filter(op=>op.op==='css').map(op=>op.id);
+ const first=await credit(0);
+ const delta=await credit(first.sequence);
+ assert.deepEqual(css(delta),['a','b','c'],'the packet budget (256 KiB) ends after the sheet that crosses it');
+ assert.deepEqual(stream.deferredSheets.map(op=>op.id),['d'],'the rest waits');
+ stream.deferredAt=Date.now()-2000;
+ const rest=await credit(delta.sequence);
+ assert.deepEqual(css(rest),['d'],'and arrives on the next credit');
+});
+
+test('MIRROR-P2-SHEETS-COLD a first paint reads its sheets while the closed roots and child frames are inspected', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
+ mirror.evaluate=async(_,expression)=>expression.startsWith('m.snapshot')?{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[{id:'s1',url:'a.css'}],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true}:{ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,fragment:null};
+ const events=[];let releaseClosed;const closed=new Promise(resolve=>{releaseClosed=resolve});
+ mirror.markClosedHosts=async()=>{events.push('closed start');await closed;events.push('closed end')};
+ mirror.frames={attach:async()=>{events.push('frames');return{records:[],ops:[],opaque:[]}},drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.tiles=async()=>[];
+ mirror.sheetOps=async()=>{events.push('sheets start');await new Promise(resolve=>setTimeout(resolve,20));events.push('sheets end');return[]};mirror.encode=async(_,packet)=>packet;
+ const packet=mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:0,wait_ms:0},'scope');
+ for(let waited=0;waited<500&&!events.includes('sheets end');waited+=10)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(events,['sheets start','closed start','sheets end'],'the sheets are read while the closed roots are inspected');
+ releaseClosed();await packet;
+ assert.deepEqual(events.slice(0,5),['sheets start','closed start','sheets end','closed end','frames'],'the child frames follow the closed roots');
+});
+
 test('F-5 a page resize during an observation re-snapshots the stream without refusing input as a stale protection policy', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
@@ -832,6 +943,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
   if(expression==='m.snapshot()')return{...page,root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],opaque:false};
   if(expression==='m.opaqueBoxes()')return boxes;
   if(expression==='m.drain()'){const d={...page,...drain};drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};return d;}
+  if(expression.startsWith('m.elementPixels('))return{x:0,y:0,width:1280,height:800,data_base64:'AAAA'};
   return {...page,ops:[],changed:[],resources:[],sheets:[]};
  };
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
@@ -1099,6 +1211,20 @@ for (const distorted of [false, 'canvas']) test(`MP-08/MP-10: opaque area and st
   const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
   assert.deepEqual(shots,[{x:1400,y:820,width:80,height:40,scale:1}]);
   assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
+});
+
+// browserfidelity r2: Excalidraw's full-viewport canvas was black in the viewer of a headless browser (always on macOS).
+// Its region video lease needs the browser's native window, so without one the still is all that carries the canvas.
+for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas has a still exactly when no native window can carry its video (${display ? 'headed' : 'headless'})`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[0,0,1192,666],distorted:'canvas'}];
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),chromium:{display},async screenshot(tab,clip){
+    shots.push(clip);return {data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255))};
+  }};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>null;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,display?[]:[{x:0,y:0,width:1192,height:666,scale:1}]);
+  assert.equal(tiles.length,display?0:1);
 });
 
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {

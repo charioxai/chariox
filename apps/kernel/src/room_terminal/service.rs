@@ -296,6 +296,16 @@ impl RoomTerminalService {
             ),
             None => (program.clone(), args),
         };
+        // What an agent runs never reaches the kernel's secrets; a person's own
+        // terminal is theirs.
+        let (spawn_program, args) = match &spec.opened_by {
+            TerminalActor::Agent(_) => {
+                let mut own = self.inner.shell_integration.files();
+                own.push(spec.working_directory.clone());
+                crate::provider::state_confinement::confine_command(spawn_program, args, &env, own)?
+            }
+            TerminalActor::User => (spawn_program, args),
+        };
         pty.spawn_interactive(PtySpawnRequest {
             agent: None,
             process_key: run_id.clone(),

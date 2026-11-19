@@ -11,6 +11,7 @@ mod credentials;
 mod payment_card;
 pub(crate) use payment_card::PaymentCard;
 pub use payment_card::{PaymentCardField, PaymentCardSummary};
+pub(crate) mod vault_kind;
 pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;
@@ -33,7 +34,7 @@ mod slices;
 pub use skills::{SkillMetadataBudgetPercent, UserSkillsConfig};
 mod socket_path;
 mod storage;
-pub(crate) use paths::{default_state_dir, kernel_state_roots};
+pub(crate) use paths::{default_config_dir, default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
 mod resource_protection;
 mod totp;
@@ -160,6 +161,8 @@ pub struct DaemonConfig {
     pub os_name: String,
     #[cfg(test)]
     pub(crate) machine_name_for_tests: Option<String>,
+    /// Owns the state `for_tests` places on disk; the last clone to drop removes it.
+    pub(crate) test_state_root: Option<std::sync::Arc<crate::test_temp_dir::TestTempDir>>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
     pub managed_slice_relay_recovery_token: Option<String>,
@@ -290,6 +293,7 @@ impl DaemonConfig {
             os_name: default_os_name(),
             #[cfg(test)]
             machine_name_for_tests: None,
+            test_state_root: None,
             relay_url: None,
             relay_token: None,
             managed_slice_relay_recovery_token: None,
@@ -322,13 +326,10 @@ impl DaemonConfig {
         // while its environment guard owns and will remove that directory.
         #[cfg(test)]
         let _environment = crate::env_lock::lock();
-        // macOS exposes its temporary root through /var -> /private/var.
-        // Private App storage rejects symlink ancestors, including system aliases.
-        let temporary_root =
-            std::fs::canonicalize(std::env::temp_dir()).expect("test temporary root must exist");
         static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        let state_root = std::sync::Arc::new(crate::test_temp_dir::TestTempDir::new("daemon"));
         let mut config = Self::new("daemon-test", "machine-test", "tester");
         // Test kernels share a host with the live kernel and may use its default MCP URL.
         // Their global orphan sweep must never terminate the live kernel's providers.
@@ -339,52 +340,19 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
-        config.session_history_root_default = temporary_root.join("chariox-tests").join(format!(
-            "session-history-{}-{}",
-            std::process::id(),
-            index
+        let state_dir = state_root.path();
+        let path_string = |path: PathBuf| path.display().to_string();
+        config.session_history_root_default = state_dir.join("session-history");
+        config.user_config.history.operational.path = Some(path_string(
+            state_dir.join("operational-history").join("operational.db"),
         ));
-        config.user_config.history.operational.path = Some(
-            temporary_root
-                .join("chariox-tests")
-                .join(format!(
-                    "operational-history-{}-{}.db",
-                    std::process::id(),
-                    index
-                ))
-                .display()
-                .to_string(),
-        );
-        config.user_config.artifacts.operational.root = Some(
-            temporary_root
-                .join("chariox-tests")
-                .join(format!(
-                    "operational-artifacts-{}-{}",
-                    std::process::id(),
-                    index
-                ))
-                .display()
-                .to_string(),
-        );
-        config.user_config.artifacts.operational.index_path = Some(
-            temporary_root
-                .join("chariox-tests")
-                .join(format!(
-                    "operational-artifacts-{}-{}.db",
-                    std::process::id(),
-                    index
-                ))
-                .display()
-                .to_string(),
-        );
-        config.user_config.state.path = Some(
-            temporary_root
-                .join("chariox-tests")
-                .join(format!("kernel-state-{}-{}", std::process::id(), index))
-                .join("state.db")
-                .display()
-                .to_string(),
-        );
+        config.user_config.artifacts.operational.root =
+            Some(path_string(state_dir.join("operational-artifacts")));
+        config.user_config.artifacts.operational.index_path =
+            Some(path_string(state_dir.join("operational-artifacts.db")));
+        config.user_config.state.path =
+            Some(path_string(state_dir.join("kernel-state").join("state.db")));
+        config.test_state_root = Some(state_root);
         config.user_config_path = config.durable_state_path().with_file_name("config.toml");
         config.user_config.workflow.max_queues_per_workflow = Some(10);
         config.user_config.providers.workspace_live_sync =
@@ -392,6 +360,15 @@ impl DaemonConfig {
                 crate::config::WorkspaceLiveSyncMode::Unrestricted,
             );
         config
+    }
+
+    /// The directory `for_tests` made for this config; it goes with the config's last clone.
+    #[cfg(test)]
+    pub(crate) fn test_state_dir(&self) -> &std::path::Path {
+        self.test_state_root
+            .as_deref()
+            .expect("only a config from for_tests owns a test directory")
+            .path()
     }
 
     pub fn with_local_socket_path(mut self, path: PathBuf) -> Self {
@@ -628,11 +605,38 @@ pub struct UserUiConfig {
     pub worktree_aliases: std::collections::BTreeMap<String, String>,
 }
 
+/// What the kernel does when an agent's turn ends on the provider's usage limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageLimitResume {
+    /// The person decides, on a card in the agent's pane.
+    #[default]
+    Ask,
+    /// The kernel goes on with the turn when usage is back.
+    Automatic,
+}
+
+impl UsageLimitResume {
+    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ask" => Ok(Self::Ask),
+            "automatic" => Ok(Self::Automatic),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be `ask` or `automatic`",
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
     /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload_without_asking: Option<bool>,
+    /// Asks by default: the owner may let the kernel resume agents stopped by a usage limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_resume: Option<UsageLimitResume>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

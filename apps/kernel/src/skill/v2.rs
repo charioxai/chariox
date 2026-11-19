@@ -218,7 +218,7 @@ pub enum SkillInstallSource {
         selection: SkillSelection,
     },
     /// One skill directory of a public git repository, pinned to the commit the
-    /// owner reviewed through `ResolveRepository`. Owner-initiated only.
+    /// owner or an agent reviewed through `ResolveRepository`.
     Repository {
         url: String,
         revision: String,
@@ -326,8 +326,10 @@ pub enum SkillsV2Request {
         agent_id: String,
         refresh: bool,
     },
+    /// `agent_id` names the focused agent whose run lists the skill; it is null for a
+    /// skill an installed provider lists with no run (an `installed:` execution id).
     NativeDetails {
-        agent_id: String,
+        agent_id: Option<String>,
         selection: SkillSelection,
     },
     Loads {

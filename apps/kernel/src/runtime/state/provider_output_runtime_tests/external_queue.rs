@@ -31,6 +31,13 @@ async fn unavailable_provider_account_defers_explicit_queue_advances_without_los
         &account.profile_id,
     )
     .expect("account should start authenticated");
+    crate::test_support::seed_account_models(
+        &app.provider_catalog_projection_store(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "codex",
+        &account.profile_id,
+        &["gpt-5.4"],
+    );
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;

@@ -416,7 +416,8 @@ fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
 }
 
 async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("workspace-live-sync-mcp-test");
+    let root = _tmp.join(format!(
         "chariox-workspace-live-sync-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -959,7 +960,8 @@ fn mcp_http_tools_call_lists_and_requests_capabilities() {
 }
 
 async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("capability-mcp-test");
+    let root = _tmp.join(format!(
         "chariox-capability-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1257,7 +1259,8 @@ fn primitive_mcp_result_shape_is_versioned_and_hashed() {
 // MP-08/MP-10: real script execution through the authenticated shared MCP dispatcher.
 #[tokio::test]
 async fn mcp_script_string_result_remains_available_to_strict_clients() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("efix7-mcp");
+    let root = _tmp.join(format!(
         "chariox-efix7-mcp-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()

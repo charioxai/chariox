@@ -617,3 +617,75 @@ fn claude_account_skill_shadows_same_name_project_skill() {
         "the account skill is the harness-effective package"
     );
 }
+
+/// An installed Codex no run uses lists its skills through skills/list on its account's
+/// app-server, with the installed execution id the Details and Import requests name again.
+#[test]
+fn installed_codex_lists_its_skills_through_its_app_server_without_a_run() {
+    use tokio_tungstenite::tungstenite::{accept, Message};
+    let scratch = Scratch::new();
+    let skill = scratch.skill("codex-home/skills", "review");
+    let cwd = scratch.0.clone();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+    let listed = serde_json::json!({"data": [{"cwd": cwd, "errors": [], "skills": [
+        {"name": "review", "description": "Review source safely", "path": skill, "enabled": true}]}]});
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = accept(stream).unwrap();
+        let mut methods = Vec::new();
+        while let Ok(message) = socket.read() {
+            let Ok(text) = message.to_text() else { break };
+            let request: serde_json::Value = serde_json::from_str(text).unwrap();
+            let (Some(id), Some(method)) = (request.get("id"), request["method"].as_str()) else {
+                continue;
+            };
+            methods.push(method.to_string());
+            let result = match method {
+                "initialize" => serde_json::json!({"userAgent": "codex-test/1"}),
+                "skills/list" => listed.clone(),
+                other => panic!("unexpected Codex request {other}"),
+            };
+            let reply = serde_json::json!({"id": id, "result": result});
+            socket.send(Message::text(reply.to_string())).unwrap();
+        }
+        methods
+    });
+    let mut binding = scratch.binding("codex");
+    binding.execution_id = "installed:codex:kernel-1:project-1".into();
+    binding.started_at_ms = 0;
+    let inventory = inventory_for_binding(
+        &binding,
+        &mut NativeSkillInventoryCache { cached: None },
+        ProviderListing {
+            client_id: "installed:codex:kernel-1:project-1",
+            endpoint: Some(&endpoint),
+            opencode_agent: "build",
+        },
+        &scratch.0,
+        &[],
+        false,
+    )
+    .unwrap();
+    assert_eq!(inventory.entries.len(), 1);
+    let SkillSelection::Native {
+        name,
+        provider,
+        execution_id,
+        ..
+    } = &inventory.entries[0].selection
+    else {
+        panic!("a provider skill is a native selection");
+    };
+    assert_eq!(
+        (name.as_str(), provider.as_str(), execution_id.as_str()),
+        ("review", "codex", "installed:codex:kernel-1:project-1")
+    );
+    assert_eq!(
+        inventory.entries[0].exposure,
+        NativeSkillExposure::Confirmed
+    );
+    let details = inventory.details(&inventory.entries[0].selection).unwrap();
+    assert!(details.body.unwrap().contains("Inspect source."));
+    assert_eq!(server.join().unwrap(), ["initialize", "skills/list"]);
+}

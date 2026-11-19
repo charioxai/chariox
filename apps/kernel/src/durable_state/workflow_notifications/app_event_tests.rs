@@ -24,6 +24,8 @@ fn installed_route(f: &Fixture) {
                 source_event_type: "dev.chariox.dummy/dummy.test".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
+                app_managed: false,
                 source: None,
             },
             now_ms: 1,
@@ -44,6 +46,7 @@ fn register(f: &Fixture, enabled: bool) -> WorkflowNotificationSource {
         name: "received".into(),
         exit_ordinal: 0,
         display_name: "Received".into(),
+        options: Vec::new(),
     };
     match f
         .store

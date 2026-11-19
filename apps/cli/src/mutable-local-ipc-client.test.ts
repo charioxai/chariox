@@ -95,7 +95,7 @@ function fakeClient(name: string) {
     supportsKernelEvents: () => true,
     send: async () => name,
     subscribeToKernelEvents: async () => {},
-    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToRoomList: async () => {},
     unsubscribeFromKernelEvents: async () => {},
     restartKernelEventStream: async () => {},
     onKernelEvent: () => () => {},

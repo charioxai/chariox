@@ -285,7 +285,7 @@ function createHarness(options: {
   ) => Promise<{ session: RuntimeSession }>
 } = {}) {
   const catalog = options.providerCatalog ?? fallbackProviderCatalog()
-  let waitingRoomState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium", "opencode", DEFAULT_THEME_REGISTRY)
+  let startState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium", "opencode", DEFAULT_THEME_REGISTRY)
   let defaults: { provider: BackendProviderId; accountProfile?: string; model: string; effort: string } = {
     provider: "opencode",
     accountProfile: "default",
@@ -312,7 +312,7 @@ function createHarness(options: {
 
   const controller = createProviderSelectionController({
     currentProviderSelection: () => options.currentSelection ?? defaults,
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     availableSessions: () => [],
     providerCatalog: () => catalog,
     providerAccounts: () => options.providerAccounts ?? [],
@@ -327,7 +327,7 @@ function createHarness(options: {
       defaults = selection
     },
     reconcileWaitingRoom: (next) => {
-      waitingRoomState = next
+      startState = next
       reconciledStates.push(next)
     },
     isAttached: () => options.attached ?? false,

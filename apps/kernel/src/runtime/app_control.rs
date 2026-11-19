@@ -80,6 +80,7 @@ pub(crate) struct AppControlService {
     validation_prompts:
         Arc<std::sync::Mutex<std::collections::BTreeMap<String, (String, Option<String>)>>>,
     publishers: super::app_publisher_control::AppPublisherControl,
+    approved_operations: super::app_approved_operations::ApprovedOperations,
     /// Agents with a delayed App catalog refresh pending (at most one each).
     catalog_refreshes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -171,6 +172,7 @@ impl AppControlService {
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
+            approved_operations: Default::default(),
             catalog_refreshes: Default::default(),
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
@@ -310,11 +312,30 @@ impl AppControlService {
             .clone()
     }
 
+    /// The shown prompts of operations whose ids start with `prefix`, with the session that shows each.
+    pub(crate) fn shown_validation_prompts(&self, prefix: &str) -> Vec<(String, String)> {
+        self.validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(operation_id, _)| operation_id.starts_with(prefix))
+            .filter_map(|(operation_id, (_, session))| {
+                Some((operation_id.clone(), session.clone()?))
+            })
+            .collect()
+    }
+
     pub(crate) fn end_validation_prompt(&self, operation_id: &str) {
         self.validation_prompts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(operation_id);
+    }
+
+    pub(crate) fn approved_operations(
+        &self,
+    ) -> &super::app_approved_operations::ApprovedOperations {
+        &self.approved_operations
     }
 
     pub(crate) fn admission(&self) -> Arc<Semaphore> {

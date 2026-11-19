@@ -43,7 +43,7 @@ private struct TerminalStage: View {
             if hasAttachment {
                 FreeformSurface(model: model, isWide: isWide)
             } else {
-                WaitingRoomSurface(model: model, isWide: isWide)
+                RoomListSurface(model: model, isWide: isWide)
             }
             PromptStrip(model: model, mode: hasAttachment ? .freeform : .waiting)
             GlobalFooter(
@@ -111,7 +111,7 @@ private struct TerminalRail: View {
                 .font(.system(.title2, design: .monospaced, weight: .heavy))
                 .foregroundStyle(CharioxPalette.orange)
                 .padding(.top, 16)
-            RailButton(systemName: "terminal", label: "Waiting room") {
+            RailButton(systemName: "terminal", label: "Room list") {
                 Task { await model.detachActiveSession() }
             }
             .disabled(model.activeAttachment == nil || model.connectionState.isWorking)
@@ -153,7 +153,7 @@ private struct RailButton: View {
     }
 }
 
-private struct WaitingRoomSurface: View {
+private struct RoomListSurface: View {
     @Bindable var model: CharioxAppModel
     let isWide: Bool
     @FocusState private var focusedField: Field?
@@ -190,7 +190,7 @@ private struct WaitingRoomSurface: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CharioxPalette.panel)
-        .accessibilityIdentifier("waiting-room")
+        .accessibilityIdentifier("room-list")
     }
 
     private var logoBlock: some View {
@@ -224,7 +224,7 @@ private struct WaitingRoomSurface: View {
 
     private var waitingRows: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Waiting room")
+            Text("Room list")
                 .terminalSectionLabel()
             VStack(spacing: 1) {
                 WaitingActionRow(marker: ">", label: "Start new session", value: "\(model.selectedProviderID) \(model.selectedModelID) \(model.selectedVariantID)") {
@@ -561,7 +561,7 @@ private struct PromptStrip: View {
                 }
             }
             HStack(spacing: 12) {
-                Text(mode == .waiting ? "WAITING ROOM" : "FREEFORM")
+                Text(mode == .waiting ? "ROOM LIST" : "FREEFORM")
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
                     .foregroundStyle(CharioxPalette.orange)
                 Text(metaText)

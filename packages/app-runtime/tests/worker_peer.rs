@@ -184,14 +184,19 @@ async fn a_broker_request_names_the_callers_of_the_calls_in_progress() {
     .unwrap();
     let agent = json!({"kind": "agent", "id": "agent-1"});
     let owner = json!({"kind": "human", "id": "local"});
-    let context = |actor: &Value| json!({"room_id": "room", "operation_id": "op", "actor": actor});
+    let context = |actor: &Value, operation: &str| json!({"room_id": "room", "operation_id": operation, "actor": actor});
     let mut calls = Vec::new();
-    for actor in [Some(&agent), Some(&agent), Some(&owner), None] {
+    for (actor, operation) in [
+        (Some(&agent), "op-1"),
+        (Some(&agent), "op-2"),
+        (Some(&owner), "op-3"),
+        (None, "op-4"),
+    ] {
         let slot = peer.reserve(BUDGET).unwrap();
         calls.push(tokio::spawn(slot.request(
             "tools.invoke",
             json!({}),
-            actor.map(context),
+            actor.map(|actor| context(actor, operation)),
         )));
     }
     let mut worker = worker(stream);
@@ -205,9 +210,22 @@ async fn a_broker_request_names_the_callers_of_the_calls_in_progress() {
         .unwrap();
     receive(&mut worker).await;
     let mut callers = seen.recv().await.unwrap();
-    callers.sort_by_key(|actor| actor["kind"].to_string());
-    // Each caller once, as the kernel named it; a call without context adds none.
-    assert_eq!(callers, [agent.clone(), owner.clone()]);
+    callers.sort_by_key(|actor| actor["operation_id"].to_string());
+    // Each call's caller, as the kernel named it, with the call's operation; a call
+    // without context adds none.
+    let named = |actor: &Value, operation: &str| {
+        let mut named = actor.clone();
+        named["operation_id"] = json!(operation);
+        named
+    };
+    assert_eq!(
+        callers,
+        [
+            named(&agent, "op-1"),
+            named(&agent, "op-2"),
+            named(&owner, "op-3")
+        ]
+    );
     for invocation in &invocations {
         worker
             .send(&response(&id(invocation), json!({})), BUDGET)

@@ -30,6 +30,10 @@ export async function ensureFocusWorld(browser, connection, sessionId, targetId,
   return world.ready ?? world;
 }
 
+// The Runtime target of a world. A cross-site navigation moves the page to a new renderer whose context ids start
+// over, so a plain id can name the next document's world; the unique id the creation event carried cannot.
+export const worldContext = world => world.uniqueContextId ? { uniqueContextId: world.uniqueContextId } : { contextId: world.contextId };
+
 // MP-08 / MP-10 / MP-11: consume only the kernel-registered isolated world
 // observed after the current main-frame commit. A page's default world never qualifies.
 export function recordFocusWorld(browser, message) {

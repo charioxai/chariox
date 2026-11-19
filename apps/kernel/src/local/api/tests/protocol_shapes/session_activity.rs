@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 fn semantic_session_activity_protocol_snapshot_and_hash() {
     let session = crate::session::RuntimeSession::new(
         "session",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
@@ -20,13 +21,13 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "schema": 14, "session": {"last_activity_at_ms": decoded.last_activity_at_ms()}});
     assert_eq!(
         snapshot,
-        serde_json::json!({"local":1012,"peer": 449,"schema":14,"session":{"last_activity_at_ms":42}})
+        serde_json::json!({"local":1060,"peer": 498,"schema":14,"session":{"last_activity_at_ms":42}})
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "f64d4f4c853c30a8a35ff47a41aeb32d676c5519f1b35af430f17bfa8a5159c1"
+        "0f485d527c2f38e32cde95a2b2f8527b7e55d2c24ba54310d97f23bf99eec9df"
     );
 }

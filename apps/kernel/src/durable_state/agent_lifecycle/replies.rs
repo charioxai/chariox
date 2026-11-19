@@ -101,8 +101,8 @@ pub(super) fn read_in_turn(
     Ok(())
 }
 /// A reply_requested question its recipient read inside a running turn (shown by an inbox read, or
-/// already acknowledged) has no message turn of its own whose end could answer it: the recipient's
-/// next message to the asker is that answer.
+/// already acknowledged), or whose delivery to that turn is still in flight, has no message turn of
+/// its own whose end could answer it: the recipient's next message to the asker is that answer.
 pub(super) fn answer_by_message(
     tx: &Transaction<'_>,
     reply: &InboxEvent,
@@ -115,7 +115,7 @@ pub(super) fn answer_by_message(
         .query_row(
             "SELECT q.sequence,json_extract(q.payload,'$.state') FROM agent_inbox q WHERE q.room_id=?1 AND q.agent_id=?2 AND q.source_id=?3 \
              AND json_extract(q.payload,'$.kind')='message' AND json_extract(q.payload,'$.reply_requested')=1 \
-             AND (json_extract(q.payload,'$.state') IN ('accepted','acknowledged','handled') \
+             AND (json_extract(q.payload,'$.state') IN ('submitting','uncertain','blocked','accepted','acknowledged','handled') \
                   OR EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=q.sequence)) \
              AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=q.room_id AND o.source_id='agent-event-'||q.agent_id||'-'||q.sequence) \
              ORDER BY q.sequence LIMIT 1",
@@ -144,8 +144,12 @@ pub(super) fn answer_by_message(
             })),
         },
     )?;
-    // Answering the question handles it: it is not delivered again as a turn of its own.
-    if !matches!(state.as_str(), "acknowledged" | "handled") {
+    // Answering the question handles it: it is not delivered again as a turn of its own. A
+    // delivery still in flight is settled by its receipt, never by an acknowledgement.
+    if !matches!(
+        state.as_str(),
+        "submitting" | "uncertain" | "blocked" | "acknowledged" | "handled"
+    ) {
         super::delivery::apply(
             tx,
             Operation::Ack {
@@ -249,6 +253,15 @@ pub(super) fn recipient_start_failed(
         crate::session::unix_epoch_ms(),
         DelegateGoneReason::FailedStart,
     )
+}
+
+/// The person declined a message before its recipient read it.
+pub(super) fn recipient_declined(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    now: u64,
+) -> Result<(), DaemonError> {
+    recipient_unavailable(tx, event, now, DelegateGoneReason::SourceLost)
 }
 fn recipient_unavailable(
     tx: &Transaction<'_>,

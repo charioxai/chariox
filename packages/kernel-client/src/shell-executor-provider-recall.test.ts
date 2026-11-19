@@ -357,3 +357,61 @@ test("stop targets the focused peer instead of the default session agent", async
     session_id: "room", attachment_id: "terminal", target_agent_id: "peer",
   } }])
 })
+
+test("provider login --vault has the kernel type a Vault entry into an API-key login", async () => {
+  const requests: Record<string, unknown>[] = []
+  const status = (state: string) => ({
+    ProviderLoginStatus: {
+      login: { provider: "opencode", account_profile: "default", login_id: "login-9", state, terminal_output_base64: "", started_at_ms: 0, updated_at_ms: 0 },
+    },
+  })
+  let polls = 0
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      if ("StartProviderLogin" in request) {
+        return { ProviderLoginStarted: { login: { provider: "opencode", account_profile: "default", login_kind: "terminal", login_id: "login-9" } } }
+      }
+      if ("SendProviderLoginVaultEntry" in request) return { ProviderLoginVaultEntrySent: { login_id: "login-9" } }
+      polls += 1
+      return status(polls < 2 ? "running" : "succeeded")
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", provider: "opencode" })
+  const signedIn = await executeShellCommand(
+    parseShellCommand("provider login opencode default --method opencode_go_api_key --vault cred-1"),
+    context,
+    { client },
+  )
+  assert.equal(signedIn.ok, true)
+  assert.match(signedIn.message ?? "", /opencode\/default login succeeded with a Vault entry/)
+  assert.deepEqual(requests.slice(0, 2), [
+    { StartProviderLogin: { provider: "opencode", account_profile: "default", method: "opencode_go_api_key" } },
+    { SendProviderLoginVaultEntry: { login_id: "login-9", credential_id: "cred-1" } },
+  ])
+  assert.doesNotMatch(JSON.stringify(requests), /value|secret/i)
+  const withoutMethod = await executeShellCommand(parseShellCommand("provider login opencode --vault cred-1"), context, { client })
+  assert.equal(withoutMethod.ok, false)
+  assert.match(withoutMethod.message ?? "", /needs --method/)
+})
+
+test("provider reauth with invalid options sends no request, not even the logout", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { ProviderLoggedOut: { provider: "opencode" } }
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", provider: "opencode" })
+  for (const command of [
+    "provider reauth opencode --bogus",
+    "provider reauth opencode work --vault cap-1",
+    "provider reauth opencode a b",
+  ]) {
+    const result = await executeShellCommand(parseShellCommand(command), context, { client })
+    assert.equal(result.ok, false, command)
+    assert.match(result.message ?? "", /usage: provider login|needs --method/, command)
+  }
+  assert.deepEqual(requests, [])
+})

@@ -83,7 +83,7 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
         },
         "approved" => {
             let config = config_projection.snapshot();
-            let persisted = enrolled_profile(&config, api_url, response)?;
+            let persisted = admit_enrolled_profile(&config, api_url, response).await?;
             persist_cloud_profile(runtime_state, persisted.clone()).await?;
             CloudRelayLoginPoll {
                 status: CloudRelayLoginPollStatus::Approved,
@@ -203,13 +203,6 @@ pub(crate) fn enrolled_profile(
             message: "approval does not match this kernel identity and key".into(),
         });
     }
-    if config
-        .cloud_relay
-        .as_ref()
-        .is_some_and(|old| old.account_id != profile.account_id)
-    {
-        return Err(DaemonError::LocalTransport { operation: "complete kernel Cloud enrollment", message: "Cloud account conflicts with this root; unlink first or use a separate root/profile".into() });
-    }
     Ok(PersistedCloudRelayProfile {
         api_url,
         email: profile.email,
@@ -229,6 +222,39 @@ pub(crate) fn enrolled_profile(
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
         token_expires_at_ms: None,
+    })
+}
+
+// An approval for another account than the one this root is linked to is refused. Cloud lists the kernel from the approval
+// on, so the refused approval is unlinked there with its own credential: left behind, it opens as a kernel that never connects.
+pub(crate) async fn admit_enrolled_profile(
+    config: &crate::config::DaemonConfig,
+    api_url: String,
+    response: CloudDevicePollResponse,
+) -> Result<PersistedCloudRelayProfile, DaemonError> {
+    let profile = enrolled_profile(config, api_url, response)?;
+    if !config
+        .cloud_relay
+        .as_ref()
+        .is_some_and(|old| old.account_id != profile.account_id)
+    {
+        return Ok(profile);
+    }
+    let unlink = LogoutCloudRelayRequest {
+        revoke_client: false,
+        revoke_machine: false,
+    };
+    let withdrawn = request_cloud_logout(Some(&profile), &unlink, |api_url, body| {
+        post_cloud_acknowledged(api_url, "/kernels/unlink", body)
+    })
+    .await;
+    let conflict = "Cloud account conflicts with this root";
+    Err(DaemonError::LocalTransport {
+        operation: "complete kernel Cloud enrollment",
+        message: match withdrawn {
+            Ok(()) => format!("{conflict}; the approval was withdrawn in Cloud. Unlink first or use a separate root/profile"),
+            Err(error) => format!("{conflict}; unlink first or use a separate root/profile. Withdrawing the approval in Cloud failed ({error}): remove kernel {} from that account in Cloud", config.daemon_id),
+        },
     })
 }
 

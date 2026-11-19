@@ -19,7 +19,7 @@ fn busy_agent(app: &mut DaemonApp, session: &str) -> String {
     let attachment = KernelSessionService::new(app)
         .attach(AttachRequest::new(
             session,
-            "attachment-github-events",
+            "attachment-github",
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
@@ -109,6 +109,8 @@ async fn exercise() {
                         installation_id: "installed".into(),
                         event_name: "changed".into(),
                     },
+                    options: Vec::new(),
+                    once: false,
                 },
                 busy_policy: None,
                 prompt: Some("Review the pull request".into()),

@@ -49,7 +49,7 @@ fn failed_turn_with_ledger_work_still_blocks_for_the_owner() {
 fn turn_with_a_registered_obligation_keeps_the_ledger_correction() {
     let f = Fixture::new();
     f.begin("p");
-    f.register();
+    f.register_owed();
     let Outcome::Settled { task, correction } = f.settle("p", true) else {
         panic!()
     };

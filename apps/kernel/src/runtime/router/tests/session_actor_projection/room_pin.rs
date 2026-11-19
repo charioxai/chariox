@@ -77,11 +77,11 @@ async fn mp11_room_pin_updates_listing_and_survives_restore() {
     let restored: crate::session::RuntimeSession = serde_json::from_value(value).unwrap();
     assert!(restored.pinned());
     let request: LocalDaemonRequest =
-        serde_json::from_value(serde_json::json!({"GetWaitingRoomPublicSnapshot":null})).unwrap();
+        serde_json::from_value(serde_json::json!({"GetRoomListSnapshot":null})).unwrap();
     let command = KernelCommand::from_local_request("room-pin-list", None, None, &request);
     let listing = serde_json::to_value(router.dispatch(command, request).await.unwrap()).unwrap();
     assert_eq!(
-        listing["WaitingRoomPublicSnapshot"]["snapshot"]["sessions"][0]["pinned"],
+        listing["RoomListSnapshot"]["snapshot"]["sessions"][0]["pinned"],
         true
     );
     let response = pin(&router, &id, false, DEFAULT_LOCAL_USER_ID)
@@ -131,17 +131,16 @@ async fn mp11_room_pin_preserves_spawned_agents_in_response_and_projections() {
             "cached session retains every agent"
         );
         let request: LocalDaemonRequest =
-            serde_json::from_value(serde_json::json!({"GetWaitingRoomPublicSnapshot": null}))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({"GetRoomListSnapshot": null})).unwrap();
         let command =
             KernelCommand::from_local_request("room-pin-list-agents", None, None, &request);
         let listing =
             serde_json::to_value(router.dispatch(command, request).await.unwrap()).unwrap();
-        let listed = &listing["WaitingRoomPublicSnapshot"]["snapshot"]["sessions"][0];
+        let listed = &listing["RoomListSnapshot"]["snapshot"]["sessions"][0];
         assert_eq!(
             listed["agents"].as_array().unwrap().len(),
             expected,
-            "waiting Room retains every agent"
+            "Room list retains every agent"
         );
     }
 }

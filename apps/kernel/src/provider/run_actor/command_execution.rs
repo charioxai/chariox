@@ -227,6 +227,38 @@ pub(super) fn execute_utility_command(
     result
 }
 
+/// A setup turn on a Claude run that has no structured I/O (headless, native terminal): the
+/// answer comes from a fresh official `claude -p` child that lives only for this turn.
+pub(crate) fn run_room_commands_on_fresh_claude(
+    run: &RuntimeProviderRun,
+    credentials: &crate::provider::ProviderCredentialEnvironment,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    let clone = run.room_commands_claude_clone(hidden_system_context);
+    let mut state = crate::provider::claude_runtime::initialize_claude_runtime_with_credentials(
+        &clone,
+        credentials,
+    )?
+    .state;
+    let envelope = PromptEnvelope::new(
+        visible_user_prompt,
+        hidden_system_context,
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::current(),
+    );
+    run_claude_utility_prompt_on_runtime(
+        &clone,
+        &mut state,
+        &envelope,
+        timeout,
+        ProviderUtilityExecutionPolicy::RoomCommands,
+        None,
+        None,
+    )
+}
+
 fn run_claude_utility_prompt_on_runtime(
     run: &RuntimeProviderRun,
     state: &mut super::super::ClaudeRuntimeState,
@@ -455,6 +487,7 @@ pub(super) fn execute_output_poll_command(
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             hook_context_delivered: false,
+            native_compactions: Vec::new(),
             skill_tool_delivery_acknowledgements,
             chunks: poll
                 .chunks
@@ -555,6 +588,7 @@ pub(super) fn execute_output_poll_command(
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         hook_context_delivered: false,
+        native_compactions: Vec::new(),
         skill_tool_delivery_acknowledgements,
         chunks: drain
             .chunks

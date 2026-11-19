@@ -128,8 +128,7 @@ mod tests {
     #[test]
     fn pairings_are_stored_privately_replaced_and_forgotten() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("paired-{:08x}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_support::TestTempDir::new("paired");
         let path = dir.join("gateway-kernels.json");
         let store = PairedKernels::new(path.clone());
         assert!(store.all().unwrap().is_empty());

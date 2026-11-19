@@ -20,7 +20,7 @@ export function mutateSkillCatalogRequest(mutation: SkillCatalogMutation, review
   if (!reviewReceiptId.trim()) throw new Error("Preview the changes again before publishing: a home review receipt is required")
   return skillsV2Request({ action: "mutate", mutation, review_receipt_id: reviewReceiptId })
 }
-export function nativeSkillDetailsRequest(agentId: string, selection: Extract<SkillSelection, { source: "native" }>) {
+export function nativeSkillDetailsRequest(agentId: string | null, selection: Extract<SkillSelection, { source: "native" }>) {
   return skillsV2Request({ action: "native_details", agent_id: agentId, selection })
 }
 export function previewSkillCatalogRequest(mutation: SkillCatalogMutation) {

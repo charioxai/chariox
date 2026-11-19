@@ -1,0 +1,317 @@
+{
+  "schema": "chariox.app.v2",
+  "appId": "com.chariox.github",
+  "version": "1.0.0",
+  "displayName": "GitHub",
+  "icon": "ui/icon.svg",
+  "publisher": {
+    "id": "com.chariox",
+    "keyId": "dev-387f43602267b693373898be0be5ec8bcecb6ab5c49eb534ee6b936ab520056c",
+    "name": "Chariox"
+  },
+  "appContractVersion": 2,
+  "resourcePolicy": "chariox.app.resources.v1",
+  "world": "chariox:app/app@1.1.0",
+  "requiredFeatures": [
+    "wasm-component",
+    "ui-actions",
+    "directed-events",
+    "credentialed-http",
+    "event-routing",
+    "workspace"
+  ],
+  "runtime": {
+    "engine": "wasm",
+    "component": "runtime/app.wasm"
+  },
+  "build": {
+    "language": "typescript",
+    "toolchain": "qjs@cecfa26bd323795be3a08afd3e08a26acfbc15dc+snapshot@059d0f9db52ab78039f7fa57994ee744bdb9145b140837ee3e852ee2713b141b",
+    "sdkVersion": "0.1.0"
+  },
+  "ui": {
+    "entry": "ui/index.html"
+  },
+  "tools": "schemas/tools.json",
+  "capabilities": {
+    "network": [
+      {
+        "origin": "https://api.github.com",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PATCH",
+          "POST",
+          "PUT"
+        ],
+        "credential": "github",
+        "routes": [
+          {
+            "method": "GET",
+            "path": "/user",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/rate_limit",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/user/repos",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/orgs/{org}/repos",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/search/issues",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/labels",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/assignees",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls/{number}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/files",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/commits",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/reviews",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/comments",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/issues/{number}/comments",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/commits/{ref}/check-runs",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/commits/{ref}/status",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/check-runs/{check_run_id}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/runs",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/jobs/{job_id}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+            "safety": "read",
+            "redirectHosts": [
+              "*.blob.core.windows.net"
+            ]
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/branches",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/branches/{branch}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/branches/{branch}/protection",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/compare/{basehead}",
+            "safety": "read"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/issues/{number}/comments",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/reviews",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/issues/{number}/labels",
+            "safety": "write"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/issues/{number}/labels/{name}",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+            "safety": "write"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls",
+            "safety": "write"
+          },
+          {
+            "method": "PUT",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/update-branch",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/graphql",
+            "safety": "write"
+          },
+          {
+            "method": "PUT",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/merge",
+            "safety": "destructive"
+          },
+          {
+            "method": "PATCH",
+            "path": "/repos/{owner}/{repo}/pulls/{number}",
+            "safety": "destructive"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/git/refs/heads/{branch}",
+            "safety": "destructive"
+          }
+        ]
+      }
+    ],
+    "eventRouting": {
+      "generator": "dev.chariox.github",
+      "incoming": [
+        "check_run_completed",
+        "check_suite_completed",
+        "issue_comment_created",
+        "issue_opened",
+        "issues_closed",
+        "issues_labeled",
+        "pull_request_closed",
+        "pull_request_labeled",
+        "pull_request_opened",
+        "pull_request_ready_for_review",
+        "pull_request_reopened",
+        "pull_request_review_comment_created",
+        "pull_request_review_submitted",
+        "pull_request_updated",
+        "push",
+        "release_published",
+        "review_requested",
+        "workflow_run_completed"
+      ],
+      "maxRoutes": 200
+    },
+    "workspace": {
+      "credential": "github"
+    }
+  },
+  "events": "schemas/events.json",
+  "uiActions": "schemas/ui-actions.json",
+  "idempotentTools": [
+    "get_check_output",
+    "get_checks",
+    "get_compare",
+    "get_event_sources",
+    "get_mergeability",
+    "get_pull_request",
+    "get_pull_request_diff",
+    "get_pull_request_files",
+    "get_pull_request_summary",
+    "get_status",
+    "get_subscription",
+    "list_accounts",
+    "list_assignees",
+    "list_branches",
+    "list_comments",
+    "list_commits",
+    "list_connection_repositories",
+    "list_deliveries",
+    "list_labels",
+    "list_pull_requests",
+    "list_repositories",
+    "list_reviews",
+    "list_subscriptions",
+    "preview_close_pull_request",
+    "preview_delete_branch",
+    "preview_merge_pull_request",
+    "view_account",
+    "view_actions",
+    "view_changes",
+    "view_state"
+  ]
+}

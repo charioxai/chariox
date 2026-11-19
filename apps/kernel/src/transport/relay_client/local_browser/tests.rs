@@ -1433,11 +1433,12 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
     });
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11 (relayproof r4, F4): a command that finishes after several
-// retry windows was retried inside each of them; every retry used to claim its window on arrival
-// and so all of them received the full result at the moment it finished.
+// A command that finishes after several retry windows was retried inside each of them. The
+// client abandons a stalled attempt and keeps the newest, so every retry that waited for the
+// original receives the result: answering one waiter left the live attempt of a slice operation
+// that ran for minutes with `duplicate_command_unavailable`.
 #[test]
-fn retries_of_a_pending_command_are_answered_once_when_it_finishes() {
+fn every_retry_of_a_pending_command_is_answered_when_it_finishes() {
     large_stack(async {
         let kernel = Kernel::new();
         let browser = Browser::new();
@@ -1496,24 +1497,16 @@ fn retries_of_a_pending_command_are_answered_once_when_it_finishes() {
             .unwrap()
             .error
             .is_none());
-        let mut answered = 0;
         for retry in retries {
             let outcome = timeout(Duration::from_secs(10), retry)
                 .await
                 .expect("a retry was left waiting")
                 .unwrap();
-            match outcome.error {
-                None => answered += 1,
-                Some(error) => {
-                    assert_eq!(error.code, "duplicate_command_unavailable");
-                    assert!(error.retryable);
-                }
-            }
+            assert!(
+                outcome.error.is_none(),
+                "a retry that waited for the original is answered, not told the result is unavailable"
+            );
         }
-        assert_eq!(
-            answered, 1,
-            "the result is sent to one of the retries when it becomes available, not to each"
-        );
     });
 }
 

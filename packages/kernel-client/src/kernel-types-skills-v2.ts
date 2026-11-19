@@ -183,7 +183,7 @@ export type SkillsV2Request =
   | { action: "catalog"; project_id: string | null; agent_id: string | null }
   | { action: "get"; skill_id: string; project_id: string | null }
   | { action: "native_inventory"; agent_id: string; refresh: boolean }
-  | { action: "native_details"; agent_id: string; selection: SkillSelection }
+  | { action: "native_details"; agent_id: string | null; selection: SkillSelection }
   | { action: "loads"; session_id: string; agent_id: string | null }
   | { action: "mutate"; mutation: SkillCatalogMutation; review_receipt_id: string }
   | { action: "preview"; mutation: SkillCatalogMutation }

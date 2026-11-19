@@ -136,6 +136,7 @@ fn cache_test_provider_catalog(app: &mut DaemonApp) {
                     id: "gpt-5".to_string(),
                     name: "GPT-5".to_string(),
                     status: "available".to_string(),
+                    aliases: Vec::new(),
                     limit: None,
                     variants: BTreeMap::new(),
                 },

@@ -14,9 +14,10 @@ use crate::local::{
     RemoveCredentialRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
     ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
     SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
-    SetWorkflowNodeMaxTurnsRequest, SetWorkflowNodeWaitForAllInputsRequest, SliceRefRequest,
-    SpawnAgentRequest, UninstallMcpServerRequest, UpdateMcpServerRequest,
-    UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
+    SetWorkflowNodeMaxTurnsRequest, SetWorkflowNodeWaitForAllInputsRequest,
+    SetWorkflowResponsibleRequest, SliceRefRequest, SpawnAgentRequest, UninstallMcpServerRequest,
+    UpdateMcpServerRequest, UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
+    WorkflowResponsibleTarget,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -25,13 +26,17 @@ use super::CommandRouter;
 
 mod agent_peer;
 mod agent_tree;
+mod agents_run;
 mod dispatch;
 mod own_schedule;
 mod reach_lists;
 mod request;
 mod result;
+mod resume_args;
+mod settings_args;
 mod spawn_args;
 mod summary;
+mod workflow_responsible;
 
 #[cfg(test)]
 mod tests;

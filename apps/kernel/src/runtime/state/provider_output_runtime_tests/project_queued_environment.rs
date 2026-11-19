@@ -22,7 +22,7 @@ async fn mp08_mp10_mp11_queued_project_replacement_failure_preserves_queue() {
 }
 
 #[tokio::test]
-async fn mp08_mp10_mp11_queued_project_vault_cancellation_preserves_queue() {
+async fn mp08_mp10_mp11_queued_project_vault_cancellation_ends_the_queued_prompt() {
     run_case(Case::VaultCancellation).await;
 }
 
@@ -135,9 +135,23 @@ async fn run_case(case: Case) {
     if matches!(case, Case::ReplacementFailure) {
         std::fs::remove_file(&fixture).unwrap();
     }
-    if matches!(case, Case::VaultCancellation | Case::PromotionRetry) {
+    if matches!(case, Case::VaultCancellation) {
         crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
     }
+    // A record the kernel cannot read fails the promotion without ending the prompt.
+    let unreadable_record = matches!(case, Case::PromotionRetry).then(|| {
+        let record = std::fs::read_dir(state_root.join("project-environment"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .expect("the Project's saved Environment");
+        let saved = std::fs::read(&record).unwrap();
+        std::fs::write(&record, b"not json").unwrap();
+        (record, saved)
+    });
     if matches!(case, Case::SynchronousCompletion) {
         let completion = runtime
             .owned
@@ -199,7 +213,7 @@ async fn run_case(case: Case) {
             cancelled_prompt: false,
             started_next_prompt: true,
         }
-    } else if matches!(case, Case::VaultCancellation | Case::PromotionRetry) {
+    } else if matches!(case, Case::VaultCancellation) {
         let cancel = async {
             loop {
                 let sequence = runtime
@@ -273,12 +287,8 @@ async fn run_case(case: Case) {
             .is_none());
         // Resolve the temporary preparation failure without replacing the run or
         // changing its Project revision. Only an ordinary submission retries it.
-        crate::secret::unlock_chariox_encrypted_vault(
-            &vault_path,
-            "synthetic-fixture-passphrase",
-            crate::secret::VaultUnlockLease::KernelShutdown,
-        )
-        .unwrap();
+        let (record, saved) = unreadable_record.expect("set for this case");
+        std::fs::write(record, saved).unwrap();
         let submitted = runtime
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session.id().into(),
@@ -387,10 +397,23 @@ async fn run_case(case: Case) {
             .unwrap();
         assert!(!settlement.started_next_prompt);
         assert!(state.active_prompt_for_agent(agent.id()).is_none());
-        let backlog = state.queued_prompts_for_agent(agent.id()).unwrap();
-        assert_eq!(backlog.len(), 1);
-        assert_eq!(backlog[0].id(), queued.id());
-        assert_eq!(backlog[0].prompt(), queued.prompt());
+        if matches!(case, Case::VaultCancellation) {
+            // The owner declined the Vault unlock the queued prompt needed: that prompt ends.
+            let (_, queued_now) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&state, agent.id());
+            assert!(
+                queued_now.is_empty(),
+                "a cancelled Vault unlock left {} prompts queued behind an idle agent",
+                queued_now.len()
+            );
+        } else {
+            let backlog = state.queued_prompts_for_agent(agent.id()).unwrap();
+            assert_eq!(backlog.len(), 1);
+            assert_eq!(backlog[0].id(), queued.id());
+            assert_eq!(backlog[0].prompt(), queued.prompt());
+        }
         let native: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture.with_extension("json")).unwrap())
                 .unwrap();

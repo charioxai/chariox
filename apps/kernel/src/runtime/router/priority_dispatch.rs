@@ -36,6 +36,7 @@ use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
+use crate::runtime::room_list_control::execute_room_list_request;
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
@@ -50,7 +51,6 @@ use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request,
 };
 use crate::runtime::user_config_executor::execute_user_config_request;
-use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
@@ -496,9 +496,66 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
-            request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
-            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
-            | LocalDaemonRequest::ListWaitingRoomSessions(_)) => boxed_handler(|| async move {
+            LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_person_inbox_request(
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_card_state(
+                    &self.runtime_state,
+                    request,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_mute(
+                    &self.runtime_state,
+                    request,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_notification_subscriptions(&command_caller_user_id(&command))
+            }),
+            LocalDaemonRequest::UpdateNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .update_notification_subscription(
+                            request,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::RemoveNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .remove_notification_subscription(
+                            &request.subscription_id,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::TestNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state.test_notification_subscription(
+                        &request.subscription_id,
+                        &command_caller_user_id(&command),
+                    )
+                })
+            }
+            LocalDaemonRequest::ReadNotificationTrace(request) => boxed_handler(|| async move {
+                self.runtime_state.read_notification_trace(
+                    &request.subscription_id,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
+            | LocalDaemonRequest::ListRoomListSessions(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
                     &self.config_projection.snapshot(),
@@ -508,10 +565,10 @@ impl CommandRouter {
                 } else {
                     Default::default()
                 };
-                execute_waiting_room_request(
+                execute_room_list_request(
                     &self.runtime_state,
                     &self.session_projection,
-                    &self.waiting_room_session_summaries,
+                    &self.room_list_session_summaries,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
                     directory,
@@ -575,22 +632,17 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceWorktrees(_)
             | LocalDaemonRequest::CreateWorkspaceWorktree(_)
             | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
             | LocalDaemonRequest::GetWorkspaceGitOverview(_)
             | LocalDaemonRequest::ListWorkspaceFiles(_)
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                boxed_handler(|| async move {
-                    execute_workspace_command_request(
-                        &self.runtime_state,
-                        &self.session_projection,
-                        request,
-                    )
-                    .await
-                })
-            }
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)) => boxed_handler(|| async move {
+                execute_workspace_command_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    request,
+                )
+                .await
+            }),
             request @ (LocalDaemonRequest::RunAgentUtility(_)
             | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
                 boxed_handler(|| async move {
@@ -653,6 +705,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),

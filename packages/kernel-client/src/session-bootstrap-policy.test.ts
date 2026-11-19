@@ -63,7 +63,7 @@ test("decideBootstrapAction respects explicit create and session refs", () => {
   )
 })
 
-test("decideBootstrapAction lands in the waiting room by default", () => {
+test("decideBootstrapAction lands in the Room list by default", () => {
   assert.deepEqual(
     decideBootstrapAction(
       {},

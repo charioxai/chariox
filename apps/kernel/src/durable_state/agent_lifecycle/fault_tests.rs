@@ -83,3 +83,43 @@ fn g05_duplicate_delivery_file_replays_one_occurrence_once_more() {
     let log = std::fs::read_to_string(f.root.join("faults/duplicate-delivery.log")).unwrap();
     assert_eq!(log.lines().count(), 1, "only deliveries are replayed");
 }
+
+#[test]
+fn drop_ack_file_commits_one_delivery_and_fails_its_acknowledgement_once() {
+    let f = FaultStore::open("drop-ack", &[]);
+    let ack = f.root.join("faults/drop-ack");
+    std::fs::write(&ack, "occurrence\n").unwrap();
+    let deliver = || {
+        f.store.agent_lifecycle(Operation::Occur(occurrence(
+            "room",
+            "agent",
+            "peer",
+            "occurrence-1",
+            "message",
+            serde_json::json!({"message": "review"}),
+        )))
+    };
+    f.begin("not-a-delivery").unwrap();
+    assert!(
+        ack.exists(),
+        "a write of another kind keeps the fault armed"
+    );
+
+    let error = deliver().unwrap_err().to_string();
+    assert!(error.contains("drop-ack"), "{error}");
+    assert!(!ack.exists(), "the fault fires once");
+    assert_eq!(
+        f.store.agent_inbox("room", "agent", 0).unwrap().len(),
+        1,
+        "the write committed"
+    );
+    let log = std::fs::read_to_string(f.root.join("faults/drop-ack.log")).unwrap();
+    assert!(log.contains("occurrence acknowledgement dropped"), "{log}");
+
+    deliver().unwrap();
+    assert_eq!(
+        f.store.agent_inbox("room", "agent", 0).unwrap().len(),
+        1,
+        "the retry is the same delivery"
+    );
+}

@@ -18,8 +18,8 @@ use crate::terminal::{
 use crate::transport::kernel_protocol::{
     event_is_relevant_to_attachment, event_session_id, event_stream_id_for_event,
     kernel_event_trace_payload, subscription_event_stream_id, KernelEvent, KernelOutgoingFrame,
-    KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
-    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    KernelSubscriptionScope, RoomListEventProjection, ROOM_LIST_SENTINEL_ID,
+    ROOM_LIST_SUBSCRIPTION_SCOPE,
 };
 
 use crate::transport::agent_turn_feed::AgentTurnFeed;
@@ -29,8 +29,8 @@ use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use super::{
     ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
-    RELAY_DISCOVERY_INTERVAL_TICKS, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
-    WAITING_ROOM_INVENTORY_INTERVAL_TICKS, WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
+    RELAY_DISCOVERY_INTERVAL_TICKS, ROOM_LIST_INTERVAL_TICKS, ROOM_LIST_ROW_COALESCE_MS,
+    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WATCH_INTERVAL_MS,
 };
 
 pub(super) async fn run_subscription_loop(
@@ -43,8 +43,8 @@ pub(super) async fn run_subscription_loop(
 ) {
     // Local subscriptions follow Cloud link/unlink through the current projection.
     let mut passkey_prompts = PasskeyPromptFeed::new_local(subscription.connection_class, &router);
-    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
-        run_waiting_room_inventory_subscription_loop(
+    if subscription.subscription_scope == KernelSubscriptionScope::RoomList {
+        run_room_list_subscription_loop(
             subscription.heartbeat_interval,
             router,
             runtime,
@@ -115,7 +115,7 @@ pub(super) async fn run_subscription_loop(
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&subscription.session_id);
         let workflow_design_change_sequence = router.workflow_design_change_sequence();
-        let skill_change_sequence = router.runtime_projection_change_sequence();
+        let skill_change_sequence = router.room_list_change_sequence();
         let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -328,7 +328,7 @@ pub(super) async fn run_subscription_loop(
                         &close_requested,
                         KernelEvent::WorkflowRunUpdated {
                             session_id: subscription.session_id.clone(),
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                         },
                         Some(&event_stream_id),
                         Some(&subscription.session_id),
@@ -462,7 +462,7 @@ pub(super) async fn run_subscription_loop(
                         workflow_design_change_sequence
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
-                    _ = router.wait_for_runtime_projection_change_after(skill_change_sequence) => {}
+                    _ = router.wait_for_room_list_change_after(skill_change_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                     _ = home_audit.changed() => {}
                 }
@@ -937,7 +937,7 @@ pub(super) async fn emit_replay_gap_snapshot(
     }
 }
 
-async fn run_waiting_room_inventory_subscription_loop(
+async fn run_room_list_subscription_loop(
     heartbeat_interval: Duration,
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
@@ -947,7 +947,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     mut passkey_prompts: PasskeyPromptFeed,
 ) {
     let mut previous_catalog_revision = None;
-    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
+    let mut room_list_event_projection = RoomListEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut previous_provider_catalog = None;
@@ -964,7 +964,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                 &close_tx,
                 &close_requested,
                 event,
-                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                 None,
                 None,
             )
@@ -984,7 +984,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                 KernelEvent::ClientCatalogChanged {
                     revision: client_catalog_sequence,
                 },
-                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                 None,
                 None,
             )
@@ -993,11 +993,11 @@ async fn run_waiting_room_inventory_subscription_loop(
                 break;
             }
         }
-        let runtime_projection_change_sequence = router.runtime_projection_change_sequence();
+        let room_list_change_sequence = router.room_list_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
-        if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+        if inventory_dirty || tick.is_multiple_of(ROOM_LIST_INTERVAL_TICKS) {
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
-                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
+                router.room_list_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
                 heartbeat_interval,
                 || {
@@ -1007,9 +1007,9 @@ async fn run_waiting_room_inventory_subscription_loop(
                         &close_tx,
                         &close_requested,
                         KernelEvent::Heartbeat {
-                            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                            session_id: ROOM_LIST_SENTINEL_ID.to_string(),
                         },
-                        Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                        Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                         None,
                         None,
                     )
@@ -1022,14 +1022,14 @@ async fn run_waiting_room_inventory_subscription_loop(
             match snapshot_result {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    for event in waiting_room_event_projection.project(snapshot) {
+                    for event in room_list_event_projection.project(snapshot) {
                         if !emit_kernel_event(
                             &runtime,
                             &outgoing_tx,
                             &close_tx,
                             &close_requested,
                             event,
-                            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                             None,
                             None,
                         )
@@ -1042,7 +1042,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                 Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.runtime_transport",
-                        "kernel waiting-room inventory subscription failed to build snapshot",
+                        "kernel room-list inventory subscription failed to build snapshot",
                         serde_json::json!({ "error": error.to_string() }),
                     );
                 }
@@ -1055,9 +1055,9 @@ async fn run_waiting_room_inventory_subscription_loop(
                 &close_tx,
                 &close_requested,
                 KernelEvent::Heartbeat {
-                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                    session_id: ROOM_LIST_SENTINEL_ID.to_string(),
                 },
-                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                 None,
                 None,
             )
@@ -1078,7 +1078,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                     &close_tx,
                     &close_requested,
                     KernelEvent::RelayStatusChanged { status },
-                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                     None,
                     None,
                 )
@@ -1100,7 +1100,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                     &close_tx,
                     &close_requested,
                     KernelEvent::RemoteMachinesChanged { machines },
-                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                     None,
                     None,
                 )
@@ -1122,7 +1122,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                         generated_at_ms: crate::session::unix_epoch_ms(),
                         catalog,
                     },
-                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                     None,
                     None,
                 )
@@ -1144,7 +1144,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                     generated_at_ms: crate::session::unix_epoch_ms(),
                     slices,
                 },
-                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                 None,
                 None,
             )
@@ -1160,8 +1160,8 @@ async fn run_waiting_room_inventory_subscription_loop(
                 .unwrap_or(Duration::ZERO),
             async {
                 tokio::select! {
-                    _ = wait_for_waiting_room_inventory_change(
-                        router.wait_for_runtime_projection_change_after(runtime_projection_change_sequence),
+                    _ = wait_for_room_list_change(
+                        router.wait_for_room_list_change_after(room_list_change_sequence),
                         router.wait_for_session_projection_change_after(
                             session_projection_change_sequence,
                         ),
@@ -1174,7 +1174,7 @@ async fn run_waiting_room_inventory_subscription_loop(
         )
         .await;
         if matches!(wait_result, Ok(true)) {
-            sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
+            sleep(Duration::from_millis(ROOM_LIST_ROW_COALESCE_MS)).await;
             inventory_dirty = true;
         }
         let elapsed_ticks =
@@ -1183,38 +1183,32 @@ async fn run_waiting_room_inventory_subscription_loop(
     }
 }
 
-async fn wait_for_waiting_room_inventory_change(
-    waiting_room_change: impl std::future::Future<Output = ()>,
+async fn wait_for_room_list_change(
+    room_list_change: impl std::future::Future<Output = ()>,
     session_projection_change: impl std::future::Future<Output = ()>,
 ) {
-    tokio::pin!(waiting_room_change);
+    tokio::pin!(room_list_change);
     tokio::pin!(session_projection_change);
     tokio::select! {
-        _ = &mut waiting_room_change => {}
+        _ = &mut room_list_change => {}
         _ = &mut session_projection_change => {}
     }
 }
 
 #[cfg(test)]
 #[tokio::test]
-async fn waiting_room_inventory_wait_wakes_for_either_projection_source() {
+async fn room_list_wait_wakes_for_either_projection_source() {
     tokio::time::timeout(
         Duration::from_secs(1),
-        wait_for_waiting_room_inventory_change(
-            std::future::ready(()),
-            std::future::pending::<()>(),
-        ),
+        wait_for_room_list_change(std::future::ready(()), std::future::pending::<()>()),
     )
     .await
-    .expect("waiting-room changes should wake inventory projection");
+    .expect("room-list changes should wake inventory projection");
 
     tokio::time::timeout(
         Duration::from_secs(1),
-        wait_for_waiting_room_inventory_change(
-            std::future::pending::<()>(),
-            std::future::ready(()),
-        ),
+        wait_for_room_list_change(std::future::pending::<()>(), std::future::ready(())),
     )
     .await
-    .expect("session activity projection changes should wake waiting-room inventory");
+    .expect("session activity projection changes should wake room-list inventory");
 }

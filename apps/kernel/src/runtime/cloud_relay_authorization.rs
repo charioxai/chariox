@@ -99,7 +99,7 @@ pub(crate) fn authorize_kernel_cloud_request(
 }
 
 // Use the complete authenticated caller, not a user-ID-only projection.
-// Session membership permits waiting-room access, never owner inventory.
+// Session membership permits room-list access, never owner inventory.
 pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand) -> bool {
     kernel_cloud_caller_owner(config, &command.source, &command.caller)
 }

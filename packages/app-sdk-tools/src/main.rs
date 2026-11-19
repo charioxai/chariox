@@ -14,7 +14,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let component = chariox_app_sdk_tools::prepare_component(&bytes)?;
         fs::write(output, component)?;
     } else {
-        chariox_app_wit::check_component(&bytes, chariox_app_wit::APP_WORLD)?;
+        chariox_app_wit::check_component(&bytes, chariox_app_wit::app_world_of(&bytes))?;
     }
     Ok(())
 }

@@ -92,7 +92,7 @@ Candidate shared surfaces:
 - terminal output normalization rules
 - transcript entry model
 - response pane selection rules
-- waiting-room row derivation
+- Room list row derivation
 - provider/model/variant selection semantics
 - request shape fixtures and protocol conformance fixtures
 
@@ -103,7 +103,7 @@ documented protocol fixtures and match the same state-transition behavior.
 
 The same conceptual components must exist across CLI, WEB_CLI, and iOS:
 
-- `WaitingRoom`
+- `RoomList`
 - `CommandCenter`
 - `PromptComposer`
 - `AgentPane`
@@ -163,7 +163,7 @@ Exit criteria:
 - app can list sessions and show connection state
 - transport unit tests cover reconnect and replay-gap behavior
 
-### IOS-M2 Waiting Room
+### IOS-M2 Room list
 
 Status: implemented for the first native slice. The app has kernel address,
 workspace/worktree target state, session refresh/create/select, attach/detach,
@@ -177,7 +177,7 @@ live-kernel UX polish.
 
 Deliverables:
 
-- waiting-room UI matching CLI/WEB_CLI semantics
+- Room list UI matching CLI/WEB_CLI semantics
 - session list, selected kernel address, workspace/worktree target state
 - create and attach session actions
 - command entry for `/session` basics
@@ -341,7 +341,7 @@ Minimum committed coverage:
 
 - kernel transport framing and reconnect behavior
 - reducer/state transition behavior
-- waiting-room row/state derivation
+- Room list row/state derivation
 - prompt submission acceptance/failure behavior
 - cancellation behavior
 - replay-gap refresh behavior

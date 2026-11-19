@@ -1,7 +1,7 @@
 //! Workflow control mailbox storage used for routed failure notifications.
 
 use crate::app::DaemonApp;
-use crate::session::{WorkflowFailureEvent, WorkflowFailureKind, WorkflowRun};
+use crate::session::{WorkflowFailureEvent, WorkflowRun};
 
 pub(super) fn workflow_node_control_contents(
     app: &DaemonApp,
@@ -69,19 +69,7 @@ pub(super) fn write_workflow_control_mailbox_entry(
     };
     let entry = format!(
         "- [{} @ {}] {}: {}",
-        match failure.kind() {
-            WorkflowFailureKind::MissingAck => "missing_ack",
-            WorkflowFailureKind::MissingStructuredOutput => "missing_structured_output",
-            WorkflowFailureKind::OutputValidationFailed => "output_validation_failed",
-            WorkflowFailureKind::WorkflowRunOutputValidationFailed => {
-                "workflow_run_output_validation_failed"
-            }
-            WorkflowFailureKind::NodeTurnBudgetExhausted => "node_turn_budget_exhausted",
-            WorkflowFailureKind::RunStopped => "run_stopped",
-            WorkflowFailureKind::ProviderFailure => "provider_failure",
-            WorkflowFailureKind::TransportFailure => "transport_failure",
-            WorkflowFailureKind::TurnStalled => "turn_stalled",
-        },
+        failure.kind().name(),
         failure.timestamp_ms(),
         edge_label,
         failure.message()

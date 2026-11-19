@@ -710,6 +710,13 @@ impl KernelRuntimeState {
             }
             Err(error) => Err(error),
         };
+        // A child held for its provider's background call hears the follow-up turn from its worker.
+        if self
+            .held_projection_drain_target(session_id, agent_id)
+            .is_some()
+        {
+            self.spawn_remote_prompt_projection_drain(session_id.to_string(), agent_id.to_string());
+        }
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",

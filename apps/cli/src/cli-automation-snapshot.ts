@@ -48,7 +48,7 @@ export type CliAutomationSnapshotDeps = {
   streamingAgentId: () => string | null
   agentBusyLatch: (agentId: string) => boolean
   isAttached: () => boolean
-  waitingRoomState: () => WaitingRoomState
+  startState: () => WaitingRoomState
   availableSessions: () => SessionListEntry[]
   waitingRoomProjects?: () => WaitingRoomProjectSummary[]
   providerCatalogState: () => ProviderCatalog
@@ -84,7 +84,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
   const waitingRoomTargets = deps.waitingRoomTargets()
   const machineAllocationCapability = waitingRoomTargets.machineAllocationCapability
   const selectedWorkflow = session.workflows?.find((workflow) => workflow.id === deps.selectedWorkflowId()) ?? null
-  const waitingRoomState = deps.waitingRoomState()
+  const startState = deps.startState()
   const providerAccounts = deps.providerAccountsState()
   const shellEntries = deps.workspaceShellEntries()
   const agentRuntimeDisplayStates = sessionAgentRuntimeDisplayStateByAgent(session)
@@ -158,9 +158,9 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
     })),
     waitingRoom: !deps.isAttached()
       ? {
-        state: waitingRoomState,
-        selectedProjectId: waitingRoomState.focus === "project-entry"
-          ? waitingRoomProjects[waitingRoomState.projectIndex ?? 0]?.id ?? null
+        state: startState,
+        selectedProjectId: startState.focus === "project-entry"
+          ? waitingRoomProjects[startState.projectIndex ?? 0]?.id ?? null
           : null,
         projects: waitingRoomProjects.map((project) => ({
           id: project.id,
@@ -173,7 +173,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           pendingCollaborationInviteCount: project.pending_collaboration_invite_count,
           lastSessionActivityAtMs: project.last_session_activity_at_ms ?? null,
         })),
-        rows: waitingRoomRows(waitingRoomState, deps.availableSessions(), deps.providerCatalogState(), {
+        rows: waitingRoomRows(startState, deps.availableSessions(), deps.providerCatalogState(), {
           ...(waitingRoomTargets.workspaceId
             ? { workspaceId: waitingRoomTargets.workspaceId }
             : {}),
@@ -182,7 +182,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
             : {}),
           cloudNotice: deps.waitingRoomCloudNotice(),
           inventoryStatus: deps.waitingRoomInventoryStatus(),
-          loadingFrame: waitingRoomState.introStep,
+          loadingFrame: startState.introStep,
           relay: deps.relayStatusState(),
           machines: deps.remoteMachinesState(),
           kernels: deps.remoteKernelsState(),

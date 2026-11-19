@@ -1,0 +1,10 @@
+[
+ {"path":"apps/cli/src/client-inventory-cache.ts","count":1,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/cli/src/client-view-cache.ts","count":1,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/cli/src/deployed-workflow-credential-enrollment.ts","count":1,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/cli/src/logging.ts","count":5,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/cli/src/terminal-exit-controller.ts","count":2,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/server/src/logging.ts","count":3,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"apps/server/src/publication-viewer.ts","count":3,"why":"swallowed an error before this check existed; handle or log it when touching the file"},
+ {"path":"packages/kernel-client/src/browser-mirror.ts","count":1,"why":"swallowed an error before this check existed; handle or log it when touching the file"}
+]

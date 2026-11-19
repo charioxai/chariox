@@ -5,7 +5,7 @@ use super::{
 };
 use std::{fs, path::Path, process::Command};
 
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args([
             "-c",
@@ -31,11 +31,11 @@ fn write_skill(root: &Path, path: &str, name: &str) {
     )
     .unwrap();
 }
-struct Repo {
-    root: std::path::PathBuf,
+pub(crate) struct Repo {
+    pub(crate) root: std::path::PathBuf,
 }
 impl Repo {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root =
             std::env::temp_dir().join(format!("skills-v2-repo-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
@@ -54,12 +54,12 @@ impl Repo {
         git(&root, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
         Self { root }
     }
-    fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         url::Url::from_directory_path(&self.root)
             .unwrap()
             .to_string()
     }
-    fn head(&self) -> String {
+    pub(crate) fn head(&self) -> String {
         git(&self.root, &["rev-parse", "HEAD"])
     }
 }
@@ -68,7 +68,7 @@ impl Drop for Repo {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-fn install_all(repo: &Repo, revision: &str, paths: &[&str]) -> SkillCatalogMutation {
+pub(crate) fn install_all(repo: &Repo, revision: &str, paths: &[&str]) -> SkillCatalogMutation {
     let mut actions = vec![SkillCatalogAction::CreatePackage {
         package_id: "package-repo".into(),
         name: "repo".into(),
@@ -183,7 +183,7 @@ fn repository_install_stays_pinned_when_the_repository_moves_on() {
 }
 
 #[test]
-fn repository_install_refuses_unknown_revisions_agents_and_credentials() {
+fn repository_install_refuses_unknown_revisions_and_credentials() {
     let f = StorageFixture::new();
     let repo = Repo::new();
     let service = SkillCatalogService::new(f.storage.clone());
@@ -195,16 +195,6 @@ fn repository_install_refuses_unknown_revisions_agents_and_credentials() {
         .unwrap_err()
         .to_string()
         .contains("full commit id"));
-    let agent = install_all(&repo, &repo.head(), &["skills/alpha"]);
-    let error = service
-        .prepare_with_source_access(
-            &agent,
-            &Default::default(),
-            SkillSourceAccess::Agent { workspace: None },
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("owner-initiated"), "{error}");
     let error = service
         .resolve_repository("https://user:secret@example.com/org/skills.git")
         .unwrap_err()
@@ -215,6 +205,47 @@ fn repository_install_refuses_unknown_revisions_agents_and_credentials() {
         fs::read_dir(f.root.join("state/skill-staging")).map_or(true, |mut d| d.next().is_none()),
         "a refused repository leaves no staging directory"
     );
+}
+
+// SV-15: agents import repositories like the owner, but the home kernel's git
+// fetches only what an agent download may reach: a public https host.
+#[test]
+fn an_agent_repository_install_keeps_the_agent_download_boundary() {
+    let f = StorageFixture::new();
+    let repo = Repo::new();
+    let service = SkillCatalogService::new(f.storage.clone());
+    let agent = SkillSourceAccess::Agent { workspace: None };
+    let local = install_all(&repo, &repo.head(), &["skills/alpha"]);
+    let error = service
+        .prepare_with_source_access(&local, &Default::default(), agent)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("only public https repositories"), "{error}");
+    for url in [
+        "https://127.0.0.1/org/skills.git",
+        "https://user:secret@example.com/org/skills.git",
+    ] {
+        let mut private = install_all(&repo, &repo.head(), &["skills/alpha"]);
+        let SkillCatalogAction::Install {
+            source: SkillInstallSource::Repository { url: target, .. },
+            ..
+        } = &mut private.actions[1]
+        else {
+            panic!("expected a repository install");
+        };
+        *target = url.into();
+        let error = service
+            .prepare_with_source_access(&private, &Default::default(), agent)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only public https repositories"), "{error}");
+        assert!(!error.contains("secret"));
+    }
+    assert!(
+        service.prepare(&local).is_ok(),
+        "the owner keeps local repositories"
+    );
+    assert_eq!(f.storage.snapshot().unwrap().revision, 0);
 }
 
 #[test]

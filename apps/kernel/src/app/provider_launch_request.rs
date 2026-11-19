@@ -83,6 +83,12 @@ fn adopts_handed_over_turn(request: &LaunchProviderRequest) -> bool {
     }
 }
 
+/// The folder the person or orchestrating agent chose for this agent: its own
+/// worktree, else the Room's. Claude runs here and trusts only this folder.
+pub(crate) fn chosen_workspace(session_worktree: &str, agent_worktree: Option<&str>) -> PathBuf {
+    PathBuf::from(agent_worktree.unwrap_or(session_worktree))
+}
+
 impl DaemonApp {
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
@@ -254,10 +260,10 @@ impl DaemonApp {
             request = request.with_agent_settings(agent);
         }
         if request.working_directory.is_none() {
-            let working_directory = agent
-                .as_ref()
-                .and_then(|agent| agent.worktree_id().map(PathBuf::from))
-                .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+            let working_directory = chosen_workspace(
+                session.worktree_id(),
+                agent.as_ref().and_then(|agent| agent.worktree_id()),
+            );
             request = request.with_working_directory(working_directory);
         }
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
@@ -984,7 +990,7 @@ mod tests {
                     .with_hidden(true),
             )
             .expect("hidden remote lease session should create");
-        assert!(session.project_id().is_empty());
+        assert!(session.project().is_hidden_scope());
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);

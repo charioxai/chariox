@@ -449,3 +449,99 @@ async fn owner_resume_does_not_depend_on_the_sudo_window_that_raised_the_decisio
     );
     assert_ne!(task.state, ExecutionState::Blocked, "{}", task.reason);
 }
+
+// An interrupted turn that had waited on work stays blocked with its owner card until a later
+// turn of the agent supersedes it; the work it waited on having finished is no reason to keep it.
+#[tokio::test]
+async fn a_later_turn_retires_an_interrupted_turn_whose_waited_work_finished() {
+    let turn = started_turn("a04-retire-interrupted-after-finished-work");
+    let runtime = owned_runtime_state(&turn.app).await;
+    let store = &runtime.owned.durable_state_store;
+    let task_id = turn.prompt.id().to_owned();
+    begin(&runtime, &turn);
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: "local".into(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: task_id.clone(),
+            run: Some(turn.run_id.clone()),
+            id: "obligation".into(),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: turn.session_id.clone(),
+            source: "child".into(),
+            occurrence: "finished".into(),
+            success: true,
+            public_answer: Some(serde_json::json!({"kind":"delegate_finished"})),
+            now: 2,
+        })
+        .unwrap();
+    for event in store
+        .agent_inbox(&turn.session_id, &turn.agent_id, 0)
+        .unwrap()
+    {
+        store
+            .agent_lifecycle(Operation::Ack {
+                room: turn.session_id.clone(),
+                agent: turn.agent_id.clone(),
+                sequence: event.sequence,
+                handled: true,
+                now: 3,
+            })
+            .unwrap();
+    }
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::EndFailedTurn {
+            task: task_id.clone(),
+            prompt: task_id.clone(),
+            reason: "Interrupted before it finished".into(),
+        })
+        .unwrap()
+    else {
+        panic!("blocked")
+    };
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    runtime
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let card = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    let open_cards = || {
+        runtime
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .map(|i| i.id().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(open_cards().contains(&card), "the owner card is raised");
+
+    let later = crate::session::PromptQueueItem::new(
+        "later-turn",
+        &turn.attachment_id,
+        &turn.agent_id,
+        "next",
+        crate::session::PromptStatus::Queued,
+    );
+    assert!(runtime
+        .retire_superseded_restart_task(&turn.session_id, &later)
+        .await
+        .unwrap());
+    assert_eq!(task_of(&runtime, &turn).state, ExecutionState::Cancelled);
+    assert!(
+        !open_cards().contains(&card),
+        "the card for the retired attempt is withdrawn"
+    );
+}

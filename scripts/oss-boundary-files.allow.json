@@ -20,10 +20,6 @@
     "why": "fixture app that prints a fake leaked secret to exercise redaction"
   },
   {
-    "path": ".playwright-mcp/page-2026-07-12T07-22-36-711Z.yml",
-    "why": "captured third-party page text (a \"pricing\" link), not product code"
-  },
-  {
     "path": "apps/browser-display/drill-fixtures.mjs",
     "why": "fixture page whose sample text says \"invoice\""
   },

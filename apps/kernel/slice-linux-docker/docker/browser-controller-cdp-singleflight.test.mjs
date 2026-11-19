@@ -198,6 +198,7 @@ test("concurrent target-session calls share one attach and one setup", { timeout
       "Runtime.enable",
       "Network.enable",
       "Inspector.enable",
+      "Emulation.setScrollbarsHidden",
       "Target.setAutoAttach",
     ]) {
       assert.equal(countCalls(connection, method), 1, `${method} should run once`);

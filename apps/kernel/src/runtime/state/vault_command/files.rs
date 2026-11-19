@@ -5,8 +5,8 @@
 //! the kernel fills with Vault values. The agent's own later reads of a file
 //! it asked for are its own action (UX-first rule), so nothing is scrubbed.
 use super::capture::{
-    capture_binding_schema, captured_handle, committed, extract, extract_pattern, service_host,
-    Captured, Extract,
+    capture_binding_schema, captured_handle, check_capture_request, committed, extract,
+    extract_pattern, service_host, Captured, Extract,
 };
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -84,26 +84,34 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: CaptureFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
-        if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
-            return Err(error("request_id must be 1-128 characters"));
-        }
-        if args.label.as_ref().is_some_and(|label| label.len() > 200) {
-            return Err(error("label must be at most 200 characters"));
-        }
+        check_capture_request(&args.request_id, args.label.as_deref())?;
         args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
         let pattern = extract_pattern(&args.extract)?;
-        let turn = &context;
-        let handle = captured_handle(turn, &args.request_id);
+        let actor = context.actor();
+        let handle = captured_handle(&actor, &args.request_id);
         let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
         self.recheck_vault_command_context(&context)?;
-        let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, turn, &host, &args.use_binding);
+        match &context.home {
+            // The Vault is at the home: it answers a retry and unlocks before the file is read.
+            Some(home) => {
+                if let Some(committed) = self
+                    .prepare_home_vault_capture(home, &args.request_id, &host, &args.use_binding)
+                    .await?
+                {
+                    return Ok(committed);
+                }
+            }
+            None => {
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
+                if let Some(existing) = registry.get(&handle)? {
+                    return committed(&existing, &actor, &host, &args.use_binding);
+                }
+            }
         }
         validate_capture_binding(&context.run, &args.use_binding)?;
         let path = existing_workspace_file(&context.run, &args.path)?;
@@ -111,23 +119,29 @@ impl KernelRuntimeState {
             std::fs::read(&path).map_err(|e| error(format!("cannot read {}: {e}", args.path)))?,
         );
         let secret = extract(&content, &args.extract, pattern.as_ref())?;
-        let _unlock = self
-            .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
-            .await?;
+        let _unlock = match &context.home {
+            Some(_) => None,
+            None => Some(self.capture_unlock(&actor).await?),
+        };
         self.recheck_vault_command_context(&context)?;
         let mut result = self
-            .store_captured(
+            .store_capture(
                 &context,
-                &registry,
                 Captured {
-                    handle: handle.clone(),
+                    handle,
                     host,
                     label: args.label,
                     use_binding: args.use_binding,
+                    request_id: args.request_id,
                 },
                 &secret,
             )
             .await?;
+        // The handle the Vault entry has: at a leased run's home it is the home agent's.
+        let handle = result.payload["credential_id"]
+            .as_str()
+            .ok_or_else(|| error("the capture answered no credential_id"))?
+            .to_owned();
         if args.replace_with_handle {
             // The file was read before the Vault wait; replace in what is there now.
             let current = Zeroizing::new(std::fs::read_to_string(&path).map_err(|e| {
@@ -185,7 +199,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
@@ -206,15 +220,16 @@ impl KernelRuntimeState {
         }
         let mode = file_mode(args.mode.as_deref())?;
         let path = new_workspace_file(&context.run, &args.path)?;
-        let turn = &context;
         let target = crate::config::VaultUseTarget::File {
             path: path.to_string_lossy().into_owned(),
         };
-        for id in args.values.values() {
-            self.preflight_workspace_vault_use(&turn.agent_id, id, &target)?;
-        }
+        let uses = args
+            .values
+            .values()
+            .map(|id| (id.as_str(), target.clone()))
+            .collect::<Vec<_>>();
         let _unlock = self
-            .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_write_file")
+            .prepare_workspace_vault_uses(&context, &uses, "vault_write_file")
             .await?;
         self.recheck_vault_command_context(&context)?;
         let mut content = Zeroizing::new(args.template.clone());

@@ -691,8 +691,17 @@ impl KernelRuntimeState {
             .as_ref()
             .and_then(|termination| termination.failure.clone())
             .or(failure);
-        // Every client renders this calm explanation and recovery.
-        let failure_notice = failure.as_ref().map(crate::provider::TurnOutcome::notice);
+        // Every client renders this calm explanation and recovery; a usage-limit turn the kernel
+        // resumes by itself says when instead of asking to send the request again.
+        let failure_notice = failure.as_ref().map(|failure| {
+            agent_id
+                .as_deref()
+                .zip(active_prompt.as_ref())
+                .and_then(|(agent_id, prompt)| {
+                    self.usage_limit_resume_notice(agent_id, prompt, failure)
+                })
+                .unwrap_or_else(|| failure.notice())
+        });
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         recorded_notice_messages.extend(terminal_failure.iter().cloned());
@@ -753,6 +762,12 @@ impl KernelRuntimeState {
         } else if saw_runtime_activity {
             owned.note_prompt_output(provider_run_id);
         }
+        // A step is finished when the batch ends on a tool call's end or an assistant message's
+        // end: the provider is between two steps then, not inside one.
+        let step_finished = !poll_result.completions.is_empty()
+            || poll_result.chunks.last().is_some_and(|chunk| {
+                chunk.kind == crate::terminal::TerminalOutputKind::ProviderTool
+            });
         let completions = poll_result.completions;
         let prompt_completed = poll_result.prompt_completed;
         if let Some(message) = terminal_failure.as_deref() {
@@ -871,6 +886,9 @@ impl KernelRuntimeState {
         if prompt_completed {
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
+        } else if step_finished {
+            // The swap sends a prompt, which pumps output: the boxed future ends the recursion.
+            Box::pin(self.swap_turn_process_at_step_boundary(session_id, provider_run_id)).await?;
         }
         Ok(records)
     }

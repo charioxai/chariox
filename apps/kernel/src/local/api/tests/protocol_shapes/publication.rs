@@ -275,6 +275,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     }
     let session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -336,6 +337,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     );
     let mut materialized_session = crate::session::RuntimeSession::new(
         "runtime-session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -693,7 +695,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "403c1990ad83c4b330c3ef6839acb9d8d194cf6adc6d6e7cf3556869da0bd649"
+        "97b1121fdf4db915af96e72fc640fa39565b80949f25b6ef5eafe9693a0a4767"
     );
 }
 

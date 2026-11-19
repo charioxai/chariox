@@ -24,6 +24,8 @@ use chariox_event_protocol::EventDeliveryEnvelope;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::{watch, Mutex};
+mod enrollment;
+mod routing;
 mod services;
 mod workflow_and_agent;
 use services::{Services, GENERATOR};
@@ -97,7 +99,7 @@ fn test_config(root: &std::path::Path, services: &Services) -> crate::config::Da
     config.user_config_path = root.join("state/config.toml");
     config = config.with_session_history_root(root.join("session-history"));
     config.user_config.history.operational.path =
-        Some(root.join("operational.db").display().to_string());
+        Some(root.join("state/operational.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
@@ -290,11 +292,14 @@ fn workflow(app: &mut DaemonApp, root: &std::path::Path, label: &str) -> (String
     (session.id().into(), publication.id().into())
 }
 fn counts(state: &KernelRuntimeState) -> (u64, u64, u64) {
+    counts_for(state, "local")
+}
+fn counts_for(state: &KernelRuntimeState, owner: &str) -> (u64, u64, u64) {
     let AppInboxOutcome::Routes(routes) = state
         .owned
         .durable_state_store
         .app_inbox(AppInboxOperation::Routes {
-            owner: "local".into(),
+            owner: owner.into(),
             installation: "installed".into(),
         })
         .unwrap()

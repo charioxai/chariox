@@ -314,7 +314,7 @@ creates opaque claim tokens, stores only hashes, defaults to seven days, and per
 five-minute to 30-day lifetime. Audience invitations use the same hash-and-return-once
 pattern in
 [`deployment-audience-service.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-audience-service.ts).
-The web app constructs copyable waiting-room links. There is no mail package, outbox,
+The web app constructs copyable Room list links. There is no mail package, outbox,
 provider adapter, SMTP configuration, bounce processing, or delivery status in the
 current implementation.
 

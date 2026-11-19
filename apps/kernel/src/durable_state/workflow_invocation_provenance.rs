@@ -176,7 +176,15 @@ mod tests {
     fn mp11_user_invoker_provenance_is_private_immutable_scoped_and_durable() {
         let root = crate::test_support::TestWorktree::new("workflow-user-provenance");
         let path = root.path().join("state.sqlite");
-        let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+        let mut room = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "tree",
+            "machine",
+            "home",
+        );
         room.add_member("bob", None, CollaborationLevel::Private);
         let make_run = |queue: &str| {
             let mut run = WorkflowRun::new(

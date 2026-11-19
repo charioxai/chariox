@@ -189,11 +189,13 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
             token.relay_token == "cloud-client-token-required",
             "no kernel transport authority leaves the kernel"
         );
-        let (mut kernel, _) = connect_async(&url).await.unwrap();
+        let (mut kernel, kernel_handshake) = connect_async(&url).await.unwrap();
         send_client_envelope(
             &mut kernel,
-            &RelayEnvelope::DaemonRegister {
-                registration: DaemonRegistration {
+            &crate::transport::relay_socket_connect::daemon_register(
+                &url,
+                &kernel_handshake,
+                DaemonRegistration {
                     auth_token: config.relay_token.clone().unwrap(),
                     daemon_id: target.clone(),
                     machine_id: "machine-fixture".into(),
@@ -210,7 +212,9 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
                     leased_agent_count: 0,
                     local_session_count: 0,
                 },
-            },
+                &config.relay_private_key,
+            )
+            .unwrap(),
         )
         .await;
         tokio::time::timeout(Duration::from_secs(5), async {

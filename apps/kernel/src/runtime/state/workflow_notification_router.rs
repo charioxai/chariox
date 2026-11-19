@@ -4,8 +4,10 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
     workflow_notifications::{
-        self as store, naming, remote_install::Generation, NotificationOperation,
-        NotificationOutcome, PreparedNotification, SourceAdmission,
+        self as store, naming,
+        remote_install::Generation,
+        subscription_settings::{self, Hold},
+        NotificationOperation, NotificationOutcome, PreparedNotification, SourceAdmission,
     },
 };
 use crate::{error::DaemonError, local::*, session::SessionService};
@@ -35,8 +37,10 @@ pub(super) fn source_available(
     };
     match source.kind {
         // An App's event source belongs to the owner's installation, not to a Room: listing
-        // keeps it enabled exactly while the installation and the route exist.
-        crate::local::NotificationSourceKind::AppEvent => true,
+        // keeps it enabled exactly while the installation and the route exist. A watcher's
+        // source is enabled exactly while the watcher exists.
+        crate::local::NotificationSourceKind::AppEvent
+        | crate::local::NotificationSourceKind::Watcher => true,
         crate::local::NotificationSourceKind::OwnerAction => in_live_room(),
         crate::local::NotificationSourceKind::WorkflowRun => {
             in_live_room()
@@ -67,7 +71,10 @@ pub(super) fn summaries(
         .iter()
         .filter(|source| source.enabled)
         .map(|source| {
-            if source.kind == NotificationSourceKind::AppEvent {
+            if matches!(
+                source.kind,
+                NotificationSourceKind::AppEvent | NotificationSourceKind::Watcher
+            ) {
                 return WorkflowNotificationSourceSummary {
                     kind: source.kind,
                     source_id: source.source_id.clone(),
@@ -79,6 +86,7 @@ pub(super) fn summaries(
                     name: source.name.clone(),
                     display_name: source.display_name.clone(),
                     available: source.available,
+                    options: source.options.clone(),
                 };
             }
             let notifying = sources
@@ -116,6 +124,7 @@ pub(super) fn summaries(
                 },
                 name,
                 available: source.available,
+                options: source.options.clone(),
             }
         })
         .collect()
@@ -193,6 +202,7 @@ impl KernelRuntimeState {
                             name: naming::workflow_name(&workflow),
                             exit_ordinal: 0,
                             display_name: String::new(),
+                            options: Vec::new(),
                         };
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Register(SourceAdmission {
@@ -434,12 +444,52 @@ impl KernelRuntimeState {
                         name: s.name,
                         exit_ordinal: s.exit_ordinal,
                         display_name: s.display_name,
+                        options: s.options,
                     })
             })
             .ok_or_else(|| store::error("source not available"))
     }
 }
 impl KernelRuntimeOwnedState {
+    /// A notification step that writes a line of a subscription's trace: the person's Inbox
+    /// revision moves with it, so an open trace reads the line without polling.
+    pub(super) fn notify_traced(
+        &self,
+        operation: NotificationOperation,
+    ) -> Result<NotificationOutcome, DaemonError> {
+        let outcome = self.durable_state_store.notify(operation)?;
+        self.person_inbox_changes.record_change();
+        Ok(outcome)
+    }
+
+    /// Where an accepted occurrence's prompt would be queued: true when its subscription is
+    /// paused, so the occurrence stays for resume or expiry.
+    pub(super) fn notification_held(
+        &self,
+        subscription_id: &str,
+        occurrence_id: &str,
+        title: String,
+    ) -> Result<bool, DaemonError> {
+        let outcome = self
+            .durable_state_store
+            .notify(NotificationOperation::Hold {
+                subscription_id: subscription_id.into(),
+                occurrence_id: occurrence_id.into(),
+                title,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        match outcome {
+            NotificationOutcome::Hold(Hold::Queue) => Ok(false),
+            NotificationOutcome::Hold(Hold::Held { traced }) => {
+                if traced {
+                    self.person_inbox_changes.record_change();
+                }
+                Ok(true)
+            }
+            _ => Err(store::error("unexpected notification hold")),
+        }
+    }
+
     /// A local source's occurrence for a local agent is accepted as a remote one is on delivery.
     pub(super) fn accept_local_agent_notification(
         &self,
@@ -462,11 +512,10 @@ impl KernelRuntimeOwnedState {
                 {
                     return Ok(());
                 }
-                self.durable_state_store
-                    .notify(NotificationOperation::Accept {
-                        subscription: sub.clone(),
-                        envelope: env.clone(),
-                    })?;
+                self.notify_traced(NotificationOperation::Accept {
+                    subscription: sub.clone(),
+                    envelope: env.clone(),
+                })?;
                 self.durable_state_store
                     .notify(NotificationOperation::Acknowledge {
                         subscription_id: sub.subscription_id.clone(),
@@ -581,6 +630,13 @@ impl KernelRuntimeOwnedState {
                                 return Err(store::error("notification target changed"));
                             }
                             if accepted {
+                                if self.notification_held(
+                                    &sub.subscription_id,
+                                    &env.occurrence_id,
+                                    subscription_settings::title_of(&env),
+                                )? {
+                                    return Ok(false);
+                                }
                                 let prepared = PreparedNotification::prepare(
                                     &mut sessions,
                                     sub.clone(),
@@ -588,18 +644,17 @@ impl KernelRuntimeOwnedState {
                                 )?;
                                 let after = prepared.after.clone();
                                 require_grant()?;
-                                self.durable_state_store
-                                    .notify(NotificationOperation::Queue(Box::new(prepared)))?;
+                                self.notify_traced(NotificationOperation::Queue(Box::new(
+                                    prepared,
+                                )))?;
                                 sessions.restore_session(after);
                                 Ok(true)
                             } else {
                                 require_grant()?;
-                                match self.durable_state_store.notify(
-                                    NotificationOperation::Accept {
-                                        subscription: sub.clone(),
-                                        envelope: env.clone(),
-                                    },
-                                )? {
+                                match self.notify_traced(NotificationOperation::Accept {
+                                    subscription: sub.clone(),
+                                    envelope: env.clone(),
+                                })? {
                                     NotificationOutcome::Ack(_) => {
                                         // Local acceptance shares the source receipt: Accepted
                                         // already promoted it. Terminal ACKs must retire any
@@ -656,7 +711,7 @@ mod tests {
         config.user_config_path = f.root.join("runtime/config.toml");
         config = config.with_session_history_root(f.root.join("history"));
         config.user_config.history.operational.path =
-            Some(f.root.join("operational.db").display().to_string());
+            Some(f.root.join("runtime/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(f.root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -1102,6 +1157,123 @@ mod tests {
     }
     // MP-08 / MP-10 / MP-11 (review 914 @c8bf9ce1e P2): an accepted candidate
     // selected before its grant is revoked must not reach the target queue.
+    // Review 5956768683 P2: a workflow endpoint's occurrence held by a pause after acceptance
+    // reads as delivered again once resume queues it, and the open trace sees the line move.
+    #[tokio::test]
+    async fn a_workflow_occurrence_held_by_a_pause_reads_as_delivered_after_resume() {
+        let mut f = Fixture::new();
+        let (a, _, _) = f.workflow("source");
+        let (b, _, bp) = f.workflow("target");
+        let kernel = runtime(&mut f);
+        let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: f.session.clone(),
+                        workflow_ref: a.clone(),
+                        enabled: true,
+                        exit_node_id: "exit-1".into(),
+                    },
+                ),
+                "local",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        kernel
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    session_id: f.session.clone(),
+                    source_id: source.source_id,
+                    publication_ref: bp,
+                }),
+                "local",
+            )
+            .unwrap();
+        f.complete(
+            &a,
+            "finished",
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "kernel output",
+        );
+        kernel
+            .owned
+            .session_store
+            .write()
+            .restore_session(f.sessions.get_session(&f.session).unwrap());
+        // Accepted for the workflow endpoint, not yet queued as its prompt.
+        let store = kernel.owned.durable_state_store.clone();
+        let now = crate::session::unix_epoch_ms();
+        let [(subscription, envelope)]: [_; 1] = store
+            .notification_candidates(false, now, 8)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let id = subscription.subscription_id.clone();
+        store
+            .notify(NotificationOperation::Accept {
+                subscription,
+                envelope,
+            })
+            .unwrap();
+        let pause = |paused| {
+            kernel.update_notification_subscription(
+                UpdateNotificationSubscriptionRequest {
+                    subscription_id: id.clone(),
+                    change: NotificationSubscriptionChange::Paused { paused },
+                },
+                "local",
+            )
+        };
+        let outcome = || {
+            let LocalDaemonResponse::NotificationTrace { lines, .. } =
+                kernel.read_notification_trace(&id, "local").unwrap()
+            else {
+                panic!()
+            };
+            lines[0].outcome
+        };
+        let queued = || {
+            kernel
+                .owned
+                .session_store
+                .get_session(&f.session)
+                .unwrap()
+                .workflow_queued_prompts()
+                .len()
+        };
+        pause(true).await.unwrap();
+        kernel.owned.route_workflow_notifications();
+        assert_eq!((queued(), outcome()), (0, NotificationTraceOutcome::Paused));
+        // Retried while paused: still held.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        kernel.owned.route_workflow_notifications();
+        assert_eq!((queued(), outcome()), (0, NotificationTraceOutcome::Paused));
+
+        pause(false).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let inbox = kernel.person_inbox_change_sequence();
+        kernel.owned.route_workflow_notifications();
+        let session = kernel.owned.session_store.get_session(&f.session).unwrap();
+        assert_eq!(
+            session
+                .workflow_queued_prompts()
+                .iter()
+                .map(|prompt| prompt.workflow_id())
+                .collect::<Vec<_>>(),
+            vec![b.as_str()],
+            "resume queues the held occurrence"
+        );
+        assert_eq!(outcome(), NotificationTraceOutcome::Delivered);
+        assert!(
+            kernel.person_inbox_change_sequence() > inbox,
+            "an open trace reads the delivered line without polling"
+        );
+        drop(kernel);
+        cleanup(f);
+    }
     #[tokio::test]
     async fn revoked_grant_fences_an_already_selected_accepted_notification() {
         let mut f = Fixture::new();

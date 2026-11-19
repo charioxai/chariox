@@ -33,6 +33,7 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 model: Some("gpt-5.5".to_string()),
                 effort: Some("high".to_string()),
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect_err("native TUI provider profile should be read-only from Chariox");
@@ -53,6 +54,9 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 clear_workspace_id: false,
                 worktree_id: None,
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect_err("native TUI provider config should be read-only from Chariox");
@@ -514,6 +518,15 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
         crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &unavailable_account.profile_id,
+            &["gpt-5.4"],
+        )
+    });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -524,6 +537,7 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
                 model: Some("gpt-5.4".to_string()),
                 effort: Some("low".to_string()),
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect("the unavailable account should remain assignable for reauthentication");
@@ -666,6 +680,7 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
                 model: Some("gpt-6-luna".to_string()),
                 effort: Some("low".to_string()),
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect("an exhausted account should remain assignable for later refresh");
@@ -743,6 +758,15 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
         )
         .expect("account should become authenticated")
     });
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &account.profile_id,
+            &["gpt-5.4"],
+        )
+    });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -753,6 +777,7 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
                 model: Some("gpt-5.4".to_string()),
                 effort: Some("low".to_string()),
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect("authenticated account should be assigned");

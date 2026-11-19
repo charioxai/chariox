@@ -1,7 +1,7 @@
 //! The `publish` step of a Room's setup: the Room's own agent creates the repository with the
 //! machine's own CLI login and pushes. Chariox holds no host-specific publishing logic.
 use super::*;
-use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy};
+use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy, TurnOutcomeKind};
 use crate::runtime::agent_utility_executor::{
     run_provider_utility_prompt, AgentUtilityPromptParts,
 };
@@ -69,6 +69,25 @@ fn plain_reason(text: &str) -> String {
     short_reason(sentence.trim_end_matches(|c: char| c.is_whitespace() || ".,".contains(c)))
 }
 
+/// What the person reads when the publish turn could not run: the provider's own reason when it
+/// gave one that tells them what to do (a limit, a sign-in), otherwise that the agent did not start.
+pub(super) fn publish_failure_reason(adapter_key: &str, error: &DaemonError) -> String {
+    let provider_text = match error {
+        DaemonError::ProviderProtocol { message, .. } => message.clone(),
+        other => other.to_string(),
+    };
+    let outcome = crate::provider::TurnOutcome::classify(adapter_key, &provider_text);
+    match outcome.kind {
+        TurnOutcomeKind::Other | TurnOutcomeKind::Unknown => {
+            "The agent could not start publishing".into()
+        }
+        _ => format!(
+            "The agent could not publish: {}",
+            outcome.reason.trim_end_matches('.')
+        ),
+    }
+}
+
 pub(super) fn short_reason(text: &str) -> String {
     let line = text
         .lines()
@@ -102,43 +121,50 @@ impl KernelRuntimeState {
             })
             .unwrap_or_else(|| "workspace".to_string());
         let prompt = publish_prompt(&folder_name);
-        match self.room_publish_answer(session_id, agent_id, prompt).await {
-            Ok(answer) => parse_publish_answer(&answer),
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.room_setup",
-                    "room publish turn failed",
-                    serde_json::json!({ "session_id": session_id, "error": error.to_string() }),
-                );
-                Err("The agent could not start publishing".into())
-            }
-        }
+        let answer = self
+            .room_publish_answer(session_id, agent_id, prompt)
+            .await?;
+        parse_publish_answer(&answer)
     }
 
+    /// The agent's answer, or the plain reason the turn could not run.
     async fn room_publish_answer(
         &self,
         session_id: &str,
         agent_id: &str,
         visible_user_prompt: String,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<String, String> {
+        let failed = |adapter_key: &str, error: DaemonError| {
+            crate::logging::warn_with_fields(
+                "daemon.room_setup",
+                "room publish turn failed",
+                serde_json::json!({ "session_id": session_id, "error": error.to_string() }),
+            );
+            publish_failure_reason(adapter_key, &error)
+        };
         let started = tokio::time::Instant::now();
         let run = loop {
             let (_, run) = self
                 .agent_utility_provider_run(session_id, agent_id, OPERATION)
-                .await?;
+                .await
+                .map_err(|error| failed("", error))?;
             match run.state() {
                 ProviderRunState::Running => break run,
                 ProviderRunState::Starting if started.elapsed() < PROVIDER_READY_TIMEOUT => {
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 state => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: OPERATION,
-                        message: format!("the agent's provider is not running ({state:?})"),
-                    })
+                    return Err(failed(
+                        run.adapter_key(),
+                        DaemonError::LocalTransport {
+                            operation: OPERATION,
+                            message: format!("the agent's provider is not running ({state:?})"),
+                        },
+                    ))
                 }
             }
         };
+        let adapter_key = run.adapter_key().to_string();
         run_provider_utility_prompt(
             self,
             run,
@@ -151,6 +177,7 @@ impl KernelRuntimeState {
             PUBLISH_TIMEOUT,
         )
         .await
+        .map_err(|error| failed(&adapter_key, error))
     }
 }
 

@@ -86,7 +86,9 @@ impl Fixture {
             crate::runtime::app_http::HttpContext {
                 limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
                 runtime: runtime.handle().clone(),
+                vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
             },
+            Default::default(),
             Default::default(),
         )
         .unwrap();

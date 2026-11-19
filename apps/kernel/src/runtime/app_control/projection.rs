@@ -34,6 +34,7 @@ pub(super) fn installation(value: Installation) -> AppInstallationSummary {
         admission_paused: value.admission_paused,
         data_kept,
         events: Vec::new(),
+        standing_permissions: 0,
     }
 }
 
@@ -55,8 +56,12 @@ pub(crate) fn installation_with_events(
                 .collect()
         })
         .unwrap_or_default();
+    let standing_permissions = store
+        .app_standing_count(owner, &value.installation_id)
+        .unwrap_or_default();
     AppInstallationSummary {
         events,
+        standing_permissions,
         ..installation(value)
     }
 }

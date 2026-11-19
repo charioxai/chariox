@@ -259,15 +259,15 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// A failed turn's calm explanation and recovery.
+    /// A failed turn's calm explanation and recovery, as `notice` words it.
     pub(super) fn record_provider_failure_notice(
         &self,
         session_id: &str,
         provider_run_id: &str,
         agent_id: &str,
-        failure: &crate::provider::TurnOutcome,
+        notice: String,
     ) {
-        self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
+        self.append_provider_failure_entry(session_id, provider_run_id, agent_id, notice);
     }
 
     /// A refused dispatch shows the owner a typed explanation and recovery; a
@@ -282,9 +282,12 @@ impl KernelRuntimeOwnedState {
     ) -> Option<crate::provider::TurnOutcome> {
         let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
         match &failure {
-            Some(failure) => {
-                self.record_provider_failure_notice(session_id, provider_run_id, agent_id, failure)
-            }
+            Some(failure) => self.record_provider_failure_notice(
+                session_id,
+                provider_run_id,
+                agent_id,
+                failure.notice(),
+            ),
             None => self.record_provider_failure_output(
                 session_id,
                 provider_run_id,

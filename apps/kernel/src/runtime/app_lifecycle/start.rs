@@ -181,8 +181,12 @@ pub(super) fn register(
         crate::runtime::app_http::HttpContext {
             limits: context.http_limits.clone(),
             runtime: context.runtime.clone(),
+            vault: std::sync::Arc::new(crate::runtime::app_http::KernelAccountVault(
+                context.event_config.clone(),
+            )),
         },
         context.event_config.clone(),
+        context.routing_host.clone(),
     )
     .map_err(preparation_failed(
         installation,

@@ -21,7 +21,7 @@ wrapper, with disk-backed TMPDIR and the documented resource limits. They cover:
 - A second renewal while registration is being built: the snapshot credential
   is authenticated without reconnect, then the next heartbeat uses the newer one.
 - Real scoped relay sockets and two kernel connectors: a multi-MB encrypted peer
-  request completes intact, an existing waiting-room subscription retains its
+  request completes intact, an existing Room list subscription retains its
   route, the relay receives the new credential and that same subscription delivers
   a subsequent inventory change.
 
@@ -44,7 +44,7 @@ home for this drill.
 | relay-token-rollover/TR-COPY | Force rollover during a multi-MB ordinary-owner Copy. Bytes, project/context identities and final outcome agree; no silent loss, duplicate import or manual retry. |
 | relay-token-rollover/TR-VIEW | Force rollover during an active browser View subscription. Use the real-site list in the Browser/Computer plan at DPR 1 and 2. Zero blank/unavailable frames or disconnect notices. |
 | relay-token-rollover/TR-AGENT | Force rollover while a real official-provider turn streams to Web and the real TUI. Same run/thread, continuous output, definitive settled outcome and usable next prompt. |
-| relay-token-rollover/TR-HOSTED | Own hosted WSS stack, calibrated client uplink near 8 Mbit/s and RTT at least 60 ms, waiting room at DPR 1 and 2 with real TUI attached. Several renewals, zero unavailable/blank frames/disconnect notices, Copy completion, plus a multi-hour stability session. |
+| relay-token-rollover/TR-HOSTED | Own hosted WSS stack, calibrated client uplink near 8 Mbit/s and RTT at least 60 ms, Room list at DPR 1 and 2 with real TUI attached. Several renewals, zero unavailable/blank frames/disconnect notices, Copy completion, plus a multi-hour stability session. |
 
 Show RED before the fix and GREEN after, retaining exact source and binary hashes,
 commands/exits, screenshots and allowlisted console/log projections per step.
@@ -54,7 +54,7 @@ heartbeat freshness to manufacture a pass. Source-only and local socket results
 do not mark any live cell PASS. Missing compatible consumer source, a signed
 release or another real resource must name the precise coordinator/owner action.
 
-For waiting-room attribution, distinguish renewal alone from renewal overlapping
+For Room list attribution, distinguish renewal alone from renewal overlapping
 peer traffic: the peer-response reconnect branch is not reached by ordinary
 browser `DaemonRequest` traffic. Report the first failing seam, not an assumed
 common cause. A successful local test does not close MP-08/MP-10 or constitute

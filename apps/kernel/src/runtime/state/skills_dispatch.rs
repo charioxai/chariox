@@ -454,6 +454,31 @@ impl SkillDispatchService {
         }
         Ok(())
     }
+    /// A compaction the run streamed starts its recovery epoch before the next turn
+    /// is planned; the transcript observer reads the same ID later and adds nothing.
+    fn record_streamed_compactions(
+        &self,
+        run: &RuntimeProviderRun,
+        batch: &crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = run.agent_instance_id() else {
+            return Ok(());
+        };
+        for id in &batch.native_compactions {
+            self.history.record_observed_agent_compaction_boundary(
+                run.session_id(),
+                agent_id,
+                crate::history::AgentCompactionOrigin {
+                    provider: run.provider(),
+                    model: run.model(),
+                    account: run.account_profile(),
+                    native_session: super::context_handoff::native_session_id(run),
+                },
+                id,
+            )?;
+        }
+        Ok(())
+    }
     fn prepare_remote(
         &self,
         session_id: &str,
@@ -776,6 +801,7 @@ impl SkillPromptBridge for SkillDispatchService {
         run: &RuntimeProviderRun,
         batch: &crate::provider::ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
+        self.record_streamed_compactions(run, batch)?;
         self.record_tool_receipts(run, batch)
     }
     fn prepare_typed_leased(

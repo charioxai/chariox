@@ -238,3 +238,36 @@ impl Drop for Inner {
         let _ = self.shutdown();
     }
 }
+
+impl AppLifecycleService {
+    /// Cloud enrollment moved this owner's Apps to another owner: stop the
+    /// workers started for the old one without recording a user stop, so the
+    /// recovery scan starts them again under the new owner. The join runs off
+    /// the caller, which holds the kernel state.
+    pub(crate) fn release_owner(&self, owner: &str) {
+        let released: Vec<_> = {
+            let mut entries = self
+                .0
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let keys: Vec<_> = entries
+                .keys()
+                .filter(|(entry_owner, _)| entry_owner == owner)
+                .cloned()
+                .collect();
+            keys.iter().filter_map(|key| entries.remove(key)).collect()
+        };
+        if released.is_empty() {
+            return;
+        }
+        for entry in &released {
+            entry.control.cancel(false);
+        }
+        std::thread::spawn(move || {
+            for entry in released {
+                entry.join();
+            }
+        });
+    }
+}

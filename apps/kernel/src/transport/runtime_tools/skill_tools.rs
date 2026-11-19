@@ -54,12 +54,20 @@ pub enum ManageSkillsArgs {
         review_receipt_id: String,
         origin_prompt_id: String,
     },
+    ResolveRepository {
+        url: String,
+        origin_prompt_id: String,
+    },
+    ResolveRepositoryUpdate {
+        package_id: String,
+        origin_prompt_id: String,
+    },
 }
 pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: LIST_SKILLS_TOOL.into(),
-            description: "Discover Auto skills in this agent's Project and the home Chariox catalog. Returns stable IDs and a bounded page; follow next_cursor. Manual and Off skills are omitted. Use the current prompt_id as origin_prompt_id. Listing does not load instruction bodies or grant tools.".into(),
+            description: "Discover Auto skills in this agent's Project and the home Chariox catalog. Returns stable IDs, this agent's project_id and a bounded page; follow next_cursor. Manual and Off skills are omitted. Use the current prompt_id as origin_prompt_id. Listing does not load instruction bodies or grant tools.".into(),
             input_schema: serde_json::json!({"type":"object","required":["origin_prompt_id"],"properties":{
                 "origin_prompt_id":{"type":"string","minLength":1},
                 "cursor":{"type":"string","maxLength":128},
@@ -74,7 +82,7 @@ pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_SKILLS_TOOL.into(),
-            description: "Review and atomically publish a Skills catalog batch through the home catalog. In BOTH preview and publish, use the current prompt_id as origin_prompt_id (top-level, beside action and mutation). Never omit it or reuse a previous turn identity. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope ({kind:chariox} or {kind:project,project_id}), expected_revision (the catalog revision chariox.list_skills returns; a stale one fails with the current revision), and actions. Each mutation action has its own action tag: {action:install,source:{kind:folder,path:skills/example},collision:{action:reject}}. Use the exact typed action schema for updates, state and packages. Omit review_receipt_id during preview. Install source is {kind:folder,path}, {kind:content,skill_md} or {kind:url,url}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
+            description: "Review and atomically publish a Skills catalog batch through the home catalog. In BOTH preview and publish, use the current prompt_id as origin_prompt_id (top-level, beside action and mutation). Never omit it or reuse a previous turn identity. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope: {kind:chariox} is the person's Chariox skills, available in every Project (use it unless they ask for this Project only); {kind:project,project_id} is only this agent's Project, with the project_id chariox.list_skills returns. move takes such a scope as destination. Then expected_revision (the catalog revision chariox.list_skills returns; a stale one fails with the current revision), and actions. Each mutation action has its own action tag: {action:install,source:{kind:folder,path:skills/example},collision:{action:reject}}. Use the exact typed action schema for updates, state and packages. Omit review_receipt_id during preview. Install source is {kind:folder,path}, {kind:content,skill_md}, {kind:url,url} or {kind:repository,url,revision,path}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. To import a public https git repository, call action resolve_repository with url: it returns the current commit (revision) and every skill directory (path) without installing anything; then preview and publish one create_package plus an install per chosen path with source {kind:repository,url,revision,path} and that package_id. To update an installed repository package, call action resolve_repository_update with package_id: it returns the changes and a ready mutation; preview and publish that mutation unchanged. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
             input_schema: schema::manage(),
         },
     ]
@@ -199,6 +207,36 @@ mod tests {
             publish["review_receipt_id"] = serde_json::json!("review-1");
             assert!(schema.is_valid(&publish));
             assert!(serde_json::from_value::<ManageSkillsArgs>(publish).is_ok());
+        }
+        // SV-15: an agent imports and updates repository packages itself.
+        let repository = serde_json::json!({"action":"preview","origin_prompt_id":"prompt-1","mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[
+            {"action":"create_package","package_id":"package-repo","name":"skills"},
+            {"action":"install","source":{"kind":"repository","url":"https://github.com/org/skills","revision":"a".repeat(40),"path":""},"collision":{"action":"reject"},"package_id":"package-repo"}]}});
+        let resolve = serde_json::json!({"action":"resolve_repository","origin_prompt_id":"prompt-1","url":"https://github.com/org/skills"});
+        let update = serde_json::json!({"action":"resolve_repository_update","origin_prompt_id":"prompt-1","package_id":"package-repo"});
+        for value in [&repository, &resolve, &update] {
+            assert!(schema.is_valid(value), "rejected: {value}");
+            assert!(serde_json::from_value::<ManageSkillsArgs>(value.clone()).is_ok());
+        }
+        let mut resolve_with_mutation = resolve.clone();
+        resolve_with_mutation["mutation"] = repository["mutation"].clone();
+        let mut update_with_url = update.clone();
+        update_with_url["url"] = resolve["url"].clone();
+        let mut resolve_without_origin = resolve.clone();
+        resolve_without_origin
+            .as_object_mut()
+            .unwrap()
+            .remove("origin_prompt_id");
+        let mut resolve_without_url = resolve.clone();
+        resolve_without_url.as_object_mut().unwrap().remove("url");
+        for malformed in [
+            resolve_with_mutation,
+            update_with_url,
+            resolve_without_origin,
+            resolve_without_url,
+        ] {
+            assert!(!schema.is_valid(&malformed), "admitted: {malformed}");
+            assert!(serde_json::from_value::<ManageSkillsArgs>(malformed).is_err());
         }
         let base = serde_json::json!({"action":"preview","origin_prompt_id":"prompt-1","mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[{"action":"install","source":{"kind":"folder","path":"skills/skill-creator"},"collision":{"action":"reject"}}]}});
         let mut wrong_tag = base.clone();

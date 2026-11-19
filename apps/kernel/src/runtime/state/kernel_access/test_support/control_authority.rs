@@ -146,6 +146,9 @@ async fn revoked_control(operation: Operation, discovery: bool) {
                 clear_workspace_id: false,
                 worktree_id: None,
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
+                usage_limit: None,
             })
         }
     };

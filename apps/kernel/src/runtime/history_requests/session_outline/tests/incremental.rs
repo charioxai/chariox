@@ -40,12 +40,11 @@ fn fragment_entry(text: &str) -> SessionHistoryEntry {
     )
 }
 
-fn store_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "chariox-incremental-outline-{}-{}.db",
-        std::process::id(),
-        rand::random::<u64>()
-    ))
+/// A store file and the directory that removes it, with its journal files.
+fn store_path() -> (crate::test_support::TestTempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TestTempDir::new("incremental-outline");
+    let path = dir.join("outline.db");
+    (dir, path)
 }
 
 fn outline(store: &OperationalHistoryStore, latest_prompt_count: usize) -> serde_json::Value {
@@ -64,7 +63,7 @@ fn full_outline(path: &std::path::Path, latest_prompt_count: usize) -> serde_jso
 
 #[test]
 fn a_second_outline_read_of_a_growing_reply_decodes_only_the_new_rows() {
-    let path = store_path();
+    let (_dir, path) = store_path();
     let store = OperationalHistoryStore::open(path.clone()).expect("open history");
     let events = std::iter::once(prompt(10, 5_000))
         .chain((0..200).map(|index| fragment(11 + index, 5_001 + index, "streamed words ")))
@@ -89,12 +88,36 @@ fn a_second_outline_read_of_a_growing_reply_decodes_only_the_new_rows() {
         grown == full_outline(&path, 1),
         "the incremental outline differs from the full one"
     );
-    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn an_outline_read_builds_one_entry_per_streamed_fragment() {
+    let builds_for = |fragments: u64| {
+        let (_dir, path) = store_path();
+        let store = OperationalHistoryStore::open(path).expect("open history");
+        let events = std::iter::once(prompt(10, 5_000))
+            .chain(
+                (0..fragments).map(|index| fragment(11 + index, 5_001 + index, "streamed words ")),
+            )
+            .collect::<Vec<_>>();
+        store.append_many(&events).expect("append the reply");
+        let builds =
+            || crate::history::session_history_entry_builds::BUILDS.with(|count| count.get());
+        let before = builds();
+        outline(&store, 1);
+        builds() - before
+    };
+
+    let added = builds_for(300) - builds_for(100);
+    assert!(
+        added <= 200,
+        "200 more fragments built {added} more entries; checks must read fields"
+    );
 }
 
 #[test]
 fn an_incremental_outline_equals_the_full_one_after_every_change() {
-    let path = store_path();
+    let (_dir, path) = store_path();
     let store = OperationalHistoryStore::open(path.clone()).expect("open history");
     let check = |step: &str| {
         for count in [1, 3] {
@@ -148,12 +171,11 @@ fn an_incremental_outline_equals_the_full_one_after_every_change() {
         .prune_events_before(1_000, true)
         .expect("prune the oldest rows");
     check("a prune");
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn an_outline_read_after_the_database_was_reclaimed_loads_the_range_again() {
-    let path = store_path();
+    let (_dir, path) = store_path();
     let store = OperationalHistoryStore::open(path.clone()).expect("open history");
     // Rows of another agent come first and go: the reply's row ids start after a gap.
     let filler = (0..300)
@@ -193,5 +215,4 @@ fn an_outline_read_after_the_database_was_reclaimed_loads_the_range_again() {
         grown == full_outline(&path, 1),
         "the cached outline differs from the full one after the database was reclaimed"
     );
-    let _ = std::fs::remove_file(path);
 }

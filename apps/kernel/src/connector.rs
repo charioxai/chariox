@@ -707,14 +707,8 @@ fn _assert_credential_use_connector_exists(_: UserCredentialUse) {}
 mod tests {
     use super::*;
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-connector-adapter-test-{name}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
+    fn temp_root(name: &str) -> crate::test_support::TestTempDir {
+        crate::test_support::TestTempDir::new(&format!("connector-adapter-test-{name}"))
     }
 
     #[test]

@@ -258,11 +258,13 @@ function sliceDevelopmentMatches(
 ): boolean {
   if (expected.kind === "empty") return !slice.development || slice.development.kind === "empty"
   const actual = slice.development
-  return actual?.kind === "source_project"
-    && actual.project_id === expected.projectId
-    && actual.repositories.length === expected.repositories.length
-    && actual.repositories.every((repository, index) => {
-      const expectedRepository = expected.repositories[index]
+  const [project, ...others] = expected.projects
+  const [actualProject, ...actualOthers] = actual?.kind === "source_projects" ? actual.projects : []
+  return project !== undefined && others.length === 0 && actualProject !== undefined && actualOthers.length === 0
+    && actualProject.project_id === project.projectId
+    && actualProject.repositories.length === project.repositories.length
+    && actualProject.repositories.every((repository, index) => {
+      const expectedRepository = project.repositories[index]
       return repository.role === expectedRepository?.role
         && repository.workspaceId === expectedRepository.workspaceId
         && (repository.worktreeId ?? null) === expectedRepository.worktreeId

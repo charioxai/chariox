@@ -3,7 +3,9 @@
 //! is independently mandatory in HttpTransport::perform before exchange_io.
 use super::*;
 use crate::runtime::app_http::{
-    dns::test_server::TestDns, limits::HttpLimits, policy::fixture_get,
+    dns::test_server::TestDns,
+    limits::HttpLimits,
+    policy::{fixture_account_get, fixture_get},
 };
 use hickory_resolver::proto::rr::RecordType;
 use std::sync::Mutex;
@@ -40,6 +42,7 @@ async fn drive(
         Instant::now() + lifetime,
     )
     .await
+    .map(|_| ())
 }
 
 #[tokio::test]
@@ -489,4 +492,214 @@ async fn single_address_keeps_connecting_while_a_syn_is_retried() {
     })
     .await
     .unwrap();
+}
+
+const SENTINEL: &str = "ghp_SENTINEL0123456789abcdefABCDEF";
+
+async fn drive_account(
+    io: TcpStream,
+    exchange: Exchange,
+    stop: watch::Receiver<bool>,
+) -> Result<()> {
+    let target = fixture_get("http://api.example.com/fixture")
+        .with_authorization(zeroize::Zeroizing::new(format!("Bearer {SENTINEL}")));
+    let mut exchange = exchange;
+    let mut stop = stop;
+    let progress = progress::Progress::new();
+    exchange_io(
+        progress::ObservedIo::new(io, progress.clone()),
+        &target,
+        &mut exchange,
+        &mut stop,
+        progress,
+        Instant::now() + Duration::from_secs(2),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tokio::test]
+async fn an_accounts_call_carries_the_credential_and_nothing_of_it_comes_back() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let (_upload, mut receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            let head = request_head(&mut server).await;
+            assert!(head.contains(&format!("authorization: Bearer {SENTINEL}\r\n")), "{head}");
+            assert!(head.contains("user-agent: chariox-app\r\n"));
+            // A debugging endpoint that echoes the request, and headers an
+            // App has no use for.
+            let body = format!("{{\"echo\":{head:?},\"token\":\"{SENTINEL}\"}}");
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"abc\"\r\nX-RateLimit-Remaining: 4999\r\nX-OAuth-Scopes: repo, workflow\r\nSet-Cookie: s=1\r\nX-Echo: Bearer {SENTINEL}\r\nServer: GitHub.com\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            server.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let head = receive.headers.await.unwrap().unwrap();
+        let names: Vec<_> = head.headers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["content-type", "etag", "x-ratelimit-remaining"]);
+        let mut answer = Vec::new();
+        while let Some(chunk) = receive.chunks.recv().await {
+            answer.extend_from_slice(&chunk.unwrap());
+        }
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(answer.contains("[redacted]"), "{answer}");
+        assert!(!answer.contains("SENTINEL"), "{answer}");
+        driver.await.unwrap().unwrap();
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_not_modified_answer_and_an_answer_over_the_cap_are_each_handled() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, mut server) = sockets().await;
+        let (_upload, receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            request_head(&mut server).await;
+            server
+                .write_all(b"HTTP/1.1 304 Not Modified\r\nETag: \"abc\"\r\nX-RateLimit-Remaining: 59\r\nRetry-After: 7\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let head = receive.headers.await.unwrap().unwrap();
+        assert_eq!(head.status, 304);
+        assert!(head.headers.iter().any(|(name, value)| name == "etag" && value == "\"abc\""));
+        assert!(head.headers.iter().any(|(name, value)| name == "retry-after" && value == "7"));
+        driver.await.unwrap().unwrap();
+        server_task.await.unwrap();
+
+        let (client, mut server) = sockets().await;
+        let (_upload, receive, exchange) = channels(false);
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive_account(client, exchange, signal));
+        let server_task = tokio::spawn(async move {
+            request_head(&mut server).await;
+            let _ = server
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", scrub::ANSWER_BYTES + 1).as_bytes())
+                .await;
+        });
+        // `run` reports a failure through the head; the driver here returns it.
+        assert_eq!(driver.await.unwrap().unwrap_err(), HttpError::Limit);
+        assert!(receive.headers.await.is_err());
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// One account GET over a plain socket: the origin's answer, and what the exchange decided.
+async fn account_get(
+    target: &ApprovedTarget,
+    answer: &'static str,
+) -> (String, Result<Option<ApprovedTarget>>, ReceivePort) {
+    let (client, mut server) = sockets().await;
+    let (_upload, receive, mut exchange) = channels(false);
+    let (_stop, mut signal) = watch::channel(false);
+    let progress = progress::Progress::new();
+    let observed = progress::ObservedIo::new(client, progress.clone());
+    let origin = tokio::spawn(async move {
+        let head = request_head(&mut server).await;
+        server.write_all(answer.as_bytes()).await.unwrap();
+        server.shutdown().await.unwrap();
+        head
+    });
+    let result = exchange_io(
+        observed,
+        target,
+        &mut exchange,
+        &mut signal,
+        progress,
+        Instant::now() + Duration::from_secs(2),
+    )
+    .await;
+    drop(exchange);
+    (origin.await.unwrap(), result, receive)
+}
+
+#[tokio::test]
+async fn a_redirect_to_a_host_the_route_declares_is_followed_without_the_account_credential() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let first = fixture_account_get("http://api.example.com/jobs/7/logs", &["*.blob.core.windows.net"]);
+        let (sent, result, receive) = account_get(
+            &first,
+            "HTTP/1.1 302 Found\r\nLocation: https://logs.blob.core.windows.net/job?sig=abc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(sent.to_ascii_lowercase().contains("authorization: bearer ghp_secret"), "the route's own host gets the account");
+        let next = result.unwrap().expect("the redirect is followed");
+        assert_eq!(next.url().as_str(), "https://logs.blob.core.windows.net/job?sig=abc");
+        assert_eq!(next.method(), hyper::Method::GET);
+        assert_eq!(next.sent_authorization(), None, "the redirected host never sees the credential");
+        assert!(next.authorization().is_some(), "its answer is still scrubbed as an account's answer");
+        assert!(receive.headers.await.is_err(), "the redirect itself is handed on to no one");
+
+        // The redirected exchange: its own request has no Authorization, and its text is the answer.
+        let (second_sent, answered, receive) = account_get(
+            &next,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nstep 1: ok\r\n",
+        )
+        .await;
+        assert!(answered.unwrap().is_none());
+        assert!(!second_sent.to_ascii_lowercase().contains("authorization"), "{second_sent}");
+        assert!(second_sent.starts_with("GET /job?sig=abc HTTP/1.1"));
+        assert!(second_sent.to_ascii_lowercase().contains("host: logs.blob.core.windows.net"));
+        let mut receive = receive;
+        assert_eq!(receive.headers.await.unwrap().unwrap().status, 200);
+        let mut text = Vec::new();
+        while let Some(chunk) = receive.chunks.recv().await {
+            text.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(String::from_utf8(text).unwrap(), "step 1: ok\r\n");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_redirect_anywhere_else_is_the_answer_and_is_not_followed() {
+    for location in [
+        "https://evil.example.com/steal",
+        "https://blob.core.windows.net/job",
+        "https://evilblob.core.windows.net/job",
+        "http://logs.blob.core.windows.net/job",
+        "https://logs.blob.core.windows.net:8443/job",
+        "https://user:pw@logs.blob.core.windows.net/job",
+        "/relative/on/the/same/host",
+    ] {
+        let answer: &'static str = Box::leak(
+            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_boxed_str(),
+        );
+        let target = fixture_account_get(
+            "http://api.example.com/jobs/7/logs",
+            &["*.blob.core.windows.net"],
+        );
+        let (_, result, receive) =
+            tokio::time::timeout(Duration::from_secs(3), account_get(&target, answer))
+                .await
+                .unwrap();
+        assert!(result.unwrap().is_none(), "{location}");
+        assert_eq!(
+            receive.headers.await.unwrap().unwrap().status,
+            302,
+            "{location}"
+        );
+    }
+    // A route that declares no redirect host follows none.
+    let target = fixture_account_get("http://api.example.com/jobs/7/logs", &[]);
+    let (_, result, receive) = account_get(
+        &target,
+        "HTTP/1.1 302 Found\r\nLocation: https://logs.blob.core.windows.net/job\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(result.unwrap().is_none());
+    assert_eq!(receive.headers.await.unwrap().unwrap().status, 302);
 }

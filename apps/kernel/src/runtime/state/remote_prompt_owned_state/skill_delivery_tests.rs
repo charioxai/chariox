@@ -3,7 +3,7 @@ use super::*;
 use crate::skill::{storage::SkillCatalogStorage, turn_authority::SkillTurnAuthority, v2::*};
 use crate::transport::relay_peer::{RelayPeerRequest, RemoteWorkspaceLiveSyncContext};
 
-async fn fixture() -> (
+pub(super) async fn fixture() -> (
     KernelRuntimeState,
     RemoteWorkspaceLiveSyncContext,
     SkillCatalogStorage,
@@ -2024,6 +2024,139 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
     assert_eq!(loads.len(), 1, "{loads:?}");
     assert_eq!(loads[0].skill_id, skill.id);
     assert_eq!(loads[0].run_id, "local-claude-run");
+}
+
+// SV-05: Claude's own /compact drops the bodies its run held. The stream reports the
+// compaction, so the next turn delivers the loaded body again instead of holding it.
+#[tokio::test]
+async fn a_streamed_claude_compaction_re_attaches_the_held_load() {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, run) =
+        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let storage = SkillCatalogStorage::new(
+        config.user_config_path.parent().unwrap(),
+        runtime.owned.durable_state_store.clone(),
+    )
+    .unwrap();
+    let service = SkillCatalogService::new(storage.clone());
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Review safely\n---\nReview source.\n"
+                    .into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skill = catalog.catalogs[0].skills[0].clone();
+    let submission = runtime
+        .owned
+        .submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "after-compact-turn",
+                &attachment,
+                &agent_id,
+                "continue the review",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    let prompt = match submission.outcome {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    // The run took the body on an earlier turn, and Claude's hook confirmed it.
+    let authority = SkillTurnAuthority {
+        catalog_revision: catalog.revision,
+        project_id: session.project_id().into(),
+        provider_run_id: run.id().into(),
+        context_generation: "generation".into(),
+        explicit_skill_ids: vec![skill.id.clone()],
+        body_budget_tokens: 100,
+        reserved_body_tokens: Default::default(),
+        pending_loads: vec![SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: skill.digest.clone(),
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            run_id: run.id().into(),
+            prompt_id: prompt.id().into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "generation".into(),
+            delivered_at_ms: 0,
+        }],
+        prompt_delivery_skill_ids: [skill.id.clone()].into(),
+        remote_roots: Default::default(),
+        native_tool_loads: Default::default(),
+        compaction_revision: None,
+    };
+    runtime
+        .owned
+        .prompt_state_owner
+        .update_skill_authority_durably(
+            &runtime.owned.session_store,
+            &runtime.owned.durable_state_store,
+            &session_id,
+            &agent_id,
+            prompt.id(),
+            |_| Ok(authority),
+        )
+        .unwrap();
+    let providers = &runtime.owned.provider_store;
+    providers
+        .apply_structured_output_metadata(
+            run.id(),
+            &crate::provider::ProviderPromptSignalBatch {
+                hook_context_delivered: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(storage.loads(&session_id).unwrap().len(), 1);
+    let carries_body = || {
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "continue the review",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+        providers
+            .prepare_skill_prompt(
+                &session_id,
+                &agent_id,
+                prompt.id(),
+                prompt.id(),
+                &run,
+                envelope,
+            )
+            .unwrap()
+            .skill_delivery
+            .is_some_and(|delivery| delivery.hidden_context.contains("Review source."))
+    };
+    assert!(!carries_body(), "the live run holds the body");
+    let compacted = crate::provider::ProviderPromptSignalBatch {
+        native_compactions: vec!["compact_boundary-c1".into()],
+        ..Default::default()
+    };
+    providers
+        .apply_structured_output_metadata(run.id(), &compacted)
+        .unwrap();
+    assert!(carries_body(), "the compaction lost the body the run held");
 }
 
 // Discovery lists skills by name: a load by name settles on the canonical id the

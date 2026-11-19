@@ -87,7 +87,7 @@ test("waiting room key controller activates on enter", () => {
 
 test("waiting room key controller opens managed configuration from the Machine field", () => {
   const harness = createHarness({
-    state: waitingRoomState({
+    state: startState({
       focus: "launch-machine",
       selectedMachineRef: NEW_MACHINE_ALLOCATION_REF,
     }),
@@ -101,7 +101,7 @@ test("waiting room key controller opens managed configuration from the Machine f
 test("Machine navigation waits for Enter before opening managed configuration", () => {
   for (const name of ["right", "left"]) {
     const harness = createHarness({
-      state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
+      state: startState({ focus: "launch-machine", selectedMachineRef: "local" }),
       remote: { machineAllocationOffered: true },
     })
     assert.equal(harness.controller.handleKey({ name, eventType: "press" }), true)
@@ -115,7 +115,7 @@ test("Machine navigation waits for Enter before opening managed configuration", 
 test("waiting room key controller renames and restores the focused project", () => {
   const project = projectSummary({ status: "archived" })
   const harness = createHarness({
-    state: waitingRoomState({ focus: "project-entry", projectIndex: 0, showArchivedProjects: true }),
+    state: startState({ focus: "project-entry", projectIndex: 0, showArchivedProjects: true }),
     projects: [project],
   })
 
@@ -139,7 +139,7 @@ function createHarness(options: {
   projects?: WaitingRoomProjectSummary[]
   remote?: WaitingRoomRemoteState
 } = {}) {
-  let state = options.state ?? waitingRoomState()
+  let state = options.state ?? startState()
   const calls: string[] = []
   const reconciledStates: WaitingRoomState[] = []
   const updatedStates: WaitingRoomState[] = []
@@ -200,7 +200,7 @@ function createHarness(options: {
   }
 }
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
@@ -225,13 +225,13 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
 }
 
 test("MP-08 OWNER-15 P toggles a focused project pin", () => {
-  const h = createHarness({ state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }), projects: [projectSummary()] })
+  const h = createHarness({ state: startState({ focus: "project-entry", projectIndex: 0 }), projects: [projectSummary()] })
   h.controller.handleKey({ name: "p" })
   assert.ok(h.calls().includes(`pin:${projectSummary().id}:true`))
 })
 
 test("MP-08 OWNER-19 Enter on New asks for its name", () => {
-  const h = createHarness({ state: waitingRoomState({ focus: "project", projectSelectionId: "new" }) })
+  const h = createHarness({ state: startState({ focus: "project", projectSelectionId: "new" }) })
   h.controller.handleKey({ name: "return" })
   assert.ok(h.calls().includes("new-project-name"))
 })
@@ -255,7 +255,7 @@ function projectSummary(overrides: Partial<WaitingRoomProjectSummary> = {}): Wai
 
 // MP-08 / MP-10: No attached Session or Agent is required.
 test("ENV P01 V opens exactly the selected Project and ignores release/modifiers", () => {
-  const harness = createHarness({ state: waitingRoomState({ focus: "project-entry", projectIndex: 1 }), projects: [projectSummary(), projectSummary({ id: "second" })] })
+  const harness = createHarness({ state: startState({ focus: "project-entry", projectIndex: 1 }), projects: [projectSummary(), projectSummary({ id: "second" })] })
   harness.controller.handleKey({ name: "v", eventType: "release" })
   harness.controller.handleKey({ name: "v", eventType: "press", ctrl: true })
   assert.deepEqual(harness.calls(), [])

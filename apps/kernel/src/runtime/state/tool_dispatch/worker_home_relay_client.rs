@@ -94,31 +94,20 @@ fn managed_slice_home_owner_public_key_for_identity(
     home_kernel_id: &str,
     identity: Option<&crate::runtime::router::ManagedSliceRelayIdentity>,
 ) -> Result<Option<String>, DaemonError> {
-    let Some(owner_public_key) = config.managed_slice_relay_owner_public_key.as_ref() else {
+    if config.managed_slice_relay_owner_public_key.is_none() {
         return Ok(None);
-    };
-    let room_binding = config.room_environment_worker_binding.as_ref();
-    let slice_matches = identity.is_some_and(|identity| identity.owner_kernel_id == home_kernel_id);
-    let room_matches = room_binding.is_some_and(|binding| {
-        binding.home_kernel_id == home_kernel_id && binding.home_public_key == *owner_public_key
-    });
+    }
     // Standalone managed slices carry the same provisioner-owned identity and
     // owner pin as Room slices, without a Room session binding. When both exist
     // they must agree before any peer request enters transport.
-    let binding_matches = match (identity, room_binding) {
-        (Some(_), Some(_)) => slice_matches && room_matches,
-        (Some(_), None) => slice_matches,
-        (None, Some(_)) => room_matches,
-        (None, None) => false,
-    };
-    if !binding_matches {
-        return Err(DaemonError::LocalTransport {
+    match crate::runtime::state::provisioned_slice_home(config, identity) {
+        Some(home) if home.kernel_id == home_kernel_id => Ok(Some(home.public_key)),
+        _ => Err(DaemonError::LocalTransport {
             operation: "forward managed slice runtime tool",
             message: "managed slice owner identity does not match its provisioned binding"
                 .to_string(),
-        });
+        }),
     }
-    Ok(Some(owner_public_key.clone()))
 }
 
 #[cfg(test)]

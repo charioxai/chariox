@@ -1,4 +1,4 @@
-//! Exact owner controls for retained tasks and timers.
+//! Exact owner controls for retained tasks, waits and the events of a wait.
 use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 
@@ -73,6 +73,8 @@ impl KernelRuntimeState {
         self.agent_cancellation_response(&request.session_id, &cancelled.task_id)
     }
 
+    /// The owner ends one event of a wait: a wake (a timer, a watched process, any driver source)
+    /// or the follow of a peer agent. The event's id is the wake's or the registration's.
     pub(crate) async fn cancel_owner_agent_wake(
         &self,
         command: &crate::runtime::command::KernelCommand,
@@ -83,18 +85,30 @@ impl KernelRuntimeState {
             &request.session_id,
             &request.attachment_id,
         )?;
-        let Outcome::Wakes(wakes) =
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::CancelOwnerTimer {
-                    id: request.wake_id,
-                    room: request.session_id.clone(),
-                    owner,
-                })?
+        let store = &self.owned.durable_state_store;
+        if store.agent_wake(&request.wake_id)?.is_some() {
+            let Outcome::Wakes(wakes) = store.agent_lifecycle(Operation::CancelOwnerWake {
+                id: request.wake_id,
+                room: request.session_id.clone(),
+                owner,
+            })?
+            else {
+                unreachable!()
+            };
+            self.stop_cancelled_wait_source(&wakes[0]).await;
+            return self.agent_cancellation_response(&request.session_id, &wakes[0].task_id);
+        }
+        let Outcome::Task(holder) = store.agent_lifecycle(Operation::EndOwnerFollow {
+            registration: request.wake_id.clone(),
+            room: request.session_id.clone(),
+            owner,
+        })?
         else {
             unreachable!()
         };
-        self.agent_cancellation_response(&request.session_id, &wakes[0].task_id)
+        self.end_peer_follow_on_other_kernel(&holder.agent_id, &request.wake_id)
+            .await;
+        self.agent_cancellation_response(&request.session_id, &holder.task_id)
     }
 
     /// The owner ends the wait of a task from the agent's pane: its sources stop, the wait row

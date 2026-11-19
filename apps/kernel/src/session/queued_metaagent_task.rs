@@ -142,6 +142,7 @@ mod tests {
         });
         let mut session = crate::session::RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

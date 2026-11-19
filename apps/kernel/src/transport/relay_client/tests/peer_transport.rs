@@ -29,14 +29,20 @@ async fn run_controlled_workspace_live_sync_target(
         if *shutdown.borrow() {
             return;
         }
-        let (mut socket, _) = connect_async(&relay_url)
+        let (mut socket, socket_handshake) = connect_async(&relay_url)
             .await
             .expect("controlled workspace target should connect to relay");
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: registration.clone(),
-                })
+                serde_json::to_string(
+                    &crate::transport::relay_socket_connect::daemon_register(
+                        &relay_url,
+                        &socket_handshake,
+                        registration.clone(),
+                        &private_key,
+                    )
+                    .unwrap(),
+                )
                 .expect("controlled target registration should serialize")
                 .into(),
             ))
@@ -441,7 +447,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                 transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
                 plan_digest: format!("sha256:{}", "f".repeat(64)),
-                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
+                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource { projects: vec![crate::transport::relay_peer::RelayManagedContextImportedProject {
                     project_id: "project-1".to_string(),
                     destination_root: "/managed/context".to_string(),
                     primary_repository_id: "repo-primary".to_string(),
@@ -454,7 +460,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                         destination_path: "/managed/context/primary".to_string(),
                         head_sha: "b".repeat(40),
                     }],
-                },
+                }] },
                 kernel_context: RelayManagedKernelContextImportReceipt::Empty,
                 receipt_sha256: "c".repeat(64),
             }),
@@ -466,7 +472,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
         Some(&serde_json::json!("consumed"))
     );
     assert_eq!(
-        value.pointer("/status/receipt/development/repositories/0/role"),
+        value.pointer("/status/receipt/development/projects/0/repositories/0/role"),
         Some(&serde_json::json!("primary"))
     );
     assert_eq!(

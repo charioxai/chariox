@@ -8,6 +8,7 @@ use crate::provider::ExternalProviderImportMetadata;
 
 use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
+use super::project_id::ProjectId;
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
@@ -88,8 +89,7 @@ pub(crate) struct DurableWorkflowHotState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
-    #[serde(default)]
-    project_id: String,
+    project_id: ProjectId,
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pinned: bool,
@@ -137,6 +137,9 @@ pub struct RuntimeSession {
     sudo_windows: Vec<crate::local::KernelSudoTurn>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
+    /// Messages from other agents waiting for their recipients' next turn, projected from the inbox; never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queued_agent_messages: Vec<super::QueuedAgentMessage>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
@@ -212,6 +215,12 @@ impl RuntimeSession {
     pub fn room_setup(&self) -> Option<&RoomSetupState> {
         self.room_setup.as_ref()
     }
+    pub fn queued_agent_messages(&self) -> &[super::QueuedAgentMessage] {
+        &self.queued_agent_messages
+    }
+    pub(crate) fn set_queued_agent_messages(&mut self, messages: Vec<super::QueuedAgentMessage>) {
+        self.queued_agent_messages = messages;
+    }
     pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
         &self.agent_wakes
     }
@@ -282,6 +291,7 @@ impl RuntimeSession {
 
     pub fn new(
         id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
         workspace_id: impl Into<String>,
         worktree_id: impl Into<String>,
@@ -294,7 +304,7 @@ impl RuntimeSession {
 
         Self {
             id: id.clone(),
-            project_id: String::new(),
+            project_id,
             alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
@@ -323,6 +333,7 @@ impl RuntimeSession {
             agent_tasks: Vec::new(),
             sudo_windows: Vec::new(),
             agent_wakes: Vec::new(),
+            queued_agent_messages: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
             trigger_deliveries: Vec::new(),
@@ -357,26 +368,28 @@ impl RuntimeSession {
     }
 
     pub fn project_id(&self) -> &str {
+        self.project_id.as_str()
+    }
+
+    pub fn project(&self) -> &ProjectId {
         &self.project_id
     }
 
-    pub(crate) fn assign_project_id(&mut self, project_id: impl Into<String>) -> bool {
-        if !self.project_id.is_empty() {
-            return false;
-        }
-        self.project_id = project_id.into();
-        true
+    /// A hidden backing Room adopts the Project its lease imported; a visible Room never changes Project this way.
+    pub(crate) fn join_leased_project(&mut self, project_id: ProjectId) {
+        debug_assert!(self.hidden);
+        self.project_id = project_id;
     }
 
     pub(crate) fn migrate_default_project_scope(
         &mut self,
         workspace_id: impl Into<String>,
-        project_id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
     ) {
         debug_assert!(!self.hidden);
         self.workspace_id = workspace_id.into();
-        self.project_id = project_id.into();
+        self.project_id = project_id;
         self.alias = alias;
     }
 
@@ -524,6 +537,9 @@ impl RuntimeSession {
         }
         for workflow in &mut self.workflows {
             workflow.enroll_local_owner(owner);
+        }
+        for publication in &mut self.workflow_publication_state.workflow_publications {
+            publication.enroll_local_owner(owner);
         }
     }
 
@@ -1092,16 +1108,30 @@ impl RuntimeSession {
     /// Names each agent's card by its asker as the session's agents name it now, so a client
     /// shows who asks without a lookup.
     pub(crate) fn name_interaction_askers(&mut self) {
-        let agents = &self.agents;
-        for interaction in &mut self.active_interactions {
-            let name = interaction.agent_id().and_then(|asker| {
-                agents
-                    .iter()
-                    .find(|agent| agent.id() == asker)
-                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
-            });
-            interaction.set_asker_name(name);
-        }
+        self.active_interactions = self.named_active_interactions();
+    }
+
+    /// The agent's name as the session's agents name it now.
+    pub(crate) fn agent_display_name(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+    }
+
+    /// The active interactions, each named by its asker as the session's agents name it now.
+    pub(crate) fn named_active_interactions(&self) -> Vec<RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .map(|interaction| {
+                let name = interaction
+                    .agent_id()
+                    .and_then(|asker| self.agent_display_name(asker));
+                let mut interaction = interaction.clone();
+                interaction.set_asker_name(name);
+                interaction
+            })
+            .collect()
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.
@@ -1526,12 +1556,12 @@ mod tests;
 impl RuntimeSession {
     pub(crate) fn for_execution_project(
         &self,
-        project_id: &str,
+        project_id: ProjectId,
         workspace: &str,
         worktree: &str,
     ) -> Self {
         let mut execution = self.clone();
-        execution.project_id = project_id.to_string();
+        execution.project_id = project_id;
         execution.workspace_id = workspace.to_string();
         execution.worktree_id = worktree.to_string();
         execution
@@ -1546,6 +1576,7 @@ mod session_activity_tests {
     fn session_activity_is_persisted_and_metadata_cannot_change_it() {
         let mut session = RuntimeSession::new(
             "session",
+            ProjectId::test(),
             None,
             "workspace",
             "worktree",

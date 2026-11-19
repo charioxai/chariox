@@ -171,7 +171,7 @@ Managed-machine note:
   infrastructure manager owns provider credentials and provider reconciliation
 - the relay remains transport-only, and direct source-to-target context transfer is
   encrypted between kernels
-- the TUI and web Waiting Room project managed environments through the existing
+- the TUI and web Room list project managed environments through the existing
   Machine field and suppress the linked runtime Machine as a duplicate row
 
 See [M28_ENVIRONMENT_CONTEXT_MATERIALIZATION_PLAN.md](M28_ENVIRONMENT_CONTEXT_MATERIALIZATION_PLAN.md)
@@ -287,13 +287,13 @@ Current architectural interpretation:
 - all user-generated payloads that cross relay boundaries must be session-scoped end-to-end encrypted, including prompts, workflow payloads, and transferred artifacts
 - this encryption requirement applies equally to self-hosted relay deployments; self-hosting does not relax the transport privacy model
 - the same CLI should support local direct daemon operation and relay-mediated remote operation without becoming two apps
-- the CLI should always open the waiting room first; local sessions remain available even when relay is not configured or disconnected
-- relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
+- the CLI should always open the Room list first; local sessions remain available even when relay is not configured or disconnected
+- relay connection is configured from slash commands or the Room list relay section, then auto-connects in the background
 - `/relay use <ws-url>` may read the token from `CHARIOX_RELAY_TOKEN`; passing the token as a visible slash-command argument remains supported for self-hosted/manual testing but should not be the preferred documented path for shared terminals or screenshots
 - worker processes may receive `CHARIOX_CLOUD_RELAY_CONFIG_JSON` only when the launcher intentionally delegates Cloud relay refresh authority to that worker; the normal env relay URL/token path remains scoped runtime relay configuration and must not imply access to home-owned Cloud credentials
-- the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
+- the Room list groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
-- waiting-room remote machine/kernel discovery must be projection-backed, not request-backed: the kernel refreshes relay presence in the background and publishes a daemon-owned remote-inventory projection; CLI/web waiting-room reads consume that projection and must not synchronously open new relay metadata sockets on the user-facing read path
+- Room list remote machine/kernel discovery must be projection-backed, not request-backed: the kernel refreshes relay presence in the background and publishes a daemon-owned remote-inventory projection; CLI/web Room list reads consume that projection and must not synchronously open new relay metadata sockets on the user-facing read path
 - the home kernel maintains local machine trust state: live unknown machines are pending, `/machine approve` makes them spawn targets, and `/machine forget` hides them from normal machine/provider availability; nothing renames a machine
 - machine names follow the machine naming rules below: a machine ID and its name come from the computer, never from a kernel home or from the person, and the relay lists a computer's kernels as the name, `<name>-2`, `<name>-3` in start order (a relay keeps no history, so these numbers follow the kernels registered now; Cloud keeps them for the life of a kernel)
 - relay machine lists remain grouped by stable machine identity; when several kernels are online from the same machine, `/machine kernels <machine-ref>` shows each of them by its name
@@ -302,7 +302,7 @@ Current architectural interpretation:
 
 #### 3.4.1 Relay byte metering
 
-The relay counts bytes, never content. For every authenticated connection it adds the size of each frame it receives (`bytes_in`) and each frame it writes (`bytes_out`, chunk frames included; WebSocket, TLS and TCP framing excluded) to a counter keyed by realm and stream scope. The scope is the label a client gave when it subscribed (`session` when it gave none, for example `kernel_browser_display`, `waiting_room_inventory`); requests, replies and presence are `control`; the Selkies display tunnel is `display_tunnel`. A label outside `[a-z0-9_.-]{1,48}` or beyond 16 scopes per realm is counted as `other`, and once the table holds 8192 keys a realm adds at most one `other` key of its own, so memory grows only with the realms that talk to the relay. A connection belongs to the first realm it authenticates in; a later request that proves another realm closes it. The relay knows nothing about what a stream carries.
+The relay counts bytes, never content. For every authenticated connection it adds the size of each frame it receives (`bytes_in`) and each frame it writes (`bytes_out`, chunk frames included; WebSocket, TLS and TCP framing excluded) to a counter keyed by realm and stream scope. The scope is the label a client gave when it subscribed (`session` when it gave none, for example `kernel_browser_display`, `room_list`); requests, replies and presence are `control`; the Selkies display tunnel is `display_tunnel`. A label outside `[a-z0-9_.-]{1,48}` or beyond 16 scopes per realm is counted as `other`, and once the table holds 8192 keys a realm adds at most one `other` key of its own, so memory grows only with the realms that talk to the relay. A connection belongs to the first realm it authenticates in; a later request that proves another realm closes it. The relay knows nothing about what a stream carries.
 
 Reporting is opt-in: set `CHARIOX_RELAY_USAGE_URL` (Cloud API origin), `CHARIOX_RELAY_ID`, `CHARIOX_RELAY_USAGE_SPOOL` (a directory on disk the relay user can write) and the shared `CHARIOX_RELAY_SCOPED_HMAC_SECRET`; `CHARIOX_RELAY_USAGE_INTERVAL_SECS` defaults to 60. Each round drains the counters into their own batch (random id, own window; more than 10,000 entries, Cloud's limit, become several batches of the same window), writes it to the spool directory, then `POST`s every spooled batch to `/relay/usage`, oldest first, and deletes each file once Cloud answered. A failed send is retried as the same batch, an outage keeps one file per interval, a restart resumes every spooled batch, and Cloud counts a batch id once and takes none whose window ended more than 14 days ago. Only what was still in memory when the process died (at most one interval) is lost; a stopping relay sends a last report. Cloud stores the totals per account, scope and UTC hour and lets an account owner or admin read them (`GET /relay/usage`). Nothing is limited or enforced.
 
@@ -387,6 +387,29 @@ registers durable dispatch intent before effects. Receipt failures preserve
 already admitted work and identify it to callers; known rejections are
 recorded separately. Obligation settlement, waits and recovery remain the
 following lifecycle PR's responsibility.
+
+### 3.6.2 Agents never reach the kernel's state
+
+Every process the kernel starts for an agent (provider runs, kernel jobs and
+watched commands, terminals an agent opens) runs where the kernel's secrets
+are out of reach: its state folder (database, relay credential, every
+provider profile), Vault, credentials, machine identity, relay pairing and
+history. Secrets live in folders of their own and exactly those folders are
+covered, matched by path component, so a folder that only shares a name prefix
+with one, or a file beside one, stays the agent's to read and write. A Vault or
+history database configured outside the kernel home must sit in a folder of its
+own; the kernel refuses to start otherwise and says where to move it. On Linux
+a Bubblewrap mount namespace covers each secret folder with an empty read-only
+one, so reading a secret fails, a write into the folder fails instead of
+vanishing, and a secret the kernel replaces or creates later stays hidden; on
+macOS a Seatbelt profile denies them. Files the kernel hands an agent to read, such as
+a workflow node's instruction file, live outside the secrets. What the launch names as the agent's
+own stays reachable: its working folder, its provider profile, its scratch
+folder and program, and, read-only, the kernel registry and local sign-in
+token the chariox CLI uses. A kernel that cannot confine (no `bwrap`, or user
+namespaces denied to it) refuses to start the process with a message that
+says how to fix it; nothing runs unconfined. A person's own terminal is not
+confined.
 
 ### 3.7 Workspace Coordination
 

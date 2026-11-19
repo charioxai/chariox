@@ -1,288 +1,424 @@
+//! Commit and push of a Room's worktree. Both stay inside the worktree's own
+//! repository: a commit holds exactly the files named, and a push goes to the
+//! `origin` GitHub repository on a branch that is not the default one, with the
+//! owner's account credential given to git through its environment (never its
+//! arguments). Opening the pull request is the GitHub App's action.
 use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
+use zeroize::Zeroizing;
+
 use crate::error::DaemonError;
-use crate::local::{WorkspaceGitActionResult, WorkspacePullRequestRecord};
+use crate::local::WorkspaceGitActionResult;
 use crate::runtime::workspace_git_changes::workspace_git_status_by_path;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_command_output, resolve_repo_root, run_workspace_git_command,
-    workspace_default_compare_ref,
+    detect_git_branch, git_command_output, git_query, git_ref_exists, head_commit, origin_url,
+    resolve_repo_root, run_workspace_git_command,
 };
 
+const MAX_FILES: usize = 500;
+const MAX_BRANCH_CHARS: usize = 200;
+
+/// The branch a commit landed on and whether the commit made it.
+pub(crate) struct CommitOutcome {
+    pub(crate) result: WorkspaceGitActionResult,
+    pub(crate) created_branch: bool,
+}
+
+/// What git needs to push to GitHub as an account: kept out of argument lists
+/// and out of every message.
+pub(crate) struct PushCredential(Zeroizing<String>);
+
+impl PushCredential {
+    /// GitHub accepts a token over HTTPS as Basic with any user name; the
+    /// `Authorization: Bearer` form that suits its REST API is refused there.
+    pub(crate) fn from_token(token: &str) -> Self {
+        let basic = base64::engine::general_purpose::STANDARD
+            .encode(format!("x-access-token:{token}").as_bytes());
+        Self(Zeroizing::new(basic))
+    }
+
+    fn environment(&self) -> Vec<(String, String)> {
+        let pairs = [
+            ("GIT_TERMINAL_PROMPT", "0".to_string()),
+            ("GIT_CONFIG_COUNT", "2".to_string()),
+            ("GIT_CONFIG_KEY_0", "credential.helper".to_string()),
+            ("GIT_CONFIG_VALUE_0", String::new()),
+            (
+                "GIT_CONFIG_KEY_1",
+                "http.https://github.com/.extraheader".to_string(),
+            ),
+            (
+                "GIT_CONFIG_VALUE_1",
+                format!("Authorization: Basic {}", self.0.as_str()),
+            ),
+        ];
+        pairs
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect()
+    }
+}
+
+/// Commits exactly `files` (paths relative to the worktree, each one changed).
+/// Work on the default branch or a detached HEAD moves to a new
+/// `chariox/<slug>` branch first; a named `branch` is created or reused. The
+/// `credential` lets the default branch be asked of a private `origin` when
+/// the clone does not know it.
 pub(crate) fn commit_workspace_changes(
     workspace_id: &str,
     worktree_id: &str,
+    files: &[String],
     message: &str,
-) -> Result<WorkspaceGitActionResult, DaemonError> {
+    branch: Option<&str>,
+    credential: Option<&PushCredential>,
+) -> Result<CommitOutcome, DaemonError> {
     let message = message.trim();
     if message.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "commit message is required".to_string(),
-        });
+        return Err(fail("workspace git commit", "commit message is required"));
     }
     let worktree_path = worktree_id.trim();
     if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "worktree_id is required".to_string(),
-        });
+        return Err(fail("workspace git commit", "worktree_id is required"));
     }
-    let _repo_root = resolve_repo_root(worktree_path)?;
+    resolve_repo_root(worktree_path)?;
     let changes = workspace_git_status_by_path(worktree_path)?;
-    if changes.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git commit",
-            message: "no workspace changes to commit".to_string(),
-        });
+    if files.is_empty() || files.len() > MAX_FILES {
+        return Err(fail(
+            "workspace git commit",
+            "name between 1 and 500 changed files to commit",
+        ));
     }
-    run_workspace_git_command(worktree_path, &["add", "-A"], "workspace git add")?;
-    run_workspace_git_command(
-        worktree_path,
-        &["commit", "-m", message],
-        "workspace git commit",
-    )?;
-    let commit_sha = git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]);
-    Ok(WorkspaceGitActionResult {
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        action: "commit".to_string(),
-        message: "committed workspace changes".to_string(),
-        commit_sha,
-        branch: detect_git_branch(worktree_path).ok(),
-        generated_at_ms: current_unix_ms(),
-    })
-}
-
-pub(crate) fn push_workspace_branch(
-    workspace_id: &str,
-    worktree_id: &str,
-    force_with_lease: bool,
-) -> Result<WorkspaceGitActionResult, DaemonError> {
-    let worktree_path = worktree_id.trim();
-    if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git push",
-            message: "worktree_id is required".to_string(),
-        });
+    // A named rename is committed with the path it moved from; its deletion is
+    // already staged, so only the commit needs that path. A file recreated at
+    // that path is a different change the caller must name, never one a
+    // rename carries along.
+    let mut pathspecs: Vec<&str> = Vec::with_capacity(files.len());
+    for file in files {
+        let Some(change) = changes.get(file) else {
+            return Err(fail(
+                "workspace git commit",
+                &format!("`{file}` is not a changed file of this worktree"),
+            ));
+        };
+        pathspecs.push(file);
+        if let Some(source) = change.renamed_from.as_deref() {
+            let recreated = std::path::Path::new(worktree_path)
+                .join(source)
+                .symlink_metadata()
+                .is_ok();
+            if recreated && !files.iter().any(|named| named == source) {
+                return Err(fail(
+                    "workspace git commit",
+                    &format!(
+                        "`{file}` was renamed from `{source}`, and a new file now exists at `{source}`; name `{source}` as well to commit it, or move it away to commit the rename alone"
+                    ),
+                ));
+            }
+            pathspecs.push(source);
+        }
     }
-    let _repo_root = resolve_repo_root(worktree_path)?;
-    let branch = detect_git_branch(worktree_path).ok();
-    let upstream = git_command_output(
-        worktree_path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    );
-    if upstream.is_none() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace git push",
-            message: "current branch has no upstream; push target is ambiguous".to_string(),
-        });
+    let target = target_branch(worktree_path, message, branch, credential)?;
+    match &target {
+        Some(BranchMove::Create(name)) => run_workspace_git_command(
+            worktree_path,
+            &["switch", "--create", name],
+            "workspace git branch",
+        )?,
+        Some(BranchMove::Switch(name)) => {
+            run_workspace_git_command(worktree_path, &["switch", name], "workspace git branch")?
+        }
+        None => {}
     }
-    let args = if force_with_lease {
-        vec!["push", "--force-with-lease"]
-    } else {
-        vec!["push"]
-    };
-    run_workspace_git_command(worktree_path, &args, "workspace git push")?;
-    Ok(WorkspaceGitActionResult {
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        action: if force_with_lease {
-            "force_push".to_string()
-        } else {
-            "push".to_string()
+    // File names are not patterns: `data[1].txt` must not also take `data1.txt`.
+    let mut add = vec!["--literal-pathspecs", "add", "-A", "--"];
+    add.extend(files.iter().map(String::as_str));
+    run_workspace_git_command(worktree_path, &add, "workspace git add")?;
+    let mut commit = vec![
+        "--literal-pathspecs",
+        "commit",
+        "--only",
+        "-m",
+        message,
+        "--",
+    ];
+    commit.extend(&pathspecs);
+    run_workspace_git_command(worktree_path, &commit, "workspace git commit")?;
+    Ok(CommitOutcome {
+        result: WorkspaceGitActionResult {
+            workspace_id: workspace_id.to_string(),
+            worktree_id: worktree_id.to_string(),
+            action: "commit".to_string(),
+            message: "committed workspace changes".to_string(),
+            commit_sha: Some(head_commit(worktree_path)?),
+            branch: Some(detect_git_branch(worktree_path)?),
+            generated_at_ms: current_unix_ms(),
         },
-        message: "pushed workspace branch".to_string(),
-        commit_sha: git_command_output(worktree_path, &["rev-parse", "--verify", "HEAD"]),
-        branch,
-        generated_at_ms: current_unix_ms(),
+        created_branch: matches!(target, Some(BranchMove::Create(_))),
     })
 }
 
-pub(crate) fn commit_and_push_workspace_changes(
-    workspace_id: &str,
-    worktree_id: &str,
+/// How the worktree gets onto the branch the commit lands on.
+enum BranchMove {
+    Create(String),
+    Switch(String),
+}
+
+/// The move to make before committing, or none when the current branch stays:
+/// a named branch other than the current one (switched to when it exists), or
+/// a fresh feature branch when the worktree is on the default branch or
+/// detached.
+fn target_branch(
+    worktree_path: &str,
     message: &str,
-) -> Result<WorkspaceGitActionResult, DaemonError> {
-    let commit_result = commit_workspace_changes(workspace_id, worktree_id, message)?;
-    let push_result = push_workspace_branch(workspace_id, worktree_id, false)?;
-    Ok(workspace_commit_and_push_result(
-        workspace_id,
-        worktree_id,
-        commit_result,
-        push_result,
+    requested: Option<&str>,
+    credential: Option<&PushCredential>,
+) -> Result<Option<BranchMove>, DaemonError> {
+    let current = detect_git_branch(worktree_path)?;
+    let default = default_branch(worktree_path, credential)?;
+    let repo = std::path::Path::new(worktree_path);
+    if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
+        if name == default
+            || name.len() > MAX_BRANCH_CHARS
+            || !valid_branch_name(worktree_path, name)
+        {
+            return Err(fail(
+                "workspace git branch",
+                &format!("`{name}` is not a usable feature branch name"),
+            ));
+        }
+        if name == current {
+            return Ok(None);
+        }
+        let name = name.to_string();
+        return Ok(Some(
+            if git_ref_exists(repo, &format!("refs/heads/{name}"))? {
+                BranchMove::Switch(name)
+            } else {
+                BranchMove::Create(name)
+            },
+        ));
+    }
+    if current != "HEAD" && current != default {
+        return Ok(None);
+    }
+    let slug = branch_slug(message);
+    (1..)
+        .map(|n| match n {
+            1 => format!("chariox/{slug}"),
+            n => format!("chariox/{slug}-{n}"),
+        })
+        .find(|name| !git_ref_exists(repo, &format!("refs/heads/{name}")).unwrap_or(true))
+        .map(|name| Some(BranchMove::Create(name)))
+        .ok_or_else(|| fail("workspace git branch", "no free branch name"))
+}
+
+fn valid_branch_name(worktree_path: &str, name: &str) -> bool {
+    !name.starts_with('-')
+        && git_command_output(worktree_path, &["check-ref-format", "--branch", name]).is_some()
+}
+
+fn branch_slug(message: &str) -> String {
+    let subject = message.lines().next().unwrap_or_default().to_lowercase();
+    let mut slug = String::new();
+    for character in subject.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    let slug: String = slug.trim_end_matches('-').chars().take(40).collect();
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() { "changes" } else { slug }.to_string()
+}
+
+/// The default branch of `origin`: what `origin/HEAD` points at, or, while the
+/// clone does not know it, the symbolic `HEAD` the remote advertises. Asking
+/// the remote needs no local ref, so a single-branch clone works, and uses the
+/// account's credential when there is one. Never a guess from local branches:
+/// a push guard built on one would let the real default branch through.
+pub(crate) fn default_branch(
+    worktree_path: &str,
+    credential: Option<&PushCredential>,
+) -> Result<String, DaemonError> {
+    if let Some(name) = origin_head(worktree_path) {
+        return Ok(name);
+    }
+    let environment = credential
+        .map(PushCredential::environment)
+        .unwrap_or_default();
+    let asked = crate::process_spawn::command("git")
+        .args(["ls-remote", "--symref", "origin", "HEAD"])
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .current_dir(worktree_path)
+        .output_for(Work::Mutation);
+    let reason = match asked {
+        Ok(output) if output.status.success() => {
+            match advertised_default_branch(&String::from_utf8_lossy(&output.stdout)) {
+                Some(name) => return Ok(name),
+                None => "the remote reports no default branch".to_string(),
+            }
+        }
+        Ok(output) => {
+            let mut said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if let Some(credential) = credential {
+                said = said.replace(credential.0.as_str(), "[redacted]");
+            }
+            said
+        }
+        Err(error) => error.to_string(),
+    };
+    Err(fail(
+        "workspace git default branch",
+        &format!(
+            "cannot determine the default branch of `origin` ({reason}); check that the account can reach the repository and that it has a default branch, then retry"
+        ),
     ))
 }
 
-pub(crate) fn create_workspace_pull_request(
+/// The branch in `git ls-remote --symref origin HEAD`'s `ref: refs/heads/<name>\tHEAD` line.
+fn advertised_default_branch(listing: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (symref, target) = line.strip_prefix("ref: ")?.split_once('\t')?;
+        (target == "HEAD")
+            .then(|| symref.strip_prefix("refs/heads/"))
+            .flatten()
+            .map(str::to_string)
+    })
+}
+
+fn origin_head(worktree_path: &str) -> Option<String> {
+    let head = git_command_output(
+        worktree_path,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )?;
+    Some(head.strip_prefix("origin/").unwrap_or(&head).to_string())
+}
+
+/// `owner/repo` of a GitHub HTTPS remote; none for any other remote.
+pub(crate) fn github_https_repository(url: &str) -> Option<String> {
+    let path = url.trim().strip_prefix("https://github.com/")?;
+    let path = path
+        .strip_suffix(".git")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    let (owner, repo) = path.split_once('/')?;
+    let part = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    };
+    (part(owner) && part(repo)).then(|| format!("{owner}/{repo}"))
+}
+
+/// Pushes the current branch to `origin`, which must be a GitHub HTTPS
+/// remote. The default branch and a detached HEAD are never pushed, and the
+/// push never forces.
+pub(crate) fn push_workspace_branch(
     workspace_id: &str,
     worktree_id: &str,
-    title: Option<&str>,
-    body: Option<&str>,
-    base_ref: Option<&str>,
-    draft: bool,
-) -> Result<WorkspacePullRequestRecord, DaemonError> {
+    credential: &PushCredential,
+) -> Result<WorkspaceGitActionResult, DaemonError> {
     let worktree_path = worktree_id.trim();
     if worktree_path.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace pull request create",
-            message: "worktree_id is required".to_string(),
-        });
+        return Err(fail("workspace git push", "worktree_id is required"));
     }
-    let repo_root = resolve_repo_root(worktree_path)?;
+    resolve_repo_root(worktree_path)?;
+    checked_push_repository(worktree_path)?;
+    push_branch(workspace_id, worktree_id, credential)
+}
+
+/// `owner/repo` the push goes to: `origin` must be a GitHub HTTPS remote and
+/// every URL a push to it uses (`pushurl`, `insteadOf`, `pushInsteadOf`) the
+/// same repository, so the commits never leave the one the pull request is for.
+fn checked_push_repository(worktree_path: &str) -> Result<String, DaemonError> {
+    let fetch = origin_url(worktree_path)?
+        .ok_or_else(|| fail("workspace git push", "the worktree has no `origin` remote"))?;
+    let repository = github_https_repository(&fetch).ok_or_else(|| {
+        fail(
+            "workspace git push",
+            "`origin` must be an https://github.com/<owner>/<repo> remote; set it with `git remote set-url origin`",
+        )
+    })?;
+    let pushes = git_query(
+        worktree_path,
+        &["remote", "get-url", "--push", "--all", "origin"],
+        "workspace git remote",
+    )?;
+    let pushes = String::from_utf8_lossy(&pushes).trim().to_string();
+    // GitHub owner and repository names are case-insensitive.
+    let same = |url: &str| {
+        github_https_repository(url).is_some_and(|pushed| pushed.eq_ignore_ascii_case(&repository))
+    };
+    if pushes.is_empty() || !pushes.lines().all(same) {
+        return Err(fail(
+            "workspace git push",
+            &format!(
+                "a push URL of `origin` is not https://github.com/{repository}; remove `remote.origin.pushurl` and any `pushInsteadOf` rewrite"
+            ),
+        ));
+    }
+    Ok(repository)
+}
+
+fn push_branch(
+    workspace_id: &str,
+    worktree_id: &str,
+    credential: &PushCredential,
+) -> Result<WorkspaceGitActionResult, DaemonError> {
+    let worktree_path = worktree_id.trim();
     let branch = detect_git_branch(worktree_path)?;
-    if branch == "HEAD" || branch.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "workspace pull request create",
-            message: "cannot create a pull request from a detached HEAD".to_string(),
-        });
+    if branch == "HEAD" {
+        return Err(fail(
+            "workspace git push",
+            "a detached HEAD has no branch to push; commit to a branch first",
+        ));
     }
-    ensure_workspace_branch_pushed(worktree_path, &branch)?;
-    let base_ref = base_ref
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalize_pull_request_base_ref)
-        .unwrap_or_else(|| {
-            normalize_pull_request_base_ref(&workspace_default_compare_ref(
-                repo_root.to_string_lossy().as_ref(),
-                Some(&branch),
-            ))
-        });
-    let title = title
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| pull_request_title_from_branch(&branch));
-    let mut args = vec![
-        "pr".to_string(),
-        "create".to_string(),
-        "--head".to_string(),
-        branch.clone(),
-        "--base".to_string(),
-        base_ref.clone(),
-        "--title".to_string(),
-        title.clone(),
-    ];
-    if let Some(body) = body.map(str::trim).filter(|value| !value.is_empty()) {
-        args.push("--body".to_string());
-        args.push(body.to_string());
-    } else {
-        args.push("--fill".to_string());
+    if branch == default_branch(worktree_path, Some(credential))? {
+        return Err(fail(
+            "workspace git push",
+            &format!("`{branch}` is the default branch; commit to a feature branch and push that"),
+        ));
     }
-    if draft {
-        args.push("--draft".to_string());
+    let output = crate::process_spawn::command("git")
+        .args(["push", "--set-upstream", "origin", &branch])
+        .envs(credential.environment())
+        .current_dir(worktree_path)
+        // push runs hooks and talks to the network.
+        .output_for(Work::Mutation)
+        .map_err(|error| fail("workspace git push", &error.to_string()))?;
+    if !output.status.success() {
+        let mut message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        message = message.replace(credential.0.as_str(), "[redacted]");
+        if message.is_empty() {
+            message = format!("git push failed with status {}", output.status);
+        }
+        return Err(fail("workspace git push", &message));
     }
-    let url = run_gh_output(worktree_path, &args, "workspace pull request create")?;
-    Ok(WorkspacePullRequestRecord {
+    Ok(WorkspaceGitActionResult {
         workspace_id: workspace_id.to_string(),
         worktree_id: worktree_id.to_string(),
-        branch,
-        base_ref,
-        url,
-        title: Some(title),
-        draft,
+        action: "push".to_string(),
+        message: "pushed workspace branch".to_string(),
+        commit_sha: Some(head_commit(worktree_path)?),
+        branch: Some(branch),
         generated_at_ms: current_unix_ms(),
     })
 }
 
-fn workspace_commit_and_push_result(
-    workspace_id: &str,
-    worktree_id: &str,
-    commit_result: WorkspaceGitActionResult,
-    push_result: WorkspaceGitActionResult,
-) -> WorkspaceGitActionResult {
-    WorkspaceGitActionResult {
-        action: "commit_and_push".to_string(),
-        message: format!("{}; {}", commit_result.message, push_result.message),
-        commit_sha: commit_result.commit_sha,
-        branch: push_result.branch.or(commit_result.branch),
-        workspace_id: workspace_id.to_string(),
-        worktree_id: worktree_id.to_string(),
-        generated_at_ms: current_unix_ms(),
+fn fail(operation: &'static str, message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: message.to_string(),
     }
-}
-
-fn ensure_workspace_branch_pushed(worktree_path: &str, branch: &str) -> Result<(), DaemonError> {
-    let upstream = git_command_output(
-        worktree_path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    );
-    if upstream.is_some() {
-        return Ok(());
-    }
-    run_workspace_git_command(
-        worktree_path,
-        &["push", "-u", "origin", branch],
-        "workspace pull request push",
-    )
-}
-
-fn normalize_pull_request_base_ref(reference: &str) -> String {
-    let mut normalized = reference.trim();
-    if let Some(stripped) = normalized.strip_prefix("refs/remotes/origin/") {
-        normalized = stripped;
-    }
-    if let Some(stripped) = normalized.strip_prefix("refs/heads/") {
-        normalized = stripped;
-    }
-    if let Some(stripped) = normalized.strip_prefix("origin/") {
-        normalized = stripped;
-    }
-    normalized.to_string()
-}
-
-fn pull_request_title_from_branch(branch: &str) -> String {
-    let title = branch
-        .rsplit('/')
-        .next()
-        .unwrap_or(branch)
-        .replace(['-', '_'], " ");
-    let title = title.trim();
-    if title.is_empty() {
-        branch.to_string()
-    } else {
-        title.to_string()
-    }
-}
-
-fn run_gh_output(
-    worktree_path: &str,
-    args: &[String],
-    operation: &'static str,
-) -> Result<String, DaemonError> {
-    let output = crate::process_spawn::command("gh")
-        .args(args)
-        .current_dir(worktree_path)
-        .output_for(Work::Mutation)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("gh {} failed with status {}", args.join(" "), output.status)
-        };
-        return Err(DaemonError::LocalTransport { operation, message });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: "gh did not return a pull request URL".to_string(),
-        });
-    }
-    Ok(stdout
-        .lines()
-        .last()
-        .unwrap_or(stdout.as_str())
-        .trim()
-        .to_string())
 }
 
 fn current_unix_ms() -> u64 {
@@ -293,203 +429,4 @@ fn current_unix_ms() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        normalize_pull_request_base_ref, pull_request_title_from_branch,
-        workspace_commit_and_push_result,
-    };
-    use crate::local::WorkspaceGitActionResult;
-
-    #[test]
-    fn pull_request_base_refs_normalize_hosted_git_refs() {
-        assert_eq!(
-            normalize_pull_request_base_ref("refs/remotes/origin/main"),
-            "main"
-        );
-        assert_eq!(normalize_pull_request_base_ref("refs/heads/dev"), "dev");
-        assert_eq!(normalize_pull_request_base_ref("origin/release"), "release");
-        assert_eq!(normalize_pull_request_base_ref("feature"), "feature");
-    }
-
-    #[test]
-    fn pull_request_titles_come_from_branch_leaf() {
-        assert_eq!(
-            pull_request_title_from_branch("miguel/add-worktree-picker"),
-            "add worktree picker"
-        );
-        assert_eq!(pull_request_title_from_branch("bug_fix"), "bug fix");
-        assert_eq!(pull_request_title_from_branch("/"), "/");
-    }
-
-    #[test]
-    fn commit_and_push_result_preserves_commit_sha_and_push_branch() {
-        let result = workspace_commit_and_push_result(
-            "/repo",
-            "/repo/worktree",
-            WorkspaceGitActionResult {
-                workspace_id: "/repo".to_string(),
-                worktree_id: "/repo/worktree".to_string(),
-                action: "commit".to_string(),
-                message: "committed workspace changes".to_string(),
-                commit_sha: Some("abc123".to_string()),
-                branch: Some("feature".to_string()),
-                generated_at_ms: 1,
-            },
-            WorkspaceGitActionResult {
-                workspace_id: "/repo".to_string(),
-                worktree_id: "/repo/worktree".to_string(),
-                action: "push".to_string(),
-                message: "pushed workspace branch".to_string(),
-                commit_sha: Some("def456".to_string()),
-                branch: Some("origin/feature".to_string()),
-                generated_at_ms: 2,
-            },
-        );
-
-        assert_eq!(result.workspace_id, "/repo");
-        assert_eq!(result.worktree_id, "/repo/worktree");
-        assert_eq!(result.action, "commit_and_push");
-        assert_eq!(
-            result.message,
-            "committed workspace changes; pushed workspace branch"
-        );
-        assert_eq!(result.commit_sha.as_deref(), Some("abc123"));
-        assert_eq!(result.branch.as_deref(), Some("origin/feature"));
-    }
-
-    #[cfg(unix)]
-    mod slow_hooks {
-        use super::super::{commit_workspace_changes, push_workspace_branch};
-        use crate::runtime::bounded_process::{with_test_command_limit, with_test_mutation_limit};
-        use std::os::unix::fs::PermissionsExt as _;
-        use std::path::{Path, PathBuf};
-        use std::time::{Duration, Instant};
-
-        const QUERY_CAP: Duration = Duration::from_secs(1);
-
-        fn git(cwd: &Path, args: &[&str]) {
-            let output = crate::process_spawn::command("git")
-                .args(args)
-                .current_dir(cwd)
-                .output()
-                .expect("git should run");
-            assert!(
-                output.status.success(),
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        fn install_hook(repo_git_dir: &Path, name: &str, body: &str) {
-            let hook = repo_git_dir.join("hooks").join(name);
-            std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-            std::fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        struct Fixture {
-            root: PathBuf,
-            clone: PathBuf,
-            remote: PathBuf,
-        }
-
-        impl Fixture {
-            fn new(label: &str) -> Self {
-                let root = std::env::temp_dir().join(format!(
-                    "chariox-git-{label}-{}-{}",
-                    std::process::id(),
-                    crate::session::unix_epoch_ms()
-                ));
-                let remote = root.join("remote.git");
-                let clone = root.join("clone");
-                std::fs::create_dir_all(&root).unwrap();
-                git(&root, &["init", "--bare", "-b", "main", "remote.git"]);
-                git(&root, &["clone", "remote.git", "clone"]);
-                git(&clone, &["config", "user.email", "tests@example.invalid"]);
-                git(&clone, &["config", "user.name", "Chariox Tests"]);
-                std::fs::write(clone.join("README.md"), "seed\n").unwrap();
-                git(&clone, &["add", "."]);
-                git(&clone, &["commit", "-m", "seed"]);
-                git(&clone, &["push", "-u", "origin", "HEAD:main"]);
-                git(&clone, &["branch", "--set-upstream-to=origin/main"]);
-                std::fs::write(clone.join("change.txt"), "change\n").unwrap();
-                Self {
-                    root,
-                    clone,
-                    remote,
-                }
-            }
-
-            fn path(&self) -> &str {
-                self.clone.to_str().unwrap()
-            }
-        }
-
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.root);
-            }
-        }
-
-        #[test]
-        fn commit_with_a_hook_slower_than_the_query_cap_succeeds() {
-            let fixture = Fixture::new("slow-commit");
-            install_hook(&fixture.clone.join(".git"), "pre-commit", "sleep 3");
-            let started = Instant::now();
-            let result = with_test_command_limit(QUERY_CAP, || {
-                commit_workspace_changes("w", fixture.path(), "slow hook")
-            });
-            assert!(result.is_ok(), "commit failed: {:?}", result.err());
-            assert!(started.elapsed() >= Duration::from_secs(3));
-        }
-
-        #[test]
-        fn push_with_a_remote_hook_slower_than_the_query_cap_succeeds() {
-            let fixture = Fixture::new("slow-push");
-            git(&fixture.clone, &["add", "."]);
-            git(&fixture.clone, &["commit", "-m", "to push"]);
-            install_hook(&fixture.remote, "pre-receive", "sleep 3");
-            let result = with_test_command_limit(QUERY_CAP, || {
-                push_workspace_branch("w", fixture.path(), false)
-            });
-            assert!(result.is_ok(), "push failed: {:?}", result.err());
-        }
-
-        fn process_is_alive(pid: i32) -> bool {
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .map(|stat| !stat.contains(") Z "))
-                .unwrap_or(false)
-        }
-
-        #[test]
-        fn hung_commit_hook_ends_at_the_mutation_deadline_with_its_tree_reaped() {
-            let fixture = Fixture::new("hung-commit");
-            let pid_file = fixture.root.join("hook.pid");
-            install_hook(
-                &fixture.clone.join(".git"),
-                "pre-commit",
-                &format!("sleep 300 &\necho $! > '{}'\nwait", pid_file.display()),
-            );
-            let started = Instant::now();
-            let error = with_test_mutation_limit(Duration::from_secs(2), || {
-                commit_workspace_changes("w", fixture.path(), "hung hook")
-            })
-            .expect_err("a hung hook must end at the mutation deadline");
-            assert!(started.elapsed() < Duration::from_secs(20), "{error}");
-            let pid: i32 = std::fs::read_to_string(&pid_file)
-                .expect("hook should have started its child")
-                .trim()
-                .parse()
-                .unwrap();
-            let reaped_by = Instant::now() + Duration::from_secs(5);
-            while process_is_alive(pid) && Instant::now() < reaped_by {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            assert!(
-                !process_is_alive(pid),
-                "hook child {pid} outlived the deadline"
-            );
-        }
-    }
-}
+mod tests;

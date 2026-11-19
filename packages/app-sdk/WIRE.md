@@ -204,6 +204,22 @@ retryable only when the App supplied `idempotencyKey`. Any other
 `CONNECTION_ACTION_FAILED` is retryable unless the generator refused the action
 itself.
 
+`routing.*` (kernel protocol 1011; only an App whose signed manifest declares
+`capabilities.eventRouting`, in the 1.1.0 world; the WIT `event-routing` interface carries the same
+calls): `routing.ensure_route {routeId, event, repository, sourceEventType, sourceEventVersion}`,
+`routing.remove_route {routeId}`, `routing.set_route_active {routeId, active}` and
+`routing.list_routes {}` manage the App's own inbox routes inside the one connection the owner
+granted (`GrantAppConnection`); a route is `{routeId, event, repository, sourceEventType,
+sourceEventVersion, active, pending, delivered, failed, expired}`. `routing.connection_status {}`,
+`routing.connection_resources {query?, cursor?, limit}` and `routing.start_authorization
+{returnUrl?}` read that connection and start the generator's consent. `routing.bind_agent {event,
+agentId?}`, `routing.bind_workflow {event, sessionId, publicationRef, queueRef?}`,
+`routing.unbind_target {automationId}` and `routing.list_targets {}` manage where the App's outgoing
+events go; the kernel decides whom a call acts for from its own caller record, so an agent binds only
+itself. Errors: `EVENT_NOT_DECLARED`, `CONNECTION_NOT_GRANTED`, `CONNECTION_AMBIGUOUS`,
+`CONNECTION_UNAVAILABLE`, `REPOSITORY_NOT_IN_CONNECTION`, `ROUTE_LIMIT`, `ROUTE_NOT_FOUND`,
+`ROUTE_EXISTS`, `NOT_ALLOWED`, `TARGET_LIMIT`, `TARGET_NOT_FOUND`.
+
 ## Worker-to-supervisor requests
 
 `worker.ready` reports `{tools:string[],events:string[],lifecycle:string[]}` after
@@ -260,7 +276,7 @@ there moves it to `approved` or `denied` (undecided operations expire after 10
 minutes, approvals must be used within 10 minutes and are single-use). Passing
 an existing `operationId` returns it only for the identical binding.
 `validation.status {operationId}` reads it for this installation only.
-`connectionId` is not supported yet.
+`connectionId` is not accepted here.
 An approved operation is spent by `http.open {..., operationId}` on one of the
 action's declared `POST`/`PUT`/`PATCH` effect routes (exact origin, method and
 path) with `hasBody: false` and no header but `accept`. The kernel sends the
@@ -305,6 +321,17 @@ connection or the HTTP exchange did not complete. `APP_DEADLINE`: a kernel time
 limit expired. `APP_HTTP_LIMIT`: a stream or size limit was reached. Earlier
 kernels report a failed handshake as `APP_HTTP_NETWORK`.
 
+`http.open {..., connectionId: "account:<label>"}` calls a credentialed destination as the
+owner's account of that label (kernel protocol `GrantAppAccount`). The App sets no
+`Authorization`; only `accept`, `content-type`, `if-match`, `if-none-match`,
+`if-modified-since` and `x-github-api-version` may be set. The answer is at most 1 MiB of
+UTF-8 text and carries only `content-type`, `etag`, `last-modified`, `link`, `location`,
+`retry-after`, `x-poll-interval`, `x-github-request-id` and `x-ratelimit-*`; the account's
+value never appears in it. Refusals: `APP_HTTP_ACCOUNT_REQUIRED` (a credentialed origin
+without an account), `APP_HTTP_ACCOUNT_UNKNOWN` (no such binding), `APP_HTTP_ROUTE_NOT_DECLARED`,
+`APP_HTTP_ACCOUNT_NOT_ALLOWED` (the owner gave the account less authority than the route's
+`safety`) and `APP_HTTP_ACCOUNT_UNAVAILABLE` (the Vault entry cannot be read).
+
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get
 `CAPABILITY_REQUIRED`) replies `{operationId, state: "pending", grantIds: [],
@@ -322,6 +349,12 @@ for, if it still declares the capability (otherwise `CAPABILITY_REQUIRED`).
 data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
+`host.pick_file_cancel {operationId}` ends an unanswered request of this
+installation at once and closes the owner's prompt; an answered one is left as it
+is. The worker sends it when the call that was waiting for the choice (`pickFile`,
+or `awaitFile` before it returned) goes away, a closed window or a passed
+deadline, because nobody holds the request's id to ask again. A call that
+returns the id to its caller leaves the request open.
 The owner can revoke the App's unanswered requests and unimported grants at
 any time (kernel protocol 394, `/app file revoke`): they then read `expired`,
 and importing them fails `NOT_FOUND`. Files already imported stay.

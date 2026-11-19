@@ -10,7 +10,7 @@ This directory preserves the final release-mode evidence for `docs/SCALE_PERFORM
 
 The Chariox-owned scale gates pass for 500 concurrently active agents distributed across ten worker kernels and for a single kernel rendering 500 synthetic agents. Read paths use immutable projections; provider work is readiness-driven; history and durable state use bounded batched writers; terminal and relay state is sharded; browser hydration is visible-first; large trees are virtualized; and Cloud inventory writes are coalesced.
 
-The original repeated-session/history CPU problem is removed from the hot path. Session and waiting-room readers clone immutable projection handles instead of cloning full runtime graphs. Event persistence now applies bounded backpressure before serialization can accumulate, and command replay retention is bounded by estimated heap footprint as well as disk size.
+The original repeated-session/history CPU problem is removed from the hot path. Session and Room list readers clone immutable projection handles instead of cloning full runtime graphs. Event persistence now applies bounded backpressure before serialization can accumulate, and command replay retention is bounded by estimated heap footprint as well as disk size.
 
 ## Three consecutive frontend matrices
 

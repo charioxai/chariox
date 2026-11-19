@@ -9,8 +9,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService};
 
 use super::{
-    AgentInstance, AgentService, AgentState, AgentSubstituteProfile, CreateAgentRequest,
-    RemoteAgentBinding,
+    AgentInstance, AgentSelfSettings, AgentService, AgentState, AgentSubstituteProfile,
+    CreateAgentRequest, RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -533,6 +533,23 @@ impl AgentServiceStore {
         self.write().clear_agent_substitutes(agent_id)
     }
 
+    pub fn change_usage_limit_stop(
+        &self,
+        agent_id: &str,
+        next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write().change_usage_limit_stop(agent_id, next)
+    }
+
+    pub fn set_agent_self_settings(
+        &self,
+        agent_id: &str,
+        self_settings: AgentSelfSettings,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_agent_self_settings(agent_id, self_settings)
+    }
+
     pub fn set_agent_substitution_timeout(
         &self,
         agent_id: &str,
@@ -540,6 +557,16 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_agent_substitution_timeout(agent_id, timeout_ms)
+    }
+
+    pub fn set_worker_model_selection(
+        &self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_worker_model_selection(agent_id, model, effort)
     }
 
     pub fn bind_remote_execution(

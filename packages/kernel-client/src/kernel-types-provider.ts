@@ -49,7 +49,7 @@ export type TerminalCommandCatalogExecutionTarget =
 
 export type TerminalCommandCatalogSurface =
   | "session"
-  | "waiting_room"
+  | "room_list"
   | "workflow_screen"
 
 export type TerminalCommandCatalogNode = {

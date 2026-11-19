@@ -237,6 +237,7 @@ impl KernelRuntimeState {
                 | RelayPeerRequest::CancelHomeExtensionInvocation { context, .. }
                 | RelayPeerRequest::InvokeHomeCredentialTool { context, .. }
                 | RelayPeerRequest::ResolveHomeCredentialSecret { context, .. }
+                | RelayPeerRequest::CaptureForHomeVault { context, .. }
                 | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. }
                 | RelayPeerRequest::CheckLeasedComputerGrant { context, .. }
                 | RelayPeerRequest::ForwardTerminalRuntimeTool { context, .. } => {
@@ -312,6 +313,7 @@ impl KernelRuntimeState {
             | RelayPeerRequest::CancelHomeExtensionInvocation { context, .. }
             | RelayPeerRequest::InvokeHomeCredentialTool { context, .. }
             | RelayPeerRequest::ResolveHomeCredentialSecret { context, .. }
+            | RelayPeerRequest::CaptureForHomeVault { context, .. }
             | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. }
             | RelayPeerRequest::CheckLeasedComputerGrant { context, .. }
             | RelayPeerRequest::ForwardTerminalRuntimeTool { context, .. } => {

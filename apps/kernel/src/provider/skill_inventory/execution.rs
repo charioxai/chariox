@@ -72,31 +72,63 @@ pub fn inventory_for_run(
         source_revision: request.source_revision,
         started_at_ms: run.process_started_at_ms(),
     };
-    cache.inventory(&binding, refresh, |force_reload| {
-        let filesystem = || {
-            filesystem_skill_candidates(
-                &binding,
-                request.worktree_root,
-                request.configured_skill_roots,
-            )
-        };
-        match provider {
+    let agent = match run.execution_mode() {
+        AgentExecutionMode::Build => "build",
+        AgentExecutionMode::Plan => "plan",
+    };
+    inventory_for_binding(
+        &binding,
+        cache,
+        ProviderListing {
+            client_id: run.id(),
+            endpoint: run.structured_endpoint(),
+            opencode_agent: agent,
+        },
+        request.worktree_root,
+        request.configured_skill_roots,
+        refresh,
+    )
+}
+
+/// Where the provider's own listing tool answers: a run's server, or the managed
+/// account server of an installed provider no run uses yet.
+pub struct ProviderListing<'a> {
+    pub client_id: &'a str,
+    pub endpoint: Option<&'a str>,
+    pub opencode_agent: &'a str,
+}
+
+/// The inventory of one binding through the provider's documented listing:
+/// Codex skills/list, OpenCode's /skill (files when its server does not list
+/// skills), Claude's skill folders.
+pub fn inventory_for_binding(
+    binding: &SkillInventoryBinding,
+    cache: &mut NativeSkillInventoryCache,
+    listing: ProviderListing<'_>,
+    worktree_root: &std::path::Path,
+    configured_skill_roots: &[PathBuf],
+    refresh: bool,
+) -> Result<NativeSkillInventory, DaemonError> {
+    let cwd = &binding.cwd;
+    cache.inventory(binding, refresh, |force_reload| {
+        let filesystem =
+            || filesystem_skill_candidates(binding, worktree_root, configured_skill_roots);
+        match binding.provider.as_str() {
             "codex" => CodexClient::new(
-                run.id(),
-                run.structured_endpoint()
+                listing.client_id,
+                listing
+                    .endpoint
                     .ok_or_else(|| failure("Codex has no official app-server endpoint"))?,
             )?
             .native_skill_candidates(cwd, force_reload),
             "opencode" => {
                 let client = OpenCodeClient::new(
-                    run.id(),
-                    run.structured_endpoint()
+                    listing.client_id,
+                    listing
+                        .endpoint
                         .ok_or_else(|| failure("OpenCode has no official server endpoint"))?,
                 )?;
-                let agent = match run.execution_mode() {
-                    AgentExecutionMode::Build => "build",
-                    AgentExecutionMode::Plan => "plan",
-                };
+                let agent = listing.opencode_agent;
                 match client.native_skill_candidates(cwd, agent)? {
                     // A failed skill-root scan leaves the official listing as it is.
                     Some(listed) => match filesystem() {

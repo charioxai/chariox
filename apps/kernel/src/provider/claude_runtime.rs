@@ -2331,6 +2331,23 @@ done
         let _ = std::fs::remove_file(file);
     }
 
+    // SV-05: the kernel hears of a compaction from the stream and from the transcript;
+    // both carry one ID, so the compaction starts one recovery epoch.
+    #[test]
+    fn a_streamed_compaction_carries_its_transcript_record_id() {
+        let (mut state, mut batch) = parser_state();
+        let record = json!({"type": "system", "subtype": "compact_boundary", "uuid": "c1"});
+        apply_claude_message("run-1", &mut state, record.clone(), &mut batch);
+        assert_eq!(
+            batch.native_compactions,
+            vec!["compact_boundary-c1".to_string()]
+        );
+        assert_eq!(
+            crate::app::claude_compaction_turn_id(&record, Some(1)).as_deref(),
+            Some("compact_boundary-c1")
+        );
+    }
+
     #[test]
     fn claude_tool_search_is_recorded_and_left_to_claude_code() {
         let (mut state, mut batch) = parser_state();

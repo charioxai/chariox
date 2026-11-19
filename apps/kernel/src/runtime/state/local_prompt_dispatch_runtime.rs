@@ -2266,15 +2266,15 @@ pub(in crate::runtime::state) mod tests {
         std::env::set_var("CHARIOX_HOME", &root);
         // This credential-delivery regression uses the mocked PTY spawn path.
         std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config =
             DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
@@ -2439,15 +2439,15 @@ pub(in crate::runtime::state) mod tests {
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
         std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
-        let vault_path = root.join("credentials.vault");
+        let vault_path = root.join("kernel/credentials.vault");
         let mut config =
             DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
+            Some(root.join("kernel/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

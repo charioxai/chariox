@@ -52,7 +52,7 @@ pub(crate) async fn authorize_history_request(
         LocalDaemonRequest::ReadAgentTranscriptEntry(read) => &read.session_id,
         _ => return Ok(request),
     };
-    let session = runtime_state.session_snapshot(session_id).await?;
+    let session = runtime_state.session_with_agents(session_id)?;
     let visible = |agent_id: &str| {
         session.agents().iter().any(|agent| {
             agent.id() == agent_id
@@ -117,54 +117,66 @@ pub(crate) async fn execute_history_request(
             runtime_state
                 .flush_session_provider_history(&request.session_id)
                 .await?;
-            let started = Instant::now();
-            let session_id = request.session_id.clone();
-            let requested_agent_count = request.agent_ids.as_ref().map_or(0, Vec::len);
-            let snapshot_started = Instant::now();
-            let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
-            let snapshot_ms = snapshot_started.elapsed().as_millis();
-            let legacy_import_started = Instant::now();
-            ensure_operational_history_for_outline(
-                &history_store,
-                &operational_history_store,
-                &snapshot,
-            )?;
-            let legacy_import_ms = legacy_import_started.elapsed().as_millis();
-            let agent_imports = snapshot
-                .agents()
-                .iter()
-                .filter_map(|agent| {
-                    agent
-                        .external_provider_import()
-                        .cloned()
-                        .map(|import| (agent.id().to_string(), import))
+            // The request is authorized for its caller already, so what it names and
+            // the history committed so far (appended, rewritten in place or deleted)
+            // are all its response depends on: a read in flight under the same key
+            // answers it.
+            let key = format!(
+                "history outline {} {request:?}",
+                operational_history_store.committed_revision()
+            );
+            runtime_state
+                .read_once(key, || async move {
+                    let started = Instant::now();
+                    let session_id = request.session_id.clone();
+                    let requested_agent_count = request.agent_ids.as_ref().map_or(0, Vec::len);
+                    let snapshot_started = Instant::now();
+                    let snapshot = runtime_state.session_with_agents(&request.session_id)?;
+                    let snapshot_ms = snapshot_started.elapsed().as_millis();
+                    let legacy_import_started = Instant::now();
+                    ensure_operational_history_for_outline(
+                        &history_store,
+                        &operational_history_store,
+                        &snapshot,
+                    )?;
+                    let legacy_import_ms = legacy_import_started.elapsed().as_millis();
+                    let agent_imports = snapshot
+                        .agents()
+                        .iter()
+                        .filter_map(|agent| {
+                            agent
+                                .external_provider_import()
+                                .cloned()
+                                .map(|import| (agent.id().to_string(), import))
+                        })
+                        .collect();
+                    let projection_started = Instant::now();
+                    let response = execute_scoped_session_history_outline_request(
+                        operational_history_store,
+                        request,
+                        agent_imports,
+                    )
+                    .await;
+                    let projection_ms = projection_started.elapsed().as_millis();
+                    let total_ms = started.elapsed().as_millis();
+                    if total_ms >= 500 {
+                        crate::logging::info_with_fields(
+                            "history.outline",
+                            "session history outline request completed slowly",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "requested_agent_count": requested_agent_count,
+                                "snapshot_ms": snapshot_ms,
+                                "legacy_import_ms": legacy_import_ms,
+                                "projection_ms": projection_ms,
+                                "total_ms": total_ms,
+                                "succeeded": response.is_ok(),
+                            }),
+                        );
+                    }
+                    response
                 })
-                .collect();
-            let projection_started = Instant::now();
-            let response = execute_scoped_session_history_outline_request(
-                operational_history_store,
-                request,
-                agent_imports,
-            )
-            .await;
-            let projection_ms = projection_started.elapsed().as_millis();
-            let total_ms = started.elapsed().as_millis();
-            if total_ms >= 500 {
-                crate::logging::info_with_fields(
-                    "history.outline",
-                    "session history outline request completed slowly",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "requested_agent_count": requested_agent_count,
-                        "snapshot_ms": snapshot_ms,
-                        "legacy_import_ms": legacy_import_ms,
-                        "projection_ms": projection_ms,
-                        "total_ms": total_ms,
-                        "succeeded": response.is_ok(),
-                    }),
-                );
-            }
-            response
+                .await
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
             runtime_state
@@ -305,7 +317,7 @@ async fn agent_external_import(
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<crate::provider::ExternalProviderImportMetadata>, DaemonError> {
-    let snapshot = runtime_state.session_snapshot(session_id).await?;
+    let snapshot = runtime_state.session_with_agents(session_id)?;
     Ok(snapshot
         .agents()
         .iter()
@@ -323,7 +335,7 @@ pub(crate) async fn execute_prompt_input_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetPromptInputHistory(request) => {
-            let session = runtime_state.session_snapshot(&request.session_id).await?;
+            let session = runtime_state.session_with_agents(&request.session_id)?;
             let author =
                 runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
             let traced_agents = session

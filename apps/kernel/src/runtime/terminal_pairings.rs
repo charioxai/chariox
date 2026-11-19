@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_record_projects_waiting_room_terminal_shape() {
+    fn terminal_record_projects_room_list_terminal_shape() {
         let record = terminal_record(PersistedClientPairing {
             client_id: "cli-1".to_string(),
             alias: None,

@@ -1,0 +1,301 @@
+// The read tools: pull requests and what surrounds them. Each call names an account (or the default) and
+// every answer is cut down by normalize.mjs to what a window row or an agent needs.
+import * as n from './normalize.mjs';
+
+const fail = (code, message) => { throw { code, message, retryable: false }; };
+const splitRepo = repo => { const [owner, name] = repo.split('/'); return { owner, repo: name }; };
+const DIFF_DEFAULT = 256 * 1024;
+const REVIEW_PAGES = 30;
+const CHECK_PAGES = 30;
+const LOG_TAIL_LINES = 200;
+const LOG_TAIL_CHARS = 16 * 1024;
+const LOG_TIMESTAMP = /^\uFEFF?\d{4}-\d\d-\d\dT[\d:.]+Z /;
+
+/** The GitHub search that finds what a scope of the pull request list means. */
+export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'any', labels = [], author, review, query }) {
+  const parts = ['is:pr'];
+  if (scope === 'mine') parts.push('author:@me');
+  else if (scope === 'review_requested') parts.push('review-requested:@me');
+  else if (scope === 'all') parts.push('involves:@me');
+  else if (scope === 'org') {
+    if (!org) fail('INVALID_ARGUMENT', 'The org scope needs an organization.');
+    parts.push(`org:${org}`);
+  } else if (scope === 'repo') {
+    if (!repos.length) fail('INVALID_ARGUMENT', 'The repo scope needs at least one repository.');
+  } else fail('INVALID_ARGUMENT', `Unknown scope ${scope}`);
+  for (const repo of repos) parts.push(`repo:${repo}`);
+  if (state !== 'all') parts.push(`is:${state}`);
+  if (draft === 'only') parts.push('draft:true'); else if (draft === 'hide') parts.push('draft:false');
+  for (const name of labels) parts.push(`label:"${name.replace(/"/g, '')}"`);
+  if (author) parts.push(`author:${author}`);
+  if (review) parts.push(`review:${review}`);
+  if (query) parts.push(query.trim());
+  parts.push('sort:updated-desc');
+  return parts.join(' ');
+}
+
+export function createPulls({ accounts, github, links }) {
+  const call = async (input, run) => {
+    const account = await accounts.resolve(input);
+    return run(account);
+  };
+  const where = input => splitRepo(input.repo);
+  const pullPath = '/repos/{owner}/{repo}/pulls/{number}';
+  const params = input => ({ ...where(input), number: input.number });
+  const fetchPull = (account, input, options) => github.get(account, pullPath, params(input), options);
+
+  /** Every run and status of the commit: a failing or pending one on a later page decides the state as much as the first page's. */
+  async function checksOf(account, input, sha) {
+    const base = { ...where(input), ref: sha };
+    const pages = async (template, key) => {
+      const found = [];
+      for (let page = 1; page <= CHECK_PAGES; page++) {
+        const { data, link } = await github.get(account, template, base, { query: { per_page: 100, page } });
+        found.push(...(data[key] ?? []));
+        if (!link.next) return found;
+      }
+      return fail('TOO_MANY_CHECKS', `The commit has more than ${CHECK_PAGES * 100} ${key.replace('_', ' ')}; open it on GitHub to see them.`);
+    };
+    const [runs, statuses] = await Promise.all([
+      pages('/repos/{owner}/{repo}/commits/{ref}/check-runs', 'check_runs'),
+      pages('/repos/{owner}/{repo}/commits/{ref}/status', 'statuses'),
+    ]);
+    return { runs, statuses };
+  }
+
+  /**
+   * The end of a job's log, where a failure shows. GitHub answers with a redirect to its storage, which the kernel follows
+   * only for this route; a log the kernel refuses (over 1 MiB, expired or still running) is reported, not thrown, so the steps still come back.
+   */
+  async function jobLog(account, input) {
+    try {
+      const { data } = await github.get(account, '/repos/{owner}/{repo}/actions/jobs/{job_id}/logs', { ...where(input), job_id: input.check_run_id }, { text: true });
+      const lines = data.split(/\r?\n/).map(line => line.replace(LOG_TIMESTAMP, ''));
+      if (lines.at(-1) === '') lines.pop();
+      const kept = lines.slice(-LOG_TAIL_LINES).join('\n');
+      return { lines: lines.length, truncated: lines.length > LOG_TAIL_LINES || kept.length > LOG_TAIL_CHARS, tail: kept.slice(-LOG_TAIL_CHARS) };
+    } catch (error) {
+      const { code, message } = error?.payload ?? error ?? {};
+      return { unavailable: `${code ?? 'ERROR'}: ${message ?? 'the log could not be read'}` };
+    }
+  }
+
+  /** Every review: the decision is each reviewer's latest verdict, which may sit on a later page. */
+  async function reviewsOf(account, input) {
+    const reviews = [];
+    for (let page = 1; page <= REVIEW_PAGES; page++) {
+      const { items, hasNext } = await github.list(account, `${pullPath}/reviews`, params(input), { page, perPage: 100 });
+      reviews.push(...items.map(n.review));
+      if (!hasNext) break;
+    }
+    return reviews;
+  }
+
+  return {
+    async list_repositories(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = input.org
+          ? await github.list(account, '/orgs/{org}/repos', { org: input.org }, { query: { sort: 'pushed', type: 'all' }, page: input.page, perPage: input.perPage ?? 100 })
+          : await github.list(account, '/user/repos', {}, { query: { sort: 'pushed', affiliation: 'owner,collaborator,organization_member' }, page: input.page, perPage: input.perPage ?? 100 });
+        const query = input.query?.toLowerCase();
+        const repos = items.filter(r => !query || r.full_name.toLowerCase().includes(query)).map(r => ({
+          fullName: r.full_name, private: r.private, description: r.description ?? null, defaultBranch: r.default_branch,
+          pushedAt: r.pushed_at, archived: r.archived, language: r.language ?? null,
+        }));
+        return { repos, page: page ?? 1, hasNext };
+      });
+    },
+
+    async list_pull_requests(input) {
+      const account = await accounts.resolve({ account: input.account, repo: input.repos?.length === 1 ? input.repos[0] : undefined });
+      const q = searchQuery(input);
+      const { data, link, stale } = await github.get(account, '/search/issues', {}, { query: { q, per_page: input.perPage ?? 25, page: input.page ?? 1 } });
+      return {
+        account, query: q, total: data.total_count, incomplete: data.incomplete_results,
+        pulls: data.items.filter(item => item.pull_request).map(n.searchRow),
+        page: input.page ?? 1, hasNext: Boolean(link.next), stale,
+      };
+    },
+
+    async get_pull_request(input) {
+      return call(input, async account => ({ account, pull: n.pullDetail((await fetchPull(account, input)).data), madeBy: await links.get(input.repo, input.number) }));
+    },
+
+    /** A list row's extras: size from the pull request, check state from its head commit, the review decision. */
+    async get_pull_request_summary(input) {
+      return call(input, async account => {
+        const { data: pull } = await fetchPull(account, input);
+        // two requests at a time at most, so several rows can load together within the kernel's four HTTP operations
+        const { runs, statuses } = await checksOf(account, input, pull.head.sha);
+        const reviews = await reviewsOf(account, input);
+        return {
+          repo: input.repo, number: input.number, additions: pull.additions, deletions: pull.deletions, changedFiles: pull.changed_files,
+          checks: n.checksSummary(runs, statuses), review: n.reviewDecision(reviews, (pull.requested_reviewers ?? []).length + (pull.requested_teams ?? []).length),
+        };
+      });
+    },
+
+    async get_pull_request_files(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, `${pullPath}/files`, params(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { files: items.map(n.file), page, hasNext };
+      });
+    },
+
+    async get_pull_request_diff(input) {
+      return call(input, async account => {
+        const limit = input.maxBytes ?? DIFF_DEFAULT;
+        const size = text => new TextEncoder().encode(text).length;
+        const answer = text => {
+          const bytes = size(text);
+          if (bytes <= limit) return { diff: text, tooLarge: false, truncated: false, bytes };
+          const cut = text.slice(0, limit);
+          return { diff: cut.slice(0, cut.lastIndexOf('\n') + 1), tooLarge: false, truncated: true, bytes };
+        };
+        if (input.path) {
+          // One file's patch comes with the file list, which also works when another file makes the whole diff too large.
+          for (let page = 1; page <= 30; page++) {
+            const { items, hasNext } = await github.list(account, `${pullPath}/files`, params(input), { page, perPage: 100 });
+            const file = items.find(item => item.filename === input.path);
+            if (file) {
+              if (file.patch) return answer(`diff --git a/${file.previous_filename ?? file.filename} b/${file.filename}\n${file.patch}\n`);
+              break;
+            }
+            if (!hasNext) break;
+          }
+        }
+        let text;
+        try {
+          ({ data: text } = await fetchPull(account, input, { accept: 'application/vnd.github.diff', text: true }));
+        } catch (error) {
+          const code = (error?.payload ?? error)?.code;
+          // GitHub refuses a diff of more than 20000 lines, and the kernel answers at most 1 MiB.
+          if (code === 'UNPROCESSABLE' || code === 'APP_HTTP_LIMIT') return { diff: '', tooLarge: true, truncated: false, bytes: 0 };
+          throw error;
+        }
+        if (input.path) {
+          const sections = text.split(/^(?=diff --git )/m);
+          text = sections.find(section => section.startsWith('diff --git ') && section.split('\n', 1)[0].endsWith(` b/${input.path}`)) ?? '';
+        }
+        return answer(text);
+      });
+    },
+
+    async list_commits(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, `${pullPath}/commits`, params(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { commits: items.map(n.commit), page, hasNext };
+      });
+    },
+
+    async get_checks(input) {
+      return call(input, async account => {
+        const { data: pull } = await fetchPull(account, input);
+        const { runs, statuses } = await checksOf(account, input, pull.head.sha);
+        return { sha: pull.head.sha, ...n.checksSummary(runs, statuses), checks: runs.map(n.checkRun), statuses: statuses.map(n.commitStatus) };
+      });
+    },
+
+    async get_check_output(input) {
+      return call(input, async account => {
+        const params = { ...where(input), check_run_id: input.check_run_id };
+        const [run, annotations, job] = await Promise.all([
+          github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}', params),
+          github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', params, { query: { per_page: 50 } }),
+          // The id of a GitHub Actions check run is the id of its job; any other check has no steps.
+          github.get(account, '/repos/{owner}/{repo}/actions/jobs/{job_id}', { ...where(input), job_id: input.check_run_id }).then(({ data }) => data, () => null),
+        ]);
+        return {
+          check: n.checkRun(run.data), title: run.data.output?.title ?? null, summary: run.data.output?.summary ?? null, text: run.data.output?.text ?? null,
+          annotations: annotations.data.map(n.annotation), steps: (job?.steps ?? []).map(n.step),
+          log: job ? await jobLog(account, input) : null,
+        };
+      });
+    },
+
+    async list_reviews(input) {
+      return call(input, async account => {
+        const [{ data: pull }, reviews] = await Promise.all([fetchPull(account, input), reviewsOf(account, input)]);
+        const requested = (pull.requested_reviewers ?? []).map(u => ({ login: u.login }));
+        const teams = (pull.requested_teams ?? []).map(t => ({ slug: t.slug, name: t.name }));
+        return { reviews, requestedReviewers: requested, requestedTeams: teams, decision: n.reviewDecision(reviews, requested.length + teams.length) };
+      });
+    },
+
+    async list_comments(input) {
+      return call(input, async account => {
+        const paging = { page: input.page, perPage: input.perPage ?? 50 };
+        const [conversation, lines] = await Promise.all([
+          github.list(account, '/repos/{owner}/{repo}/issues/{number}/comments', params(input), paging),
+          github.list(account, `${pullPath}/comments`, params(input), paging),
+        ]);
+        return {
+          comments: conversation.items.map(n.issueComment), lineComments: lines.items.map(n.reviewComment),
+          page: paging.page ?? 1, hasNext: conversation.hasNext || lines.hasNext,
+        };
+      });
+    },
+
+    async get_mergeability(input) {
+      return call(input, async account => {
+        const { data: pull } = await fetchPull(account, input);
+        const base = { ...where(input) };
+        const [behind, protection, settings] = await Promise.all([
+          github.get(account, '/repos/{owner}/{repo}/compare/{basehead}', { ...base, basehead: `${pull.base.ref}...${pull.head.sha}` })
+            .then(({ data }) => ({ behindBy: data.behind_by, aheadBy: data.ahead_by }), () => ({ behindBy: null, aheadBy: null })),
+          github.get(account, '/repos/{owner}/{repo}/branches/{branch}/protection', { ...base, branch: pull.base.ref })
+            .then(({ data }) => ({
+              state: 'protected',
+              requiredApprovals: data.required_pull_request_reviews?.required_approving_review_count ?? 0,
+              requiredChecks: data.required_status_checks?.contexts ?? [],
+              requireUpToDate: Boolean(data.required_status_checks?.strict),
+            }), error => {
+              const cause = error?.payload ?? error;
+              return { state: /not protected/i.test(cause?.github ?? '') ? 'unprotected' : 'unknown' };
+            }),
+          github.get(account, '/repos/{owner}/{repo}', base).then(({ data }) => ({
+            methods: [['merge', data.allow_merge_commit], ['squash', data.allow_squash_merge], ['rebase', data.allow_rebase_merge]].filter(([, allowed]) => allowed !== false).map(([method]) => method),
+            autoMergeAllowed: Boolean(data.allow_auto_merge), deleteBranchOnMerge: Boolean(data.delete_branch_on_merge),
+          }), () => ({ methods: ['merge', 'squash', 'rebase'], autoMergeAllowed: false, deleteBranchOnMerge: false })),
+        ]);
+        const detail = n.pullDetail(pull);
+        return {
+          mergeable: detail.mergeable, mergeableState: detail.mergeableState, rebaseable: detail.rebaseable, draft: detail.state === 'draft',
+          merged: detail.merged, autoMerge: detail.autoMerge, ...behind, protection, ...settings,
+        };
+      });
+    },
+
+    async list_branches(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/branches', where(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { branches: items.map(b => ({ name: b.name, protected: b.protected, sha: b.commit.sha })), page, hasNext };
+      });
+    },
+
+    async list_labels(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/labels', where(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { labels: items.map(l => ({ name: l.name, color: l.color, description: l.description ?? null })), page, hasNext };
+      });
+    },
+
+    async list_assignees(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/assignees', where(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { people: items.map(u => ({ login: u.login, type: u.type })), page, hasNext };
+      });
+    },
+
+    async get_compare(input) {
+      return call(input, async account => {
+        const { data } = await github.get(account, '/repos/{owner}/{repo}/compare/{basehead}', { ...where(input), basehead: `${input.base}...${input.head}` });
+        return {
+          status: data.status, aheadBy: data.ahead_by, behindBy: data.behind_by, totalCommits: data.total_commits,
+          filesChanged: (data.files ?? []).length, url: data.html_url,
+          commits: data.commits.slice(0, 20).map(c => ({ sha: c.sha, message: c.commit.message.split('\n', 1)[0], author: c.author?.login ?? c.commit.author?.name ?? null })),
+        };
+      });
+    },
+  };
+}

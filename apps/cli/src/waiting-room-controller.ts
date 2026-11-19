@@ -13,7 +13,7 @@ import {
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
-import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { roomListLaunchPlacement } from "@chariox/kernel-client/room-list-runtime-placement"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomSliceSelectionUnavailable, waitingRoomSelectedSlice, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
@@ -383,7 +383,7 @@ function waitingRoomAcquisitionDecision(remote: WaitingRoomRemoteState): Waiting
 }
 
 function waitingRoomAccountInventoryIsRemote(state: WaitingRoomState, remote: WaitingRoomRemoteState): boolean {
-  const placement = waitingRoomLaunchPlacement(state, remote)
+  const placement = roomListLaunchPlacement(state, remote)
   return Boolean(placement.kernelRef && placement.kernelRef !== "local"
     && placement.kernelRef !== remote.relay?.daemon_id)
 }
@@ -400,7 +400,7 @@ function waitingRoomUnavailableSliceMessage(
   ) {
     return "Choose an existing Project and primary Workspace before using Current Project in a slice."
   }
-  const placement = waitingRoomLaunchPlacement(state, remote)
+  const placement = roomListLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
     projectSelectionId: state.projectSelectionId,
@@ -427,7 +427,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       // started and connected the selected machine.
       if (waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)
         || waitingRoomAccountInventoryIsRemote(options.state, remote)) return { action: "none" }
-      const placement = waitingRoomLaunchPlacement(options.state, remote)
+      const placement = roomListLaunchPlacement(options.state, remote)
       const slices = waitingRoomSlices(remote, {
         worktreeSelectionId: options.state.worktreeSelectionId,
         projectSelectionId: options.state.projectSelectionId,

@@ -62,7 +62,7 @@ test("MP-08 MP-11 owner-managed admission is interactive and carries inventory s
     target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
     contextSelection: {
       kernelContext: "source_kernel_without_credentials" as const,
-      developmentSetup: { kind: "source_project" as const, projectId: "project", repositories: [{ role: "primary" as const, workspaceId: "/repo", worktreeId: null }] },
+      developmentSetup: { kind: "source_projects" as const, projects: [{ projectId: "project", repositories: [{ role: "primary" as const, workspaceId: "/repo", worktreeId: null }] }] },
     },
   }
   assert.deepEqual(startOwnerManagedContextTransferRequest(ownerManaged), {

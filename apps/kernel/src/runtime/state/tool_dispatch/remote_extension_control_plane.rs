@@ -7,6 +7,9 @@ use super::*;
 #[path = "remote_extension_refresh_result.rs"]
 mod remote_extension_refresh_result;
 
+/// The relay waits this long beyond the call's own bound for the home's answer.
+const AGENTS_RUN_FORWARD_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A forwarded tool can wait at home for the owner: the 300 s decision, the
 /// forward buffer and the relay hops each way.
 pub(in crate::runtime::state) const OWNER_DECISION_FORWARD_TIMEOUT: std::time::Duration =
@@ -145,6 +148,67 @@ impl KernelRuntimeState {
         self.forward_meta_runtime_tool(remote_context, tool_name, arguments, min_response_timeout)
             .await
             .map(Some)
+    }
+
+    /// A leased caller's `chariox.agents.run` belongs to the home room, task ledger and parent
+    /// tree: the call is forwarded and blocks at home until its workers answer.
+    pub(crate) async fn try_forward_leased_agents_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        arguments: serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let Some(remote_context) = self.leased_forward_context(provider_run).await? else {
+            return Ok(None);
+        };
+        let Some(arguments) =
+            self.arguments_with_home_origin(provider_run, &remote_context, &arguments)?
+        else {
+            return Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "origin_prompt_id is not this running turn's; use the exact id from this turn's hidden context"
+                }),
+            }));
+        };
+        self.forward_meta_runtime_tool(
+            remote_context,
+            crate::transport::runtime_tools::AGENTS_RUN_TOOL,
+            arguments,
+            crate::room_terminal::MAX_WAIT + AGENTS_RUN_FORWARD_MARGIN,
+        )
+        .await
+        .map(Some)
+    }
+
+    /// The call's arguments with the leased turn's home prompt as origin; `None` when the origin
+    /// is not the worker's running turn. The worker and home allocate different prompt IDs, so
+    /// the worker's turn is validated before it is translated to the leased home turn.
+    fn arguments_with_home_origin(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        remote_context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        arguments: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        let worker_origin = arguments
+            .get("origin_prompt_id")
+            .and_then(serde_json::Value::as_str);
+        let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
+            Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
+                provider_run.session_id(),
+                agent_id,
+                prompt_id,
+            )?,
+            None => false,
+        };
+        let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+            return Ok(None);
+        };
+        if !origin_is_current {
+            return Ok(None);
+        }
+        let mut translated = arguments.clone();
+        translated["origin_prompt_id"] = serde_json::json!(home_prompt_id);
+        Ok(Some(translated))
     }
 
     /// The home-bound context of a leased worker run, or `None` when local.
@@ -318,26 +382,12 @@ impl KernelRuntimeState {
             || crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
         {
-            let worker_origin = arguments
-                .get("origin_prompt_id")
-                .and_then(serde_json::Value::as_str);
-            let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
-                Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
-                    provider_run.session_id(),
-                    agent_id,
-                    prompt_id,
-                )?,
-                None => false,
-            };
-            let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+            let Some(translated) =
+                self.arguments_with_home_origin(provider_run, &remote_context, &arguments)?
+            else {
                 return Ok(Some(origin_rejected(skill_tool)));
             };
-            if !origin_is_current {
-                return Ok(Some(origin_rejected(skill_tool)));
-            }
-            // The worker and home allocate different prompt IDs. Validate the
-            // worker's turn before translating it to the leased home turn.
-            forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
+            forwarded_arguments = translated;
         }
         let config = self.config_snapshot().await;
         let mut original_response = None;
@@ -576,6 +626,12 @@ impl KernelRuntimeState {
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => {
                 Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
                     .await
+            }
+            crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL => {
+                Box::pin(
+                    self.handle_promote_agent_message_runtime_tool(&session, &agent, arguments),
+                )
+                .await
             }
             crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)

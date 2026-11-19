@@ -108,11 +108,11 @@ pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, Daem
             }
             if metadata.is_dir() {
                 // Traverse an ignored build directory only when a declared output lies beneath it.
-                if !ignored
-                    || outputs
-                        .iter()
-                        .any(|pattern| pattern.starts_with(&format!("{path}/")))
-                {
+                if !ignored || outputs.iter().any(|pattern| {
+                    crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(
+                        pattern, &path,
+                    )
+                }) {
                     pending.push(path);
                 }
             } else if metadata.is_file() && (!ignored || output) {
@@ -160,16 +160,19 @@ pub(crate) fn apply_return(
     if current.as_ref() != base {
         let conflict = format!(".chariox/jobs/{job_id}/conflicts/{path}");
         let conflict = checked_path(root, &conflict)?;
-        publish(
-            &conflict,
-            returned
-                .map(|file| file.bytes.as_slice())
-                .unwrap_or(b"Remote job deleted this file; local edit retained.\n"),
-        )?;
+        match returned {
+            Some(file) => publish(&conflict, &file.bytes, file.executable, &target)?,
+            None => publish(
+                &conflict,
+                b"Remote job deleted this file; local edit retained.\n",
+                false,
+                &target,
+            )?,
+        }
         return Ok(false);
     }
     match returned {
-        Some(file) => publish(&target, &file.bytes)?,
+        Some(file) => publish(&target, &file.bytes, file.executable, &target)?,
         None if current.is_some() => std::fs::remove_file(&target)
             .map_err(|e| error(format!("Cannot return job deletion: {e}")))?,
         None => {}
@@ -192,7 +195,15 @@ pub(crate) fn checked_path(root: &Path, path: &str) -> Result<std::path::PathBuf
     Ok(target)
 }
 
-fn publish(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
+/// Writes `bytes` to `path`. The file keeps the read and write bits of `home_copy` (or of a
+/// newly created file when there is none): a job changes the executable bit only, whatever
+/// mode its machine happened to give the file.
+fn publish(
+    path: &Path,
+    bytes: &[u8],
+    executable: bool,
+    home_copy: &Path,
+) -> Result<(), DaemonError> {
     let parent = path
         .parent()
         .ok_or_else(|| error("Job file has no parent"))?;
@@ -201,11 +212,32 @@ fn publish(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         ".chariox-job-return-{:032x}",
         rand::random::<u128>()
     ));
-    let result = std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+    let result = std::fs::write(&temporary, bytes)
+        .and_then(|()| set_executable(&temporary, home_copy, executable))
+        .and_then(|()| std::fs::rename(&temporary, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
     result.map_err(|e| error(format!("Cannot apply job file: {e}")))
+}
+
+#[cfg(unix)]
+fn set_executable(file: &Path, home_copy: &Path, executable: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let kept = std::fs::metadata(home_copy).or_else(|_| std::fs::metadata(file))?;
+    let mode = kept.permissions().mode() & 0o777;
+    let mode = match (executable, mode & 0o111 != 0) {
+        (false, _) => mode & !0o111,
+        (true, true) => mode,
+        // Whoever may read the file may run it.
+        (true, false) => mode | ((mode & 0o444) >> 2),
+    };
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_executable(_: &Path, _: &Path, _: bool) -> std::io::Result<()> {
+    Ok(())
 }
 
 pub(crate) fn hard_excluded(path: &str) -> bool {
@@ -242,6 +274,17 @@ mod tests {
         let artifacts = snapshot(root, &["target/release/*".into()]).unwrap();
         assert!(artifacts.contains_key("target/release/build-output"));
         assert!(!artifacts.contains_key(".env"));
+    }
+    #[test]
+    fn offload_job_snapshot_enters_nested_ignored_folders_below_a_recursive_output_pattern() {
+        let tree = crate::test_support::TestWorktree::new("job-snapshot-recursive");
+        let root = tree.path();
+        std::fs::create_dir_all(root.join("target/release/deps")).unwrap();
+        std::fs::write(root.join("target/release/app"), b"binary").unwrap();
+        std::fs::write(root.join("target/release/deps/lib.rlib"), b"lib").unwrap();
+        let artifacts = snapshot(root, &["target/**".into()]).unwrap();
+        assert!(artifacts.contains_key("target/release/app"));
+        assert!(artifacts.contains_key("target/release/deps/lib.rlib"));
     }
     #[test]
     fn offload_job_return_preserves_local_edit_and_records_remote_conflict() {

@@ -81,7 +81,7 @@ Protocol version `13` adds the `agent_activity` projection to `PromptSubmitted` 
 
 Protocol version `21` adds semantic history search mode selection. `SemanticSearchHistory` accepts `mode: "knn" | "agent" | null`; omitted/null defaults to KNN. `SemanticHistoryEvents` may include an `answer` for focused-agent semantic search, and each `SemanticHistoryMatch` may include a short `reason`.
 
-Protocol version `22` removes the kernel-to-kernel provider catalog request and stops embedding relay remote machine/kernel inventory in waiting-room snapshots. Browser clients now obtain per-kernel catalogs by opening target-scoped runtime connections to each available kernel.
+Protocol version `22` removes the kernel-to-kernel provider catalog request and stops embedding relay remote machine/kernel inventory in Room list snapshots. Browser clients now obtain per-kernel catalogs by opening target-scoped runtime connections to each available kernel.
 
 Protocol version `17` adds optional editable custom choices for choice interactions. `RuntimeInteraction` may include `custom_choice`, and `RespondToInteraction` may include `custom_reply` when responding with that custom choice id.
 
@@ -333,34 +333,14 @@ Commit request:
   "CommitWorkspaceChanges": {
     "workspace_id": "/Users/miguel/chariox",
     "worktree_id": "/Users/miguel/chariox",
-    "message": "Update workspace git panel"
+    "message": "Update workspace git panel",
+    "files": ["src/panel.ts"],
+    "branch": null
   }
 }
 ```
 
-Push request:
-
-```json
-{
-  "PushWorkspaceBranch": {
-    "workspace_id": "/Users/miguel/chariox",
-    "worktree_id": "/Users/miguel/chariox",
-    "force_with_lease": false
-  }
-}
-```
-
-Commit-and-push request:
-
-```json
-{
-  "CommitAndPushWorkspaceChanges": {
-    "workspace_id": "/Users/miguel/chariox",
-    "worktree_id": "/Users/miguel/chariox",
-    "message": "Update workspace git panel"
-  }
-}
-```
+`files` names exactly what the commit holds. On the default branch or a detached HEAD the commit moves to a new `chariox/<slug>` branch first; `branch` names one instead.
 
 Delete worktree request:
 
@@ -370,21 +350,6 @@ Delete worktree request:
     "workspace_id": "/Users/miguel/chariox",
     "worktree_id": "/Users/miguel/chariox-feature",
     "force": false
-  }
-}
-```
-
-Create pull request request:
-
-```json
-{
-  "CreateWorkspacePullRequest": {
-    "workspace_id": "/Users/miguel/chariox",
-    "worktree_id": "/Users/miguel/chariox-feature",
-    "title": "Update workspace git panel",
-    "body": "Optional pull request body",
-    "base_ref": "main",
-    "draft": true
   }
 }
 ```
@@ -401,25 +366,6 @@ Git action response:
       "message": "committed workspace changes",
       "commit_sha": "abcdef...",
       "branch": "main",
-      "generated_at_ms": 1778080000000
-    }
-  }
-}
-```
-
-Pull request response:
-
-```json
-{
-  "WorkspacePullRequestCreated": {
-    "pull_request": {
-      "workspace_id": "/Users/miguel/chariox",
-      "worktree_id": "/Users/miguel/chariox-feature",
-      "branch": "chariox/feature",
-      "base_ref": "main",
-      "url": "https://github.com/example/repo/pull/1",
-      "title": "Update workspace git panel",
-      "draft": true,
       "generated_at_ms": 1778080000000
     }
   }

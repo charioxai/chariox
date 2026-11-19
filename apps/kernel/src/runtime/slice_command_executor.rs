@@ -192,10 +192,12 @@ fn inherited_slice_development(
         .map(|plan| plan.package_binding().development)
     {
         None => InheritedSliceDevelopment::None,
-        Some(ManagedContextDevelopmentSelection::SourceProject { project_id, .. }) => {
-            InheritedSliceDevelopment::ImportedProject(project_id)
-        }
-        Some(development) => InheritedSliceDevelopment::Plan(development),
+        Some(development) => match development.single_source_project() {
+            Some((project_id, _)) => {
+                InheritedSliceDevelopment::ImportedProject(project_id.to_string())
+            }
+            None => InheritedSliceDevelopment::Plan(development),
+        },
     }
 }
 

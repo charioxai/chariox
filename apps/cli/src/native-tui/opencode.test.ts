@@ -41,6 +41,22 @@ for (const [placement, flags] of [
   })
 }
 
+for (const model of ["openai/gpt-5.2", "opencode-go/kimi-k2.6"]) {
+  test(`OpenCode launches the connected upstream model ${model}: the kernel, not the launcher, resolves it`, async (t) => {
+    const h = nativeLaunchHarness(t)
+    await runOpenCodeNativeTui([...h.args, "--model", model])
+    assert.equal((h.createdSessions[0]!.agent_defaults as { model: string }).model, model)
+    assert.deepEqual(h.launchedModels, [model])
+  })
+}
+
+test("OpenCode --machine creates the agent on the machine, with no move from home", async (t) => {
+  const h = nativeLaunchHarness(t, "ready", "/workspace")
+  await runOpenCodeNativeTui([...h.args, "--machine", "selected-worker", "--model", "openai/gpt-5.2"])
+  assert.equal(h.createdSessions[0]!.kernel_ref, "selected-worker")
+  assert.deepEqual(h.launchedModels, ["openai/gpt-5.2"])
+})
+
 test("MP-08/MP-10 OpenCode attach retains the worktree fallback for older run projections", async (t) => {
   const h = nativeLaunchHarness(t)
   await runOpenCodeNativeTui(h.args)
@@ -71,7 +87,9 @@ function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeo
   let closes = 0
   const attachedSessions: string[] = []
   const attachedDirectories: string[] = []
-  const agent = { id: "agent-1", session_id: "home-session", provider: "opencode", alias: "A1", extension_grants: [] }
+  const createdSessions: Record<string, unknown>[] = []
+  const launchedModels: unknown[] = []
+  const agent = { id: "agent-1", session_id: "home-session", provider: "opencode", alias: "A1", model: "opencode/big-pickle", extension_grants: [] }
   const run = {
     id: "home-projected-run", session_id: "home-session", agent_instance_id: agent.id,
     provider: "opencode", adapter_key: "opencode", client_interface: "native_tui",
@@ -79,12 +97,24 @@ function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeo
     state: "Running", structured_endpoint: "http://127.0.0.1:1", provider_session_id: null,
   }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
-    if ("CreateSession" in request) return { SessionCreated: { session: {
-      id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
-    }, agent } }
+    if ("CreateSession" in request) {
+      const created = request.CreateSession as Record<string, unknown>
+      createdSessions.push(created)
+      // The kernel resolves the named model on the execution target; this one serves it.
+      const named = (created.agent_defaults as { model?: string } | undefined)?.model
+      if (named && named !== "default") agent.model = named
+      return { SessionCreated: { session: {
+        id: "home-session", workspace_id: "/fixture", worktree_id: "/fixture", agents: [agent],
+      }, agent } }
+    }
+    // Home's catalog: only the free OpenCode models; a connected upstream is its own entry.
+    if ("GetProviderCatalog" in request) return { ProviderCatalog: { catalog: {
+      all: [{ id: "opencode", name: "OpenCode", models: { "big-pickle": { id: "big-pickle", name: "Big Pickle" } } }],
+      default: { opencode: "big-pickle" }, connected: ["opencode"],
+    } } }
     if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment-1" } } }
-    if ("MoveAgentToRemote" in request) return { AgentMovedToRemote: { agent } }
     if ("LaunchProviderRun" in request) {
+      launchedModels.push((request.LaunchProviderRun as Record<string, unknown>).model)
       launches += 1
       return { ProviderRunLaunchAccepted: { provider_run: run } }
     }
@@ -115,6 +145,6 @@ function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeo
   t.mock.method(process.stderr, "write", () => true)
   return {
     args: ["--kernel-url", "ws://127.0.0.1:1/kernel", "--workspace", "/fixture", "--worktree", "/fixture"],
-    attachedSessions, attachedDirectories, reads: () => reads, launches: () => launches, closes: () => closes,
+    attachedSessions, attachedDirectories, createdSessions, launchedModels, reads: () => reads, launches: () => launches, closes: () => closes,
   }
 }

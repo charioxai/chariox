@@ -9,7 +9,8 @@ fn local_request_api_runs_shell_command_capability() {
 }
 
 fn local_request_api_runs_shell_command_capability_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-shell-local-api-test");
+    let _tmp = crate::test_support::TestTempDir::new("shell-local-api-test");
+    let worktree_root = _tmp.join("chariox-shell-local-api-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -69,7 +70,8 @@ fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
 }
 
 fn local_request_api_rejects_shell_command_for_unauthorized_attachment_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-shell-local-api-denied-test");
+    let _tmp = crate::test_support::TestTempDir::new("shell-local-api-denied-test");
+    let worktree_root = _tmp.join("chariox-shell-local-api-denied-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -128,8 +130,8 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
 }
 
 fn local_request_api_rejects_file_capability_for_unauthorized_attachment_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-file-local-api-denied-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("file-local-api-denied-test");
+    let worktree_root = _tmp.join("chariox-file-local-api-denied-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("notes.txt"), "hello").expect("file should exist");
     let harness = LocalRouterTestHarness::new();
@@ -184,8 +186,8 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
 }
 
 fn local_request_api_reads_directory_tree_file_and_git_status_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-capability-local-api-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("capability-local-api-test");
+    let worktree_root = _tmp.join("chariox-capability-local-api-test");
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
@@ -295,8 +297,8 @@ fn local_request_api_inspects_workspace_git_overview() {
 }
 
 fn local_request_api_inspects_workspace_git_overview_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-git-overview-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("workspace-git-overview-test");
+    let worktree_root = _tmp.join("chariox-workspace-git-overview-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
     run_test_git(&worktree_root, &["init", "-b", "main"]);
@@ -354,8 +356,8 @@ fn local_request_api_lists_workspace_repo_files() {
 }
 
 fn local_request_api_lists_workspace_repo_files_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-files-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("workspace-files-test");
+    let worktree_root = _tmp.join("chariox-workspace-files-test");
     std::fs::create_dir_all(worktree_root.join("src/app")).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
     std::fs::write(worktree_root.join("src/app/main.rs"), "fn main() {}\n")
@@ -461,8 +463,8 @@ fn local_request_api_reads_workspace_file_content() {
 }
 
 fn local_request_api_reads_workspace_file_content_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-file-content-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("workspace-file-content-test");
+    let worktree_root = _tmp.join("chariox-workspace-file-content-test");
     std::fs::create_dir_all(worktree_root.join("src/app")).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "# hello\n").expect("file should exist");
     std::fs::write(worktree_root.join("src/app/main.rs"), "fn main() {}\n")

@@ -137,14 +137,19 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
     let Outcome::Event(event) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            session.id(),
-            agent.id(),
-            "peer",
-            "plain-message",
-            "message",
-            serde_json::json!({"message":"Review the PTY finding"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            // Only an urgent message starts its idle recipient.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "plain-message",
+                "message",
+                serde_json::json!({"message":"Review the PTY finding"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!()
@@ -163,7 +168,8 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
         .expect("delivery attempt must be recorded");
     // The PTY write is the only receipt this adapter has; an `uncertain`
     // receipt would block every task of the recipient after two minutes.
-    assert_eq!(delivered.state, "accepted");
+    // The prompt carried the message text, so the write settles it.
+    assert_eq!(delivered.state, "acknowledged");
 }
 
 // accam A02-S03: an explicitly stopped agent stays stopped. A later urgent
@@ -257,6 +263,135 @@ async fn stopped_agent_keeps_messages_pending_until_the_owner_prompts_it() {
             .unwrap()
             .expect("the owner's prompt ends the stop")
             .state,
+        "acknowledged"
+    );
+}
+
+// The owner's Stop of a turn that ended Done with a process still running keeps the agent
+// stopped like any other owner Stop: a later message waits for the owner's next prompt.
+#[tokio::test]
+async fn owner_stop_of_work_a_done_turn_retains_keeps_messages_pending_until_the_owner_prompts() {
+    use crate::durable_state::agent_lifecycle::{occurrence, ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("stopped-done-retained-work");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let begin = |prompt: &str| {
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+    };
+    let settle = |prompt: &str| {
+        let Outcome::Settled { task, .. } = store
+            .agent_lifecycle(Operation::Settle {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: 2,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        task
+    };
+    begin("retaining-turn");
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: "local".into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: "retaining-turn".into(),
+            run: Some("run".into()),
+            id: "long-process".into(),
+            kind: "process".into(),
+            resource: Some("wake-long".into()),
+            now: 1,
+        })
+        .unwrap();
+    let done = settle("retaining-turn");
+    assert_eq!(done.state, ExecutionState::Done);
+    // A later turn ends while the process runs: the newest task is not the one retaining work.
+    begin("intervening-turn");
+    assert_eq!(settle("intervening-turn").state, ExecutionState::Done);
+    let Outcome::Task(stopped) = store
+        .agent_lifecycle(Operation::CancelTask {
+            task: done.task_id.clone(),
+            owner: "local".into(),
+            revision: done.revision,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(stopped.state, ExecutionState::Done);
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur({
+            // Urgent, so only the owner's Stop keeps it from starting the idle agent.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "message-after-stop",
+                "message",
+                serde_json::json!({"message":"Rerun the build"}),
+            );
+            message.urgent = true;
+            message
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let prompt = format!("agent-event-{}-{}", agent.id(), event.sequence);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .is_none(),
+        "an agent the owner stopped must not run the message"
+    );
+    begin("owner-prompt");
+    assert_eq!(settle("owner-prompt").state, ExecutionState::Done);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .expect("the owner's prompt ends the stop")
+            .state,
         "accepted"
     );
 }
@@ -288,14 +423,19 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
     let Outcome::Event(e) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            session.id(),
-            agent.id(),
-            "peer",
-            "first-message",
-            "message",
-            serde_json::json!({"message":"Review the rejected launch"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            // Only an urgent message starts its idle recipient.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "first-message",
+                "message",
+                serde_json::json!({"message":"Review the rejected launch"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!()
@@ -336,13 +476,14 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
         )
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     let retried = store
         .agent_inbox(session.id(), agent.id(), 0)
         .unwrap()
         .remove(0);
     assert_eq!(
         (retried.state.as_str(), quiet),
-        ("accepted", true),
+        ("acknowledged", true),
         "periodic sweep must retry taskless recipients without a rejection notice"
     );
 }
@@ -3356,7 +3497,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
         .unwrap();
     let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(
-        inbox[2].state, "accepted",
+        inbox[2].state, "acknowledged",
         "later urgent work must still steer the active turn"
     );
     assert_eq!(inbox[0].state, "pending");
@@ -3366,14 +3507,15 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
         .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     assert_eq!(
         store.agent_inbox(session.id(), agent.id(), 0).unwrap()[0].state,
-        "accepted",
+        "acknowledged",
         "the refused message must wake when the existing turn ends"
     );
     let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(
-        inbox[1].state, "accepted",
+        inbox[1].state, "acknowledged",
         "the wake that ends the existing turn carries every pending row"
     );
     assert_eq!(inbox[1].prompt_id, inbox[0].prompt_id);

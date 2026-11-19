@@ -62,7 +62,7 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let project_id = if request.hidden
+        let selected_project = if request.hidden
             && !matches!(
                 &request.project_selection,
                 SessionProjectSelection::Existing { .. }
@@ -71,18 +71,21 @@ impl SessionService {
         } else {
             Some(self.resolve_project_selection(&request)?)
         };
+        let session_id = self.store.next_session_id();
+        let project_id = match selected_project {
+            Some(project_id) => ProjectId::new(project_id)
+                .map_err(|error| project_error("session.create", error.to_string()))?,
+            None => ProjectId::hidden_scope(&session_id),
+        };
         let mut session = RuntimeSession::new(
-            self.store.next_session_id(),
+            session_id,
+            project_id,
             alias,
             request.workspace_id,
             request.worktree_id,
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
-        if let Some(project_id) = project_id {
-            let assigned = session.assign_project_id(project_id);
-            debug_assert!(assigned);
-        }
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
@@ -234,10 +237,6 @@ impl SessionService {
         }
     }
 
-    pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
-        self.restore_session_with_default_project_name_hint(session, None)
-    }
-
     pub(crate) fn commit_publication_runtime_configuration(
         &mut self,
         session: RuntimeSession,
@@ -260,24 +259,12 @@ impl SessionService {
         Ok(self.store.insert(session))
     }
 
-    pub(crate) fn restore_session_with_default_project_name_hint(
-        &mut self,
-        mut session: RuntimeSession,
-        default_project_name_hint: Option<&str>,
-    ) -> RuntimeSession {
+    pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
         if let Some(held) = self.store.get(session.id()) {
             session.note_activity_at(held.last_activity_at_ms());
         }
         session.purge_unsupported_workflow_publications();
-        if !session.is_hidden() && session.project_id().is_empty() {
-            let project_id = self.ensure_default_project(
-                session.owner_user_id(),
-                session.workspace_id(),
-                default_project_name_hint,
-            );
-            let assigned = session.assign_project_id(project_id);
-            debug_assert!(assigned);
-        } else if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
+        if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
                 &default_project_name(session.workspace_id()),
@@ -384,7 +371,7 @@ impl SessionService {
             .store
             .list()
             .into_iter()
-            .filter(|session| !session.is_hidden() && !session.project_id().is_empty())
+            .filter(|session| !session.is_hidden())
             .fold(BTreeMap::<String, usize>::new(), |mut counts, session| {
                 *counts.entry(session.project_id().to_string()).or_default() += 1;
                 counts
@@ -521,6 +508,8 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        let target_project_id = ProjectId::new(target_project_id)
+            .map_err(|error| project_error("session.migrate", error.to_string()))?;
         session.migrate_default_project_scope(workspace_id, target_project_id, alias);
         Ok(Some(session.clone()))
     }

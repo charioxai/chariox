@@ -115,6 +115,11 @@ test("App automation commands route one event to one workflow and validate argum
     return { AppAutomations: { installation_id: "todo", automations: [] } }
   } })
   assert.equal(disabled.message, "No App automations.")
+  const paused = await executeAppCommand(["automation", "pause", "todo", "reminders", "1"], { send: async sent => {
+    assert.deepEqual(sent, { PauseAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 1 } })
+    return { AppAutomation: { installation_id: "todo", automation: { ...automation, revision: 2, status: "paused" } } }
+  } })
+  assert.match(paused.message!, /reminders · todo_due v1 → workflow p \(queue q\) · paused · revision 2/)
   for (const args of [["automation", "add", "todo", "reminders"], ["automation", "disable", "todo", "reminders", "x"], ["automation", "add", "todo", "a", "e", "s", "w", "--bogus"], ["worker"]]) {
     const invalid = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
     assert.equal(invalid.ok, false)
@@ -207,11 +212,15 @@ test("app inbox configures routes and test occurrences through the shared reques
   const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x', 'y"}'], client)
   assert.equal(tested.message, "Occurrence occ-1 on mail was already accepted.")
   await executeAppCommand(["inbox", "remove", "todo", "mail"], client)
+  await executeAppCommand(["inbox", "pause", "todo", "mail"], client)
+  await executeAppCommand(["inbox", "resume", "todo", "mail"], client)
   await executeAppCommand(["inbox", "list", "todo"], client)
   assert.deepEqual(sent, [
     { CreateAppInboxRoute: { installation_id: "todo", route_id: "mail", event_name: "todo_requested", source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 2 } },
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x y" } } },
     { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } },
+    { SetAppInboxRoutePaused: { installation_id: "todo", route_id: "mail", paused: true } },
+    { SetAppInboxRoutePaused: { installation_id: "todo", route_id: "mail", paused: false } },
     { ListAppInboxRoutes: { installation_id: "todo" } },
   ])
   for (const args of [["inbox", "test", "todo", "mail", "occ", "{bad"], ["inbox", "add", "todo", "mail", "e", "t", "--version", "0"], ["inbox", "list"]]) {

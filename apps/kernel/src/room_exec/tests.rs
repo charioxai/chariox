@@ -276,6 +276,65 @@ async fn exec_room_end_cancels_the_whole_owned_process_tree() {
     }
 }
 
+// A job that leaves the command's tree (its own session, its parent gone) before anything
+// looked at the tree is still the command's: cleanup owns it from the spawn, not from a snapshot.
+// The second command's launcher exits at once, so it is usually gone before ownership is
+// captured and its environment cannot name the claim.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn exec_cleanup_ends_a_job_that_left_the_tree_before_any_snapshot() {
+    for script in [
+        "(setsid sh -c 'echo $$; exec sleep 60' &) ; sleep 0.3; wait",
+        "(setsid sh -c 'echo $$; exec sleep 60' &)",
+    ] {
+        ends_with_its_command(script).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn ends_with_its_command(script: &str) {
+    let service = RoomExecService::default();
+    let id = open(&service, script);
+    let page = service
+        .read("room", &id, 0, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let bytes = page
+        .chunks
+        .iter()
+        .flat_map(|chunk| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&chunk.data_base64)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let pid: u32 = String::from_utf8(bytes).unwrap().trim().parse().unwrap();
+    assert!(pid > 1);
+    service.end_session("room");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+    let ended = stat.as_ref().map_or(true, |stat| {
+        stat.rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('Z')
+    });
+    // The test may have failed first: never leave the sleeper running.
+    // SAFETY: a PID this test just read from its own child's output.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    assert!(
+        ended,
+        "the detached job must be ended with its command: {stat:?}"
+    );
+}
+
 #[tokio::test]
 async fn exec_cancel_never_reports_truncated_output_as_success() {
     let service = RoomExecService::default();
@@ -518,6 +577,10 @@ async fn offload_job_declared_memory_queues_before_creating_a_process() {
     assert!(!marker.exists());
 }
 
+/// The pool stops a command it sees growing; one that already holds its memory
+/// at the first sample only waits, so the memory arrives over several samples.
+const GROWING_PAST_THE_POOL: &str = "import time\nx = []\nfor _ in range(16):\n    x.append(bytearray(32 * 1024 * 1024))\n    time.sleep(0.2)\ntime.sleep(30)";
+
 #[tokio::test]
 async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_settle() {
     let directory = crate::test_support::TestWorktree::new("offload-job-memory-outcome");
@@ -527,17 +590,13 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
             "room",
             crate::session::DEFAULT_LOCAL_USER_ID,
             directory.path(),
-            &[
-                "python3".into(),
-                "-c".into(),
-                "import time; x=bytearray(512*1024*1024); time.sleep(30)".into(),
-            ],
+            &["python3".into(), "-c".into(), GROWING_PAST_THE_POOL.into()],
             &crate::local::JobNeeds::default(),
             None,
             Some("agent".into()),
         )
         .unwrap();
-    let input = serde_json::json!({"argv":["python3", "-c", "import time; x=bytearray(512*1024*1024); time.sleep(30)"], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
+    let input = serde_json::json!({"argv":["python3", "-c", GROWING_PAST_THE_POOL], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
     let offset = service
         .write(
             "room",
@@ -549,12 +608,78 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
     service.close_stdin("room", &id, offset).unwrap();
     let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(15), collect(&service, &id))
         .await
-        .unwrap();
+        .expect("the command grew past the pool and was never stopped for memory");
     assert!(
         matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0),
         "{outcome:?}"
     );
     assert!(!service.has_running_work());
+    service.close("room", &id).unwrap();
+}
+
+/// Limits the command's own domain (a `process-*` leaf the kernel made) to 128 MiB, then
+/// allocates 512 MiB: the memory controller, not the kernel's pool, kills it.
+fn memory_controller_kill(after: &str) -> String {
+    format!(
+        "cg=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup); \
+         case \"$cg\" in */process-*) ;; *) echo \"no command domain: $cg\"; exit 3;; esac; \
+         unit=$(dirname $cg); \
+         echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; {after}"
+    )
+}
+
+async fn killed_by_the_memory_controller(after: &str) -> (String, ExecOutcome) {
+    let service = RoomExecService::default();
+    let id = open(&service, &memory_controller_kill(after));
+    let (_, stderr, outcome) =
+        tokio::time::timeout(Duration::from_secs(20), collect(&service, &id))
+            .await
+            .unwrap();
+    service.close("room", &id).unwrap();
+    (String::from_utf8_lossy(&stderr).into_owned(), outcome)
+}
+
+#[tokio::test]
+#[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+async fn a_command_the_memory_controller_killed_ends_as_memory_limit_with_the_reason() {
+    let (stderr, outcome) = killed_by_the_memory_controller(
+        "exec python3 -c 'x=bytearray(512*1024*1024); print(len(x))'",
+    )
+    .await;
+    assert!(
+        matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0 && limit_bytes <= 134217728),
+        "{outcome:?} {stderr}"
+    );
+    assert!(stderr.contains("killed: out of memory"), "{stderr}");
+}
+
+#[tokio::test]
+#[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+async fn a_command_that_fails_after_the_memory_controller_killed_its_child_ends_as_memory_limit() {
+    let (stderr, outcome) = killed_by_the_memory_controller(
+        "python3 -c 'x=bytearray(512*1024*1024); print(len(x))'; exit 101",
+    )
+    .await;
+    assert!(
+        matches!(outcome, ExecOutcome::MemoryLimit { .. }),
+        "{outcome:?} {stderr}"
+    );
+    assert!(stderr.contains("killed: out of memory"), "{stderr}");
+}
+
+#[tokio::test]
+async fn a_signalled_command_names_the_signal() {
+    let service = RoomExecService::default();
+    let id = open(&service, "kill -TERM $$");
+    let (_, stderr, outcome) =
+        tokio::time::timeout(Duration::from_secs(10), collect(&service, &id))
+            .await
+            .unwrap();
+    assert!(
+        matches!(outcome, ExecOutcome::Signaled { signal: 15 }),
+        "{outcome:?}"
+    );
+    assert!(String::from_utf8_lossy(&stderr).contains("killed by signal 15 (SIGTERM)"));
     service.close("room", &id).unwrap();
 }
 

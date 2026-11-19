@@ -632,7 +632,7 @@ async fn wait_for_fault_action(
     .expect("queued-mutation fault action should become visible")
 }
 
-fn controller_click_count(path: &std::path::Path) -> u64 {
+pub(super) fn controller_click_count(path: &std::path::Path) -> u64 {
     serde_json::from_slice::<Value>(&std::fs::read(path).expect("controller state should exist"))
         .expect("controller state should decode")["clickCount"]
         .as_u64()

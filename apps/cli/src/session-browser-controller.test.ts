@@ -131,7 +131,7 @@ function createHarness(options: {
     setSelectedIndex: (updater) => {
       selectedIndex = updater(selectedIndex)
     },
-    waitingRoomState: () => ({
+    startState: () => ({
       ...createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "medium"),
       focus: "session",
       sessionIndex: selectedIndex,

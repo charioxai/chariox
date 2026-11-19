@@ -159,7 +159,7 @@ test("buildRelaySubscribeFrame projects scoped relay subscriptions", () => {
     attachmentId: "attachment-1",
     clientPublicKey: "client-public-key",
     resumeFromEventId: 42,
-    subscriptionScope: "waiting_room_inventory",
+    subscriptionScope: "room_list",
   })
 
   assert.deepEqual(frame, {
@@ -171,7 +171,7 @@ test("buildRelaySubscribeFrame projects scoped relay subscriptions", () => {
     attachment_id: "attachment-1",
     client_public_key: "client-public-key",
     resume_from_event_id: 42,
-    subscription_scope: "waiting_room_inventory",
+    subscription_scope: "room_list",
   })
 })
 

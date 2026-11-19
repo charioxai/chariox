@@ -1,0 +1,79 @@
+{
+  "local_protocol": 1060,
+  "requests": [
+    {
+      "GrantAppStanding": {
+        "installation_id": "github",
+        "account": "work",
+        "repo": "charioxai/drill",
+        "class": "merge",
+        "expires_at_ms": 1900000000000
+      }
+    },
+    {
+      "GrantAppStanding": {
+        "installation_id": "github",
+        "account": "work",
+        "repo": "charioxai/drill",
+        "class": "delete_branch"
+      }
+    },
+    {
+      "RevokeAppStanding": {
+        "installation_id": "github",
+        "standing_id": "standing-1"
+      }
+    },
+    {
+      "ListAppStanding": {
+        "installation_id": "github"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "AppStanding": {
+        "installation_id": "github",
+        "standing": [
+          {
+            "standing_id": "standing-1",
+            "account": "work",
+            "repo": "charioxai/drill",
+            "class": "merge",
+            "created_at_ms": 5,
+            "expires_at_ms": 9,
+            "uses": 2,
+            "last_used_ms": 7
+          },
+          {
+            "standing_id": "standing-2",
+            "account": "work",
+            "repo": "charioxai/drill",
+            "class": "review",
+            "created_at_ms": 5,
+            "uses": 0
+          }
+        ]
+      }
+    }
+  ],
+  "confirmation_frame": {
+    "installation_id": "github",
+    "app_id": "com.chariox.github",
+    "app_name": "GitHub",
+    "publisher_id": "com.chariox",
+    "publisher_name": "Chariox",
+    "action_name": "merge_pull_request",
+    "input": "{\n  \"number\": 7\n}",
+    "preview": [
+      {
+        "label": "Repository",
+        "value": "charioxai/drill"
+      },
+      {
+        "label": "Method",
+        "value": "squash"
+      }
+    ]
+  }
+}

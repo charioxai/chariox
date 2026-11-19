@@ -309,6 +309,7 @@ mod tests {
     fn provider_run_ids_for_pump_uses_agent_runtime_projection_when_session_mirror_is_stale() {
         let session = crate::session::RuntimeSession::new(
             "session-terminal-pump",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

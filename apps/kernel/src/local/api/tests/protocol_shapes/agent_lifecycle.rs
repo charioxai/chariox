@@ -6,7 +6,15 @@ use crate::durable_state::agent_lifecycle::{
 use sha2::{Digest, Sha256};
 
 fn room_session() -> crate::session::RuntimeSession {
-    crate::session::RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon")
+    crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    )
 }
 
 #[test]
@@ -41,7 +49,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             deadline_ms: Some(60_000),
             started_at_ms: 1,
             inbox_cursor: 3,
-            long_wait_notified: false,
             last_checked_at_ms: 1,
         }),
         last_progress_at_ms: 1,
@@ -62,13 +69,13 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         "obligations": [{"id": "obligation", "kind": "delegate", "resource_id": "child",
             "completion_task_id": "child-task", "status": "open", "dispatch_state": "accepted"}],
         "wait": {"registration_ids": ["reg"], "deadline_ms": 60000, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1},
+            "inbox_cursor": 3, "last_checked_at_ms": 1},
         "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     });
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "4ffa08d93b9e27134e13df1e08cefa349e44d8918028a1cac241d2e97f16cb01"
+        "e6f8d1eccae4c46390a0c86ef2272494f68d10f2016b458fb3e19916211a8ac6"
     );
 }
 
@@ -84,18 +91,17 @@ fn agent_wait_without_a_deadline_reports_a_null_deadline() {
         deadline_ms: None,
         started_at_ms: 1,
         inbox_cursor: 3,
-        long_wait_notified: false,
         last_checked_at_ms: 1,
     };
     let value = serde_json::to_value(wait).unwrap();
     assert_eq!(
         value,
         serde_json::json!({"registration_ids": ["reg"], "deadline_ms": null, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1})
+            "inbox_cursor": 3, "last_checked_at_ms": 1})
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "40729d74583fd594c73484f308a96a58c80aa1c991016f7728a3bb41a11c59ae"
+        "f8abdcd92861f4306d96055bcc034470df1d10ecc1969ff7f3cb00b085227077"
     );
 }
 
@@ -258,7 +264,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "f85e422cdbd7e87c53ad01c29e094be47f901d7e2b4b155671305229a46fdc2f"
+        "0e2ec5015979d97ede4703cac7914e0780b879a008ccbaeb5b666bb4733a96b7"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -266,46 +272,6 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
         let request: LocalDaemonRequest = serde_json::from_value(fixture[key].clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
     }
-}
-
-#[test]
-fn browser_owner_action_shape_is_bound_to_protocol993() {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("agent-browser-owner-action-993.json")).unwrap();
-    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
-    let task: AgentTaskExecution = serde_json::from_value(fixture["task"].clone()).unwrap();
-    assert_eq!(
-        task.owner_action,
-        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
-    );
-    assert_eq!(serde_json::to_value(task).unwrap(), fixture["task"]);
-    let card = crate::session::RuntimeInteraction::for_kernel_operation(
-        "task-blocked-browser-task-2",
-        "task-blocked-browser-task-2",
-        "Allow browser access",
-        "Allow browser access?",
-        vec![crate::session::RuntimeInteractionChoice::new(
-            "allow_browser",
-            "Allow browser",
-            "resume",
-            None,
-        )],
-    )
-    .without_timeout()
-    .with_related_agent_id("agent".into());
-    let encoded = serde_json::to_value(card).unwrap();
-    assert_eq!(
-        serde_json::json!({"related_agent_id":encoded["related_agent_id"],"timeout_sec":encoded["timeout_sec"]}),
-        fixture["decision"]
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "078e78f7807c8283b95a843e4a7cae80e8f8736c5a553588c9daab21e2da4f66"
-    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: idle Stop has an explicit successful wire result.

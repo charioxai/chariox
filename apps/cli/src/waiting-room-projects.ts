@@ -1,10 +1,10 @@
 import type { SessionListEntry } from "./sessions.js"
 import type {
   SessionProjectSelection,
-  WaitingRoomPublicProjectSummary,
+  RoomListProjectSummary,
 } from "@chariox/kernel-client"
 
-export type WaitingRoomProjectSummary = WaitingRoomPublicProjectSummary
+export type WaitingRoomProjectSummary = RoomListProjectSummary
 export type { SessionProjectSelection }
 
 export const DEFAULT_PROJECT_SELECTION_ID = "default"

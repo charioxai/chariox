@@ -19,6 +19,8 @@ struct Fixture {
     /// The agent `/credential vault manage` runs for.
     agent: String,
     vault: std::path::PathBuf,
+    /// Declared last so the kernel stops before its directory goes.
+    _root: crate::test_support::TestTempDir,
 }
 
 /// Pending interaction ids are process-wide: each test's ids are its own.
@@ -51,8 +53,8 @@ impl Fixture {
     }
 
     fn build(vault: bool, guest: Option<&str>, enrolled: Option<&str>) -> Self {
-        let root = std::env::temp_dir().join(format!("passkey-{:016x}", rand::random::<u64>()));
-        std::fs::create_dir_all(&root).unwrap();
+        let owner_dir = crate::test_support::TestTempDir::new("passkey");
+        let root = owner_dir.to_path_buf();
         let vault_path = root.join("vault.json");
         if vault {
             crate::secret::create_chariox_encrypted_vault_for_test(&vault_path, PASSKEY).unwrap();
@@ -69,6 +71,7 @@ impl Fixture {
         let app = DaemonApp::bootstrap(config).unwrap();
         let mut session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -104,6 +107,7 @@ impl Fixture {
             session: session_id,
             agent,
             vault: vault_path,
+            _root: owner_dir,
         }
     }
 

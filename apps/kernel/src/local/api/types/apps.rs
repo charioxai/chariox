@@ -222,6 +222,14 @@ pub struct AppInstallationSummary {
     /// Filled by `ListAppInstallations` and `GetAppInstallation`; empty without an active release.
     #[serde(default)]
     pub events: Vec<AppEventSummary>,
+    /// How many standing permissions the owner has given this installation's actions
+    /// (`ListAppStanding` lists them). Filled with `events`; absent when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub standing_permissions: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +366,18 @@ pub struct DisableAppAutomationRequest {
     pub expected_revision: u64,
 }
 
+/// Protocol 1011: stops an App automation delivering without ending it. The
+/// owner resumes it with `ConfigureAppAutomation`, which checks its target again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PauseAppAutomationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub installation_id: String,
+    pub automation_id: String,
+    pub expected_revision: u64,
+}
+
 /// Protocol 348: the App's own `log.write` entries, oldest first, after an
 /// optional sequence (for paging and following).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -414,6 +434,88 @@ pub struct RevokeAppConnectionRequest {
     pub connection_id: String,
 }
 
+/// Lets one installation call a credentialed destination of its signed
+/// manifest as the owner's account: `credential` is the manifest's label, the
+/// Vault entry must be bound to that destination's origin, and `allow` bounds
+/// the routes the App may use (a route needing more is refused).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppAccountRequest {
+    pub installation_id: String,
+    /// The owner's name for this account, for example `work`.
+    pub account: String,
+    pub credential: String,
+    pub vault_credential_id: String,
+    pub allow: chariox_app_package::RouteSafety,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppAccountRequest {
+    pub installation_id: String,
+    pub account: String,
+}
+
+/// An account bound to an installation. The Vault entry is named by id only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppAccountSummary {
+    pub account: String,
+    pub credential: String,
+    pub vault_credential_id: String,
+    pub allow: chariox_app_package::RouteSafety,
+    pub bound_at_ms: u64,
+}
+
+/// Lets one action class run without its card in one repository, for an account the owner
+/// bound. Only the owner makes it, here; an App or an agent has no way to. `class` is one of
+/// the closed set (`merge`, `close`, `delete_branch`, `review`): there is none for a force
+/// push, for deleting a default branch or for any grant. `expires_at_ms` absent: until
+/// revoked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppStandingRequest {
+    pub installation_id: String,
+    pub account: String,
+    /// `owner/name`.
+    pub repo: String,
+    pub class: chariox_app_package::v2::StandingClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppStandingRequest {
+    pub installation_id: String,
+    pub standing_id: String,
+}
+
+/// A standing permission the owner gave. `uses` and `last_used_ms` say how often the card was
+/// skipped under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppStandingSummary {
+    pub standing_id: String,
+    pub account: String,
+    pub repo: String,
+    pub class: chariox_app_package::v2::StandingClass,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub uses: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<u64>,
+}
+
+/// A credentialed destination the active release declares, with the most
+/// authority one of its routes needs, so a client can offer the right levels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppCredentialSummary {
+    pub credential: String,
+    pub origin: String,
+    pub routes: u32,
+    pub safety: chariox_app_package::RouteSafety,
+}
+
 /// A connection an installation may use, with the actions its manifest
 /// declares for that generator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,6 +524,19 @@ pub struct AppConnectionSummary {
     pub connection_id: String,
     pub granted_at_ms: u64,
     pub actions: Vec<String>,
+    /// Protocol 1011: set when the App's signed `eventRouting` names this
+    /// generator, so the grant also lets it manage its own routes here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_routing: Option<AppEventRoutingSummary>,
+}
+
+/// What an App routes through a granted connection, against its signed limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEventRoutingSummary {
+    pub max_routes: u32,
+    /// Routes the App created itself, paused ones included.
+    pub routes: u32,
+    pub paused: u32,
 }
 
 /// Protocol 358: an event generator connection an inbox route subscribes to.
@@ -443,6 +558,16 @@ pub struct AppInboxRouteRequest {
     pub route_id: String,
 }
 
+/// Protocol 1011: pauses or resumes one inbox route. A paused route accepts no
+/// occurrence and is claimed as inactive; a deployment handover never resumes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetAppInboxRoutePausedRequest {
+    pub installation_id: String,
+    pub route_id: String,
+    pub paused: bool,
+}
+
 /// Accepts one occurrence for a route as a source would, for drills and
 /// local development. The payload must match the App's signed schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -462,6 +587,8 @@ pub struct AppInboxRouteSummary {
     pub source_event_type: String,
     pub source_event_version: u32,
     pub active: bool,
+    /// Protocol 1011: paused by the owner or by the App; independent of `active`.
+    pub paused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<AppInboxConnection>,
     /// Occurrences by outcome; `failed` ones exhausted their attempts.
@@ -779,6 +906,8 @@ pub struct AppFrontendAsset {
 #[serde(deny_unknown_fields)]
 pub struct AppFrontendBundle {
     pub entry: String,
+    /// Empty in every reply to a client: it fetches the signed files with `ClientAppViewRequest`,
+    /// since a view can be larger than one relay reply.
     pub assets: Vec<AppFrontendAsset>,
     pub content_security_policy: String,
     pub iframe_sandbox: String,

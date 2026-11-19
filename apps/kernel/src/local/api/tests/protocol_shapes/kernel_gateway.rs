@@ -74,7 +74,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None,
         } },
         "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
-            name: "a".into(), kind: KernelFileKind::Directory, size: 0, modified_ms: None,
+            name: "a".into(), kind: KernelFileKind::Directory, target_kind: None, size: 0, modified_ms: None,
             revision: "2049:18:0:5.0:5.0".into(), mode: 0o755,
         }], truncated: false },
         "chunk": LocalDaemonResponse::KernelFileChunk { path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), size: 3, eof: true },
@@ -229,7 +229,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "81aa549b8cd25370a746681fcaac8eccd8bb2eb844f2484ae90956d335f9c21b"
+        "bfa244342847e49e83ccd1c786504c405227b7976f01013d0d0e1ed06a36f1dc"
     );
 }
 
@@ -237,6 +237,7 @@ fn outside_events_snapshot_and_hash() {
 fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
     let session = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

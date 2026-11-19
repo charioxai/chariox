@@ -161,6 +161,7 @@ impl DaemonConfig {
             host_machine_id: runtime_identity.machine_id.clone(),
             #[cfg(test)]
             machine_name_for_tests: None,
+            test_state_root: None,
             os_name: env::var("CHARIOX_OS_NAME")
                 .ok()
                 .map(|value| value.trim().to_string())

@@ -178,6 +178,9 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
         clear_workspace_id: false,
         worktree_id: Some("/repo-feature".to_string()),
         clear_worktree_id: false,
+        reason: None,
+        self_settings: None,
+        usage_limit: None,
     });
     let snapshot = serde_json::to_value(request).expect("request should serialize");
     assert_eq!(
@@ -547,6 +550,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let acked = LocalDaemonResponse::MetaagentEventsAcked { acked: vec![event] };
     let mut task_session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -680,7 +684,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "fa5e8dc117725530ae1c69adc96ae7e6e355b59d7fca97bb722059c78b5a58b5"
+        "89631e90f05a4b6d5586707b2a2bb354ea131b4bb3e935afaa004fa79d572bae"
     );
 }
 

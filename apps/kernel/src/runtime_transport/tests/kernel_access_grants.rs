@@ -20,6 +20,7 @@ fn kernel_access_socket(root: &Path) -> PathBuf {
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
+mod owner_cards;
 mod standing;
 mod vault_secret;
 mod waiter;
@@ -53,7 +54,7 @@ fn kernel_access_child_server() {
             config.user_config_path = root.join("private/config.toml");
             config.user_config.credential_vault.backend =
                 crate::config::CredentialVaultBackend::CharioxEncrypted;
-            let vault = root.join("vault.json");
+            let vault = root.join("vault").join("vault.json");
             config.user_config.credential_vault.path = vault.to_string_lossy().into_owned();
             config.user_config.credential_vault.unlock_policy =
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;
@@ -67,6 +68,7 @@ fn kernel_access_child_server() {
             {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
+                    crate::session::ProjectId::test(),
                     // A valid alias can collide with another session's ID.
                     // Scoping must use the same ID-first resolver as dispatch.
                     Some(
@@ -104,6 +106,25 @@ fn kernel_access_child_server() {
                         None,
                         crate::agent::GridPosition::new(0, 0, 1, 1),
                     ));
+            }
+            // Sub-agents two levels down, whose cards are the owner's too.
+            for (id, parent) in [
+                ("access-sub-agent", "access-vault-agent"),
+                ("access-sub-sub-agent", "access-sub-agent"),
+            ] {
+                let mut agent = crate::agent::AgentInstance::new(
+                    id,
+                    id,
+                    SESSION,
+                    None,
+                    "claude",
+                    None,
+                    None,
+                    None,
+                    crate::agent::GridPosition::new(0, 0, 1, 1),
+                );
+                agent.set_parent_agent(Some(crate::agent::AgentRef::local(parent)));
+                app.agents_mut().restore_agent(agent);
             }
             // MP-11: a different owner session holds a worker admission credential.
             if credential_session {
@@ -625,6 +646,8 @@ impl Kernel {
         // State follows TMPDIR; the socket uses the same bounded parent as real kernels.
         let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
+        // The kernel process is killed at the end, so its test state lives under `root`.
+        std::fs::create_dir(root.join("tmp")).unwrap();
         crate::config::validate_local_socket_path(&kernel_access_socket(&root))
             .expect("the test kernel socket path is bounded independently of TMPDIR");
         let mut starting = StartingKernel {
@@ -639,6 +662,7 @@ impl Kernel {
                         if credential_session { "1" } else { "0" },
                     )
                     .env("CHARIOX_HOME", root.join("state"))
+                    .env("TMPDIR", root.join("tmp"))
                     .env("HOME", root.join("home"))
                     .env(crate::runtime::owned_process_signals::CLAIM_VARIABLE, &root)
                     .envs(extra_env.iter().copied())
@@ -664,7 +688,7 @@ impl Kernel {
         popups
             .send(Message::Text(
                 serde_json::json!({"type":"subscribe", "request_id":"popups",
-            "session_id":"", "attachment_id":"", "subscription_scope":"waiting_room_inventory"})
+            "session_id":"", "attachment_id":"", "subscription_scope":"room_list"})
                 .to_string()
                 .into(),
             ))
@@ -1952,6 +1976,68 @@ async fn an_unknown_terminal_is_explained_to_the_grant_holder() {
         "{refused}"
     );
     assert_eq!(refused["error"]["code"], "terminal_refused", "{refused}");
+}
+
+// A request the kernel runs and refuses reaches the grant holder in the kernel's own words,
+// so the agent (and the owner reading its report) learns what to do next, not that the
+// reason is kept in a terminal.
+#[tokio::test]
+async fn a_refused_request_tells_the_grant_holder_why() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"CreateSession": {
+        "workspace_id": "/tmp",
+        "worktree_id": "/tmp",
+        "metaagent": true,
+        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+    }}));
+    let error = &refused["error"];
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("create a regular session and send `/meta <task>`"),
+        "{refused}"
+    );
+    assert!(!message.contains("host terminal"), "{refused}");
+    assert_eq!(error["code"], "local_transport_error", "{refused}");
+}
+
+// A kernel whose default Project is archived refuses CreateSession for an outside agent
+// with the reason and the next step, not "details are available only in the host terminal".
+#[tokio::test]
+async fn an_archived_default_project_is_explained_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let workspace = kernel.root.join("project-workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    // A model of the offline Claude catalog and an effort keep the account catalog out of this test.
+    let request = serde_json::json!({"CreateSession": {
+        "workspace_id": workspace, "worktree_id": workspace,
+        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+    }});
+    let created = kernel.request(request.clone()).await;
+    let project_id = created["response"]["SessionCreated"]["session"]["project_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    let archived = kernel
+        .request(serde_json::json!({"ArchiveProject": {"project_id": project_id}}))
+        .await;
+    assert!(archived["error"].is_null(), "{archived}");
+    let refused = holder.request(request);
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&format!(
+            "default project `{project_id}` is archived; restore it before creating a session"
+        )),
+        "{refused}"
+    );
+    assert!(!message.contains("host terminal"), "{refused}");
+    assert!(
+        !message.contains(kernel.root.to_str().unwrap()),
+        "no host path reaches the caller: {refused}"
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: revocation may deliver only its final control record.

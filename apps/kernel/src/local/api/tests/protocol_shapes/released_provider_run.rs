@@ -92,6 +92,7 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     run_value["last_activity_at_ms"] = serde_json::json!(1_000);
     let mut session_value = serde_json::to_value(crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -135,6 +136,8 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         .as_object_mut()
         .unwrap()
         .remove("last_activity_at_ms");
+    // The released hash pins the example value it shipped with; the session type refuses an empty id, so it is set after decoding.
+    snapshot[3]["AgentForked"]["session"]["project_id"] = serde_json::json!("");
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(

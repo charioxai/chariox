@@ -92,6 +92,11 @@ enum BrokerRequest<'a> {
         id: &'a str,
         path: &'a str,
     },
+    HomeArchiveQuarantine {
+        scope: &'a str,
+        id: &'a str,
+        path: &'a str,
+    },
     HomeRestoreResolve {
         container: &'a str,
         path: &'a str,
@@ -683,6 +688,45 @@ pub(super) fn verify_home_archive(
             ));
         }
         Ok(Some((verified.size_bytes, verified.sha256)))
+    }
+    #[cfg(not(unix))]
+    unreachable!()
+}
+
+/// Asks the broker to move a managed archive that fails its integrity check aside. It proves the
+/// corruption itself and refuses an intact archive, so the kernel may ask after any failed verify.
+/// Returns where the generation now is, or `None` when no broker owns the archive.
+pub(super) fn quarantine_home_archive(
+    scope: &str,
+    id: &str,
+    path: &std::path::Path,
+) -> io::Result<Option<std::path::PathBuf>> {
+    if !broker_is_configured() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed home archive path is not UTF-8",
+            )
+        })?;
+        let output = execute(&BrokerRequest::HomeArchiveQuarantine { scope, id, path })?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "managed home archive quarantine failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Quarantined {
+            path: std::path::PathBuf,
+        }
+        let quarantined: Quarantined = serde_json::from_slice(&output.stdout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(Some(quarantined.path))
     }
     #[cfg(not(unix))]
     unreachable!()

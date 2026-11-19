@@ -1,5 +1,56 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: source outcomes, sweeps and owner disposition.
 use super::*;
+/// A turn that ended with a watched process, job, terminal watch or delegate still open left it
+/// supervised (see `AgentObligation::outlives_turn`); its end closes that work. The agent hears of
+/// a process as an event of its own, marked `after_turn`: the task that started it is done. A
+/// delegate's end reaches its parent as `child_finished`.
+fn close_outlived(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    held: Vec<Registration>,
+    source: &str,
+    occurrence: &str,
+    success: bool,
+    public_answer: &Option<serde_json::Value>,
+) -> Result<(), DaemonError> {
+    let mut told_elsewhere = true;
+    let mut closed = false;
+    for o in &mut t.obligations {
+        if o.completion_source() == Some(source)
+            && o.outlives_turn()
+            && !(success
+                && o.kind == "delegate"
+                && o.dispatch_state == "accepted"
+                && o.completion_task_id.is_none())
+        {
+            o.status = "satisfied".into();
+            told_elsewhere &= o.kind == "delegate" || o.dispatch_state == "cancel_requested";
+            closed = true;
+        }
+    }
+    if !closed {
+        return Ok(());
+    }
+    for mut reg in held {
+        if reg.source_id == source && reg.live {
+            reg.live = false;
+            tx.execute(
+                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                params![reg.id, encode(&reg)?],
+            )
+            .map_err(sql)?;
+        }
+    }
+    if !told_elsewhere {
+        let mut told =
+            super::transitions::source_end(t, source, occurrence, success, public_answer, false);
+        told.payload["after_turn"] = true.into();
+        event(tx, told)?;
+    }
+    t.revision += 1;
+    save(tx, t)
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Progress {
@@ -128,13 +179,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
                 let held = registrations(tx, &t.task_id);
-                // A finished task is done with its sources, unless it still follows this peer.
+                // A finished task is done with its sources, unless it still follows this peer or
+                // ended while this source was running.
                 if t.state == ExecutionState::Done
                     && !held.as_ref().is_ok_and(|held| {
                         held.iter()
                             .any(|reg| reg.peer && reg.live && reg.source_id == source)
                     })
                 {
+                    if let Ok(held) = held {
+                        close_outlived(tx, &mut t, held, &source, &id, success, &public_answer)?;
+                    }
                     continue;
                 }
                 let registrations = match held {
@@ -283,15 +338,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else {
                         None
                     };
+                    let settled = super::settled_waits::is_settled(tx, &t)?;
                     if let Some(w) = t.wait.as_mut() {
-                        if !w.long_wait_notified
-                            && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
-                        {
-                            w.long_wait_notified = true;
-                            t.revision += 1;
-                            changed.push(t.clone());
-                        }
-                        let w = t.wait.as_mut().unwrap();
                         let clock_rollback = now < w.last_checked_at_ms;
                         w.last_checked_at_ms = w.last_checked_at_ms.max(now);
                         let dead = w
@@ -306,11 +354,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && now >= w.started_at_ms
                                 && !clock_rollback
                         });
-                        if (dead && unread == 0)
-                            || w.deadline_ms.is_some_and(|deadline| deadline <= now)
-                            || now < w.started_at_ms
-                            || clock_rollback
-                            || check_in.is_some()
+                        // A settled wait held back by the agent's other work has nothing to re-check.
+                        if !settled
+                            && ((dead && unread == 0)
+                                || w.deadline_ms.is_some_and(|deadline| deadline <= now)
+                                || now < w.started_at_ms
+                                || clock_rollback
+                                || check_in.is_some())
                         {
                             let kind = if dead {
                                 "wait_recheck"
@@ -453,7 +503,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     e.attempted_at_ms
                 };
-                if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
+                if e.state == "pending"
                     && (clock_quarantined
                         || deadline_start.is_some_and(|at| {
                             // Receipt time can advance during Sweep's awaited pre-work.
@@ -463,18 +513,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
                         }))
                 {
-                    // Refused before any provider I/O: nothing is unconfirmed, so it ends as
-                    // failed and cannot fence the recipient's later wakes and messages.
-                    let undelivered =
-                        e.state == "pending" && e.submit_epoch.is_none() && !clock_quarantined;
+                    // A delivery with a provider attempt but no receipt is settled by the
+                    // kernel before this sweep (`settle_interrupted_deliveries`). What is
+                    // left refused before any provider I/O: nothing is unconfirmed, so it
+                    // ends as failed and cannot fence the recipient's later wakes.
                     let reason = if clock_quarantined {
                         format!("Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel", e.sequence)
-                    } else if undelivered {
-                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
                     } else {
-                        format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel", e.sequence)
+                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
                     };
-                    if undelivered {
+                    if !clock_quarantined {
                         super::delivery_failure::fail_undelivered(tx, &mut e)?;
                     } else {
                         e.state = "blocked".into();
@@ -495,11 +543,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             }
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
-                            t.reason = if clock_quarantined || undelivered {
-                                reason.clone()
-                            } else {
-                                format!("Unconfirmed delivery {}: owner must reconcile the original attempt", e.sequence)
-                            };
+                            t.reason = reason.clone();
                             t.revision += 1;
                             save(tx, &t)?;
                             changed.push(t);
@@ -516,7 +560,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
         Operation::CancelTask {
@@ -549,27 +592,34 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::RetireRestartFailure {
             task,
             revision,
+            later_prompt,
             now,
         } => {
             let mut t = load(tx, &task)?;
-            // Admission must not abandon a goal, owned work, or an uncertain receipt.
+            // Admission must not abandon a goal, owned work, or an uncertain receipt. The rows of
+            // the later turn itself are its own delivery, not work left behind.
             let unresolved: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled') ELSE 1 END)",
-                params![t.room_id, t.agent_id], |r| r.get(0),
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') IS NOT ?3 AND (json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled')) ELSE 1 END)",
+                params![t.room_id, t.agent_id, later_prompt], |r| r.get(0),
             ).map_err(sql)?;
+            // A Blocked task is not waiting: its pending prompt and wait are what its ended
+            // attempt left behind, and a wait on a live source shows as a live registration.
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
-                || t.goal.is_some()
-                || !t.obligations.is_empty()
-                || t.wait.is_some()
-                || t.pending_prompt_id.is_some()
+                || t.owns_unfinished_work()
                 || unresolved
                 || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
             {
                 return Ok(Outcome::Task(t));
             }
+            // An interrupted wake turn keeps the wait and wake prompt it was dispatched with;
+            // with its source settled and handled nothing can consume them.
+            t.wait = None;
+            t.pending_prompt_id = None;
             t.state = ExecutionState::Cancelled;
-            t.reason = "Interrupted attempt superseded by a later turn".into();
+            t.reason = "Superseded by a later turn of the same agent; it holds no open work".into();
+            t.pending_prompt_id = None;
+            t.wait = None;
             t.last_progress_at_ms = now;
             t.revision += 1;
             save(tx, &t)?;
@@ -600,7 +650,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .and_then(|n| n.parse::<u64>().ok());
                 if let Some(own) = own {
                     let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
-                    if matches!(event.state.as_str(), "blocked" | "uncertain" | "failed") {
+                    if event.state == "failed" {
                         super::delivery_failure::send_again(tx, &mut event, now)?;
                         t.state = ExecutionState::Done;
                         t.reason = "Delivery sent again".into();
@@ -618,22 +668,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
             drop(q);
-            if resume && !deliveries.is_empty() {
-                return Err(error("unconfirmed delivery must receive its exact provider receipt or be explicitly cancelled before resume"));
-            }
-            if !resume {
-                for sequence in deliveries {
-                    let mut event = get_event(
-                        tx,
-                        &t.room_id,
-                        &t.agent_id,
-                        u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
-                    )?;
-                    if delivery_belongs_to_task(tx, &event, &t)? {
-                        event.state = "failed".into();
-                        save_event(tx, &event)?;
-                    }
+            // Only this task's own unsettled deliveries hold its Resume: another turn's message
+            // on its way in keeps its place in the agent's queue either way.
+            for sequence in deliveries {
+                let mut event = get_event(
+                    tx,
+                    &t.room_id,
+                    &t.agent_id,
+                    u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
+                )?;
+                if !delivery_belongs_to_task(tx, &event, &t)? {
+                    continue;
                 }
+                if resume {
+                    return Err(error(format!(
+                        "unconfirmed delivery of inbox event {} to task {} must receive its exact provider receipt or be explicitly cancelled before resume",
+                        event.sequence, t.task_id
+                    )));
+                }
+                event.state = "failed".into();
+                save_event(tx, &event)?;
             }
             let retry_wake = resume && t.wait.is_some() && pending_refused_wake(tx, &t)?;
             let blocked_revision = t.blocked_revision;
@@ -671,7 +725,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "goal.owner_resume",
                         &t.task_id,
@@ -708,12 +762,79 @@ fn cancel_task(
             "stale or foreign owner cancellation; reload the task in its owning room and retry",
         ));
     }
-    if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-        cancel_intent(tx, &mut t, by_agent)?;
-        t.revision += 1;
-        save(tx, &t)?;
+    match t.state {
+        // A failure can have cancelled it already and left its diagnostic as the reason. An
+        // accepted Stop is still a decision to stop: record it, or nothing that goes on with a
+        // failed turn (a usage-limit resume) can tell the cancel from the failure.
+        ExecutionState::Cancelled => {
+            if !t.cancelled_on_purpose() {
+                t.reason = if by_agent {
+                    AGENT_CANCELLED_REASON
+                } else {
+                    OWNER_CANCELLED_REASON
+                }
+                .into();
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+        }
+        // The turn is over and stays so: Stop only ends the work it left running. The owner's Stop
+        // still keeps the agent stopped, as for any turn it ends.
+        ExecutionState::Done => {
+            if cancel_retained_work(&mut t) {
+                if !by_agent {
+                    t.reason = OWNER_CANCELLED_REASON.into();
+                    keep_agent_stopped(tx, &t)?;
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+        }
+        _ => {
+            cancel_intent(tx, &mut t, by_agent)?;
+            t.revision += 1;
+            save(tx, &t)?;
+        }
     }
     Ok(Outcome::Task(t))
+}
+/// Message delivery reads the stop from the agent's newest task, so an owner's Stop of an older
+/// task that retains work marks the newest finished one too; the owner's next prompt starts a
+/// newer task and ends the stop.
+fn keep_agent_stopped(
+    tx: &Transaction<'_>,
+    stopped: &AgentTaskExecution,
+) -> Result<(), DaemonError> {
+    let Some(mut newest) = super::tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2",
+        params![stopped.room_id, stopped.agent_id],
+    )?
+    .pop() else {
+        return Ok(());
+    };
+    if newest.task_id != stopped.task_id
+        && matches!(
+            newest.state,
+            ExecutionState::Done | ExecutionState::Cancelled
+        )
+        && newest.reason != OWNER_CANCELLED_REASON
+    {
+        newest.reason = OWNER_CANCELLED_REASON.into();
+        newest.revision += 1;
+        save(tx, &newest)?;
+    }
+    Ok(())
+}
+/// Asks for the end of the work a Done task retains; its end closes the obligation without
+/// waking the agent, whom Stop told to stand down.
+fn cancel_retained_work(task: &mut AgentTaskExecution) -> bool {
+    let mut any = false;
+    for obligation in task.obligations.iter_mut().filter(|o| o.outlives_turn()) {
+        obligation.dispatch_state = "cancel_requested".into();
+        any = true;
+    }
+    any
 }
 /// `by_agent`: an agent, not the owner, cancels the task; it keeps the agent reachable.
 pub(super) fn cancel_intent(

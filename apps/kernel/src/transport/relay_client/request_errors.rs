@@ -23,6 +23,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
         ),
+        DaemonError::ExternalRequestFailed {
+            code,
+            message,
+            retryable,
+        } => relay_error(code, message, *retryable),
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
@@ -30,7 +35,6 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
         | DaemonError::ProviderProfileRefused { .. }
-        | DaemonError::ExternalRequestFailed { .. }
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }
@@ -112,6 +116,30 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message,
+        } if crate::runtime::browser_controller_process::controller_failure_code(message)
+            .is_some() =>
+        {
+            relay_error(
+                crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE,
+                message,
+                crate::runtime::browser_controller_process::controller_failure_is_transient(
+                    message,
+                ),
+            )
+        }
+        // A refusal Cloud named (budget, no capacity, denied) is retryable only when Cloud says it is transient.
+        DaemonError::LocalTransport { .. }
+            if crate::runtime::cloud_api_client::cloud_error_code(error).is_some() =>
+        {
+            relay_error(
+                "transport_error",
+                &error.to_string(),
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(error),
+            )
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -179,9 +207,8 @@ pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayEr
 
 pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
-        LocalDaemonRequest::ListWaitingRoomSessions(_) => "waiting_room.sessions.list",
-        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
-        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
+        LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
         LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
@@ -269,11 +296,12 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
     }
 }
+
+#[cfg(test)]
+mod cloud_refusal_tests;
 
 #[cfg(test)]
 mod tests {
@@ -309,6 +337,33 @@ mod tests {
             retryable: false,
         }
         .is_no_active_prompt());
+    }
+
+    const STALE_ELEMENT: &str =
+        "browser controller `browser.action` failed with stale_element_reference: the element is stale";
+
+    #[test]
+    fn controller_refusal_crosses_the_relay_as_its_own_sentence_not_a_retryable_transport_error() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: STALE_ELEMENT.to_string(),
+        });
+        assert_eq!(mapped.code, "browser_controller_failed");
+        assert_eq!(mapped.message, STALE_ELEMENT);
+        assert!(!mapped.retryable);
+        let transient = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller `browser.action` failed with browser_cdp_timeout: slow"
+                .to_string(),
+        });
+        assert_eq!(transient.code, "browser_controller_failed");
+        assert!(transient.retryable);
+        let lost = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller exited during `browser.action`".to_string(),
+        });
+        assert_eq!(lost.code, "transport_error");
+        assert!(lost.retryable);
     }
 
     #[test]

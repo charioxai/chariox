@@ -27,6 +27,7 @@ fn router_fixture_with_owner(
     let app = crate::app::DaemonApp::bootstrap(config).unwrap();
     let mut session = RuntimeSession::new(
         format!("am7-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
