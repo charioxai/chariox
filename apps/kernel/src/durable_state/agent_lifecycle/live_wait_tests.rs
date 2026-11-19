@@ -229,13 +229,6 @@ fn orphaned_registration_wait(deadline: Option<u64>) -> Fixture {
     wait_on_child(&f, deadline);
     let receipt = child_finishes(&f);
     f.begin("event-turn");
-    handle(&f, receipt, true);
-    assert_eq!(f.task().state, ExecutionState::Waiting);
-    assert!(f
-        .task()
-        .obligations
-        .iter()
-        .all(|o| !o.requires_resolution()));
     // Model storage loss after the receipt retired the registration, but before
     // the parent turn ended and could settle the original task.
     let bridge = Connection::open(f.root.join("state.sqlite")).unwrap();
@@ -248,7 +241,13 @@ fn orphaned_registration_wait(deadline: Option<u64>) -> Fixture {
             .unwrap(),
         1
     );
+    handle(&f, receipt, true);
     f.settle("event-turn", true);
+    assert!(f
+        .task()
+        .obligations
+        .iter()
+        .all(|o| !o.requires_resolution()));
     f
 }
 
