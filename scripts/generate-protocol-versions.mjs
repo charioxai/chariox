@@ -65,6 +65,7 @@ const currentSnapshots = [
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",
   "fixtures/owner-vault-protocol.json",
+  "fixtures/peer-agent-link-protocol.json",
   "fixtures/peer-browser-snapshot-protocol.json",
   "fixtures/totp-protocol.json",
   "fixtures/workspace-artifact-paging-protocol.json"

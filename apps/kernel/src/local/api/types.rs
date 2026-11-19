@@ -599,4 +599,7 @@ pub use workspace::*;
 /// `choice_id` and `outcome`, no longer the Room `session`; clients read the Room from its events).
 /// Local 1032 (provisional): `TrashKernelFiles` moves files and folders to the machine's own trash and `RestoreKernelTrash` puts them
 /// back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`; docs/PROTOCOL.md, "Move to Trash").
+/// 1035 (provisional) adds `KernelTerminal` and the `kernel_terminal` stream scope for the kernel's own terminals,
+/// a terminal summary's `scope` (`session_id` only for a Room's), and the `kernel_terminal_v1` capability
+/// (docs/PROTOCOL.md, "Kernel terminals").
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

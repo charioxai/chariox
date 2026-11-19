@@ -152,6 +152,7 @@ pub enum LocalDaemonRequest {
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),
     RoomBrowserArtifact(RoomBrowserArtifactRequest),
     RoomTerminal(RoomTerminalRequest),
+    KernelTerminal(KernelTerminalRequest),
     CaptureRoomEnvironmentScreenshot(CaptureRoomEnvironmentScreenshotRequest),
     ReadRoomEnvironmentScreenshotChunk(ReadRoomEnvironmentScreenshotChunkRequest),
     GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest),

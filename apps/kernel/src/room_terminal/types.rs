@@ -2,6 +2,66 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What a terminal belongs to: one Room, or the kernel itself (a shell on this machine with no
+/// Room). Who may reach a scope is decided in one place, `authorize_kernel_terminal`, not here.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "scope", content = "session_id", rename_all = "snake_case")]
+pub enum TerminalScope {
+    Room(String),
+    Kernel,
+}
+
+impl TerminalScope {
+    pub fn room(session_id: impl Into<String>) -> Self {
+        Self::Room(session_id.into())
+    }
+
+    /// The key the process sampler lists this scope's processes under. A Room's is its id;
+    /// the kernel's cannot be one (Room ids are generated and never contain a space).
+    pub fn process_key(&self) -> &str {
+        match self {
+            Self::Room(session_id) => session_id,
+            Self::Kernel => KERNEL_PROCESS_KEY,
+        }
+    }
+
+    /// The owner of a terminal as a refusal names it.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Room(_) => "this Room",
+            Self::Kernel => "this kernel",
+        }
+    }
+
+    pub fn room_id(&self) -> Option<&str> {
+        match self {
+            Self::Room(session_id) => Some(session_id),
+            Self::Kernel => None,
+        }
+    }
+}
+
+/// The process sampler's key for the kernel's own terminals and commands.
+pub const KERNEL_PROCESS_KEY: &str = "kernel terminals";
+
+impl From<&TerminalScope> for TerminalScope {
+    fn from(scope: &TerminalScope) -> Self {
+        scope.clone()
+    }
+}
+
+impl From<&String> for TerminalScope {
+    fn from(session_id: &String) -> Self {
+        Self::room(session_id.as_str())
+    }
+}
+
+impl From<&str> for TerminalScope {
+    fn from(session_id: &str) -> Self {
+        Self::room(session_id)
+    }
+}
+
 /// Who types into a terminal: the signed-in user, or one Room agent.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "agent_id", rename_all = "snake_case")]
@@ -78,7 +138,9 @@ pub enum RoomTerminalStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomTerminalSummary {
     pub terminal_id: String,
-    pub session_id: String,
+    /// Flattened: a Room's terminal still shows `session_id`; the kernel's shows only `scope`.
+    #[serde(flatten)]
+    pub scope: TerminalScope,
     pub title: String,
     pub program: String,
     pub working_directory: String,
@@ -180,7 +242,9 @@ pub struct RoomTerminalWaitResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomTerminalEvent {
     pub terminal_id: String,
-    pub session_id: String,
+    /// Flattened: a Room's terminal still shows `session_id`; the kernel's shows only `scope`.
+    #[serde(flatten)]
+    pub scope: TerminalScope,
     /// The `wake_id` the watch was armed with.
     pub wake_id: String,
     pub armed_by: String,

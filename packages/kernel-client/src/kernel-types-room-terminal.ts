@@ -21,7 +21,9 @@ export type RoomTerminalStatus =
 
 export type RoomTerminalSummary = {
   readonly terminal_id: string
-  readonly session_id: string
+  /** A Room's terminal says which Room; the kernel's own terminal (no Room) has none. */
+  readonly scope: "room" | "kernel"
+  readonly session_id?: string
   readonly title: string
   readonly program: string
   readonly working_directory: string
@@ -126,6 +128,12 @@ export type RoomTerminalRequest = {
   readonly session_id: string
   readonly acting_agent?: string
   readonly host_agent?: string
+  readonly operation: RoomTerminalOperation
+}
+
+/** One operation on the kernel's own terminals (no Room); `directory` is where `open` starts. */
+export type KernelTerminalRequest = {
+  readonly directory?: string
   readonly operation: RoomTerminalOperation
 }
 

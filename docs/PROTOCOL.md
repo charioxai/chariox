@@ -5980,6 +5980,25 @@ management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for ei
 request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
 Relay peer 159 only pairs the embedded local response union with local 551.
 
+### Kernel terminals — provisional local 1035
+
+A kernel has terminals of its own that belong to no Room: the same PTY terminals as a Room's, owned by
+`TerminalScope::Kernel`. One request, `KernelTerminal { directory?, operation }`, carries the Room terminal's
+`operation` (`open`, `list`, `snapshot`, `input`, `resize`, `read_output`, `wait`, `close`) and answers with the
+same `RoomTerminal { result }`. `directory` is where `open` starts (the kernel user's home folder when absent) and
+is refused on any other operation. The `exec_*` operations belong to a Room and are refused. A terminal summary
+carries `scope` (`room` or `kernel`); `session_id` is present for a Room's terminal only. The output stream is the
+Room terminal stream (`subscription_scope` `kernel_terminal`, `attachment_id` `<terminal_id>`, no Room id). The kernel advertises
+`kernel_terminal_v1` in `RelayStatus.capabilities`.
+
+Who may use them is decided in one place, `authorize_kernel_terminal`: the kernel owner's own clients, which includes
+an external agent working under the owner's kernel-access grant. A Room agent (its `reach:` grant), a Room guest or
+member, a peer kernel and a hosted service are refused, and a Room's terminal list never shows a kernel terminal.
+A kernel terminal lives until it is closed or the kernel stops; it survives web reloads, other clients and a hot
+reload (the same handover as a Room terminal). Closing it, or the kernel stopping, ends its whole process tree.
+`chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
+no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
+
 ### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
 
 Numbering: the terminal shapes below were written at 562/170 and are carried by

@@ -233,6 +233,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 449 carries the confirmation card's `input` in `app_confirmation`.
 /// Peer 449 (provisional) carries local 1032 between kernels of one owner: `TrashMachineFiles` and `RestoreMachineTrash`
 /// with their answers `MachineFilesTrashed` and `MachineTrashRestored`.
+/// 496 (provisional) adds `scope` to the terminal summary a worker answers a Room terminal request with
+/// (`session_id` stays for a Room's terminal).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -2693,6 +2695,37 @@ mod room_terminal_peer_shapes {
             serde_json::to_value(&response).unwrap(),
             "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
         );
+    }
+
+    /// Peer 496: a worker's terminal summary carries `scope`; a Room's still shows `session_id`.
+    #[test]
+    fn a_worker_answers_a_listed_terminal_with_its_scope() {
+        let summary = serde_json::json!({
+            "terminal_id": "term-1", "scope": "room", "session_id": "room-1", "title": "Terminal 1",
+            "program": "/bin/bash", "working_directory": "/work", "cols": 80, "rows": 24,
+            "status": {"state": "running"}, "driver": {"state": "free"},
+            "opened_by": {"kind": "user"}, "user_interacted": true, "created_at_ms": 7, "output_offset": 12
+        });
+        let wire = serde_json::json!({"kind": "room_terminal", "result": {"result": "listed", "terminals": [summary]}});
+        let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { terminals },
+        } = response
+        else {
+            panic!("a list answers a list");
+        };
+        assert_eq!(
+            terminals[0].scope,
+            crate::room_terminal::TerminalScope::room("room-1")
+        );
+        // A summary from a worker that predates the scope is refused, not read as some Room's.
+        let mut old = wire;
+        old["result"]["terminals"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("scope");
+        assert!(serde_json::from_value::<RelayPeerResponse>(old).is_err());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::durable_state::agent_lifecycle::{
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 use crate::room_terminal::{
     CompletionEvents, RoomTerminalEvent, RoomTerminalEventKind, RoomTerminalService,
-    RoomTerminalStatus, RoomTerminalWatch, TerminalActor, WatchOwner, MAX_WAIT,
+    RoomTerminalStatus, RoomTerminalWatch, TerminalActor, TerminalScope, WatchOwner, MAX_WAIT,
 };
 
 pub(super) const KIND: &str = "terminal";
@@ -198,7 +198,7 @@ impl TerminalWakeDriver {
                     &sink,
                     RoomTerminalEvent {
                         terminal_id: detail.terminal_id.clone(),
-                        session_id: wake.room_id.clone(),
+                        scope: TerminalScope::room(wake.room_id.clone()),
                         wake_id: wake.id.clone(),
                         armed_by: wake.agent_id.clone(),
                         kind: waited.fired.expect("a settled wait fired"),

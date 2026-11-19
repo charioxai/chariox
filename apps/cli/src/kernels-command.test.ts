@@ -276,6 +276,10 @@ for (const ended of [false, true]) test(`exec real socket loss preserves resume 
 })
 
 // `--help` is a success path: the usage on stdout, exit 0, for every command, without needing a kernel.
+test("a bare `chariox terminal` is not usage: it reaches the attach to the kernel's own terminal", async () => {
+  assert.equal(await runKernelsCommand(["terminal"]), false)
+})
+
 test("--help answers with usage and exit 0 for every agent command; bare terminal shows both families", async () => {
   const printed: string[] = []
   const log = console.log
@@ -289,8 +293,7 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
       [["request", "--help"], /Usage: chariox request/],
       [["kernels", "--help"], /Usage: chariox kernels/],
       [["terminal", "open", "--help"], /Usage: chariox terminal open/],
-      [["terminal", "--help"], /chariox terminal --session[^]*chariox terminal open\|/],
-      [["terminal"], /chariox terminal --session[^]*chariox terminal open\|/],
+      [["terminal", "--help"], /chariox terminal \[--session[^]*chariox terminal open\|/],
     ] as const) {
       printed.length = 0
       process.exitCode = undefined

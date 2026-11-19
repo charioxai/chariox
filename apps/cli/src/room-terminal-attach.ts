@@ -99,7 +99,7 @@ export async function attachRoomTerminal(options: {
 }): Promise<TerminalAttachEnd> {
   const { send, target, input, output } = options
   const terminalId = options.terminal.terminal_id
-  const hostedTarget: RoomTerminalTarget = options.terminal.host_agent && !target.hostAgent
+  const hostedTarget: RoomTerminalTarget = options.terminal.host_agent && !target.kernelTerminal && !target.hostAgent
     ? { ...target, hostAgent: options.terminal.host_agent }
     : target
   const hosted = new HostedScreenFilter()

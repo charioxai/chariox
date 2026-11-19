@@ -2328,7 +2328,7 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
             .is_err(),
         "terminal approval was bypassed after sudo ended"
     );
-    f.state.owned.room_terminals.end_session(&turn.session_id);
+    f.state.owned.room_terminals.end_scope(&turn.session_id[..]);
 }
 
 #[test]

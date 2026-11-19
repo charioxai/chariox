@@ -7,8 +7,8 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
 export const TERMINAL_VERBS = ["open", "list", "send", "read", "wait", "close"] as const
-export const TERMINAL_ATTACH_USAGE = `usage: chariox terminal --session SESSION [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]
-Attaches this terminal to a Room terminal (the newest running one, else a new one). Ctrl-] detaches.`
+export const TERMINAL_ATTACH_USAGE = `usage: chariox terminal [--session SESSION] [--kernel NAME] [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]
+Attaches this terminal to a terminal of the Room, or of the kernel itself when no --session is given (the newest running one, else a new one). Ctrl-] detaches.`
 export type TerminalVerb = typeof TERMINAL_VERBS[number]
 
 const DEFAULT_COLS = 120
@@ -21,7 +21,7 @@ const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\
 
 type Flag = string | true | undefined
 export type TerminalFlags = {
-  cols?: Flag; rows?: Flag; title?: Flag; session?: Flag; terminal?: Flag; since?: Flag
+  cols?: Flag; rows?: Flag; title?: Flag; session?: Flag; directory?: Flag; terminal?: Flag; since?: Flag
   waitMs?: Flag; for?: Flag; timeout?: Flag; hostAgent?: Flag; noEnter: boolean
 }
 
@@ -75,10 +75,11 @@ function plainPage(output: { data_base64: string; next_offset: number }): { text
 }
 
 export async function runTerminalVerb(verb: TerminalVerb, positionals: readonly string[], flags: TerminalFlags, send: SendRequest): Promise<unknown> {
-  const target: RoomTerminalTarget = {
-    sessionId: required(flags.session, "--session"),
-    ...(typeof flags.hostAgent === "string" ? { hostAgent: flags.hostAgent } : {}),
-  }
+  // Without --session the terminal is the kernel's own: it belongs to no Room.
+  if (flags.session === undefined && flags.hostAgent !== undefined) throw new CommandFailure("usage", "--host-agent needs --session")
+  const target: RoomTerminalTarget = flags.session === undefined
+    ? { kernelTerminal: true, ...(typeof flags.directory === "string" && verb === "open" ? { directory: flags.directory } : {}) }
+    : { sessionId: required(flags.session, "--session"), ...(typeof flags.hostAgent === "string" ? { hostAgent: flags.hostAgent } : {}) }
   if (verb === "open") {
     const command = positionals.length ? positionals : undefined
     const reply = await send(openRoomTerminalRequest(target,

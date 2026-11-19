@@ -265,6 +265,8 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RoomTerminal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        // The kernel's own terminals belong to no Room: no Room membership gates them.
+        LocalDaemonRequest::KernelTerminal(_) => None,
         LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

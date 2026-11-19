@@ -7,13 +7,14 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{RoomTerminalOutcome, TerminalActor};
+use super::types::{RoomTerminalOutcome, TerminalActor, TerminalScope};
 use crate::error::DaemonError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct TerminalRecord {
     pub terminal_id: String,
-    pub session_id: String,
+    #[serde(flatten)]
+    pub scope: TerminalScope,
     pub title: String,
     pub program: String,
     pub working_directory: String,

@@ -308,7 +308,7 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
+    KernelTerminalRequest, ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
     RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
@@ -320,8 +320,8 @@ pub use api::{
     HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
     KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileFailure,
     KernelFileKind, KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest,
-    ListKernelAccessGrantsRequest, ListKernelDirectoryRequest, ListOwnerInteractionsRequest, OnBehalfOf, OwnerInteraction,
-    OwnerInteractionChoice, ReadKernelFileRequest,
+    ListKernelAccessGrantsRequest, ListKernelDirectoryRequest, ListOwnerInteractionsRequest,
+    OnBehalfOf, OwnerInteraction, OwnerInteractionChoice, ReadKernelFileRequest,
     RenewKernelSudoRequesterRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
     RequestVaultSecretRequest, RestoreKernelTrashRequest, RevokeKernelAccessGrantRequest,
     StartFileTransferRequest, StatKernelFileRequest, TrashKernelFilesRequest, TrashedKernelFile,
