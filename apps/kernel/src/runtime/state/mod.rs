@@ -145,7 +145,7 @@ mod vault_generate;
 mod vault_use;
 mod visual;
 mod visual_preview;
-pub(crate) use agent_process_watch::WatchedHandover;
+pub(crate) use agent_process_watch::{WatchedHandover, WatchedProcessTransfer};
 pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;

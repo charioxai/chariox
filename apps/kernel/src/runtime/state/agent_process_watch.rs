@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 mod handover;
 mod run;
 use handover::Origin;
-pub(crate) use handover::WatchedHandover;
+pub(crate) use handover::{WatchedHandover, WatchedProcessTransfer};
 pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput};
 
 const ENV_ALLOW: &[&str] = &[

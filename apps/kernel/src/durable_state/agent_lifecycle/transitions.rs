@@ -239,13 +239,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task.provider_run_id = None;
                 task.revision += 1;
             }
-            // The retained wait is consumed only by an actual provider dispatch;
-            // a refused wake before that returns the task to this wait. A named
-            // run proves admission, not provider I/O: a wake still unsubmitted
-            // keeps its wait until BindSubmission.
+            // A wake keeps its previous wait until provider I/O, so a refusal
+            // before submission can restore it. Only the first binding can
+            // consume that inherited wait. On recovery a handed-over turn can
+            // accept a new yield before the kernel binds its run again.
             if run.is_some() && !super::goals::is_check(&task, &task.prompt_id) {
                 super::goals::clock(&mut task, now);
-                if task.wait.is_some() {
+                if task.provider_run_id.is_none() && task.wait.is_some() {
                     let unsubmitted_wake: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 AND json_extract(payload,'$.state')='submitting' AND json_extract(payload,'$.submit_epoch') IS NULL ELSE 0 END)",
                         params![task.room_id, task.agent_id, task.prompt_id],
