@@ -13,6 +13,17 @@ pub(in crate::runtime::state) fn blocking_popup_timeout_seconds(requested: Optio
         .min(BLOCKING_POPUP_MAX_SECONDS)
 }
 
+/// The id a keyed ask always gets, so its retry finds the first one.
+fn keyed_interaction_id(session_id: &str, agent_id: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(
+        serde_json::to_vec(&(session_id, agent_id, key)).expect("identities serialize"),
+    );
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    format!("interaction-{:032x}", u128::from_be_bytes(id))
+}
+
 fn popup_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -125,6 +136,31 @@ impl KernelRuntimeState {
         if args.timeout_sec == Some(0) {
             return Err(popup_error("timeout_sec must be at least 1"));
         }
+        let keyed_id = match args.idempotency_key.as_deref() {
+            None => None,
+            Some("") => return Err(popup_error("idempotency_key must not be empty")),
+            Some(_) if args.wait != Some(false) => {
+                return Err(popup_error("idempotency_key needs wait:false"))
+            }
+            Some(key) => Some(keyed_interaction_id(session_id, agent_id, key)),
+        };
+        if let Some(id) = keyed_id.as_deref() {
+            if self
+                .owned
+                .durable_state_store
+                .agent_wake(id)?
+                .is_some_and(|wake| wake.room_id == session_id && wake.agent_id == agent_id)
+            {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "interaction_id": id,
+                        "registration_id": format!("completion-{id}"),
+                        "deduplicated": true,
+                    }),
+                });
+            }
+        }
         if args.action.is_some() {
             return Err(popup_error(
                 "an action card must be raised by a local agent's own provider run",
@@ -228,7 +264,8 @@ impl KernelRuntimeState {
             Some(until) => Some(self.card_condition_wake(session_id, agent_id, &until.wake_id)?),
             None => None,
         };
-        let interaction_id = format!("interaction-{:032x}", rand::random::<u128>());
+        let interaction_id =
+            keyed_id.unwrap_or_else(|| format!("interaction-{:032x}", rand::random::<u128>()));
         let view = if let Some(view) = args.view.as_ref() {
             if let Some(run) = provider_run {
                 self.user_domain_agent_authority(run)?;

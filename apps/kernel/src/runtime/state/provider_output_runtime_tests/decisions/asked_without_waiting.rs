@@ -82,3 +82,47 @@ async fn a_question_asked_without_waiting_under_parked_ancestors_reaches_the_use
     assert!(t.decision_events(&t.p).is_empty());
     assert!(t.decision_events(&t.g).is_empty());
 }
+
+impl Tree {
+    /// `agent` asks again in the turn its task already runs, as a retried tool call does.
+    async fn ask_with_key(&self, agent: &str, key: &str) -> serde_json::Value {
+        let token = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&self.room, agent)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        self.runtime
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::REQUEST_POPUP_TOOL,
+                serde_json::json!({"wait": false, "idempotency_key": key, "message": "Deploy now?",
+                    "choices": [{"id": "yes", "label": "Yes", "reply": "Deploy."}]}),
+            )
+            .await
+            .unwrap()
+            .payload
+    }
+}
+
+/// A retried ask (same idempotency key) is the same card: one interaction, one holder notice.
+#[tokio::test]
+async fn a_retried_ask_with_the_same_key_is_not_raised_twice() {
+    let t = tree(
+        "decision-async-retry",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.begin_task(&t.c);
+
+    let first = t.ask_with_key(&t.c, "deploy-1").await;
+    let again = t.ask_with_key(&t.c, "deploy-1").await;
+
+    assert_eq!(again["interaction_id"], first["interaction_id"]);
+    assert_eq!(again["deduplicated"], true);
+    assert_eq!(t.decision_events(&t.p).len(), 1, "the holder is told once");
+}
