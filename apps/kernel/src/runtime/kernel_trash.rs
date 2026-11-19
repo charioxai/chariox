@@ -113,7 +113,8 @@ fn restore_with(
                 .strip_prefix(outer_trash)
                 .ok()
                 .is_some_and(|rest| {
-                    outer_path.join(rest) == Path::new(&item.path) && Path::new(&item.path).exists()
+                    outer_path.join(rest) == Path::new(&item.path)
+                        && std::fs::symlink_metadata(&item.path).is_ok()
                 })
         });
         if with_folder {

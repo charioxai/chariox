@@ -342,6 +342,27 @@ fn naming_a_folder_and_something_in_it_gives_each_its_own_result_and_undoes_both
     assert!(inner.exists());
 }
 
+#[test]
+fn a_dangling_link_inside_a_moved_folder_is_restored_with_the_folder() {
+    let m = machine("nested-dangling");
+    let folder = m.home.join("work/project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let link = folder.join("missing-target");
+    std::os::unix::fs::symlink("not-present", &link).unwrap();
+    let (trashed, failed) = move_to_trash(&[&link, &folder]).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(trashed.len(), 2);
+
+    let (restored, failed) = put_back(&trashed).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(restored.len(), 2);
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("not-present"));
+}
+
 /// What `move_to_trash` and `put_back` say about one path: the item that moved, if it did.
 fn moved<'a>(trashed: &'a [TrashedKernelFile], path: &Path) -> &'a TrashedKernelFile {
     trashed
