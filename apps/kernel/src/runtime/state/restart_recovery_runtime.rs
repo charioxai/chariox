@@ -596,7 +596,7 @@ impl KernelRuntimeState {
                                 session_id == session.id() && queued_agent_id == agent_id
                             },
                         );
-                        (!held && !publication)
+                        (!held && !publication && prompt.launch_wait().is_none())
                             .then(|| (session.id().to_string(), agent_id.to_string()))
                     })
                     .collect::<Vec<_>>()

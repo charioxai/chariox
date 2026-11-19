@@ -363,7 +363,10 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    if remote_prompt_receipt_is_rejected(&error) {
+                    if remote_prompt_receipt_is_rejected(&error)
+                        || super::provider_turn_admission::provider_memory_wait_reason(&error)
+                            .is_some()
+                    {
                         if let Err(settle_error) = self
                             .settle_verified_remote_prompt_rejection(&dispatch, error)
                             .await
@@ -1270,7 +1273,11 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(DaemonError::NoActivePrompt { .. }) => return,
-                Err(error) if remote_prompt_receipt_is_rejected(&error) => {
+                Err(error)
+                    if remote_prompt_receipt_is_rejected(&error)
+                        || super::provider_turn_admission::provider_memory_wait_reason(&error)
+                            .is_some() =>
+                {
                     match self
                         .settle_verified_remote_prompt_rejection(dispatch, error)
                         .await

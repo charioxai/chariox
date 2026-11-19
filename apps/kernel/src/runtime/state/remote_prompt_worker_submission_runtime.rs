@@ -101,6 +101,12 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 return Ok(provider_run_id);
             }
             RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if super::provider_turn_admission::provider_memory_wait_reason(&error)
+                    .is_some() =>
+            {
+                return Err(error);
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
                 if provider_launch_credential.is_none()
                     && !provider_credential_retry_used
                     && remote_prompt_error_requires_provider_launch_credential(&error) =>
@@ -196,9 +202,13 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 let detail = if persist_remote_prompt_reconciliation_pending(state, dispatch, true)
                     .is_ok()
                 {
-                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})")
+                    format!(
+                        "the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})"
+                    )
                 } else {
-                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay")
+                    format!(
+                        "the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay"
+                    )
                 };
                 state.report_remote_prompt_reconciliation_pending(dispatch, &detail);
                 crate::logging::warn_with_fields(
@@ -717,16 +727,17 @@ pub(super) fn remote_prompt_error_is_known_pre_admission_rejection(error: &Daemo
     matches!(
         *operation,
         "read relay peer response" | "read temporary relay peer response"
-    ) && matches!(
-        code.as_str(),
-        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-            | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
-            | "leased_agent_not_found"
-            | "execution_lease_not_found"
-            | "target_not_connected"
-            | "target_not_allowed"
-            | "action_not_allowed"
-    )
+    ) && (super::provider_turn_admission::provider_memory_wait_reason(error).is_some()
+        || matches!(
+            code.as_str(),
+            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+                | "leased_agent_not_found"
+                | "execution_lease_not_found"
+                | "target_not_connected"
+                | "target_not_allowed"
+                | "action_not_allowed"
+        ))
 }
 
 pub(super) fn remote_prompt_error_is_definitely_pre_send_after_transport_start(
@@ -883,7 +894,7 @@ impl KernelRuntimeState {
                 return RemotePromptSubmissionAttempt {
                     result: Err(error),
                     request_transport_started: false,
-                }
+                };
             }
         }
         // A10: an elevated leased turn's worker fence lands before its prompt.

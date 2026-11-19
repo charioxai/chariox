@@ -697,6 +697,7 @@ mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
+mod provider_turn_admission;
 mod relay_peer_runtime_state;
 mod remote_completion_harvest;
 mod remote_native_provider_launch;

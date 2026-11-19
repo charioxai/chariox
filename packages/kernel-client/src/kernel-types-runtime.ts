@@ -651,6 +651,7 @@ export type PromptQueueItem = {
   created_at_ms?: number
   updated_at_ms?: number
   status: string
+  launch_wait?: string
   prompt_origin?: "chariox" | "external" | string
   external_provider?: string | null
   external_provider_session_id?: string | null

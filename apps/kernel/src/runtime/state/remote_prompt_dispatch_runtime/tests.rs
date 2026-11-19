@@ -1586,6 +1586,93 @@ mod receipt_reconciliation {
     }
 
     #[tokio::test]
+    async fn waiting_worker_receipt_requeues_exact_prompt_after_home_restart() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "memory").await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert!(matches!(
+                &request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id: queried_agent_id,
+                    home_prompt_id,
+                } if queried_agent_id == &leased_agent_id && home_prompt_id == &prompt_id
+            ));
+            send_fake_worker_peer_response(
+                request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id,
+                        worker_provider_run_id: String::new(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::WaitingForMemory,
+                        target_home_prompt_id: None,
+                        execution_lease_id: Some("lease-receipt-memory".into()),
+                    }),
+                },
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .unwrap());
+        server.await.unwrap();
+
+        let owned = &fixture.runtime.owned;
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let restored = crate::runtime::prompt_state::PromptStateOwner::default();
+        restored.restore_session_state(&session);
+        let (active, queued) = restored.state_parts(&session, &fixture.agent_id);
+        assert!(active.is_none());
+        assert_eq!(queued[0].id(), fixture.dispatch.prompt_id);
+        assert_eq!(
+            queued[0].launch_wait(),
+            Some("Waiting for memory on the worker")
+        );
+        assert!(!queued[0].durable_delivery_reconciliation_pending());
+        assert_eq!(queued[1].id(), fixture.successor_prompt_id);
+        assert_eq!(
+            owned
+                .advance_next_queued_remote_prompt_dispatch(&fixture.session_id, &fixture.agent_id)
+                .unwrap()
+                .unwrap()
+                .remote_dispatch
+                .unwrap()
+                .prompt_id,
+            fixture.dispatch.prompt_id
+        );
+    }
+
+    #[tokio::test]
     async fn rejected_original_worker_receipt_settles_once_and_preserves_queued_successor() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await

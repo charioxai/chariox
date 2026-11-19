@@ -26,6 +26,7 @@ export type QueuedPromptStripItem = {
   externalProviderSessionId?: string | null
   externalProviderTurnId?: string | null
   status: string
+  launchWait?: string
   attachmentCount: number
   steerDisabled: boolean
   canSteer: boolean
@@ -53,6 +54,7 @@ export type QueuedPromptTranscriptMetadata = {
   externalProviderSessionId?: string | null
   externalProviderTurnId?: string | null
   status: string
+  launchWait?: string
   attachmentCount: number
   steerDisabled: boolean
   canSteer: boolean
@@ -173,6 +175,7 @@ function queuedPromptStripTranscriptQueuedMetadata(
     promptOrigin: item.promptOrigin,
     ...externalProviderObservedTranscriptIdentityFields(item),
     status: item.status,
+    ...(item.launchWait ? { launchWait: item.launchWait } : {}),
     attachmentCount: item.attachmentCount,
     steerDisabled: item.steerDisabled,
     canSteer: item.canSteer,
@@ -272,6 +275,7 @@ function queuedPromptItemsFromEntries(
       promptOrigin: queuedPrompt.promptOrigin ?? entry.promptOrigin ?? null,
       ...externalProviderObservedCoalescedTranscriptIdentityFields(queuedPrompt, entry),
       status: queuedPrompt.status,
+      ...(queuedPrompt.launchWait ? { launchWait: queuedPrompt.launchWait } : {}),
       attachmentCount: queuedPrompt.attachmentCount,
       steerDisabled: queuedPrompt.steerDisabled,
       canSteer: queuedPrompt.canSteer,
@@ -309,6 +313,7 @@ function queuedPromptItemFromProjection(
     promptOrigin: prompt.promptOrigin,
     ...externalProviderObservedTranscriptIdentityFields(prompt),
     status: prompt.status,
+    ...(prompt.launchWait ? { launchWait: prompt.launchWait } : {}),
     attachmentCount: prompt.attachmentCount,
     steerDisabled: prompt.steerDisabled,
     canSteer: prompt.canSteer,

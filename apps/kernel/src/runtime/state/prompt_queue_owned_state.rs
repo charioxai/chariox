@@ -714,6 +714,9 @@ impl KernelRuntimeOwnedState {
             {
                 return Ok(None);
             }
+            if self.hold_queued_provider_turn(&session, agent_id, &next_prompt)? {
+                return Ok(None);
+            }
             let workflow_is_runnable =
                 next_prompt.workflow_run_id().is_none_or(|workflow_run_id| {
                     session

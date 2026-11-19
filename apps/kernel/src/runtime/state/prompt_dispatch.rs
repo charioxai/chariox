@@ -727,11 +727,6 @@ impl KernelRuntimeState {
             )
             .await?;
             authorize()?;
-            self.limit_local_run_for_next_turn(
-                &prepared.session_id,
-                prepared.prompt.target_agent_id(),
-            )
-            .await?;
             // A submit that may queue never waits for a person: when the Vault is locked the
             // prompt waits in the queue on the Room's unlock card.
             let vault_use = if allow_queue {
@@ -739,24 +734,48 @@ impl KernelRuntimeState {
             } else {
                 "launch provider run"
             };
-            let refreshed = self
-                .with_external_command_authority(authority)
-                .refresh_project_prompt_provider(
+            let launch_wait = self
+                .owned
+                .prompt_state_owner
+                .provider_launch_wait()
+                .filter(|_| {
+                    !prepared.force_queue
+                        && self
+                            .owned
+                            .agent_store
+                            .get_agent(prepared.prompt.target_agent_id())
+                            .is_ok_and(|agent| agent.remote_execution().is_none())
+                });
+            let awaiting_vault = if launch_wait.is_some() {
+                prepared.prompt.set_launch_wait(launch_wait);
+                false
+            } else {
+                self.limit_local_run_for_next_turn(
                     &prepared.session_id,
                     prepared.prompt.target_agent_id(),
-                    vault_use,
                 )
-                .await;
-            let awaiting_vault = match refreshed {
-                Err(error)
-                    if allow_queue
-                        && super::runtime_vault_unlock_state::is_vault_unlock_card_open(&error) =>
-                {
-                    true
-                }
-                refreshed => {
-                    refreshed?;
-                    false
+                .await?;
+                let refreshed = self
+                    .with_external_command_authority(authority)
+                    .refresh_project_prompt_provider(
+                        &prepared.session_id,
+                        prepared.prompt.target_agent_id(),
+                        vault_use,
+                    )
+                    .await;
+                match refreshed {
+                    Err(error)
+                        if allow_queue
+                            && super::runtime_vault_unlock_state::is_vault_unlock_card_open(
+                                &error,
+                            ) =>
+                    {
+                        true
+                    }
+                    refreshed => {
+                        refreshed?;
+                        false
+                    }
                 }
             };
             authorize()?;

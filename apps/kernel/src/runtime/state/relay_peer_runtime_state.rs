@@ -744,10 +744,14 @@ impl KernelRuntimeState {
             }
             result => result?,
         };
-        let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
+        let replaying_receipt = existing_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt.phase == WorkerPromptReceiptPhase::Accepted);
+        let new_receipt = home_prompt_id.is_some() && !replaying_receipt;
         if let Some(receipt) = existing_receipt.as_ref() {
             match receipt.receipt.phase {
-                WorkerPromptReceiptPhase::Accepted => {}
+                WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::WaitingForMemory => {
+                }
                 WorkerPromptReceiptPhase::Dispatching => {
                     return Err(DaemonError::LocalTransport {
                         operation: "submit remote leased prompt",
@@ -762,6 +766,22 @@ impl KernelRuntimeState {
                             .to_string(),
                     });
                 }
+            }
+        }
+
+        if !replaying_receipt {
+            if let Some(reason) = self.owned.prompt_state_owner.provider_launch_wait() {
+                if let Some(home_prompt_id) = home_prompt_id.clone() {
+                    let leased_agent_id = leased_agent_id.clone();
+                    self.with_app_side_effect(move |app| {
+                        RemoteLeaseRuntime::new(app)
+                            .wait_for_leased_prompt_memory(&leased_agent_id, &home_prompt_id)
+                    })
+                    .await?;
+                }
+                return Err(super::provider_turn_admission::provider_memory_wait_error(
+                    reason,
+                ));
             }
         }
 
@@ -818,7 +838,7 @@ impl KernelRuntimeState {
         if let Some(replayed) = profile_replay {
             return Ok(replayed);
         }
-        if existing_receipt.is_some() {
+        if replaying_receipt {
             return Err(DaemonError::LocalTransport {
                 operation: "submit remote leased prompt",
                 message: "accepted worker receipt cannot replay from current live state"

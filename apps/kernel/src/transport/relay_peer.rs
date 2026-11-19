@@ -234,7 +234,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -777,6 +777,7 @@ pub struct LeasedSudoGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
+    WaitingForMemory,
     Active,
     Completed,
     SteerDispatching,
@@ -2298,6 +2299,10 @@ mod tests {
         );
 
         for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::WaitingForMemory,
+                "waiting_for_memory",
+            ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
                 "steer_dispatching",
