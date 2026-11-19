@@ -213,6 +213,13 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
             kernel_ref: "worker".into(),
         },
     ] {
+        // The machine list names kernels too old for the relay, which Cloud has offline: it is
+        // granted every linked kernel. Kernel queries are granted the online ones only.
+        let granted = if matches!(query, RelayMetadataQuery::ListLiveMachines) {
+            json!(["dormant", "owner", "worker"])
+        } else {
+            json!(["owner", "worker"])
+        };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());
         let issuer = tokio::spawn(async move {
@@ -262,7 +269,7 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
                     }
                     let body: Value =
                         serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
-                    assert_eq!(body["allowedTargets"], json!(["owner", "worker"]));
+                    assert_eq!(body["allowedTargets"], granted);
                     assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
                     assert_eq!(body["kernelCredential"], "synthetic-kernel-credential");
                     assert_eq!(body["publicKeyThumbprint"], "synthetic-kernel-key");

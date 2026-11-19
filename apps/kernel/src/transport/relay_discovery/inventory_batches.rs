@@ -13,11 +13,12 @@ pub(super) async fn query(
         .cloud_relay
         .as_ref()
         .ok_or_else(|| invalid("Cloud profile missing"))?;
-    let targets: Vec<_> = authorization::visible_targets(profile)
-        .await?
-        .ok_or_else(|| invalid("kernel inventory missing"))?
-        .into_iter()
-        .collect();
+    let targets: Vec<_> =
+        authorization::granted_targets(profile, authorization::GrantedKernels::for_query(&query))
+            .await?
+            .ok_or_else(|| invalid("kernel inventory missing"))?
+            .into_iter()
+            .collect();
     let mut combined = None;
     for targets in targets.chunks(64) {
         let token = authorization::cloud_metadata_token_for_targets(

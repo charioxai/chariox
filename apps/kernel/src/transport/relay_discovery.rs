@@ -657,7 +657,12 @@ async fn query_relay_once_body(
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
-    let discovery_config = metadata_discovery_config(config).await?;
+    let discovery_config =
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config_granting(
+            config,
+            authorization::GrantedKernels::for_query(&query),
+        )
+        .await?;
     if discovery_config.cloud_relay.is_some() {
         return inventory_batches::query(&discovery_config, main, query).await;
     }
