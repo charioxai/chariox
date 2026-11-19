@@ -113,11 +113,16 @@ impl KernelRuntimeOwnedState {
             TurnOutcome::completed()
         } else {
             // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
-            failure
+            let mut outcome = failure
                 .cloned()
                 .or_else(|| self.recorded_turn_outcome(task))
                 .filter(|outcome| outcome.kind != crate::provider::TurnOutcomeKind::Completed)
-                .unwrap_or_else(TurnOutcome::cancelled)
+                .unwrap_or_else(TurnOutcome::cancelled);
+            // The parent reads why it ended: an outcome with no words of its own says the task's.
+            if outcome.reason.is_empty() {
+                outcome.reason.clone_from(&task.reason);
+            }
+            outcome
         }
     }
 
