@@ -6199,7 +6199,7 @@ grants"); their occurrences arrive as `notification` events, and `ListNotificati
 `UnsubscribeEvents { targets, sources, all }`, `GetEventSubscription`, `ListEvents
 { since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
-or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+or an empty timed-out batch, with a maximum wait of nine minutes (540 s): a longer `timeout_ms` is refused at once with `events_refused`, and the CLI refuses a longer `--timeout` before sending it. Batches are
 oldest first, limited to 1,000 records and the existing relay envelope budget.
 Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
 `EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
@@ -8409,3 +8409,17 @@ qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headles
 an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
 resolves to none is refused with the models to use. `provider-catalog-aliases-1012.json` and its SHA-256
 test pin the shape.
+
+### What a grant follows, and taking over an earlier grant's targets — local 1012
+
+A grant that has not subscribed follows nothing, and says so: `GetKernelAccessStatus` answers `follows`
+(the count of targets and notification sources its event subscription follows, zero for a new grant,
+absent without a grant), and `GetEventSubscription` answers an empty subscription instead of a refusal.
+`WaitEvents` and `ListEvents` on a subscription that follows nothing and holds nothing unread are refused at
+once with `events_refused` and the commands that fix it, rather than running out the timeout or answering
+empty for ever; unread records are still read, and an ended subscription still answers with its ending. `SubscribeEvents { like: <grant id> }`, sent without `targets` or `sources`,
+follows the targets an earlier live grant of the same owner follows. The follows are added to the grant's
+own (a retry changes nothing); the earlier grant keeps its own, and ending it does not touch the new one.
+An id that is unknown, ended, another owner's, the caller's own, or a grant that follows no targets is
+refused with `events_refused` naming what to run instead. `event-follow-1012.json` and its SHA-256 test pin
+the shapes.

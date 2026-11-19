@@ -610,6 +610,7 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
             holder_executable: "/usr/bin/codex".into(),
             holder_harness: Some(crate::local::KernelAccessProviderHarness::Codex),
             grant: None,
+            follows: None,
             reason: Some(KernelAccessStatusReason {
                 code: "access_refused".into(),
                 message: "the user refused access".into(),

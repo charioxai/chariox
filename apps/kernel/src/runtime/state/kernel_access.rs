@@ -785,12 +785,19 @@ impl KernelRuntimeState {
                     .find(|(known, _)| known == &holder)
                     .map(|(_, reason)| reason.clone())
             });
+        // The follow count reads the grant again under this lock: let go of it first.
+        drop(state);
         let (state, reason) = match (grant.is_some(), pending, ended) {
             (true, _, _) => (KernelAccessHolderState::Granted, None),
             (false, true, _) => (KernelAccessHolderState::Pending, None),
             (false, false, Some(reason)) => (KernelAccessHolderState::Ended, Some(reason)),
             (false, false, None) => (KernelAccessHolderState::NotRequested, None),
         };
+        let follows = grant
+            .as_ref()
+            .map(|grant| self.outside_follow_count(&grant.grant_id))
+            .transpose()?
+            .map(|count| count as u32);
         Ok(KernelAccessStatus {
             state,
             holder_pid: holder.pid,
@@ -798,6 +805,7 @@ impl KernelRuntimeState {
                 .provider_harness,
             holder_executable: holder.executable,
             grant,
+            follows,
             reason,
         })
     }

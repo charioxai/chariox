@@ -698,6 +698,8 @@ mod outside_agent_listing_tests;
 #[cfg(test)]
 mod outside_agent_tests;
 #[cfg(test)]
+mod outside_follow_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};

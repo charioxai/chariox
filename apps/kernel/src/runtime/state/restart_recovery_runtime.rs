@@ -3409,6 +3409,7 @@ mod tests {
                             agent_id: Some(agent_id.clone()),
                         }],
                         sources: Vec::new(),
+                        like: None,
                     },
                 ),
             )

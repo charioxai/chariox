@@ -160,6 +160,7 @@ mod async_questions;
 mod provider_login;
 mod session_activity;
 
+mod event_follow;
 mod owner_vault;
 mod person_inbox;
 mod totp;

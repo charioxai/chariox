@@ -13,11 +13,16 @@ pub struct EventTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribeEventsRequest {
+    #[serde(default)]
     pub targets: Vec<EventTarget>,
     /// Notification sources of this kernel (workflow exits and owner actions) by id. Their
     /// occurrences reach the grant's own event stream; nothing else can receive them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
+    /// Protocol 1012: take over the targets an earlier live grant of the same owner follows.
+    /// Sent alone, with no `targets` or `sources`; following them again changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

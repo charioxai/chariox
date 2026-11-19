@@ -691,6 +691,8 @@ export type KernelAccessStatus = {
   holder_executable: string
   holder_harness?: "codex" | "claude" | "opencode"
   grant?: KernelAccessGrant
+  /** Protocol 1012: how many targets and sources the granted holder's event subscription follows; absent without a grant. */
+  follows?: number
   reason?: { code: string; message: string }
 }
 export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelAccessStatus } }

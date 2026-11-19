@@ -608,4 +608,6 @@ pub use workspace::*;
 /// execution place; the per-agent skill grants and the `skill` extension kind are gone; an agent's active turn has
 /// the phase `thinking` while the model reasons without visible output (`awaiting_first_output` is the provider still
 /// reading the context).
+/// An event subscription's `like` copies the follows of an earlier live grant of the same owner.
+/// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

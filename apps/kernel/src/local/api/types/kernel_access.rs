@@ -241,6 +241,10 @@ pub struct KernelAccessStatus {
     pub holder_harness: Option<KernelAccessProviderHarness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<KernelAccessGrant>,
+    /// Protocol 1012: the targets and notification sources the granted holder's event
+    /// subscription follows. Zero is a grant that follows nothing; absent without a grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follows: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<KernelAccessStatusReason>,
 }
