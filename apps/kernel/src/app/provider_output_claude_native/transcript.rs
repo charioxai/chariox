@@ -25,18 +25,41 @@ pub(super) struct ClaudeTranscriptCursor {
     /// outlive the turn that started them.
     #[serde(default)]
     background_calls: BTreeMap<String, ClaudeBackgroundCall>,
-    /// The nth compaction Claude started (PreCompact) and the nth summary it wrote are one row.
+    // The hook and transcript can be read in either order. Both outcomes
+    // consume an ordinal, so a later summary never replaces a failed row.
     #[serde(default)]
     compaction_starts: u64,
     #[serde(default)]
-    compaction_summaries: u64,
+    compaction_outcomes: u64,
+    #[serde(default)]
+    pending_compactions: BTreeMap<u64, Option<String>>,
 }
 
 impl ClaudeTranscriptCursor {
-    /// The row a PreCompact hook opens.
-    pub(super) fn start_compaction(&mut self) -> u64 {
+    pub(super) fn start_compaction(&mut self, prompt_id: Option<&str>) -> Option<u64> {
+        let number = self.compaction_starts;
         self.compaction_starts += 1;
-        self.compaction_starts - 1
+        if number < self.compaction_outcomes {
+            return None;
+        }
+        self.pending_compactions
+            .insert(number, prompt_id.map(str::to_owned));
+        Some(number)
+    }
+
+    pub(super) fn fail_compaction(&mut self, prompt_id: Option<&str>) -> Option<u64> {
+        let pending_prompt = self.pending_compactions.get(&self.compaction_outcomes)?;
+        if pending_prompt.as_deref() != prompt_id {
+            return None;
+        }
+        Some(self.finish_compaction())
+    }
+
+    fn finish_compaction(&mut self) -> u64 {
+        let number = self.compaction_outcomes;
+        self.compaction_outcomes += 1;
+        self.pending_compactions.remove(&number);
+        number
     }
 }
 
@@ -340,10 +363,10 @@ fn claude_transcript_chunks(
     if let Some(ClaudeCompaction::Summary { summary, .. }) =
         crate::provider::claude_compaction(value)
     {
-        cursor.compaction_summaries += 1;
+        let number = cursor.finish_compaction();
         return vec![ClaudeTranscriptChunk {
             kind: TerminalOutputKind::ContextCompacted,
-            merge_key_suffix: compaction_merge_key_suffix(cursor.compaction_summaries - 1),
+            merge_key_suffix: compaction_merge_key_suffix(number),
             text: ContextCompaction::Done { summary }.to_text(),
         }];
     }
