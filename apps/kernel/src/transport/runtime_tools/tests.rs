@@ -946,3 +946,13 @@ fn vflag_popup_tool_tells_agents_to_use_wait_false_for_human_steps() {
     assert!(spec.description.contains("use wait:false and yield"));
     assert!(spec.description.contains("about 5 minutes"));
 }
+
+#[test]
+fn popup_tool_tells_agents_a_reply_line_wakes_nobody() {
+    let spec = credential_runtime_tool_specs()
+        .into_iter()
+        .find(|spec| spec.name == REQUEST_POPUP_TOOL)
+        .expect("popup tool is advertised");
+    assert!(spec.description.contains("`FOR <name>:` in your reply wakes nobody"));
+    assert!(spec.input_schema["properties"]["idempotency_key"].is_object());
+}
