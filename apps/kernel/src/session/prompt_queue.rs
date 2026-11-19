@@ -259,6 +259,9 @@ pub(crate) struct QueuedNotification {
     pub(crate) title: String,
     pub(crate) source: String,
     pub(crate) sequence: u64,
+    /// The notification operation whose receipt this prompt delivers; the prompt-state
+    /// commit that carries the occurrence binds that receipt in the same transaction.
+    pub(crate) operation_id: String,
 }
 
 fn is_zero_u32(value: &u32) -> bool {

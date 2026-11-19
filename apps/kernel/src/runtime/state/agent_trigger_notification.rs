@@ -681,8 +681,22 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
-        let notification =
-            self.record_notification_occurrence(session_id, agent_id, &hold, &payload)?;
+        let operation_id =
+            crate::durable_state::workflow_notifications::agent_lineage::operation_id(
+                trigger_id, &payload,
+            )?;
+        let notification = self.record_notification_occurrence(
+            session_id,
+            agent_id,
+            &hold,
+            &payload,
+            &operation_id,
+        )?;
+        // The receipt names its operation first: whichever prompt-state commit carries the
+        // occurrence, its own prompt or the one it joins, binds the receipt in that commit.
+        self.owned
+            .durable_state_store
+            .reserve_agent_notification_lineage(receipt_id, &operation_id)?;
         // Several occurrences behind a busy agent cost one turn: this one joins the
         // trigger's prompt that already waits. The caller settles its receipt with that
         // prompt, so the occurrence keeps its own inbox row and acknowledgement.
@@ -704,14 +718,6 @@ impl KernelRuntimeState {
                 .persist_agent_trigger_session(session_id, "agent_trigger_joined")?;
             return Ok(Some(prompt_id));
         }
-        self.owned
-            .durable_state_store
-            .reserve_agent_notification_lineage(
-                receipt_id,
-                &crate::durable_state::workflow_notifications::agent_lineage::operation_id(
-                    trigger_id, &payload,
-                )?,
-            )?;
         let Some(mut dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             session_id,
             trigger_id,
@@ -781,6 +787,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         hold: &NotificationHold<'_>,
         payload: &serde_json::Value,
+        operation_id: &str,
     ) -> Result<crate::session::QueuedNotification, DaemonError> {
         let mut event = crate::durable_state::agent_lifecycle::occurrence(
             session_id,
@@ -802,6 +809,7 @@ impl KernelRuntimeState {
             title: hold.title.clone(),
             source: hold.source.clone(),
             sequence: event.sequence,
+            operation_id: operation_id.to_string(),
         })
     }
 
