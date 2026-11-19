@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn a_room_can_create_more_than_1024_idle_agents() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-large-room");
+    let harness = LocalRouterTestHarness::new();
+    let LocalDaemonResponse::SessionCreated { session, .. } = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("expected a new Room");
+    };
+    let agents = (0..1025)
+        .map(|index| serde_json::json!({"alias": format!("idle-{index}"), "provider": "dev-stub"}))
+        .collect::<Vec<_>>();
+    let request = serde_json::from_value(serde_json::json!({"SpawnAgents": {
+        "session_id": session.id(), "agents": agents, "no_subscribe": true
+    }}))
+    .unwrap();
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = harness.dispatch(request).unwrap()
+    else {
+        panic!("expected idle Room agents");
+    };
+    assert_eq!(agents.len(), 1025);
+}
+
+#[test]
 fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
     let worktree = crate::test_support::TestWorktree::new("session-control-project-lifecycle");
     let harness = LocalRouterTestHarness::new();

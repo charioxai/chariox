@@ -251,7 +251,6 @@ function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): Ru
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 1,
     agents: [agent("agent-1")],
     config_state: {
       version: 1,

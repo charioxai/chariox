@@ -71,7 +71,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 6,
     agents: [],
     workflows: [],
     workflow_runs: [],

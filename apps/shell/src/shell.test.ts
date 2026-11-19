@@ -224,7 +224,6 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 6,
     agents: [makeAgent()],
     config_state: { version: 0, values: {} },
     ...overrides,

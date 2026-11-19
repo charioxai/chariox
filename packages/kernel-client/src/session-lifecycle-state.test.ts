@@ -49,7 +49,6 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [makeAgent("agent-a")],
     config_state: { version: 1, values: {} },
     workflows: [],

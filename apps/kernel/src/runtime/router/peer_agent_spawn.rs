@@ -166,9 +166,6 @@ impl CommandRouter {
                     "peer spawn answered without an agent",
                 ));
             }
-            Err(DaemonError::AgentLimitReached { .. }) => {
-                return Ok(refused(PeerAgentRefusal::RoomFull));
-            }
             Err(error) => return Err(error),
         };
         let mut answer = RelayPeerResponse::RoomPeerSpawned {

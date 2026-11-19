@@ -242,7 +242,7 @@ async function main() {
     note(cell === "ft02" ? "deaf-listener" : "slow-proxy", { port: deaf.address().port, claude_bin: claudeBin, hold_ms: cell === "ft03" ? holdMs : null })
   }
   for (const sub of ["chariox", "home", "tmp", "logs", "history", "config", "cache", "state"]) mkdirSync(join(root, sub), { recursive: true, mode: 0o700 })
-  writeFileSync(join(root, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[workflow]\nsession_default_max_agents = ${agents + ballast + 4}\n[state]\npath = "${root}/chariox/state.db"\n`, { mode: 0o600 })
+  writeFileSync(join(root, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[state]\npath = "${root}/chariox/state.db"\n`, { mode: 0o600 })
   const kernelEnv = { ...env, HOME: join(root, "home"), TMPDIR: join(root, "tmp"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state"),
     CHARIOX_HOME: join(root, "chariox"), CHARIOX_LOG_DIR: join(root, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(root, "history"),
     CHARIOX_DAEMON_SOCKET: join(socketRoot, "kernel.sock"), CHARIOX_DAEMON_ALIAS: `ft-${cell}`, CHARIOX_MACHINE_ALIAS: `ft-${cell}-machine`,

@@ -68,7 +68,6 @@ pub use super::workflow_turns::{
 };
 pub use super::workspace_links::{WorkspaceLinkAttachment, WorkspaceLinkDefinition};
 
-pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 1024;
 pub const DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT: u32 = 32;
 pub const DEFAULT_WORKFLOW_CODE_MAX_NODES: u32 = 1024;
 pub const DEFAULT_WORKFLOW_CODE_MAX_AGENTS: u32 = 1024;

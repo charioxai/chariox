@@ -175,82 +175,51 @@ async fn raised() {
 }
 
 #[test]
-fn a_parent_spawns_more_than_sixteen_sub_agents_through_the_spawn_command() {
-    run_large_stack_async_test("authority-wide-fan-out", wide_fan_out);
+fn an_agent_can_spawn_eighty_idle_helpers() {
+    run_large_stack_async_test("authority-wide-team", wide_team);
 }
 
-async fn wide_fan_out() {
-    let mut world = world("authority-wide-fan-out").await;
+async fn wide_team() {
+    let mut world = world("authority-wide-team").await;
     let s = world.ids["s"].clone();
     let token = launch(&world.app, &world.room, &s).await;
     world.tokens.insert("s", token);
-    for index in 0..24 {
+    for index in 0..80 {
         let spawned = room_command(
             &world,
             "s",
             &format!("agent spawn wide-{index} --provider dev-stub"),
         )
         .await;
-        assert!(spawned.ok, "sub-agent {index} must start: {spawned:?}");
+        assert!(spawned.ok, "helper {index} must be created: {spawned:?}");
     }
 }
 
 #[test]
-fn the_caps_are_depth_four_and_sixty_four_per_team() {
-    run_large_stack_async_test("authority-caps", caps);
+fn an_agent_can_spawn_helpers_six_levels_deep() {
+    run_large_stack_async_test("authority-deep-team", deep_team);
 }
 
-async fn spawn_under(world: &World, parent: &str, alias: &str) -> String {
-    let mut app = world.app.lock().await;
-    crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(&world.room, "dev-stub")
-                .with_alias(alias)
-                .with_parent_agent_id(parent),
+async fn deep_team() {
+    let mut world = world("authority-deep-team").await;
+    let mut parent_id = world.ids["d"].clone(); // Already two levels below the room agent.
+    for depth in 3..=6 {
+        let token = launch(&world.app, &world.room, &parent_id).await;
+        world.tokens.insert("parent", token);
+        let spawned = room_command(
+            &world,
+            "parent",
+            &format!("agent spawn depth-{depth} --provider dev-stub"),
         )
-        .unwrap()
-        .id()
-        .to_owned()
-}
-
-async fn caps() {
-    let mut world = world("authority-caps").await;
-    // Depth: a -> b -> d is two levels; two more are allowed, the fifth is not.
-    let d = world.ids["d"].clone();
-    launch(&world.app, &world.room, &d).await;
-    let e = spawn_under(&world, &d, "depth3").await;
-    let token_e = launch(&world.app, &world.room, &e).await;
-    let f = spawn_under(&world, &e, "depth4").await;
-    let token = launch(&world.app, &world.room, &f).await;
-    world.tokens.insert("f", token);
-    let too_deep = room_command(&world, "f", "agent spawn depth5 --provider dev-stub").await;
-    assert!(
-        !too_deep.ok && error_text(&too_deep).contains("levels below"),
-        "{too_deep:?}"
-    );
-    // Per team: fill below a up to sixty-four, then one more is refused.
-    let mut index = 0;
-    while team_size(&world).await < 64 {
-        spawn_under(&world, &e, &format!("e-fill-{index}")).await;
-        index += 1;
+        .await;
+        assert!(
+            spawned.ok,
+            "helper at depth {depth} must be created: {spawned:?}"
+        );
+        let child = &spawned.payload["response"]["agent"];
+        assert_eq!(child["parent_agent_id"], parent_id);
+        parent_id = child["id"].as_str().unwrap().to_owned();
     }
-    assert_eq!(team_size(&world).await, 64);
-    world.tokens.insert("e", token_e);
-    let over = room_command(&world, "e", "agent spawn over --provider dev-stub").await;
-    assert!(
-        !over.ok && error_text(&over).contains("at most 64"),
-        "{over:?}"
-    );
-}
-
-async fn team_size(world: &World) -> usize {
-    let agents = world
-        .app
-        .lock()
-        .await
-        .agents()
-        .get_session_agents(&world.room);
-    crate::agent::authority_limit::descendants(&world.ids["a"], &agents).len()
 }
 
 #[test]

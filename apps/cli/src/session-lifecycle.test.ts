@@ -180,7 +180,6 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -284,7 +283,6 @@ test("attachBinding patches the waiting-room session row without listing every s
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -346,7 +344,6 @@ test("attachBinding launches a provider run with provider and effort in the corr
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-focus",
-    max_agents: 6,
     agents: [{
       id: "agent-focus",
       agent_ref: "agent-focus",
@@ -455,7 +452,6 @@ test("attachBinding recovers when its launch target moves remote", async () => {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-moving",
-    max_agents: 6,
     agents: [{
       id: "agent-moving",
       agent_ref: "agent-moving",
@@ -542,7 +538,6 @@ test("attachBinding does not mask unrelated provider launch failures", async () 
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-local",
-    max_agents: 6,
     agents: [{
       id: "agent-local",
       agent_ref: "agent-local",
@@ -593,7 +588,6 @@ test("attachBinding preserves the actionable vault warning after session hydrati
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-vault-locked",
-    max_agents: 6,
     agents: [{
       id: "agent-vault-locked",
       agent_ref: "agent-vault-locked",
@@ -653,7 +647,6 @@ test("attachBinding skips provider launch when existing session exposes no visib
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 6,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -719,7 +712,6 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "missing-agent",
-    max_agents: 6,
     agents: [{
       id: "agent-a",
       agent_ref: "agent-a",
@@ -788,7 +780,6 @@ test("attachBinding restores the focused agent runtime profile for existing sess
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-focus",
-    max_agents: 6,
     agents: [{
       id: "agent-focus",
       agent_ref: "agent-focus",
@@ -896,7 +887,6 @@ test("attachBinding syncs CLI provider selection from an existing active provide
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-focus",
-    max_agents: 6,
     agents: [{
       id: "agent-focus",
       agent_ref: "agent-focus",
@@ -996,7 +986,6 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -1072,7 +1061,6 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -1160,7 +1148,6 @@ test("attachBinding adopts the attached session response layout immediately", as
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 6,
     agents: [],
     config_state: {
       version: 1,

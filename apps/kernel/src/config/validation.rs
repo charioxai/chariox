@@ -152,17 +152,6 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
-        if self
-            .user_config
-            .workflow
-            .session_default_max_agents
-            .is_some_and(|value| value == 0)
-        {
-            return Err(DaemonError::InvalidConfig {
-                field: "workflow.session_default_max_agents",
-                message: "value must not be zero",
-            });
-        }
         validate_workflow_code_limits(&self.user_config.workflow)?;
         validate_non_empty("relay_public_key", &self.relay_public_key)?;
         validate_non_empty("relay_private_key", &self.relay_private_key)?;

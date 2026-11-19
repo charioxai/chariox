@@ -1154,7 +1154,7 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
             .authorize_sudo_request(
                 &turn.entry_id,
                 &LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-                    path: "workflow.session_default_max_agents".into(),
+                    path: "workflow.max_queues_per_workflow".into(),
                     value: "16".into()
                 })
             )

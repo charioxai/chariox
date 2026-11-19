@@ -195,7 +195,6 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 8,
     agents: [{
       id: "agent-a",
       agent_ref: "agent-a",
@@ -328,7 +327,6 @@ test("bootstrapSession seeds newly created sessions from the requested provider 
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 8,
     agents: [],
     config_state: { version: 1, values: {} },
   }
@@ -413,7 +411,6 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 8,
     agents: [{
       id: "agent-a",
       agent_ref: "agent-a",
@@ -522,7 +519,6 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "missing-agent",
-    max_agents: 8,
     agents: [{
       id: "agent-a",
       agent_ref: "agent-a",
@@ -615,7 +611,6 @@ test("bootstrapSession recovers when the launch target moves remote during attac
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: agent.id,
-    max_agents: 8,
     agents: [agent],
     config_state: { version: 1, values: {} },
   }
@@ -841,7 +836,7 @@ test("bootstrapSession renders while the kernel holds the attach-time launch on 
   const agent = { id: "agent-a", agent_ref: "agent-a", session_id: "session-1", alias: null, provider: "claude-p", model: "claude-haiku-5-5", effort: "low",
     worktree_id: null, state: "Idle" as const, is_processing: false, grid_row: 0, grid_col: 0, grid_row_span: 1, grid_col_span: 1, created_at_ms: 1, last_activity_at_ms: 1 }
   const session = { id: "session-1", project_id: "project-default", workspace_id: "/workspace", worktree_id: "/workspace", created_at_ms: 1, status: "Active",
-    active_provider_run_id: null, attachment_ids: [], active_prompt: null, queued_prompts: [], focused_agent_id: "agent-a", max_agents: 8, agents: [agent],
+    active_provider_run_id: null, attachment_ids: [], active_prompt: null, queued_prompts: [], focused_agent_id: "agent-a", agents: [agent],
     config_state: { version: 1, values: {} } }
   const run = { id: "run-1", session_id: "session-1", agent_instance_id: "agent-a", adapter_key: "claude-p", provider: "claude-p", account_profile: "default",
     model: "claude-haiku-5-5", variant: "low", usage_tokens_total: null, state: "Running" }

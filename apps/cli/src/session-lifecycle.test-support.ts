@@ -47,7 +47,6 @@ const detachedState: DetachedCliTransitionState = {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 6,
     agents: [],
     config_state: { version: 0, values: {} },
   },

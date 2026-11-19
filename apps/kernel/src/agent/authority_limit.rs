@@ -2,14 +2,12 @@
 //! and folders are checked where the child is created, against the parent's current settings.
 //! Tools, secrets, Apps and the account profile are not limited.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::{AgentInstance, CreateAgentRequest};
 use crate::error::DaemonError;
 use crate::session::{EffectiveAgentExecutionConfig, RuntimeSession};
-
-pub(crate) const MAX_DEPTH: usize = 4;
-pub(crate) const MAX_AGENTS_PER_TREE: usize = 64;
 
 fn refused(message: String) -> DaemonError {
     DaemonError::LocalTransport {
@@ -18,44 +16,19 @@ fn refused(message: String) -> DaemonError {
     }
 }
 
-/// The agents above `agent`, nearest first. Bounded, so a corrupt cycle cannot loop.
+/// The agents above `agent`, nearest first. A repeated agent ends the walk.
 pub(crate) fn ancestors<'a>(
     agent: &'a AgentInstance,
     agents: &'a [AgentInstance],
 ) -> Vec<&'a AgentInstance> {
-    let mut found = Vec::new();
-    let mut current = agent;
-    for _ in 0..=MAX_DEPTH * 4 {
-        let Some(parent) = current
-            .parent_agent_id()
-            .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
-        else {
-            break;
-        };
-        found.push(parent);
-        current = parent;
-    }
-    found
+    parent_chain(agent, agents).0
 }
 
-/// The agents below `agent_id`, at any depth.
-pub(crate) fn descendants<'a>(
-    agent_id: &str,
-    agents: &'a [AgentInstance],
-) -> Vec<&'a AgentInstance> {
-    agents
-        .iter()
-        .filter(|agent| ancestors(agent, agents).iter().any(|a| a.id() == agent_id))
-        .collect()
-}
-
-/// The agents above `agent` up to its root, nearest first, or `None` when the walk meets an
-/// agent twice (a cycle). Unbounded by depth, so a long chain is never taken for a root.
-fn chain_above<'a>(
+fn parent_chain<'a>(
     agent: &'a AgentInstance,
     agents: &'a [AgentInstance],
-) -> Option<Vec<&'a AgentInstance>> {
-    let mut seen = std::collections::HashSet::from([agent.id()]);
+) -> (Vec<&'a AgentInstance>, bool) {
+    let mut seen = HashSet::from([agent.id()]);
     let mut found = Vec::new();
     let mut current = agent;
     while let Some(parent) = current
@@ -63,78 +36,59 @@ fn chain_above<'a>(
         .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
     {
         if !seen.insert(parent.id()) {
-            return None;
+            return (found, true);
         }
         found.push(parent);
         current = parent;
     }
-    Some(found)
+    (found, false)
 }
 
-/// Refuses placing `agent` (with its subtree) under `parent` when that closes a cycle or the
-/// moved subtree would exceed the depth or team size a spawn is held to.
+/// The agents below `agent_id`, at any depth, in their original order.
+pub(crate) fn descendants<'a>(
+    agent_id: &str,
+    agents: &'a [AgentInstance],
+) -> Vec<&'a AgentInstance> {
+    let mut children = HashMap::<&str, Vec<&str>>::new();
+    for agent in agents {
+        if let Some(parent) = agent.parent_agent_id() {
+            children.entry(parent).or_default().push(agent.id());
+        }
+    }
+    let mut seen = HashSet::from([agent_id]);
+    let mut pending = vec![agent_id];
+    while let Some(parent) = pending.pop() {
+        if let Some(children) = children.get(parent) {
+            pending.extend(children.iter().copied().filter(|child| seen.insert(*child)));
+        }
+    }
+    agents
+        .iter()
+        .filter(|agent| agent.id() != agent_id && seen.contains(agent.id()))
+        .collect()
+}
+
+/// Placing an agent under a parent must keep the tree acyclic.
 pub(crate) fn check_placement(
     agent: &AgentInstance,
     parent: &AgentInstance,
     agents: &[AgentInstance],
 ) -> Result<(), String> {
-    let above = chain_above(parent, agents)
-        .ok_or("the agent tree has a cycle; place the agents as room agents first")?;
+    let (above, cyclic) = parent_chain(parent, agents);
+    if cyclic {
+        return Err("the agent tree has a cycle; place the agents as room agents first".into());
+    }
     if parent.id() == agent.id() || above.iter().any(|a| a.id() == agent.id()) {
         return Err(
             "an agent cannot be placed under itself or under one of its descendants".into(),
         );
     }
-    let subtree = descendants(agent.id(), agents)
-        .into_iter()
-        .filter(|a| !a.archived())
-        .collect::<Vec<_>>();
-    let height = subtree
-        .iter()
-        .map(|a| {
-            chain_above(a, agents)
-                .unwrap_or_default()
-                .iter()
-                .position(|b| b.id() == agent.id())
-                .map_or(0, |at| at + 1)
-        })
-        .max()
-        .unwrap_or(0);
-    if above.len() + 1 + height > MAX_DEPTH {
-        return Err(format!(
-            "sub-agents are limited to {MAX_DEPTH} levels below a room agent; place this agent higher or move part of its team first"
-        ));
-    }
-    let root = above.last().copied().unwrap_or(parent);
-    let moved = std::iter::once(agent.id())
-        .chain(subtree.iter().map(|a| a.id()))
-        .collect::<std::collections::HashSet<_>>();
-    let team = agents
-        .iter()
-        .filter(|a| {
-            !a.archived()
-                && !moved.contains(a.id())
-                && chain_above(a, agents)
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|b| b.id() == root.id())
-        })
-        .count();
-    if team + moved.len() > MAX_AGENTS_PER_TREE {
-        return Err(format!(
-            "a team can have at most {MAX_AGENTS_PER_TREE} sub-agents below its room agent; place this agent under another room agent"
-        ));
-    }
     Ok(())
 }
 
-/// Refuses a child above its parent's current level or mode, or beyond the depth and team caps.
-/// `agents` includes the parent's team across Rooms.
+/// Refuses a child above its parent's current permission level or mode.
 pub(crate) fn check_spawn(
     request: &CreateAgentRequest,
-    parent: &AgentInstance,
-    agents: &[AgentInstance],
-    earlier_in_batch: &[CreateAgentRequest],
     limit: EffectiveAgentExecutionConfig,
 ) -> Result<(), DaemonError> {
     let level_ok = request
@@ -147,28 +101,6 @@ pub(crate) fn check_spawn(
         return Err(refused(format!(
             "a sub-agent cannot have more authority than its parent: the parent runs {:?} in {} mode; spawn with a permission and mode at or below it",
             limit.permission_level, limit.mode
-        )));
-    }
-    let above_parent = ancestors(parent, agents);
-    if above_parent.len() + 1 > MAX_DEPTH {
-        return Err(refused(format!(
-            "sub-agents are limited to {MAX_DEPTH} levels below a room agent; do the work in this agent or ask its parent"
-        )));
-    }
-    let root = above_parent.last().copied().unwrap_or(parent);
-    let tree = agents
-        .iter()
-        .filter(|agent| {
-            !agent.archived() && ancestors(agent, agents).iter().any(|a| a.id() == root.id())
-        })
-        .count()
-        + earlier_in_batch
-            .iter()
-            .filter(|earlier| earlier.parent_agent_id.is_some())
-            .count();
-    if tree >= MAX_AGENTS_PER_TREE {
-        return Err(refused(format!(
-            "a team can have at most {MAX_AGENTS_PER_TREE} sub-agents below its room agent; delete the ones that are done"
         )));
     }
     Ok(())

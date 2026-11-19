@@ -79,7 +79,6 @@ export type RuntimeSession = {
   agent_triggers?: AgentTrigger[]
   trigger_deliveries?: TriggerDelivery[]
   focused_agent_id: string | null
-  max_agents: number
   agents: AgentInstance[]
   collaboration_agent_counts?: SessionCollaborationAgentCounts | null
   config_state: SessionConfigState

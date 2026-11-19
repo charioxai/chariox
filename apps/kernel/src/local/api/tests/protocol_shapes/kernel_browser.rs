@@ -765,7 +765,7 @@ fn mp08_mp10_browser_favicon_cache_1012_shape_and_hash() {
     let bytes = include_bytes!("browser-favicon-cache-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "87c221c6a1fdc3350f4d3594a40e9abd407c6314cb18b7cbd2e6f5e73b33ff90"
+        "dfa4f3bc03b7d6c8e0af409268a45cdcd1d76fd2e0ed641bb4cc7fd755d178c9"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();

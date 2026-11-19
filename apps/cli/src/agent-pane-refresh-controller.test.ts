@@ -306,7 +306,6 @@ function session(focusedAgentId: string, overrides: Partial<RuntimeSession> = {}
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: focusedAgentId,
-    max_agents: 2,
     agents: [agent("a"), agent("b")],
     config_state: { values: {} } as RuntimeSession["config_state"],
     ...overrides,

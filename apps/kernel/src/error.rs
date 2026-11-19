@@ -554,8 +554,6 @@ pub enum DaemonError {
     },
     #[error("agent alias `{alias}` is already in use for session `{session_id}`")]
     AgentAliasConflict { session_id: String, alias: String },
-    #[error("session `{session_id}` has reached the maximum of {max_agents} agents")]
-    AgentLimitReached { session_id: String, max_agents: i32 },
 }
 
 impl DaemonError {

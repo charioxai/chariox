@@ -632,7 +632,6 @@ function runtimeSession(
       } }
       : {}),
     focused_agent_id: null,
-    max_agents: 1,
     agents: [],
     config_state: {
       version: 1,

@@ -1160,7 +1160,7 @@ async fn config_effect_after_app_lock_wait(expired: bool) {
     let f = fixture_with_options(None, true);
     let window = running(&f);
     let request = LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-        path: "workflow.session_default_max_agents".into(),
+        path: "workflow.max_queues_per_workflow".into(),
         value: "16".into(),
     });
     f.state
@@ -1173,10 +1173,10 @@ async fn config_effect_after_app_lock_wait(expired: bool) {
     admitted.observe_app_lock_wait_for_test(probe.clone());
     admitted.authorize_current_external_command().unwrap();
     let app = f.app.lock().await;
-    let before = app.config().user_config.workflow.session_default_max_agents;
+    let before = app.config().user_config.workflow.max_queues_per_workflow;
     let task = tokio::spawn(async move {
         admitted
-            .set_user_config_value("workflow.session_default_max_agents".into(), "16".into())
+            .set_user_config_value("workflow.max_queues_per_workflow".into(), "16".into())
             .await
     });
     tokio::time::timeout(Duration::from_secs(3), probe.notified())
@@ -1212,7 +1212,7 @@ async fn config_effect_after_app_lock_wait(expired: bool) {
             .config()
             .user_config
             .workflow
-            .session_default_max_agents,
+            .max_queues_per_workflow,
         before
     );
     f.state

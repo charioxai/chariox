@@ -224,7 +224,6 @@ function automationSession(overrides: Partial<RuntimeSession> = {}): RuntimeSess
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 6,
     agents: [automationAgent()],
     workflows: [],
     workflow_runs: [],

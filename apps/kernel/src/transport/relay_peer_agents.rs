@@ -83,7 +83,6 @@ pub enum PeerAgentRefusal {
         permission_level: AgentPermissionLevel,
     },
     SubAgentCaller,
-    RoomFull,
     AttachmentsLocalOnly,
     AgentDeadlineReached {
         message: String,
