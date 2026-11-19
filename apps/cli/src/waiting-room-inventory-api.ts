@@ -65,7 +65,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getMachine
   const [slices, machineAllocationCapability, accountCopy] = await Promise.all([
     listSlices(client).catch(() => []),
     getMachineCapability?.(),
-    payload.relay_status.connected && payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
+    payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
       ? listProviderAccountCopyOffers(client).then(offers => ({ offers, unavailable: false }), () => ({ offers: [], unavailable: true }))
       : Promise.resolve({ offers: [], unavailable: false }),
   ])

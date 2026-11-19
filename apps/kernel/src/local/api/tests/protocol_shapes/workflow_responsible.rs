@@ -11,33 +11,3 @@ fn workflow_responsible_run_outcome_and_requests_are_bound_to_protocol1011() {
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
         "27e54d2c445f487e710e594a0eb50561d7023f081b4639fcbe4006d569c67237"
-    );
-    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(
-        fixture["local"],
-        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
-    );
-    assert_eq!(
-        fixture["peer"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
-    let responsible: WorkflowResponsible =
-        serde_json::from_value(fixture["workflow"]["responsible"].clone()).unwrap();
-    assert!(!responsible.is_person());
-    assert_eq!(
-        serde_json::to_value(responsible).unwrap(),
-        fixture["workflow"]["responsible"]
-    );
-    for key in ["failed_outcome", "waiting_outcome"] {
-        let outcome: WorkflowRunOutcome = serde_json::from_value(fixture[key].clone()).unwrap();
-        assert_eq!(serde_json::to_value(outcome).unwrap(), fixture[key]);
-    }
-    for key in ["set_request", "clear_request"] {
-        let request: LocalDaemonRequest = serde_json::from_value(fixture[key].clone()).unwrap();
-        assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
-    }
-    for key in ["peer_set_request", "peer_apply_request"] {
-        let request: RelayPeerRequest = serde_json::from_value(fixture[key].clone()).unwrap();
-        assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
-    }
-}

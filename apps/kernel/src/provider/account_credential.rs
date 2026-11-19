@@ -37,6 +37,11 @@ pub(crate) fn resolve_provider_account_credentials(
     provider: &str,
     profile_id: &str,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    // Codex owns its native auth file and refresh. A transfer's Vault receipt
+    // must never be injected or replayed over the provider's newer credentials.
+    if crate::provider::canonical_provider_family(provider) == Some("codex") {
+        return Ok(ProviderCredentialEnvironment::default());
+    }
     let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
     let credentials = crate::credential::load_user_credentials()?;
     if !credentials
@@ -124,6 +129,9 @@ pub(crate) fn launch_uses_vault_credential(
     profile_id: &str,
     _client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<bool, DaemonError> {
+    if crate::provider::canonical_provider_family(provider) != Some("claude") {
+        return Ok(false);
+    }
     let source_profile_id = if crate::provider::canonical_provider_family(provider).is_some() {
         profiles.credential_source_profile_id(owner_user_id, provider, profile_id)?
     } else {
@@ -171,7 +179,44 @@ pub(crate) fn store_provider_account_credential(
     overwrite: bool,
 ) -> Result<StoredProviderAccountCredential, DaemonError> {
     let provider = validate_provider_account_credential_input(provider, secret)?;
-    let secret = secret.trim();
+    store_account_secret(
+        config,
+        owner_user_id,
+        provider,
+        profile_id,
+        secret.trim(),
+        overwrite,
+    )
+}
+
+pub(crate) fn store_provider_account_copy_credential(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
+    if provider != "codex" {
+        return store_provider_account_credential(
+            config,
+            owner_user_id,
+            provider,
+            profile_id,
+            secret,
+            true,
+        );
+    }
+    store_account_secret(config, owner_user_id, provider, profile_id, secret, true)
+}
+
+fn store_account_secret(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+    overwrite: bool,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
     let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
     let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let existing = registry.get(&credential_id)?;

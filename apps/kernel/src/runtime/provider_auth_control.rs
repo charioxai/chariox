@@ -915,6 +915,11 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
     mut request: StartProviderLoginRequest,
     overwrite: bool,
 ) -> Result<ProviderAuthStart, DaemonError> {
+    if crate::provider::canonical_provider_family(&request.provider) == Some("claude") {
+        request.account_profile = runtime_state
+            .provider_account_profile_registry()
+            .credential_source_profile_id(owner_user_id, "claude", &request.account_profile)?;
+    }
     if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
         && request.method.is_none()
     {

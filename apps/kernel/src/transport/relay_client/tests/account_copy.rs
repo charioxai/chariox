@@ -9,6 +9,9 @@ use chariox_relay::auth::{
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+#[path = "account_copy_codex.rs"]
+mod codex;
+
 struct Environment(Vec<(&'static str, Option<std::ffi::OsString>)>);
 impl Drop for Environment {
     fn drop(&mut self) {
@@ -302,7 +305,12 @@ fn run_account_copy_drill(scenario: CopyScenario) {
         let _relay = relay_client_test_guard().await;
         let _home = RelayTestHome::new();
         let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
-        let names = ["HOME", "CHARIOX_CLAUDE_BIN", "CHARIOX_LOG_DIR"];
+        let names = [
+            "HOME",
+            "CHARIOX_CLAUDE_BIN",
+            "CHARIOX_CODEX_BIN",
+            "CHARIOX_LOG_DIR",
+        ];
         let _restore = Environment(
             names
                 .iter()
@@ -1406,6 +1414,17 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 source_request(&target_router, reverse).await.unwrap(),
                 backward
             );
+        }
+        if scenario == CopyScenario::Serial {
+            codex::check_native_copy(
+                &root,
+                &target,
+                &source_router,
+                &target_router,
+                &source_profiles,
+                &target_profiles,
+            )
+            .await;
         }
         let _ = stop_target.send(true);
         tokio::time::timeout(Duration::from_secs(5), target_task)

@@ -1,0 +1,156 @@
+//! Native Codex copy follows the public source router and encrypted target transaction.
+use super::*;
+use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
+
+pub(super) async fn check_native_copy(
+    root: &Path,
+    target: &DaemonConfig,
+    source_router: &CommandRouter,
+    target_router: &CommandRouter,
+    source_profiles: &ProviderAccountProfileRegistry,
+    target_profiles: &ProviderAccountProfileRegistry,
+) {
+    let executable = root.join("codex-copy-check");
+    std::fs::write(&executable, "#!/bin/sh\n[ \"$1 $2\" = 'login status' ] || exit 2\n[ -s \"$CODEX_HOME/auth.json\" ] || exit 1\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_CODEX_BIN", executable);
+    let canary = r#"{"tokens":{"access_token":"synthetic-native-copy"}}"#;
+    let profile = source_profiles
+        .create_managed("local", "codex", "Native source")
+        .unwrap();
+    let source_environment = source_profiles
+        .resolve_environment("local", "codex", &profile.profile_id)
+        .unwrap();
+    let source_auth = Path::new(&source_environment["CODEX_HOME"]).join("auth.json");
+    std::fs::write(&source_auth, canary).unwrap();
+    source_profiles
+        .update_observation(
+            "local",
+            "codex",
+            &profile.profile_id,
+            ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let request = serde_json::json!({"CopyProviderAccountToKernel": {
+        "provider":"codex", "account_profile":profile.profile_id, "operation_id":"native-copy",
+        "target_kernel_id":target.daemon_id,
+        "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),
+        "replace":false
+    }});
+    let response = source_request(source_router, request.clone())
+        .await
+        .unwrap();
+    assert!(!response.to_string().contains("synthetic-native-copy"));
+    let id = response["ProviderAccountCopied"]["receipt"]["account_profile"]
+        .as_str()
+        .unwrap();
+    let target_environment = target_profiles
+        .resolve_environment("local", "codex", id)
+        .unwrap();
+    assert_ne!(
+        source_environment["CODEX_HOME"],
+        target_environment["CODEX_HOME"]
+    );
+    let target_auth = Path::new(&target_environment["CODEX_HOME"]).join("auth.json");
+    assert_eq!(std::fs::read_to_string(&target_auth).unwrap(), canary);
+    assert_eq!(
+        target_profiles
+            .get("local", "codex", id)
+            .unwrap()
+            .auth_state,
+        ProviderAccountAuthState::Authenticated
+    );
+    assert!(
+        crate::provider::resolve_provider_account_credentials(target, "local", "codex", id)
+            .unwrap()
+            .is_empty(),
+        "the Vault transfer receipt is never a launch environment or a refresh source"
+    );
+    let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+        .await
+        .unwrap();
+    let card = inbox["PersonInbox"]["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["body"]["notice"]["action"]["account_profile"] == id)
+        .unwrap();
+    let notice = &card["body"]["notice"];
+    assert!(notice["title"].as_str().unwrap().contains("was copied to"));
+    assert_eq!(notice["action"]["kind"], "provider_sign_in");
+    assert_eq!(notice["action"]["kernel_id"], target.daemon_id);
+    assert!(!inbox.to_string().contains("synthetic-native-copy"));
+    source_request(
+        target_router,
+        serde_json::json!({"SetInboxCardState":{
+            "card_ids":[card["card_id"]], "change":{"read":{"read":true}}
+        }}),
+    )
+    .await
+    .unwrap();
+    // Both native refresh and a new device login may replace auth.json. Retry
+    // must return the same receipt and leave that new lineage alone.
+    std::fs::write(&target_auth, "target-independent-login").unwrap();
+    std::fs::write(&source_auth, "source-rotated-login").unwrap();
+    assert_eq!(
+        source_request(source_router, request.clone())
+            .await
+            .unwrap(),
+        response
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target_auth).unwrap(),
+        "target-independent-login"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source_auth).unwrap(),
+        "source-rotated-login"
+    );
+    let inbox = source_request(target_router, serde_json::json!({"GetPersonInbox":null}))
+        .await
+        .unwrap();
+    let cards = inbox["PersonInbox"]["cards"].as_array().unwrap();
+    let matching = cards
+        .iter()
+        .filter(|card| card["body"]["notice"]["action"]["account_profile"] == id)
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0]["body"]["notice"]["read"], true);
+    let mut conflict = request;
+    conflict["CopyProviderAccountToKernel"]["operation_id"] = "native-conflict".into();
+    assert_code(
+        source_request(source_router, conflict).await,
+        "provider_account_copy_conflict",
+        "synthetic-native-copy",
+    );
+    let foreign = request_as(
+        target_router,
+        serde_json::json!({"GetPersonInbox":null}),
+        |caller| {
+            caller.user_id = Some("another-owner".into());
+        },
+    )
+    .await;
+    if let Ok(inbox) = foreign {
+        assert!(!inbox.to_string().contains(id));
+    }
+    assert!(!std::fs::read_dir(
+        target_auth
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+    )
+    .unwrap()
+    .any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".account-copy-")));
+}

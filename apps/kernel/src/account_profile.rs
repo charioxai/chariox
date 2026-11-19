@@ -1544,14 +1544,18 @@ impl ProviderAccountProfileRegistry {
         let result = document.profiles[profile_index].public.clone();
         let scope = document.profiles[profile_index].locator.clone();
         for (index, peer) in document.profiles.iter_mut().enumerate() {
-            if index == profile_index || peer.public.provider != provider
+            if index == profile_index
+                || peer.public.provider != provider
                 || !peer.locator.same_credential_scope(&scope)
             {
                 continue;
             }
             // One native credential has one authentication state, including across aliases.
             peer.public.auth_state = result.auth_state;
-            peer.public.auth_error = result.auth_error.as_ref().map(|_| native_sign_in_advice(&peer.public));
+            peer.public.auth_error = result
+                .auth_error
+                .as_ref()
+                .map(|_| native_sign_in_advice(&peer.public));
             peer.public.identity_summary = result.identity_summary.clone();
             peer.public.plan = result.plan.clone();
             peer.public.detected_provider_version = result.detected_provider_version.clone();
@@ -1579,6 +1583,19 @@ impl ProviderAccountProfileRegistry {
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
         let result = profile.public.clone();
+        let locator = profile.locator.clone();
+        for peer in &mut document.profiles {
+            if peer.public.provider == provider && peer.locator.same_credential_scope(&locator) {
+                peer.public.auth_state = result.auth_state;
+                peer.public.auth_error = None;
+                peer.public.identity_summary = None;
+                peer.public.plan = None;
+                peer.public.services.clear();
+                peer.public.last_validated_at_ms = result.last_validated_at_ms;
+                peer.public.usage =
+                    ProviderAccountUsageSnapshot::unavailable(&peer.public.profile_id, provider);
+            }
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }

@@ -23,6 +23,7 @@ pub struct ProviderAccountCopyBinding {
 impl ProviderAccountCopyBinding {
     pub(crate) fn validate(&self) -> Result<(), crate::error::DaemonError> {
         if !["claude", "codex", "opencode"].contains(&self.provider.as_str())
+            || (self.provider == "opencode" && self.source_kernel_id != self.target_kernel_id)
             || ![
                 &self.operation_id,
                 &self.source_profile_id,

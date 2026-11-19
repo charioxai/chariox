@@ -47,7 +47,11 @@ impl KernelRuntimeState {
             kernel_id: config.daemon_id.clone(),
             provider: profile.provider.clone(),
             account_profile: profile.profile_id.clone(),
-            label: format!("Sign in on {machine}"),
+            label: if copied {
+                format!("Sign in on {machine}")
+            } else {
+                format!("Sign in again on {machine}")
+            },
         };
         let now = unix_epoch_ms();
         let card_id = format!("{ORIGIN}{}:{}", profile.provider, profile.profile_id);

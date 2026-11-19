@@ -87,7 +87,9 @@ impl KernelRuntimeState {
             && !crate::provider::provider_account_credential_uses_vault(
                 &owner,
                 &binding.provider,
-                &profile.profile_id,
+                &self
+                    .provider_account_profile_registry()
+                    .credential_source_profile_id(&owner, &binding.provider, &profile.profile_id)?,
             )
             .map_err(|_| failure("provider_account_copy_profile"))?
         {
@@ -165,20 +167,22 @@ impl KernelRuntimeState {
             ))
             .lock_owned()
             .await;
-            unlocked(&config)?;
-            let selected = crate::provider::resolve_provider_account_credentials(
-                &config,
-                &owner,
-                &binding.provider,
-                &binding.source_profile_id,
-            )
-            .map_err(|_| failure("provider_account_copy_vault_locked"))?;
-            let value = selected
-                .iter()
-                .find(|(name, _)| *name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
-                .map(|(_, value)| value.to_string())
-                .ok_or_else(|| failure("provider_account_copy_profile"))?;
-            ProviderAccountCopyCredential::new(value)
+            if binding.provider == "claude" {
+                unlocked(&config)?;
+            }
+            let profiles = self.provider_account_profile_registry().clone();
+            let source_config = config.clone();
+            let source_binding = binding.clone();
+            tokio::task::spawn_blocking(move || {
+                profiles.export_account_copy_credential(
+                    &source_config,
+                    &owner,
+                    &source_binding.provider,
+                    &source_binding.source_profile_id,
+                )
+            })
+            .await
+            .map_err(|_| failure("provider_account_copy_install_failed"))??
         };
         let response = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
             &config, &self.owned.relay_state,
