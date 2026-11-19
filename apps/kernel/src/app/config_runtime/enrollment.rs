@@ -410,6 +410,7 @@ mod tests {
         // (`local`): the enrolled owner reaches them as that Room's owner
         // (`acts_for_room_owner`, `room_member_user_id_in`), so they are not re-owned.
         const KEPT_FOR_ROOM: &[&str] = &[
+            "notification_watchers",
             "workflow_notification_exit_sources",
             "workflow_notification_generations",
             "workflow_notification_grants",

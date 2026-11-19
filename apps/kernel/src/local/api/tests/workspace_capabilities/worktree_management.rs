@@ -10,9 +10,14 @@ fn local_request_api_commits_workspace_changes() {
 }
 
 fn local_request_api_commits_workspace_changes_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-commit-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let fixture = crate::test_temp_dir::TestTempDir::new("workspace-commit");
+    let worktree_root = fixture.path().join("worktree");
+    let origin = fixture.path().join("origin.git");
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+    run_test_git(
+        fixture.path(),
+        &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
+    );
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
     run_test_git(&worktree_root, &["init", "-b", "main"]);
     run_test_git(
@@ -22,6 +27,11 @@ fn local_request_api_commits_workspace_changes_inner() {
     run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
     run_test_git(&worktree_root, &["add", "."]);
     run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    run_test_git(
+        &worktree_root,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    run_test_git(&worktree_root, &["push", "origin", "main"]);
     std::fs::write(worktree_root.join("README.md"), "hello\nworld\n").expect("file should update");
 
     let harness = LocalRouterTestHarness::new();
