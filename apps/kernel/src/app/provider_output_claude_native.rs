@@ -404,6 +404,28 @@ fn acknowledge_claude_headless_steering_enqueue(
 }
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
+    /// Claude's PreCompact hook: the row shows the compaction running until its summary settles it.
+    fn show_compaction_running(&self, session_id: &str, provider_run_id: &str, context_file: &str) {
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let number = cursor.start_compaction();
+        save_claude_transcript_cursor(context_file, &cursor);
+        ProviderOutputFanout::new(self.app).fan_out(
+            session_id,
+            provider_run_id,
+            TerminalOutputKind::ContextCompacted,
+            Some(format!(
+                "claude-transcript:{provider_run_id}:{}",
+                transcript::compaction_merge_key_suffix(number)
+            )),
+            self.app.attachments.list_session_attachment_ids(session_id),
+            crate::provider::ContextCompaction::Running {
+                started_at_ms: crate::session::unix_epoch_ms(),
+            }
+            .to_text()
+            .as_bytes(),
+        );
+    }
+
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self {
             app,
@@ -561,6 +583,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         }
                     }
                 }
+                continue;
+            }
+            if event_name == "PreCompact" {
+                self.show_compaction_running(session_id, provider_run_id, context_file);
                 continue;
             }
             if event_name == "CharioxContextDelivered" {

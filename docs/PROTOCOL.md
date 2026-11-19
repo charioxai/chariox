@@ -3431,6 +3431,12 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1070 (provisional): a provider's context compaction is the history and terminal-output kind `context_compacted`
+  (`SessionHistoryEntry.kind` and `TerminalOutputRecord.kind`): its text is the summary the provider wrote, empty when the
+  provider marked the compaction without one. The kernel classifies by the provider's own markers (Claude: the
+  `compact_boundary` event and the transcript entry flagged `isCompactSummary`), never by the summary's wording; it is
+  not a user prompt, so prompt lists, search by role and replay never count it. A client draws one collapsed row
+  ("Context compacted" with the time; "Summary unavailable" for empty text).
 - protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the

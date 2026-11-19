@@ -68,6 +68,7 @@ pub(crate) enum ObservedExternalProviderTurnRole {
     Reasoning,
     Tool,
     Status,
+    ContextCompacted,
 }
 
 impl ObservedExternalProviderTurnRole {
@@ -82,6 +83,7 @@ impl ObservedExternalProviderTurnRole {
             Self::Reasoning => crate::history::SessionHistoryEntryKind::ProviderReasoning,
             Self::Tool => crate::history::SessionHistoryEntryKind::ProviderTool,
             Self::Status => crate::history::SessionHistoryEntryKind::ProviderStatus,
+            Self::ContextCompacted => crate::history::SessionHistoryEntryKind::ContextCompacted,
         }
     }
 }
@@ -93,6 +95,7 @@ pub(crate) fn observed_role(role: Option<&str>) -> Option<ObservedExternalProvid
         Some("reasoning") => Some(ObservedExternalProviderTurnRole::Reasoning),
         Some("tool") => Some(ObservedExternalProviderTurnRole::Tool),
         Some("status") => Some(ObservedExternalProviderTurnRole::Status),
+        Some("context_compacted") => Some(ObservedExternalProviderTurnRole::ContextCompacted),
         _ => None,
     }
 }
@@ -107,6 +110,10 @@ pub(crate) fn clean_observed_turn_text(role: Option<&str>, text: String) -> Opti
         ObservedExternalProviderTurnRole::Reasoning
         | ObservedExternalProviderTurnRole::Tool
         | ObservedExternalProviderTurnRole::Status => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        ObservedExternalProviderTurnRole::ContextCompacted => {
             let text = text.trim();
             (!text.is_empty()).then(|| text.to_string())
         }
@@ -179,6 +186,7 @@ fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
         ObservedExternalProviderTurnRole::Reasoning => "reasoning",
         ObservedExternalProviderTurnRole::Tool => "tool",
         ObservedExternalProviderTurnRole::Status => "status",
+        ObservedExternalProviderTurnRole::ContextCompacted => "context_compacted",
     }
 }
 
@@ -380,7 +388,8 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             ObservedExternalProviderTurnRole::Assistant
             | ObservedExternalProviderTurnRole::User
             | ObservedExternalProviderTurnRole::Reasoning
-            | ObservedExternalProviderTurnRole::Tool => false,
+            | ObservedExternalProviderTurnRole::Tool
+            | ObservedExternalProviderTurnRole::ContextCompacted => false,
         }
     }
 

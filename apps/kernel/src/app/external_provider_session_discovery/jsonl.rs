@@ -209,6 +209,9 @@ pub(super) fn claude_user_prompt(value: &Value) -> Option<String> {
     {
         return None;
     }
+    if crate::provider::claude_compaction(value).is_some() {
+        return None;
+    }
     let message = value.get("message")?;
     text_from_content(message.get("content")?)
         .and_then(clean_provider_prompt)

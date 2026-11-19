@@ -597,4 +597,6 @@ pub use workspace::*;
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
 /// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// Provisional 1070: a compaction is the history kind `context_compacted` (its text is the summary, empty when
+/// Claude wrote none), not a user prompt.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1070;

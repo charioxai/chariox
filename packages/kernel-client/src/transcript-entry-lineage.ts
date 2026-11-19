@@ -60,6 +60,7 @@ export function transcriptEntryIsBlobCollapsible(entry: TranscriptTurnDisplayEnt
     case "tool":
     case "reasoning":
     case "status":
+    case "compaction":
     case "notice":
       return true
     default:

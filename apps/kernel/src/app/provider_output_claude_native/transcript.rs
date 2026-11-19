@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::provider::{ClaudeCompaction, ContextCompaction};
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -24,6 +25,19 @@ pub(super) struct ClaudeTranscriptCursor {
     /// outlive the turn that started them.
     #[serde(default)]
     background_calls: BTreeMap<String, ClaudeBackgroundCall>,
+    /// The nth compaction Claude started (PreCompact) and the nth summary it wrote are one row.
+    #[serde(default)]
+    compaction_starts: u64,
+    #[serde(default)]
+    compaction_summaries: u64,
+}
+
+impl ClaudeTranscriptCursor {
+    /// The row a PreCompact hook opens.
+    pub(super) fn start_compaction(&mut self) -> u64 {
+        self.compaction_starts += 1;
+        self.compaction_starts - 1
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -311,6 +325,10 @@ fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> Strin
         .unwrap_or_else(|| format!("{path}:line:{index}"))
 }
 
+pub(super) fn compaction_merge_key_suffix(number: u64) -> String {
+    format!("compaction:{number}")
+}
+
 fn claude_transcript_chunks(
     value: &Value,
     cursor: &mut ClaudeTranscriptCursor,
@@ -319,6 +337,16 @@ fn claude_transcript_chunks(
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
+    if let Some(ClaudeCompaction::Summary { summary, .. }) =
+        crate::provider::claude_compaction(value)
+    {
+        cursor.compaction_summaries += 1;
+        return vec![ClaudeTranscriptChunk {
+            kind: TerminalOutputKind::ContextCompacted,
+            merge_key_suffix: compaction_merge_key_suffix(cursor.compaction_summaries - 1),
+            text: ContextCompaction::Done { summary }.to_text(),
+        }];
+    }
     if let Some(notification) = crate::provider::finished_background_task(value) {
         return finish_background_call(cursor, notification, now_ms)
             .into_iter()
