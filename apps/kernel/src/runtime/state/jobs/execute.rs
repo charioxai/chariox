@@ -1,3 +1,4 @@
+use super::handover::{ActiveJob, JobProgress, Shutdown};
 use super::never_fit::Shortfall;
 use super::pending_return::PendingReturn;
 use super::remote::Remote;
@@ -238,13 +239,9 @@ impl KernelRuntimeState {
         wake: AgentWake,
         mut record: Record,
         mut cancelled: watch::Receiver<bool>,
-        local: Option<(
-            Output,
-            super::local::ActiveLocalJob,
-            super::local::LocalProgress,
-        )>,
+        inherited: Option<(Output, ActiveJob, JobProgress)>,
     ) {
-        let (output, progress) = match local {
+        let (output, progress) = match inherited {
             Some((output, active, progress)) => (Ok(output), Some((active, progress))),
             None => (Output::new(self, &record), None),
         };
@@ -270,11 +267,15 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        let result = if let Some((active, progress)) = progress {
-            self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
+        let result = if matches!(record.remote, RemoteStage::Running { .. }) {
+            let reader = match progress {
+                Some(reader) => reader,
+                None => (self.track_job().await, JobProgress::default()),
+            };
+            self.resume_remote_job(&mut record, &mut output, &mut cancelled, reader)
                 .await
-        } else if matches!(record.remote, RemoteStage::Running { .. }) {
-            self.resume_remote_job(&mut record, &mut output, &mut cancelled)
+        } else if let Some((active, progress)) = progress {
+            self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
                 .await
         } else {
             match selected_environment(self, &record) {
@@ -688,88 +689,156 @@ impl KernelRuntimeState {
         self.job_compute_started(machine).await?;
         record.state = "running".into();
         save_record(self, record)?;
-        self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+        let reader = (self.track_job().await, JobProgress::default());
+        self.supervise_remote(record, output, cancelled, reader, Some((remote, plan)))
             .await
     }
 
-    /// After a restart: reattaches to the command the record names and waits for its end, so no
-    /// file is accepted and the worker is not released while it still runs.
+    /// The saved command keeps running while its reader reconnects.
     async fn resume_remote_job(
         &self,
         record: &mut Record,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
+        reader: (ActiveJob, JobProgress),
     ) -> Result<JobResult, DaemonError> {
-        let RemoteStage::Running { room, exec_id } = record.remote.clone() else {
-            return Err(ledger::error("The job has no running command to resume"));
-        };
-        let result = async {
-            let plan = PendingReturn::load(self, &record.job_id)?;
-            let since = tokio::time::Instant::now();
-            let grant = loop {
-                match self.return_grant(record, &plan.kernel_id).await {
-                    Ok(grant) => break grant,
-                    Err(error) if *cancelled.borrow() || since.elapsed() >= WORKER_PATIENCE => {
-                        return Err(error)
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "job worker not reachable after restart; retrying");
-                        tokio::time::sleep(Duration::from_secs(2)).await
-                    }
-                }
-            };
-            if let Some(driver) = &self.job_wake_driver {
-                driver
-                    .return_grants
-                    .lock()
-                    .expect("job return grants")
-                    .insert(record.job_id.clone(), grant.clone());
-            }
-            let remote = Remote::new(grant, room, record.job_id.clone());
-            self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
-                .await
-        }
-        .await;
+        let result = self
+            .supervise_remote(record, output, cancelled, reader, None)
+            .await;
         let was_cancelled = *cancelled.borrow();
         self.complete_remote_job(record, output, result, was_cancelled)
             .await
     }
 
-    /// Follows the command on the worker to its end, then brings its files home.
+    async fn reconnect_worker(
+        &self,
+        record: &Record,
+        room: String,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(Remote, PendingReturn), DaemonError> {
+        let plan = PendingReturn::load(self, &record.job_id)?;
+        let since = tokio::time::Instant::now();
+        let grant = loop {
+            match self.return_grant(record, &plan.kernel_id).await {
+                Ok(grant) => break grant,
+                Err(error) if *cancelled.borrow() || since.elapsed() >= WORKER_PATIENCE => {
+                    return Err(error);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "job worker not reachable after restart; retrying");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        };
+        if let Some(driver) = &self.job_wake_driver {
+            driver
+                .return_grants
+                .lock()
+                .expect("job return grants")
+                .insert(record.job_id.clone(), grant.clone());
+        }
+        Ok((Remote::new(grant, room, record.job_id.clone()), plan))
+    }
+
+    /// Follow the command while the handover can still transfer its reader.
     async fn supervise_remote(
         &self,
         record: &mut Record,
-        remote: &Remote,
-        plan: &PendingReturn,
-        exec_id: &str,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
+        (mut active, mut progress): (ActiveJob, JobProgress),
+        worker: Option<(Remote, PendingReturn)>,
     ) -> Result<JobResult, DaemonError> {
+        let RemoteStage::Running { room, exec_id } = record.remote.clone() else {
+            return Err(ledger::error("The job has no running command to follow"));
+        };
+        let follow = async {
+            let (remote, plan) = match worker {
+                Some(worker) => worker,
+                None => self.reconnect_worker(record, room, cancelled).await?,
+            };
+            let end = self
+                .read_remote_command(record, &remote, &exec_id, output, cancelled, &mut progress)
+                .await?;
+            Ok::<_, DaemonError>((remote, plan, end))
+        };
+        let (remote, plan, end) = tokio::select! {
+            biased;
+            shutdown = active.shutdown() => {
+                if matches!(shutdown, Shutdown::Reload) {
+                    if let Err(error) = self.freeze_job(record, output, progress, None) {
+                        tracing::warn!(%error, "remote job reader could not be transferred");
+                    }
+                }
+                drop(active);
+                return std::future::pending().await;
+            }
+            end = follow => end?,
+        };
+        drop(active);
+        let outcome = match end {
+            RemoteCommandEnd::Finished(outcome) => outcome,
+            RemoteCommandEnd::Uncollected(outcome) => {
+                return uncollected_stop(self, record, output, outcome);
+            }
+        };
+        note_failed_end(self, record, output, &outcome)?;
+        let mut result = result_from_exit(record, outcome, progress.stopped);
+        // Save the command's end before accepting any of its files.
+        record.advance(StageEvent::End(result.outcome))?;
+        record.state = "returning".into();
+        save_record(self, record)?;
+        match remote
+            .return_files(&plan.root, record, &plan.base, &plan.uploaded)
+            .await
+        {
+            Ok((files, conflicts)) => {
+                result.files_back = files;
+                result.conflicts = conflicts;
+                record.advance(StageEvent::Home)?;
+            }
+            Err(error) => {
+                let notice = format!(
+                    "The command finished, but its files could not all be returned: {error}. {}",
+                    kept_worker_notice(record)
+                );
+                output.push(self, &record.room_id, notice.as_bytes(), true)?;
+                result.outcome = JobOutcome::OutsideEnd;
+            }
+        }
+        Ok(result)
+    }
+
+    async fn read_remote_command(
+        &self,
+        record: &mut Record,
+        remote: &Remote,
+        exec_id: &str,
+        output: &mut Output,
+        cancelled: &watch::Receiver<bool>,
+        progress: &mut JobProgress,
+    ) -> Result<RemoteCommandEnd, DaemonError> {
         let started = record
             .running_at_ms
             .unwrap_or_else(crate::session::unix_epoch_ms);
         let left = (started + record.request.timeout_s * 1000)
             .saturating_sub(crate::session::unix_epoch_ms());
         let deadline = tokio::time::Instant::now() + Duration::from_millis(left);
-        let (mut cursor, mut stopped) = (0, None);
         let mut disconnected = None;
         let mut last_samples = tokio::time::Instant::now() - Duration::from_secs(1);
-        let outcome = loop {
-            if stopped.is_none() && (*cancelled.borrow() || tokio::time::Instant::now() >= deadline)
+        loop {
+            if progress.stopped.is_none()
+                && (*cancelled.borrow() || tokio::time::Instant::now() >= deadline)
             {
-                stopped = Some(if *cancelled.borrow() {
+                let outcome = if *cancelled.borrow() {
                     JobOutcome::Cancelled
                 } else {
                     JobOutcome::TimeLimit
-                });
+                };
                 if remote.cancel(exec_id).await.is_err() {
-                    return uncollected_stop(
-                        self,
-                        record,
-                        output,
-                        stopped.expect("requested stop"),
-                    );
+                    return Ok(RemoteCommandEnd::Uncollected(outcome));
                 }
+                progress.stopped = Some(outcome);
             }
             if last_samples.elapsed() >= Duration::from_secs(1) {
                 if let Ok(mut samples) = remote.samples().await {
@@ -798,21 +867,22 @@ impl KernelRuntimeState {
                 }
                 last_samples = tokio::time::Instant::now();
             }
-            match remote.read(exec_id, cursor).await {
+            match remote.read(exec_id, progress.cursor).await {
                 Ok(page) => {
-                    if disconnected.take().is_some() {
+                    disconnected = None;
+                    if record.state == "reconnecting" {
                         record.state = "running".into();
                         save_record(self, record)?;
                     }
-                    cursor = page.next_cursor;
                     output.page(self, &record.room_id, &page)?;
+                    progress.cursor = page.next_cursor;
                     if let Some(outcome) = page.outcome {
-                        break outcome;
+                        return Ok(RemoteCommandEnd::Finished(outcome));
                     }
                 }
                 Err(error) => {
-                    if let Some(outcome) = stopped {
-                        return uncollected_stop(self, record, output, outcome);
+                    if let Some(outcome) = progress.stopped {
+                        return Ok(RemoteCommandEnd::Uncollected(outcome));
                     }
                     let since = disconnected.get_or_insert_with(tokio::time::Instant::now);
                     if since.elapsed() >= WORKER_PATIENCE {
@@ -823,33 +893,13 @@ impl KernelRuntimeState {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
-        };
-        note_failed_end(self, record, output, &outcome)?;
-        let mut result = result_from_exit(record, outcome, stopped);
-        // The command's end is saved before any of its files are accepted.
-        record.advance(StageEvent::End(result.outcome))?;
-        record.state = "returning".into();
-        save_record(self, record)?;
-        match remote
-            .return_files(&plan.root, record, &plan.base, &plan.uploaded)
-            .await
-        {
-            Ok((files, conflicts)) => {
-                result.files_back = files;
-                result.conflicts = conflicts;
-                record.advance(StageEvent::Home)?;
-            }
-            Err(error) => {
-                let notice = format!(
-                    "The command finished, but its files could not all be returned: {error}. {}",
-                    kept_worker_notice(record)
-                );
-                output.push(self, &record.room_id, notice.as_bytes(), true)?;
-                result.outcome = JobOutcome::OutsideEnd;
-            }
         }
-        Ok(result)
     }
+}
+
+enum RemoteCommandEnd {
+    Finished(ExecOutcome),
+    Uncollected(JobOutcome),
 }
 
 /// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.

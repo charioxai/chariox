@@ -16,6 +16,7 @@ mod cleanup_tests;
 mod control;
 mod driver;
 mod execute;
+mod handover;
 mod held;
 #[cfg(test)]
 mod held_tests;
@@ -54,7 +55,7 @@ use stage::{RemoteStage, StageEvent};
 pub(super) const KIND: &str = "job";
 const TAIL_BYTES: usize = 64 * 1024;
 
-pub(crate) use local::LocalJobHandover;
+pub(crate) use handover::JobHandover;
 
 struct Pending {
     state: KernelRuntimeState,
@@ -70,7 +71,7 @@ pub(super) struct JobDriver {
     router: std::sync::OnceLock<std::sync::Weak<crate::runtime::router::CommandRouter>>,
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
-    local: Arc<local::LocalJobs>,
+    supervisors: Arc<handover::JobSupervisors>,
     remote_requested: std::sync::Mutex<BTreeSet<String>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
     remote_samples:
