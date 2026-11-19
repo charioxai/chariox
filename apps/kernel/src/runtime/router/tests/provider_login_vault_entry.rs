@@ -381,7 +381,7 @@ async fn a_locked_vault_is_refused_as_locked_before_the_login_is_touched() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new(crate::config::CredentialVaultBackend::CharioxEncrypted);
     let entry = fixture.owner_entry(OPENCODE_SITE).await;
-    let vault = fixture.root.join("vault.enc");
+    let vault = fixture.root.join("vault/vault.enc");
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
     crate::secret::clear_vault_secret_process_cache().unwrap();
     let login_id = fixture.start("opencode_go_api_key").await;
