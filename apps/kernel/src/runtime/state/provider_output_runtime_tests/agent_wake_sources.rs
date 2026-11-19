@@ -1690,9 +1690,10 @@ async fn a_refused_yield_names_the_missing_part_instead_of_blaming_live_sources(
     let registration = timer["registration_id"].as_str().unwrap().to_string();
     let now = crate::session::unix_epoch_ms();
     for (args, cause) in [
+        // A missing argument is refused by the tool's schema check, which names it.
         (
             serde_json::json!({"registration_ids":[registration],"inbox_cursor":0}),
-            "reason required",
+            "missing its required argument `reason`",
         ),
         (
             serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"  "}),
