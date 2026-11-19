@@ -326,7 +326,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
-                    if super::settled_waits::finish(tx, &mut t)? {
+                    if super::settled_waits::finish(tx, &mut t, now)? {
                         t.revision += 1;
                         save(tx, &t)?;
                         changed.push(t);
