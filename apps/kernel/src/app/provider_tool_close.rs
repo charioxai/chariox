@@ -89,6 +89,29 @@ pub(crate) fn is_work_of_a_turn(kind: &TerminalOutputKind, bytes: &[u8]) -> bool
         .map_or(true, |tool| tool.get("background") != Some(&true.into()))
 }
 
+/// The ids of the background calls whose end `chunks` report.
+pub(crate) fn ended_background_call_ids(
+    chunks: &[crate::provider::ProviderPromptChunk],
+) -> std::collections::BTreeSet<String> {
+    chunks
+        .iter()
+        .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        .filter_map(|chunk| {
+            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&chunk.bytes).ok()
+        })
+        .filter(|record| {
+            record.get("background") == Some(&serde_json::Value::Bool(true))
+                && !is_running_background_record(record)
+        })
+        .filter_map(|record| {
+            record
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// The state of every background command in `entries` (one run's tool rows, oldest first).
 pub(crate) fn background_calls(entries: Vec<SessionHistoryEntry>) -> BackgroundCalls {
     let mut calls = BackgroundCalls::None;
