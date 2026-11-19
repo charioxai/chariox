@@ -6,6 +6,9 @@
 #[path = "hot_reload/local_jobs.rs"]
 mod local_jobs;
 
+#[path = "hot_reload/steered_tool_history.rs"]
+mod steered_tool_history;
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -1562,6 +1565,15 @@ while IFS= read -r line; do
     uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
     echo "prompt $turn" >> "$record/prompts"
     printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\",\"model\":\"claude-haiku-5-5\"}"
+    if [[ -e "$record/steer-tool" ]]; then
+        printf '%s\n' '{"type":"assistant","message":{"id":"tool-invocation","role":"assistant","content":[{"type":"tool_use","id":"original-run","name":"mcp__chariox__chariox_agents_run","input":{"workers":[{"name":"worker","brief":"report WORKER-DONE"}]}}]}}'
+        while IFS= read -r steering; do [[ "$steering" == *STEER-MARKER* ]] && break; done
+        steer_uuid=$(printf '%s' "$steering" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+        printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"original-run","content":[{"type":"text","text":"{\"workers\":[{\"name\":\"worker\",\"answer\":\"WORKER-DONE\"}]}"}]}]}}'
+        printf '%s\n' '{"type":"assistant","message":{"id":"final-answer","role":"assistant","content":[{"type":"text","text":"WORKER-DONE and STEER-MARKER received"}]}}'
+        printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"done\",\"user_message_uuids\":[\"$uuid\",\"$steer_uuid\"]}"
+        continue
+    fi
     # One message whose text block streams as deltas, as with --include-partial-messages.
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\"}}}"
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
