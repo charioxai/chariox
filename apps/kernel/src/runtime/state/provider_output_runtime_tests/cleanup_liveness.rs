@@ -792,6 +792,84 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
 }
 
 #[tokio::test]
+async fn ended_run_reconciliation_fails_an_accepted_prompt_instead_of_completing_it() {
+    // m3h: a Room's first prompt was accepted (not yet bound to its run) when
+    // that run ended; reconciliation closed the turn as completed with no
+    // output, so the person's prompt was lost as if it had succeeded.
+    let worktree = crate::test_support::TestWorktree::new("cleanup-accepted-prompt");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "first-prompt",
+        attachment.id(),
+        agent.id(),
+        "first prompt\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("first prompt should be admitted")
+    else {
+        panic!("first prompt should start");
+    };
+    assert!(prompt.durable_delivery_provider_run_id().is_none());
+    // A failed launch ends the run and clears the selection before delivery.
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should be marked ended")
+        .into_run();
+    app.update_provider_run_projection(ended);
+    app.sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("selection should clear");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("already-ended liveness reconciliation should succeed");
+
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("the ended run's prompt should be settled");
+    let outcome = serde_json::to_value(&completed).expect("turn serializes")["outcome"].clone();
+    assert_ne!(outcome["kind"], "completed", "{outcome}");
+    assert_eq!(outcome["retryable"], true, "{outcome}");
+    assert!(
+        !outcome["reason"].as_str().unwrap_or_default().is_empty(),
+        "{outcome}"
+    );
+}
+
+#[tokio::test]
 async fn stale_provider_exit_does_not_settle_prompt_on_replacement_run() {
     let worktree = crate::test_support::TestWorktree::new("cleanup-stale-exit");
     let mut app =
