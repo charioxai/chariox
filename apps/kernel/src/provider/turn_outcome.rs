@@ -24,6 +24,7 @@ pub enum TurnOutcomeKind {
     Overloaded,
     UsageLimit,
     SignInRequired,
+    PolicyDeclined,
     ProviderCrashed,
     Network,
     Other,
@@ -42,6 +43,7 @@ impl TurnOutcomeKind {
             Self::Overloaded => "overloaded",
             Self::UsageLimit => "usage limit",
             Self::SignInRequired => "Sign-in required",
+            Self::PolicyDeclined => "usage policy decline",
             Self::ProviderCrashed => "provider crashed",
             Self::Network => "network",
             Self::Other => "other",
@@ -69,6 +71,7 @@ impl TurnOutcomeKind {
             Self::Overloaded => "Provider overloaded",
             Self::UsageLimit => "Usage limit reached",
             Self::SignInRequired => "Sign-in required",
+            Self::PolicyDeclined => "Usage policy decline",
             Self::ProviderCrashed => "Provider stopped unexpectedly",
             Self::Network => "Network problem",
             Self::Other => "Provider error",
@@ -166,6 +169,9 @@ impl TurnOutcome {
             (TurnOutcomeKind::SignInRequired, _) => {
                 "Sign in again in Provider Accounts, then send the request again."
             }
+            (TurnOutcomeKind::PolicyDeclined, _) => {
+                "Review the provider's usage policy before submitting another request."
+            }
             (TurnOutcomeKind::ProviderCrashed, _) => {
                 "The provider process ended; send the request again to start it."
             }
@@ -221,6 +227,9 @@ impl TurnOutcome {
             TurnOutcomeKind::Overloaded => "The provider is at capacity.",
             TurnOutcomeKind::UsageLimit => "The provider's usage limit was reached.",
             TurnOutcomeKind::SignInRequired => "The provider needs you to sign in.",
+            TurnOutcomeKind::PolicyDeclined => {
+                "Codex declined this request under its usage policy."
+            }
             TurnOutcomeKind::ProviderCrashed => "The provider process stopped unexpectedly.",
             TurnOutcomeKind::Network => "The connection to the provider was interrupted.",
             TurnOutcomeKind::Other | TurnOutcomeKind::Unknown => {
@@ -246,11 +255,12 @@ impl TurnOutcome {
         if let Some((code, message, native_retryable)) =
             super::prompt_signals::split_coded_failure(text)
         {
-            let mut failure = if let Some((cause, retryable)) = failure_for_code(code, message) {
-                Self::provider_failure_for_message(adapter_key, cause, retryable, message)
-            } else {
-                Self::classify_words(adapter_key, message)
-            };
+            let mut failure =
+                if let Some((cause, retryable)) = failure_for_code(adapter_key, code, message) {
+                    Self::provider_failure_for_message(adapter_key, cause, retryable, message)
+                } else {
+                    Self::classify_words(adapter_key, message)
+                };
             if let Some(retryable) = native_retryable {
                 failure.retryable = retryable;
             }
@@ -378,7 +388,11 @@ fn rate_limit_clears(normalized: &str) -> bool {
 
 /// Codex `codexErrorInfo` variants (snake case), Claude `StopFailure` kinds and
 /// OpenCode error names, by the code each adapter frames.
-fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)> {
+fn failure_for_code(
+    adapter_key: &str,
+    code: &str,
+    message: &str,
+) -> Option<(TurnOutcomeKind, bool)> {
     use TurnOutcomeKind::*;
     if let Some(status) = code
         .strip_prefix("http_status_")
@@ -423,17 +437,19 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
                 (Other, true)
             }
         }
+        "bio_policy" | "cyber_policy" | "misalignment_policy_violation"
+            if adapter_key == "codex" =>
+        {
+            (PolicyDeclined, false)
+        }
         "context_window_exceeded"
         | "invalid_prompt"
         | "too_many_denials"
         | "active_turn_not_steerable"
-        | "bio_policy"
         | "max_output_tokens"
         | "bad_request"
         | "invalid_request"
         | "model_not_found"
-        | "cyber_policy"
-        | "misalignment_policy_violation"
         | "sandbox_error"
         | "thread_rollback_failed" => (Other, false),
         _ => return None,

@@ -1,5 +1,5 @@
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
-import { createEffect, For, onCleanup } from "solid-js"
+import { createEffect, For, onCleanup, Show } from "solid-js"
 import type { SubAgentsController } from "@chariox/kernel-client/sub-agents-controller"
 import { theme } from "./theme.js"
 
@@ -24,10 +24,13 @@ export function SubAgentsPane(props: SubAgentsPaneProps) {
       <For each={controller().panels()}>{panel => {
         onCleanup(() => boxes.delete(panel.id))
         const active = () => controller().focusedPanelId === panel.id
-        return <box ref={value => { boxes.set(panel.id, value) }} flexDirection="row" justifyContent="space-between" paddingLeft={panel.depth * 2} border={true}
+        return <box ref={value => { boxes.set(panel.id, value) }} flexDirection="column" paddingLeft={panel.depth * 2} border={true}
           borderColor={active() ? theme.primary : theme.border} onMouseDown={() => props.onFocus(panel.id)}>
-          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.name}</text>
-          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.word}</text>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.name}</text>
+            <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.word}</text>
+          </box>
+          <Show when={panel.reason}>{reason => <text fg={theme.text}>{reason()}</text>}</Show>
         </box>
       }}</For>
     </scrollbox>

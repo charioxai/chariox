@@ -291,7 +291,7 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
         request,
         crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root"
     ));
-    let tree = crate::local::AgentTree {
+    let mut tree = crate::local::AgentTree {
         root: "root".into(),
         rev: 7,
         totals: crate::local::AgentTreeTotals {
@@ -316,6 +316,7 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
             depth: 1,
             state: crate::local::AgentTreeState::Waiting,
             outcome: None,
+            reason: None,
             needs_user: true,
             deadline_ms: None,
             created_at_ms: 5,
@@ -332,7 +333,8 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
         }],
     };
     assert_eq!(
-        serde_json::to_value(crate::local::LocalDaemonResponse::AgentTree { tree }).unwrap(),
+        serde_json::to_value(crate::local::LocalDaemonResponse::AgentTree { tree: tree.clone() })
+            .unwrap(),
         serde_json::json!({"AgentTree":{"tree":{"root":"root","rev":7,
             "totals":{"live":1,"running":0,"needs_user":1},
             "nodes":[{"agent_id":"child","parent_agent_id":"root","kernel_id":null,
@@ -342,6 +344,19 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5,
                 "usage_limit_stop":{"prompt_id":"p","provider":"codex","account_profile":"work",
                     "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}}}]}}})
+    );
+    let node = &mut tree.nodes[0];
+    node.state = crate::local::AgentTreeState::Error;
+    node.outcome = Some(crate::provider::TurnOutcomeKind::PolicyDeclined);
+    node.reason = Some("Codex declined this request under its usage policy.".into());
+    let reply =
+        serde_json::to_value(crate::local::LocalDaemonResponse::AgentTree { tree }).unwrap();
+    let node = &reply["AgentTree"]["tree"]["nodes"][0];
+    assert_eq!(node["state"], "error");
+    assert_eq!(node["outcome"], "policy_declined");
+    assert_eq!(
+        node["reason"],
+        "Codex declined this request under its usage policy."
     );
     assert_eq!(
         serde_json::to_value(crate::local::OutsideEventValue::AgentTree {

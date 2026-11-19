@@ -12,6 +12,8 @@ import base64, hashlib, json, os, socket, struct, sys, threading, time, urllib.r
 
 record = os.environ.get("CHARIOX_FAKE_CODEX_RECORD", "/dev/null/none")
 finish_in_gap = os.environ.get("CHARIOX_FAKE_CODEX_FINISH_IN_GAP") == "1"
+reject_turn = os.environ.get("CHARIOX_FAKE_CODEX_REJECT_TURN") == "1"
+TURN_ERROR = {"message": "Native fixture diagnostic.", "codexErrorInfo": "cyberPolicy"}
 THREAD, TURN, ITEM = "thread-1", "turn-1", "msg-1"
 lock = threading.Condition()
 subscriber = None
@@ -79,7 +81,10 @@ def turn_view():
     items = [{"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "prompt"}]}]
     if turn["status"] == "completed":
         items.append({"type": "agentMessage", "id": ITEM, "text": turn["text"]})
-    return {"id": TURN, "status": turn["status"], "items": items}
+    view = {"id": TURN, "status": turn["status"], "items": items}
+    if turn["status"] == "failed":
+        view["error"] = TURN_ERROR
+    return view
 
 
 PARTS = 450
@@ -99,6 +104,11 @@ def wait_for(name):
 
 def run_turn():
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
+    if reject_turn:
+        turn["status"] = "failed"
+        notify("codex/event/task_complete", {"id": TURN, "msg": {"type": "task_complete", "turn_id": TURN, "error": TURN_ERROR}})
+        notify("turn/completed", {"threadId": THREAD, "turn": turn_view()})
+        return
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
     for n in range(1, PARTS + 1):
         swapping = os.path.exists(os.path.join(record, "swap"))
@@ -114,6 +124,7 @@ def run_turn():
         time.sleep(0.02)
     notify("item/completed", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": turn["text"]}})
     turn["status"] = "completed"
+    notify("codex/event/task_complete", {"id": TURN, "msg": {"type": "task_complete", "turn_id": TURN}})
     notify("turn/completed", {"threadId": THREAD, "turn": {"id": TURN, "status": "completed", "items": []}})
     note("parts", "result 1")
 

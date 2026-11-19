@@ -69,7 +69,7 @@ impl KernelRuntimeState {
                 Some(NodeTurn {
                     live: !finished && task.state != ExecutionState::Blocked,
                     blocked: task.state == ExecutionState::Blocked,
-                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None).kind),
+                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None)),
                 })
             },
         )?;

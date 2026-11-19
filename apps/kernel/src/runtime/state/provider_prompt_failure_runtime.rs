@@ -369,10 +369,9 @@ impl KernelRuntimeState {
             owned.record_failed_request(
                 session_id,
                 provider_run_id,
-                provider_run.adapter_key(),
                 &agent_id,
                 &active_prompt,
-                message,
+                &failure,
             );
         }
         if workflow_failed {

@@ -124,6 +124,7 @@ export type TurnOutcomeKind =
   | "usage_limit"
   | "sign_in_required"
   | "provider_crashed"
+  | "policy_declined"
   | "network"
   | "other"
   | "unknown"
@@ -740,6 +741,7 @@ export interface AgentTreeNode {
   depth: number
   state: AgentTreeState
   outcome: TurnOutcomeKind | null
+  reason?: string
   /** The user holds a pending decision of this node (no holder, path or card). */
   needs_user: boolean
   deadline_ms: number | null

@@ -2,12 +2,13 @@
 // one state word per agent, the hierarchy in creation order. Status only; a decision is never read here.
 import type { AgentTree, AgentTreeNode } from "./kernel-types-runtime.js"
 
-export type SubAgentWord = "running" | "waiting" | "needs you" | "done"
+export type SubAgentWord = "running" | "waiting" | "needs you" | "done" | "error"
 
 export interface SubAgentRow {
   readonly id: string
   readonly name: string
   readonly word: SubAgentWord
+  readonly reason?: string
   /** Finished: shown dimmed until the parent's task ends and the kernel drops it. */
   readonly dimmed: boolean
   readonly depth: number
@@ -26,7 +27,8 @@ const wordOf = (node: AgentTreeNode): Exclude<SubAgentWord, "needs you"> => {
   switch (node.state) {
     case "starting": case "running": return "running"
     case "waiting": case "unreachable": return "waiting"
-    case "idle": case "ended": case "error": return "done"
+    case "idle": case "ended": return "done"
+    case "error": return "error"
   }
 }
 
@@ -45,6 +47,7 @@ export function subAgentRows(tree: AgentTree): readonly SubAgentRow[] {
       id: node.agent_id,
       name: node.alias ?? node.agent_id,
       word: base === "waiting" && node.needs_user === true ? "needs you" : base,
+      ...(node.reason ? { reason: node.reason } : {}),
       dimmed: base === "done",
       depth,
       children: nodes.filter(child => child.parent_agent_id === node.agent_id && !seen.has(child.agent_id)).map(child => build(child, depth + 1)),
@@ -79,6 +82,7 @@ export function subAgentStripe(tree: AgentTree | null): SubAgentStripe | null {
     [words.filter(word => word === "running").length, "running"],
     [waiting - needsYou, "waiting"],
     [words.filter(word => word === "done").length, "done"],
+    [words.filter(word => word === "error").length, "with errors"],
   ]
   const text = parts.filter(([n]) => n > 0)
     .map(([n, word], index) => index === 0 ? `${n} ${n === 1 ? "agent" : "agents"} ${word === "needs you" && n > 1 ? "need you" : word}` : `${n} ${word}`)

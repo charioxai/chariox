@@ -291,19 +291,22 @@ impl KernelRuntimeOwnedState {
                         &finished.prompt_id,
                         &finished.provider_run_id,
                         &diagnostic,
-                        failure,
+                        failure.clone(),
                     ) {
                         Ok(Some(released_claim)) => {
+                            let failure = failure.unwrap_or_else(|| {
+                                let adapter = provider_run
+                                    .as_ref()
+                                    .map(|run| run.adapter_key())
+                                    .unwrap_or_default();
+                                crate::provider::TurnOutcome::classify(adapter, &diagnostic)
+                            });
                             self.record_failed_request(
                                 &finished.session_id,
                                 &finished.provider_run_id,
-                                provider_run
-                                    .as_ref()
-                                    .map(|run| run.adapter_key())
-                                    .unwrap_or_default(),
                                 &finished.agent_id,
                                 &failed_prompt,
-                                &diagnostic,
+                                &failure,
                             );
                             // MP-08/MP-10: the retired run cannot deliver the accepted
                             // backlog. Re-enter the normal Vault-aware queue path.

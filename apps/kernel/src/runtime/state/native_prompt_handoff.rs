@@ -86,6 +86,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
             return Ok(None);
         }
         let message = crate::app::CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE;
+        let failure = crate::provider::TurnOutcome::classify(run.adapter_key(), message);
         if prompt.workflow_run_id().is_some() {
             self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
@@ -100,17 +101,10 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
             Some(run_id),
             Some(prompt_id),
             None,
-            crate::provider::TurnOutcome::classify(run.adapter_key(), message),
+            failure.clone(),
         )? {
             self.record_provider_failure_output(session_id, run_id, agent_id, message);
-            self.record_failed_request(
-                session_id,
-                run_id,
-                run.adapter_key(),
-                agent_id,
-                &prompt,
-                message,
-            );
+            self.record_failed_request(session_id, run_id, agent_id, &prompt, &failure);
             self.agent_store.clear_local_prompt_error(agent_id)?;
             self.agent_store
                 .set_agent_state(agent_id, crate::agent::AgentState::Idle)?;

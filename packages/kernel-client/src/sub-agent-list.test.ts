@@ -36,7 +36,7 @@ test("AO-UI-01 needs you leads, then running, waiting and done; plural of need",
   assert.deepEqual(subAgentStripe(mixed), { text: "1 agent needs you · 2 running · 1 waiting · 2 done", needsYou: true })
   const two = tree([node("a1", null, "waiting", { needs_user: true }), node("a2", null, "waiting", { needs_user: true })])
   assert.equal(subAgentStripe(two)!.text, "2 agents need you")
-  assert.equal(subAgentStripe(tree([node("a1", null, "ended"), node("a2", null, "error"), node("a3", null, "idle")]))!.text, "3 agents done")
+  assert.equal(subAgentStripe(tree([node("a1", null, "ended"), node("a2", null, "error"), node("a3", null, "idle")]))!.text, "2 agents done · 1 with errors")
 })
 
 test("AO-UI-01 needs you comes from the node flag only: an ancestor-held wait reads waiting", () => {

@@ -9,19 +9,18 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         provider_run_id: &str,
-        adapter_key: &str,
         agent_id: &str,
         failed_prompt: &crate::session::PromptQueueItem,
-        failure_message: &str,
+        failure: &crate::provider::TurnOutcome,
     ) {
-        let reason = crate::agent::failed_request_reason(adapter_key, failure_message);
+        let reason = failure.reason.trim_end_matches('.').to_string();
+        let notice = if failure.kind == crate::provider::TurnOutcomeKind::PolicyDeclined {
+            format!("Request not carried out: {}", failure.notice())
+        } else {
+            crate::agent::failed_request_notice(&reason)
+        };
         // The prompt-failure transcript entry, rendered by the web and the TUI.
-        self.record_provider_failure_output(
-            session_id,
-            provider_run_id,
-            agent_id,
-            &crate::agent::failed_request_notice(&reason),
-        );
+        self.record_provider_failure_output(session_id, provider_run_id, agent_id, &notice);
         if let Err(error) = self.agent_store.record_failed_request_durably(
             &self.durable_state_store,
             agent_id,
