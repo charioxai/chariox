@@ -108,3 +108,83 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 }
+
+/// What followers read of an ask, cut at these sizes after secret-shaped text is removed.
+const ASK_TITLE_MAX_CHARS: usize = 200;
+const ASK_MESSAGE_MAX_CHARS: usize = 2000;
+
+fn bounded_ask_text(text: &str, max_chars: usize) -> String {
+    let clean = crate::secret_redaction::redact_secrets(text);
+    if clean.chars().count() <= max_chars {
+        return clean.into_owned();
+    }
+    let mut cut: String = clean.chars().take(max_chars).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
+impl KernelRuntimeOwnedState {
+    /// An agent's open question the person holds wakes the followers of "Agent needs your action"
+    /// with its title and message, so they can answer it without a second read. A question an
+    /// agent holds alerts them only when it is handed up to the person.
+    pub(super) fn alert_owner_of_ask(
+        &self,
+        session_id: &str,
+        interaction: &crate::session::RuntimeInteraction,
+    ) {
+        // A blocked task's decision has its own alert above.
+        let blocked_task = interaction
+            .id()
+            .starts_with(super::agent_task_owner_interactions::BLOCKED_TASK_DECISION_PREFIX);
+        let theirs = self
+            .pending_interactions
+            .write()
+            .get(interaction.id())
+            .is_some_and(|pending| pending.holder == super::DecisionHolder::User);
+        if blocked_task || !theirs {
+            return;
+        }
+        if let Err(error) = self.emit_ask_notification(session_id, interaction) {
+            tracing::warn!(%error, interaction_id = interaction.id(), "ask alert failed");
+        }
+    }
+
+    fn emit_ask_notification(
+        &self,
+        session_id: &str,
+        interaction: &crate::session::RuntimeInteraction,
+    ) -> Result<(), DaemonError> {
+        let (Some(agent_id), Some(task_id)) = (interaction.agent_id(), interaction.asking_task_id())
+        else {
+            return Ok(());
+        };
+        let session = self.session_store.get_session(session_id)?;
+        if session.status() == crate::session::SessionStatus::Ended {
+            return Ok(());
+        }
+        let source = self.ensure_owner_action_notification_source(&session)?;
+        let output = crate::session::WorkflowOutputPayload::new(
+            serde_json::json!({
+                "title": "Agent needs your action",
+                "room_id": session_id,
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "interaction_id": interaction.id(),
+                "question": {
+                    "title": interaction.title().map(|title| bounded_ask_text(title, ASK_TITLE_MAX_CHARS)),
+                    "message": bounded_ask_text(interaction.message(), ASK_MESSAGE_MAX_CHARS),
+                },
+            })
+            .to_string(),
+            Vec::new(),
+        );
+        self.durable_state_store
+            .notify(NotificationOperation::EmitOwnerAction {
+                source_id: source.source_id,
+                occurrence_id: interaction.id().into(),
+                output,
+                at: crate::session::unix_epoch_ms(),
+            })?;
+        Ok(())
+    }
+}

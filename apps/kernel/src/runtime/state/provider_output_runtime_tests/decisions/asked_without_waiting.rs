@@ -126,3 +126,87 @@ async fn a_retried_ask_with_the_same_key_is_not_raised_twice() {
     assert_eq!(again["deduplicated"], true);
     assert_eq!(t.decision_events(&t.p).len(), 1, "the holder is told once");
 }
+
+impl Tree {
+    /// A grant of the owner follows "Agent needs your action"; returns it.
+    fn follow_owner_alerts(&self) -> String {
+        let grant = self.runtime.insert_access_grant_for_test(&self.room);
+        let target = crate::local::EventTarget {
+            kernel: self.runtime.owned.config_projection.snapshot().daemon_id,
+            session_id: self.room.clone(),
+            agent_id: Some(self.c.clone()),
+        };
+        self.runtime
+            .subscribe_outside_part(&grant, true, vec![target])
+            .unwrap();
+        let session = self.runtime.owned.session_store.get_session(&self.room).unwrap();
+        let owner = session.owner_user_id().to_owned();
+        let source = crate::runtime::state::owner_action_notifications::owner_action_source(&session)
+            .source_id;
+        self.runtime.followable_notification_sources(&owner).unwrap();
+        self.runtime
+            .follow_notification_sources(&grant, &owner, &[source])
+            .unwrap();
+        grant
+    }
+
+    /// The text of every owner-action occurrence the grant has been told.
+    fn alerts(&self, grant: &str) -> Vec<serde_json::Value> {
+        self.runtime
+            .outside_store()
+            .outside_list(grant, None, 100)
+            .unwrap()
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.value {
+                crate::local::OutsideEventValue::Notification { output, .. } => {
+                    Some(serde_json::from_str(output.message()).unwrap())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// A question the person holds wakes the followers of "Agent needs your action" with its words.
+#[tokio::test]
+async fn a_question_asked_without_waiting_reaches_followers_of_owner_alerts_with_its_text() {
+    let t = tree(
+        "decision-async-alert",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.end_turn_yielded(&t.p).await;
+    t.end_turn_yielded(&t.g).await;
+    let grant = t.follow_owner_alerts();
+
+    let id = t.ask_through_popup(&t.c).await;
+
+    let alerts = t.alerts(&grant);
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0]["interaction_id"], id);
+    assert_eq!(alerts[0]["question"]["message"], "Deploy now?");
+}
+
+/// A question an agent holds tells the person's followers only when it is handed up to the person.
+#[tokio::test]
+async fn a_question_an_agent_holds_alerts_followers_only_once_it_reaches_the_person() {
+    let t = tree(
+        "decision-async-alert-up",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let grant = t.follow_owner_alerts();
+    let id = t.ask_through_popup(&t.c).await;
+    assert!(t.alerts(&grant).is_empty(), "held by its parent");
+
+    t.end_turn_yielded(&t.p).await;
+    t.end_turn_yielded(&t.g).await;
+
+    let alerts = t.alerts(&grant);
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0]["interaction_id"], id);
+}
