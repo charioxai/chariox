@@ -32,27 +32,53 @@ pub(super) struct ClaudeTranscriptCursor {
     #[serde(default)]
     compaction_outcomes: u64,
     #[serde(default)]
-    pending_compactions: BTreeMap<u64, Option<String>>,
+    pending_compactions: BTreeMap<u64, PendingCompaction>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingCompaction {
+    provider_prompt_id: Option<String>,
+    kernel_prompt_id: Option<String>,
 }
 
 impl ClaudeTranscriptCursor {
-    pub(super) fn start_compaction(&mut self, prompt_id: Option<&str>) -> Option<u64> {
+    pub(super) fn start_compaction(
+        &mut self,
+        provider_prompt_id: Option<&str>,
+        kernel_prompt_id: Option<&str>,
+    ) -> Option<u64> {
         let number = self.compaction_starts;
         self.compaction_starts += 1;
         if number < self.compaction_outcomes {
             return None;
         }
-        self.pending_compactions
-            .insert(number, prompt_id.map(str::to_owned));
+        self.pending_compactions.insert(
+            number,
+            PendingCompaction {
+                provider_prompt_id: provider_prompt_id.map(str::to_owned),
+                kernel_prompt_id: kernel_prompt_id.map(str::to_owned),
+            },
+        );
         Some(number)
     }
 
     pub(super) fn fail_compaction(&mut self, prompt_id: Option<&str>) -> Option<u64> {
-        let pending_prompt = self.pending_compactions.get(&self.compaction_outcomes)?;
-        if pending_prompt.as_deref() != prompt_id {
+        let pending = self.pending_compactions.get(&self.compaction_outcomes)?;
+        if pending.provider_prompt_id.as_deref() != prompt_id {
             return None;
         }
         Some(self.finish_compaction())
+    }
+
+    pub(super) fn cancel_compaction(&mut self, prompt_id: &str) -> Option<u64> {
+        self.is_compacting_for_prompt(prompt_id)
+            .then(|| self.finish_compaction())
+    }
+
+    pub(super) fn is_compacting_for_prompt(&self, prompt_id: &str) -> bool {
+        self.pending_compactions
+            .get(&self.compaction_outcomes)
+            .is_some_and(|pending| pending.kernel_prompt_id.as_deref() == Some(prompt_id))
     }
 
     fn finish_compaction(&mut self) -> u64 {

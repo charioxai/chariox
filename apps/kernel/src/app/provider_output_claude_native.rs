@@ -409,18 +409,24 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         session_id: &str,
         provider_run_id: &str,
         context_file: &str,
+        agent_id: &str,
         event_name: &str,
         event: &Value,
-    ) {
+    ) -> Result<(), DaemonError> {
         let mut cursor = load_claude_transcript_cursor(context_file);
         let prompt_id = event.get("prompt_id").and_then(Value::as_str);
         let (number, state) = match event_name {
-            "PreCompact" => (
-                cursor.start_compaction(prompt_id),
-                ContextCompaction::Running {
-                    started_at_ms: unix_epoch_ms(),
-                },
-            ),
+            "PreCompact" => {
+                let prompt = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+                (
+                    cursor.start_compaction(prompt_id, prompt.as_ref().map(|prompt| prompt.id())),
+                    ContextCompaction::Running {
+                        started_at_ms: unix_epoch_ms(),
+                    },
+                )
+            }
             "StopFailure" => (
                 cursor.fail_compaction(prompt_id),
                 ContextCompaction::Failed {
@@ -428,12 +434,65 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         .into(),
                 },
             ),
-            _ => return,
+            _ => return Ok(()),
         };
         save_claude_transcript_cursor(context_file, &cursor);
-        let Some(number) = number else {
-            return;
+        if let Some(number) = number {
+            self.publish_compaction(session_id, provider_run_id, number, state);
+        }
+        Ok(())
+    }
+
+    pub(super) fn cancel_compaction(
+        &mut self,
+        run: &RuntimeProviderRun,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (Some(agent_id), Some(context_file)) = (
+            run.agent_instance_id(),
+            run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT"),
+        ) else {
+            return Ok(());
         };
+        let session_id = run.session_id();
+        if !self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.status() == crate::session::PromptStatus::Cancelling
+            })
+        {
+            return Ok(());
+        }
+        if !load_claude_transcript_cursor(context_file).is_compacting_for_prompt(prompt_id) {
+            return Ok(());
+        }
+        // Claude can finish the summary just before the interrupt reaches the PTY.
+        self.drain_known_claude_transcripts(session_id, run.id(), context_file)?;
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        if let Some(number) = cursor.cancel_compaction(prompt_id) {
+            save_claude_transcript_cursor(context_file, &cursor);
+            self.publish_compaction(
+                session_id,
+                run.id(),
+                number,
+                ContextCompaction::Failed {
+                    reason: "The turn was cancelled before Claude finished compacting context."
+                        .into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn publish_compaction(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        number: u64,
+        state: ContextCompaction,
+    ) {
         ProviderOutputFanout::new(self.app).fan_out(
             session_id,
             provider_run_id,
@@ -611,9 +670,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     session_id,
                     provider_run_id,
                     context_file,
+                    &agent_id,
                     event_name,
                     &event,
-                );
+                )?;
                 continue;
             }
             if event_name == "CharioxContextDelivered" {
@@ -893,9 +953,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     session_id,
                     provider_run_id,
                     context_file,
+                    &agent_id,
                     event_name,
                     &event,
-                );
+                )?;
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
             } else if event_name == "SessionEnd"
