@@ -365,13 +365,17 @@ impl KernelRuntimeOwnedState {
             return Err(error);
         }
         if let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() {
-            let owns_prompt_run = self
+            let run = self
                 .provider_store
                 .get_run(provider_run_id)
-                .is_ok_and(|run| {
+                .ok()
+                .filter(|run| {
                     run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
                 });
-            if owns_prompt_run {
+            if let Some(run) = run {
+                if phase == crate::session::DurablePromptDeliveryPhase::Delivered {
+                    self.settle_usage_limit_on_delivery(agent_id, prompt_id, &run)?;
+                }
                 self.structured_output_records
                     .reset_poll_failures_if_prompt_changed(
                         provider_run_id,

@@ -68,6 +68,11 @@ pub fn effective_agent_execution_config_in_tree(
         config.permission_level = config
             .permission_level
             .lower(parent_config.permission_level);
+        // A parent the person raised above its own limit runs at its own settings, so what
+        // lies below it is limited by it and by nothing above it.
+        if parent.parent_limit_waived() {
+            break;
+        }
         current = parent;
     }
     config
@@ -194,6 +199,66 @@ mod tests {
 
         assert_eq!(config.mode, AgentExecutionMode::Build);
         assert_eq!(config.permission_level, AgentPermissionLevel::Yolo);
+    }
+
+    #[test]
+    fn a_parent_the_person_raised_above_its_limit_limits_its_descendants_alone() {
+        use crate::agent::AgentRef;
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let agent = |id: &str, parent: Option<&str>, mode, level| {
+            let mut agent = AgentInstance::new(
+                id,
+                id,
+                session.id(),
+                None,
+                "dev-stub",
+                None,
+                None,
+                None,
+                GridPosition::new(0, 0, 1, 1),
+            );
+            agent.set_parent_agent(parent.map(AgentRef::local));
+            agent.set_execution_mode_override(Some(mode));
+            agent.set_permission_level_override(Some(level));
+            agent
+        };
+        let grandparent = agent(
+            "g",
+            None,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        );
+        let mut parent = agent(
+            "p",
+            Some("g"),
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+        let child = agent(
+            "c",
+            Some("p"),
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let run = |parent: &AgentInstance| {
+            let agents = [grandparent.clone(), parent.clone(), child.clone()];
+            effective_agent_execution_config_in_tree(&session, &child, &agents)
+        };
+        let limited = run(&parent);
+        assert_eq!(limited.mode, AgentExecutionMode::Plan);
+        assert_eq!(limited.permission_level, AgentPermissionLevel::Required);
+
+        parent.set_parent_limit_waived(true);
+        let held = run(&parent);
+        assert_eq!(
+            (held.mode, held.permission_level),
+            (AgentExecutionMode::Build, AgentPermissionLevel::Yolo),
+            "the person's raise of the parent holds for the child it may spawn"
+        );
     }
 
     #[test]

@@ -549,12 +549,35 @@ impl AgentServiceStore {
         self.write().set_agent_parent_limit_waived(agent_id, waived)
     }
 
+    #[cfg(test)]
     pub fn change_usage_limit_stop(
         &self,
         agent_id: &str,
         next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
     ) -> Result<Option<AgentInstance>, DaemonError> {
         self.write().change_usage_limit_stop(agent_id, next)
+    }
+
+    pub(crate) fn change_usage_limit_stop_durably(
+        &self,
+        durable_state_store: &DurableKernelStateStore,
+        agent_id: &str,
+        next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let mut agents = self.write();
+        let previous = agents.get_agent(agent_id)?;
+        let Some(updated) = agents.change_usage_limit_stop(agent_id, next)? else {
+            return Ok(None);
+        };
+        if let Err(error) = durable_state_store.append_event(
+            "agent.updated",
+            Some(agent_id.to_string()),
+            serde_json::json!({ "agent": &updated }),
+        ) {
+            agents.restore_agent(previous);
+            return Err(error);
+        }
+        Ok(Some(updated))
     }
 
     pub fn set_agent_substitution_timeout(

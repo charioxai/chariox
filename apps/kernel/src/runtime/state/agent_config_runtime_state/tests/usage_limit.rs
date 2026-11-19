@@ -1940,7 +1940,7 @@ impl Team {
     /// The agent goes on by a route of its own (a settings change and a prompt, an urgent
     /// prompt): a new turn runs on `account`, and nobody took the stop.
     async fn goes_on_on(&self, lane: usize, account: &str) {
-        let agent_id = self.lanes[lane].agent_id.clone();
+        let agent_id = &self.lanes[lane].agent_id;
         let request = crate::provider::LaunchProviderRequest::new(
             &self.session_id,
             "claude",
@@ -1948,7 +1948,7 @@ impl Team {
             account,
             "claude-haiku-5-5",
         )
-        .with_agent_id(&agent_id);
+        .with_agent_id(agent_id);
         let mut run = crate::provider::RuntimeProviderRun::new(
             "continued-run",
             &request,
@@ -1978,7 +1978,7 @@ impl Team {
                 let prompt = crate::session::PromptQueueItem::new(
                     "continued-prompt",
                     attachment.id(),
-                    &agent_id,
+                    agent_id,
                     "go on",
                     crate::session::PromptStatus::Queued,
                 );
@@ -1986,6 +1986,35 @@ impl Team {
             })
             .await
             .unwrap();
+        let owned = &self.rt().owned;
+        let session = owned.session_store.get_session(&self.session_id).unwrap();
+        let active = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .expect("the continuation is admitted");
+        assert_eq!(active.prompt(), "go on");
+        owned
+            .mark_active_prompt_delivery(
+                &self.session_id,
+                agent_id,
+                active.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("continued-run".to_string()),
+                None,
+            )
+            .unwrap();
+    }
+
+    async fn finishes_on(&self, account: &str) {
+        self.goes_on_on(0, account).await;
+        self.rt()
+            .settle_owned_provider_prompt(&self.session_id, "continued-run", true, false, true)
+            .await
+            .unwrap();
+        assert!(
+            !self.has_turn(0),
+            "the other-account turn finished before the tick"
+        );
     }
 }
 
@@ -2032,5 +2061,87 @@ async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
     tick(team.rt(), 2).await;
 
     assert!(team.stop(0).is_some());
+    assert_eq!(team.cards(0).len(), 1);
+}
+
+#[tokio::test]
+async fn a_turn_on_another_account_that_finished_before_the_tick_ends_the_stop_and_nothing_resumes_later(
+) {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    team.finishes_on("other-account").await;
+
+    tick(team.rt(), reset).await;
+
+    assert!(
+        team.stop(0).is_none(),
+        "the agent went on: the stop is over"
+    );
+    assert!(team.cards(0).is_empty());
+    assert!(
+        !team.has_turn(0),
+        "the armed resume sent nothing on top of the continuation"
+    );
+    tick(
+        team.rt(),
+        reset + super::super::usage_limit_runtime::RESUME_STAGGER_MS,
+    )
+    .await;
+    assert!(!team.has_turn(0), "and nothing resumes later");
+}
+
+#[tokio::test]
+async fn a_turn_on_another_account_ends_the_stop_after_a_restart_too() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    team.finishes_on("other-account").await;
+
+    let after = restarted(&mut team).await;
+    tick(&after, reset).await;
+
+    let agent = after
+        .owned
+        .agent_store
+        .get_agent(&team.lanes[0].agent_id)
+        .unwrap();
+    assert!(agent.usage_limit_stop().is_none());
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    assert!(after
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn an_agent_that_only_switched_account_keeps_its_stop_until_it_goes_on() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let stop = team.stop(0).unwrap();
+    team.rt()
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &team.lanes[0].agent_id,
+            "claude",
+            Some("claude-haiku-5-5".to_string()),
+            None,
+            Some("other-account".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+
+    tick(team.rt(), stop.stopped_at_ms + 5).await;
+
+    assert!(
+        team.stop(0).is_some(),
+        "no turn started: the person may still decide"
+    );
     assert_eq!(team.cards(0).len(), 1);
 }

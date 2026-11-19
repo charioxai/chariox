@@ -46,6 +46,54 @@ fn refused(message: impl Into<String>) -> DaemonError {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    /// A delivery acknowledgement identifies the account that actually took the prompt.
+    /// Write the stop's end before completion can make the turn invisible to the scheduler.
+    pub(super) fn settle_usage_limit_on_delivery(
+        &self,
+        agent_id: &str,
+        prompt_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let Some(stop) = agent.usage_limit_stop() else {
+            return Ok(());
+        };
+        let account_label = self.account_label(&agent, run.account_profile());
+        let event = StopEvent::Continued {
+            account_profile: run.account_profile(),
+            account_label: &account_label,
+        };
+        let changed = self.agent_store.change_usage_limit_stop_durably(
+            &self.durable_state_store,
+            agent_id,
+            |held| {
+                let held = held.filter(|held| *held == stop && held.prompt_id != prompt_id)?;
+                transition(Some(held), &event)
+            },
+        )?;
+        if let Some(updated) = changed {
+            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
+            self.close_usage_limit_decision(&updated, stop)?;
+            let _ = self.session_snapshot(agent.session_id());
+        }
+        Ok(())
+    }
+
+    fn notice_usage_limit_stop(&self, agent: &crate::agent::AgentInstance, notice: &str) {
+        if !notice.is_empty() {
+            self.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent.id()),
+                self.attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                notice,
+            );
+        }
+    }
+}
+
 impl KernelRuntimeState {
     /// How the usage limit reached a turn, or `None` for a turn that did not end on it, a step of a
     /// workflow run (the run owns the step, so no stop continues it outside the run, whether or not
@@ -157,16 +205,17 @@ impl KernelRuntimeState {
         event: &StopEvent<'_>,
     ) -> Result<Option<AppliedStop>, DaemonError> {
         let mut before = None;
-        let changed = self
-            .owned
-            .agent_store
-            .change_usage_limit_stop(agent_id, |held| {
+        let changed = self.owned.agent_store.change_usage_limit_stop_durably(
+            &self.owned.durable_state_store,
+            agent_id,
+            |held| {
                 let next = transition(held, event);
                 if next.is_some() {
                     before = held.cloned();
                 }
                 next
-            })?;
+            },
+        )?;
         let Some(agent) = changed else {
             return Ok(None);
         };
@@ -182,19 +231,7 @@ impl KernelRuntimeState {
         notice: &str,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
-        if !notice.is_empty() {
-            owned.record_notice_for_agent(
-                updated.session_id(),
-                None,
-                Some(updated.id()),
-                owned
-                    .attachment_store
-                    .list_session_attachment_ids(updated.session_id()),
-                notice,
-            );
-        }
-        self.append_agent_durable_event("agent.updated", updated, None)
-            .await?;
+        owned.notice_usage_limit_stop(updated, notice);
         let _ = owned.session_snapshot(updated.session_id());
         self.sync_usage_limit_interaction(updated).await
     }
@@ -221,18 +258,6 @@ impl KernelRuntimeState {
                 );
             }
             if self.drop_stop_of_cancelled_task(&agent, &stop).await? {
-                continue;
-            }
-            if let Some((account_profile, account_label)) = self.continued_elsewhere(&agent, &stop)
-            {
-                self.apply_stop_event(
-                    agent.id(),
-                    &StopEvent::Continued {
-                        account_profile: &account_profile,
-                        account_label: &account_label,
-                    },
-                )
-                .await?;
                 continue;
             }
             match stop.state {
@@ -322,36 +347,6 @@ impl KernelRuntimeState {
         )
         .await?;
         Ok(true)
-    }
-
-    /// The account the agent's running turn is on when it is not the account that hit the limit
-    /// and nobody took the stop: the agent went on by another route (a settings change and a
-    /// prompt, a decision on another stripe) and the stop is over.
-    fn continued_elsewhere(
-        &self,
-        agent: &crate::agent::AgentInstance,
-        stop: &UsageLimitStop,
-    ) -> Option<(String, String)> {
-        if !matches!(
-            stop.state,
-            UsageLimitStopState::Asking
-                | UsageLimitStopState::Armed { .. }
-                | UsageLimitStopState::Declined
-        ) || !self.agent_has_turn(agent)
-        {
-            return None;
-        }
-        let run = self
-            .owned
-            .provider_store
-            .get_run_for_agent(agent.session_id(), agent.id())
-            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)?;
-        (run.account_profile() != stop.account_profile).then(|| {
-            (
-                run.account_profile().to_string(),
-                self.owned.account_label(agent, run.account_profile()),
-            )
-        })
     }
 
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {

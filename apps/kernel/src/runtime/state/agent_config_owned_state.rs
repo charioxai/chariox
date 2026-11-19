@@ -359,6 +359,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         execution_mode_override: Option<Option<crate::provider::AgentExecutionMode>>,
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
+        waive_parent_limit: Option<bool>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -374,6 +375,10 @@ impl KernelRuntimeOwnedState {
             None,
             None,
         )?;
+        if let Some(waived) = waive_parent_limit {
+            self.agent_store
+                .set_agent_parent_limit_waived(agent_id, waived)?;
+        }
         let agent = self.agent_store.get_agent(agent_id)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(agent)

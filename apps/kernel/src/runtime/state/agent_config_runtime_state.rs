@@ -1259,6 +1259,7 @@ impl KernelRuntimeState {
                 agent_id,
                 execution_mode_override,
                 permission_level_override,
+                waive_parent_limit,
             )?;
             if update.scope_changed {
                 self.claude_session_grants.forget(agent_id);
