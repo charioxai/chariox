@@ -34,6 +34,10 @@ pub struct RunJobRequest {
     pub wait_s: u64,
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// The allocation_ref of a machine the agent already holds (from `chariox.machines.acquire`):
+    /// the job runs on that machine's kernel and leaves the machine held afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 fn job_timeout() -> u64 {

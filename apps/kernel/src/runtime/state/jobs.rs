@@ -14,6 +14,9 @@ mod cleanup_tests;
 mod control;
 mod driver;
 mod execute;
+mod held;
+#[cfg(test)]
+mod held_tests;
 mod never_fit;
 #[cfg(test)]
 mod never_fit_tests;

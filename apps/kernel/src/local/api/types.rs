@@ -602,5 +602,6 @@ pub use workspace::*;
 /// `RestoreKernelTrash` puts them back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`;
 /// docs/PROTOCOL.md, "Move to Trash"); `KernelTerminal` and the `kernel_terminal` stream scope serve the kernel's own
 /// terminals, a terminal summary carries its `scope` (`session_id` only for a Room's) and the `kernel_terminal_v1`
-/// capability names them (docs/PROTOCOL.md, "Kernel terminals").
+/// capability names them (docs/PROTOCOL.md, "Kernel terminals"); a job request may name a machine the agent
+/// already holds (`machine`), which runs it through that machine's own kernel.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

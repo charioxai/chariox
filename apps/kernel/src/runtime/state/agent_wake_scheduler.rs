@@ -455,7 +455,7 @@ impl KernelRuntimeState {
 
     /// After a restart a driver-held source from an earlier kernel is either
     /// reattached by its driver or reported lost; it is never relaunched.
-    fn recover_driver_wakes(&self, now: u64) -> Result<(), DaemonError> {
+    pub(super) fn recover_driver_wakes(&self, now: u64) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
             if wake.kind == "process"
@@ -472,6 +472,7 @@ impl KernelRuntimeState {
                 self.report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))?;
             }
         }
+        monitor.drivers.reconcile_ended();
         Ok(())
     }
 

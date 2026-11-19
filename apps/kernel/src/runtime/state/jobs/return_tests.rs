@@ -31,6 +31,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
             timeout_s: 30,
             wait_s: 0,
             outputs: outputs.iter().map(|pattern| (*pattern).into()).collect(),
+            machine: None,
         },
         workspace: source.to_owned(),
         cwd: source.to_owned(),
@@ -75,9 +76,13 @@ pub(super) async fn finish_on_worker(
     let base = crate::jobs::snapshot(source, &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source, &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
-    let (remote, root) = remote::Remote::prepare(worker, &record, &upload, &cancelled)
+    let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await
         .unwrap();
+    let remote = remote::Remote::prepare(worker, &record, &located, &upload, &cancelled)
+        .await
+        .unwrap();
+    let root = located.root;
     let argv = validate(&record.request).unwrap();
     let exec = remote
         .open(argv.clone(), Some(JobNeeds::default()), "test-command")
@@ -344,14 +349,16 @@ pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::Job
         allocation_ref: "cleanup-test".into(),
         machine_label: "offload-test".into(),
         address: None,
-        capability_revision: "v1".into(),
         kernel_id: "worker".into(),
         grant,
-        class_id: "test-class".into(),
-        rate_per_minute: crate::local::JobMachineRate {
-            amount_micros: 1,
-            currency: "usd".into(),
-        },
+        class: Some(super::super::job_compute::JobClass {
+            capability_revision: "v1".into(),
+            class_id: "test-class".into(),
+            rate_per_minute: crate::local::JobMachineRate {
+                amount_micros: 1,
+                currency: "usd".into(),
+            },
+        }),
     }
 }
 

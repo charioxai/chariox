@@ -16,6 +16,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-catalog-aliases-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/kernel-trash-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/job-held-machine-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-login-vault-entry-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-accounts-1011.json",
