@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use crate::provider::{ClaudeCompaction, ContextCompaction};
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -25,67 +24,52 @@ pub(super) struct ClaudeTranscriptCursor {
     /// outlive the turn that started them.
     #[serde(default)]
     background_calls: BTreeMap<String, ClaudeBackgroundCall>,
-    // The hook and transcript can be read in either order. Both outcomes
-    // consume an ordinal, so a later summary never replaces a failed row.
     #[serde(default)]
-    compaction_starts: u64,
+    next_compaction: u64,
     #[serde(default)]
-    compaction_outcomes: u64,
-    #[serde(default)]
-    pending_compactions: BTreeMap<u64, PendingCompaction>,
+    pending_compactions: BTreeMap<String, PendingCompaction>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingCompaction {
-    provider_prompt_id: Option<String>,
+    number: u64,
     kernel_prompt_id: Option<String>,
 }
 
 impl ClaudeTranscriptCursor {
     pub(super) fn start_compaction(
         &mut self,
-        provider_prompt_id: Option<&str>,
+        provider_prompt_id: &str,
         kernel_prompt_id: Option<&str>,
     ) -> Option<u64> {
-        let number = self.compaction_starts;
-        self.compaction_starts += 1;
-        if number < self.compaction_outcomes {
+        if self.pending_compactions.contains_key(provider_prompt_id) {
             return None;
         }
+        let number = self.next_compaction;
+        self.next_compaction += 1;
         self.pending_compactions.insert(
-            number,
+            provider_prompt_id.to_owned(),
             PendingCompaction {
-                provider_prompt_id: provider_prompt_id.map(str::to_owned),
+                number,
                 kernel_prompt_id: kernel_prompt_id.map(str::to_owned),
             },
         );
         Some(number)
     }
 
-    pub(super) fn fail_compaction(&mut self, prompt_id: Option<&str>) -> Option<u64> {
-        let pending = self.pending_compactions.get(&self.compaction_outcomes)?;
-        if pending.provider_prompt_id.as_deref() != prompt_id {
-            return None;
-        }
-        Some(self.finish_compaction())
-    }
-
-    pub(super) fn cancel_compaction(&mut self, prompt_id: &str) -> Option<u64> {
-        self.is_compacting_for_prompt(prompt_id)
-            .then(|| self.finish_compaction())
-    }
-
-    pub(super) fn is_compacting_for_prompt(&self, prompt_id: &str) -> bool {
+    pub(super) fn settle_compaction(&mut self, provider_prompt_id: &str) -> Option<u64> {
         self.pending_compactions
-            .get(&self.compaction_outcomes)
-            .is_some_and(|pending| pending.kernel_prompt_id.as_deref() == Some(prompt_id))
+            .remove(provider_prompt_id)
+            .map(|pending| pending.number)
     }
 
-    fn finish_compaction(&mut self) -> u64 {
-        let number = self.compaction_outcomes;
-        self.compaction_outcomes += 1;
-        self.pending_compactions.remove(&number);
-        number
+    pub(super) fn cancel_compactions(&mut self, prompt_id: &str) -> Vec<u64> {
+        self.pending_compactions
+            .extract_if(.., |_, pending| {
+                pending.kernel_prompt_id.as_deref() == Some(prompt_id)
+            })
+            .map(|(_, pending)| pending.number)
+            .collect()
     }
 }
 
@@ -131,6 +115,7 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) terminal_assistant_message_ids: Vec<String>,
     pub(super) terminal_failure: Option<String>,
     pub(super) enqueued_prompts: Vec<String>,
+    pub(super) unbound_compaction_summaries: usize,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
     /// The person answered "No" in Claude's own dialog: Claude records the
@@ -243,6 +228,13 @@ pub(super) fn drain_claude_transcript_raw_since(
         consumed_line_count = index + 1;
         let key = claude_transcript_entry_key(transcript_path, index, &value);
         if !cursor.seen_keys.insert(key) {
+            continue;
+        }
+        // Only PostCompact carries the prompt identity of a live summary.
+        if value.get("type").and_then(Value::as_str) == Some("user")
+            && value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+        {
+            drain.unbound_compaction_summaries += 1;
             continue;
         }
         if minimum_timestamp_ms.is_some_and(|minimum_timestamp_ms| {
@@ -386,16 +378,6 @@ fn claude_transcript_chunks(
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
-    if let Some(ClaudeCompaction::Summary { summary, .. }) =
-        crate::provider::claude_compaction(value)
-    {
-        let number = cursor.finish_compaction();
-        return vec![ClaudeTranscriptChunk {
-            kind: TerminalOutputKind::ContextCompacted,
-            merge_key_suffix: compaction_merge_key_suffix(number),
-            text: ContextCompaction::Done { summary }.to_text(),
-        }];
-    }
     if let Some(notification) = crate::provider::finished_background_task(value) {
         return finish_background_call(cursor, notification, now_ms)
             .into_iter()

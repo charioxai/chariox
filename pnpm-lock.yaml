@@ -162,6 +162,9 @@ importers:
 
   packages/transcript-view:
     dependencies:
+      '@chariox/kernel-client':
+        specifier: workspace:*
+        version: link:../kernel-client
       '@chariox/tool-display':
         specifier: workspace:*
         version: link:../tool-display

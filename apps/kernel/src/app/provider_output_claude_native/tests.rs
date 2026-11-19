@@ -4436,7 +4436,7 @@ mod compaction;
 mod workspace_scope;
 
 #[test]
-fn claude_transcript_compaction_is_one_row_and_not_a_prompt() {
+fn claude_transcript_compaction_summary_cannot_settle_a_live_row_or_start_a_prompt() {
     let root = crate::test_temp_dir::TestTempDir::new("claude-transcript-compaction");
     let transcript = root.path().join("session.jsonl");
     let mut cursor = ClaudeTranscriptCursor::default();
@@ -4463,19 +4463,9 @@ fn claude_transcript_compaction_is_one_row_and_not_a_prompt() {
 
     let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
 
-    let compactions = drain
-        .chunks
-        .iter()
-        .filter(|chunk| chunk.kind == TerminalOutputKind::ContextCompacted)
-        .collect::<Vec<_>>();
-    assert_eq!(compactions.len(), 1);
-    assert_eq!(compactions[0].merge_key_suffix, "compaction:0");
-    assert_eq!(
-        compactions[0].text,
-        crate::provider::ContextCompaction::Done {
-            summary: "Earlier work, condensed by Claude.".into()
-        }
-        .to_text()
-    );
+    assert_eq!(drain.unbound_compaction_summaries, 1);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+    assert_eq!(drain.chunks[0].text, "Back to work.");
     assert!(drain.enqueued_prompts.is_empty());
 }

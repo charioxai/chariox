@@ -644,18 +644,21 @@ async fn native_cancellation_settles_compaction_before_retry_on_same_run() {
         .unwrap();
     };
     let owned = &runtime.owned;
+    let process_bridge = || async {
+        runtime
+            .with_app_side_effect(|app| {
+                app.process_claude_native_bridge_with_handoff_for_runtime(
+                    &session_id,
+                    run.id(),
+                    &run,
+                    owned,
+                )
+            })
+            .await
+            .unwrap()
+    };
     emit_pre_compact("claude-cancelled");
-    runtime
-        .with_app_side_effect(|app| {
-            app.process_claude_native_bridge_with_handoff_for_runtime(
-                &session_id,
-                run.id(),
-                &run,
-                owned,
-            )
-        })
-        .await
-        .unwrap();
+    process_bridge().await;
     let cancellation = owned
         .cancel_local_prompt(&session_id, &agent_id, &source_id)
         .unwrap()
@@ -684,38 +687,57 @@ async fn native_cancellation_settles_compaction_before_retry_on_same_run() {
         "The turn was cancelled before Claude finished compacting context."
     );
 
+    let write_summary = |provider_prompt: &str, uuid: &str, summary: &str| {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type":"user", "uuid":uuid, "isCompactSummary":true, "message":{"content":summary}})
+        )
+        .unwrap();
+        std::fs::write(
+            events,
+            serde_json::json!({"hook_event_name":"PostCompact", "prompt_id":provider_prompt, "transcript_path":transcript, "compact_summary":summary})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    let before_late = owned.terminal_stream.output_records();
+    write_summary(
+        "claude-cancelled",
+        "cancelled-late-summary",
+        "Cancelled summary.",
+    );
+    process_bridge().await;
+    assert_eq!(
+        owned.terminal_stream.output_records(),
+        before_late,
+        "late summary must leave all rows alone"
+    );
+
     emit_pre_compact("claude-next");
-    runtime
-        .with_app_side_effect(|app| {
-            app.process_claude_native_bridge_with_handoff_for_runtime(
-                &session_id,
-                run.id(),
-                &run,
-                owned,
-            )
-        })
-        .await
-        .unwrap();
-    std::fs::write(
-        &transcript,
-        serde_json::json!({"type":"user", "uuid":"next-summary", "isCompactSummary":true, "message":{"content":"New summary."}}).to_string(),
-    ).unwrap();
-    std::fs::write(
-        events,
-        serde_json::json!({"hook_event_name":"PostCompact", "prompt_id":"claude-next", "transcript_path":transcript})
-            .to_string(),
-    ).unwrap();
-    runtime
-        .with_app_side_effect(|app| {
-            app.process_claude_native_bridge_with_handoff_for_runtime(
-                &session_id,
-                run.id(),
-                &run,
-                owned,
-            )
-        })
-        .await
-        .unwrap();
+    process_bridge().await;
+    let next_running = records();
+    assert_eq!(next_running.len(), 3);
+    write_summary(
+        "claude-cancelled",
+        "cancelled-late-copy",
+        "Cancelled summary.",
+    );
+    process_bridge().await;
+    assert_eq!(
+        records(),
+        next_running,
+        "late summary must leave the retry running"
+    );
+
+    write_summary("claude-next", "next-summary", "New summary.");
+    process_bridge().await;
     let after = records();
     assert_eq!(&after[..2], cancelled);
     assert_eq!(after.len(), 4);
@@ -724,5 +746,12 @@ async fn native_cancellation_settles_compaction_before_retry_on_same_run() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&after[3].bytes).unwrap()["summary"],
         "New summary."
+    );
+    write_summary("claude-next", "next-summary", "New summary.");
+    process_bridge().await;
+    assert_eq!(
+        records(),
+        after,
+        "duplicate completion must leave all rows alone"
     );
 }
