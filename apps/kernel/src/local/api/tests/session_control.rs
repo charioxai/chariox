@@ -1087,7 +1087,6 @@ fn local_request_api_spawns_and_focuses_agents() {
                 worktree_id: Some("/repo/feature-wt".to_string()),
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))

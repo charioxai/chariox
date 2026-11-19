@@ -46,6 +46,54 @@ fn refused(message: impl Into<String>) -> DaemonError {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    /// A delivery acknowledgement identifies the account that actually took the prompt.
+    /// Write the stop's end before completion can make the turn invisible to the scheduler.
+    pub(super) fn settle_usage_limit_on_delivery(
+        &self,
+        agent_id: &str,
+        prompt_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let Some(stop) = agent.usage_limit_stop() else {
+            return Ok(());
+        };
+        let account_label = self.account_label(&agent, run.account_profile());
+        let event = StopEvent::Continued {
+            account_profile: run.account_profile(),
+            account_label: &account_label,
+        };
+        let changed = self.agent_store.change_usage_limit_stop_durably(
+            &self.durable_state_store,
+            agent_id,
+            |held| {
+                let held = held.filter(|held| *held == stop && held.prompt_id != prompt_id)?;
+                transition(Some(held), &event)
+            },
+        )?;
+        if let Some(updated) = changed {
+            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
+            self.close_usage_limit_decision(&updated, stop)?;
+            let _ = self.session_snapshot(agent.session_id());
+        }
+        Ok(())
+    }
+
+    fn notice_usage_limit_stop(&self, agent: &crate::agent::AgentInstance, notice: &str) {
+        if !notice.is_empty() {
+            self.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent.id()),
+                self.attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                notice,
+            );
+        }
+    }
+}
+
 impl KernelRuntimeState {
     /// How the usage limit reached a turn, or `None` for a turn that did not end on it, a step of a
     /// workflow run (the run owns the step, so no stop continues it outside the run, whether or not
@@ -157,16 +205,17 @@ impl KernelRuntimeState {
         event: &StopEvent<'_>,
     ) -> Result<Option<AppliedStop>, DaemonError> {
         let mut before = None;
-        let changed = self
-            .owned
-            .agent_store
-            .change_usage_limit_stop(agent_id, |held| {
+        let changed = self.owned.agent_store.change_usage_limit_stop_durably(
+            &self.owned.durable_state_store,
+            agent_id,
+            |held| {
                 let next = transition(held, event);
                 if next.is_some() {
                     before = held.cloned();
                 }
                 next
-            })?;
+            },
+        )?;
         let Some(agent) = changed else {
             return Ok(None);
         };
@@ -182,19 +231,7 @@ impl KernelRuntimeState {
         notice: &str,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
-        if !notice.is_empty() {
-            owned.record_notice_for_agent(
-                updated.session_id(),
-                None,
-                Some(updated.id()),
-                owned
-                    .attachment_store
-                    .list_session_attachment_ids(updated.session_id()),
-                notice,
-            );
-        }
-        self.append_agent_durable_event("agent.updated", updated, None)
-            .await?;
+        owned.notice_usage_limit_stop(updated, notice);
         let _ = owned.session_snapshot(updated.session_id());
         self.sync_usage_limit_interaction(updated).await
     }
@@ -691,6 +728,9 @@ pub(super) struct AppliedStop {
 
 /// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
 fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
+    if let StopEvent::Continued { account_label, .. } = event {
+        return format!("Continued on {account_label}.");
+    }
     let Some(stop) = stop else {
         return String::new();
     };

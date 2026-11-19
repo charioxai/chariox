@@ -900,14 +900,10 @@ An agent changes its own settings, or those of an agent below it, with the room 
 `agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P]
 [--provider P] [--reason TEXT]` or, in a second command, `[--mode build|plan] [--permission
 required|yolo] [--dir PATH]`; the command is the `UpdateAgentProfile` / `UpdateAgentConfig` request
-with `reason` and the caller as the origin, so there is no other authority. The person's allowed set is
-`AgentInstance.self_settings` `{models, efforts, account_profiles, directories}` (`"*"` allows any),
-changed only by the person with `UpdateAgentConfig.self_settings`. An agent changing itself within
-the set applies at once; a value outside it, a provider change or a higher mode or permission level
-takes one kernel-operation card ("<agent> wants to change its model to X", Allow once / Allow always /
-Deny; Allow always adds the value to the set, a /sudo task needs no card), and a level above what its
-parent chain allows is refused. The agents above an agent choose its settings without the set, as
-when they start it. The result of the command reads "applied, continuing" once the process takes the
+with `reason` and the caller as the origin, so there is no other authority and no allowed set: an agent
+changes its own settings, and an agent above it those of the agents below, exactly as the person does, with no
+refusal and no card. The change applies mid-turn as above and stays; `agent.settings_changed` records who
+asked (the origin of the call) and the pane line names them. The result of the command reads "applied, continuing" once the process takes the
 change after the command's own tool call ends.
 
 When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`

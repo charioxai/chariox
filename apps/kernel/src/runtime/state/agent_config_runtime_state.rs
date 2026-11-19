@@ -1123,7 +1123,6 @@ impl KernelRuntimeState {
             workspace_id,
             worktree_id,
             max_context_tokens,
-            None,
             SettingsContext::person(),
         )
         .await
@@ -1147,40 +1146,27 @@ impl KernelRuntimeState {
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
         max_context_tokens: Option<Option<u64>>,
-        self_settings: Option<crate::agent::AgentSelfSettings>,
         context: SettingsContext,
     ) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
         self.authorize_current_external_command()?;
         let before_agent = self.owned.agent_store.get_agent(agent_id)?;
-        if matches!(context.origin, SettingsOrigin::Agent(_)) {
-            if self_settings.is_some() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "update agent config",
-                    message: "only the person changes what an agent may change about itself"
-                        .to_string(),
-                });
-            }
-            self.owned
-                .ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
-            self.gate_agent_settings_change(
+        self.owned.refuse_above_parent_cap(
+            &before_agent,
+            &context.origin,
+            execution_mode_override.flatten(),
+            permission_level_override.flatten(),
+        )?;
+        // The person's own choice holds against the limit from above; an agent's never exceeds it.
+        let waive_parent_limit = (!matches!(context.origin, SettingsOrigin::Agent(_))
+            && (execution_mode_override.is_some() || permission_level_override.is_some()))
+        .then(|| {
+            self.owned.person_raised_above_parent_cap(
                 &before_agent,
-                &context,
-                &agent_self_settings::RequestedSettings {
-                    mode: execution_mode_override.flatten(),
-                    permission_level: permission_level_override.flatten(),
-                    directory: worktree_id.clone().flatten(),
-                    ..Default::default()
-                },
+                execution_mode_override,
+                permission_level_override,
             )
-            .await?;
-        }
-        if let Some(self_settings) = self_settings {
-            self.owned
-                .ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
-            self.owned
-                .agent_store
-                .set_agent_self_settings(agent_id, self_settings)?;
-        }
+        })
+        .transpose()?;
         let before = self.owned.agent_settings_view(&before_agent)?;
         let active_turn = self
             .owned
@@ -1196,6 +1182,7 @@ impl KernelRuntimeState {
             workspace_id,
             worktree_id,
             max_context_tokens,
+            waive_parent_limit,
         )?;
         if update.scope_changed && update.remote_update.is_none() {
             self.claude_session_grants.forget(agent_id);
@@ -1212,6 +1199,7 @@ impl KernelRuntimeState {
                 agent_id,
                 execution_mode_override,
                 permission_level_override,
+                waive_parent_limit,
             )?;
             if update.scope_changed {
                 self.claude_session_grants.forget(agent_id);
@@ -1312,28 +1300,6 @@ impl KernelRuntimeState {
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
         if original.remote_execution().is_some() {
             self.ensure_remote_agent_binding_current(agent_id).await?;
-        }
-        if matches!(context.origin, SettingsOrigin::Agent(_)) {
-            let resolved = self.owned.validate_agent_profile_update(
-                session_id,
-                agent_id,
-                caller_user_id,
-                agent_profile_selections(&provider, &account_profile, &model, &effort),
-            )?;
-            self.gate_agent_settings_change(
-                &original,
-                &context,
-                &agent_self_settings::RequestedSettings {
-                    provider: provider.is_some().then(|| resolved.provider.clone()),
-                    account_profile: account_profile
-                        .is_some()
-                        .then(|| resolved.account_profile.clone()),
-                    model: model.is_some().then(|| resolved.model.clone()).flatten(),
-                    effort: effort.as_ref().map(|_| resolved.effort.clone()),
-                    ..Default::default()
-                },
-            )
-            .await?;
         }
         let session = self.owned.session_store.get_session(session_id)?;
         let active_turn = self
@@ -1563,18 +1529,4 @@ fn is_home_extension_audit_event(event: &crate::durable_state::DurableStateEvent
         || event.kind.starts_with("agent.mcp_")
         || event.kind.starts_with("agent.skill_")
         || event.kind.starts_with("extension.registration.")
-}
-
-fn agent_profile_selections(
-    provider: &Option<String>,
-    account_profile: &Option<String>,
-    model: &Option<String>,
-    effort: &Option<Option<String>>,
-) -> super::agent_profile_owned_state::AgentProfileSelections {
-    super::agent_profile_owned_state::AgentProfileSelections {
-        provider: provider.clone(),
-        account_profile: account_profile.clone(),
-        model: model.clone(),
-        effort: effort.clone(),
-    }
 }

@@ -609,18 +609,18 @@ impl KernelRuntimeState {
                 .agent_instance_id()
                 .filter(|_| projected_provider_run.turn_substitute().is_none())
             {
-                owned.agent_store.set_agent_runtime_profile_durably(
+                owned.agent_store.set_agent_provider_resume_state_durably(
                     &owned.durable_state_store,
                     agent_id,
-                    projected_provider_run.provider(),
-                    Some(projected_provider_run.model().to_string()),
-                    projected_provider_run.variant().map(str::to_string),
-                    Some(projected_provider_run.account_profile().to_string()),
                     resume_state.clone(),
-                    Some(projected_provider_run.id()),
-                    None,
+                    projected_provider_run.id(),
+                    (
+                        projected_provider_run.provider(),
+                        crate::account_profile::provider_account_selection_for_run(
+                            &projected_provider_run,
+                        ),
+                    ),
                 )?;
-                let _ = owned.session_snapshot(projected_provider_run.session_id())?;
             }
         }
         Ok(poll_result)

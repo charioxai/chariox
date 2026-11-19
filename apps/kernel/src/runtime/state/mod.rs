@@ -53,9 +53,7 @@ mod failed_request_owned_state;
 mod native_prompt_handoff;
 use crate::local::SettingsApplies;
 pub(crate) use agent_model_choice::Source as ModelSource;
-use agent_self_settings_gate as agent_self_settings;
-pub(crate) use agent_settings_change::SettingsContext;
-use agent_settings_change::SettingsOrigin;
+pub(crate) use agent_settings_change::{SettingsContext, SettingsOrigin};
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -590,7 +588,6 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
-mod agent_self_settings_gate;
 mod agent_settings_change;
 mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;

@@ -126,7 +126,6 @@ async fn configure_with_mode(
         clear_workspace_id: false,
         worktree_id: None,
         clear_worktree_id: false,
-        self_settings: None,
         usage_limit: None,
         reason: None,
     });

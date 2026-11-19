@@ -54,7 +54,6 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
         worktree_id: None,
         clear_worktree_id: false,
         reason: None,
-        self_settings: None,
         usage_limit: None,
     });
     let command =
@@ -150,7 +149,6 @@ async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
         worktree_id: None,
         clear_worktree_id: false,
         reason: None,
-        self_settings: None,
         usage_limit: None,
     });
     let command =

@@ -27,6 +27,25 @@ fn is_usage_limit_decision_of(
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn close_usage_limit_decision(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+    ) -> Result<(), DaemonError> {
+        if stop.state == UsageLimitStopState::Asking {
+            let room = self.session_store.get_session(agent.session_id())?;
+            let id = decision_id(agent.id(), stop);
+            if room
+                .active_interactions()
+                .iter()
+                .any(|interaction| interaction.id() == id)
+            {
+                self.timeout_runtime_interaction(room.id(), &id)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The accounts of the stopped agent's provider that can go on with its turn right now.
     fn usage_limit_alternatives(
         &self,

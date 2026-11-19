@@ -140,7 +140,6 @@ fn create_publication_test_graph_in_workspace(
                 worktree_id: Some(worktree_id.to_string()),
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))

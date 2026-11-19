@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
-    AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
+    RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -1035,6 +1035,21 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn set_agent_parent_limit_waived(
+        &mut self,
+        agent_id: &str,
+        waived: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_parent_limit_waived(waived);
+        Ok(agent.clone())
+    }
+
     pub fn clear_agent_substitutes(
         &mut self,
         agent_id: &str,
@@ -1069,21 +1084,6 @@ impl AgentService {
         };
         agent.set_usage_limit_stop(changed);
         Ok(Some(agent.clone()))
-    }
-
-    pub fn set_agent_self_settings(
-        &mut self,
-        agent_id: &str,
-        self_settings: AgentSelfSettings,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.set_self_settings(self_settings);
-        Ok(agent.clone())
     }
 
     pub fn set_agent_substitution_timeout(

@@ -640,7 +640,10 @@ impl KernelRuntimeState {
             })
             .transpose()?
             .unwrap_or(false);
+        // A deferred settings change belongs to the next turn. Route a queued
+        // prompt through provider selection instead of promoting it on this run.
         let defer_queued_prompt = is_workflow_prompt
+            || (provider_run.settings_stale() && provider_run.client_interface().is_chariox())
             || next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),

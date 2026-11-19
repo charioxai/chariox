@@ -610,4 +610,5 @@ pub use workspace::*;
 /// reading the context).
 /// An event subscription's `like` copies the follows of an earlier live grant of the same owner.
 /// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
+/// Agent settings updates drop `self_settings` from the request and agent record.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
