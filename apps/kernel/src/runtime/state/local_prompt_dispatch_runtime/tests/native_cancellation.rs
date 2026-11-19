@@ -589,7 +589,7 @@ async fn workflow_node_behind_failed_dispatch(run_survives_the_failure: bool) {
             message: "the provider refused the prompt".to_string(),
         }
     } else {
-        prompt_ack_timeout_error(&dispatch)
+        prompt_ack_timeout_error(&dispatch, false, None)
     };
     let _ = runtime.fail_prompt_dispatch(dispatch, error).await;
     let successor_run = runtime
