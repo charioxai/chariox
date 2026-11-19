@@ -124,6 +124,13 @@ struct ClaudeNativePromptInjection<'a> {
     context_handoff: &'a dyn Fn(usize) -> String,
 }
 
+impl ClaudeNativePromptInjection<'_> {
+    /// A steer joins another prompt's running turn, so it is only ever typed into a busy Claude.
+    fn steers_a_running_turn(&self) -> bool {
+        self.origin_prompt_id != self.id
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaudeNativeDispatchAttempt {
     Completed,
@@ -1725,6 +1732,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
+        // Claude holding a steer in its queue is its receipt: it answers it in the running turn,
+        // so the steer must not wait for that turn to end.
+        if prompt.steers_a_running_turn()
+            && claude_headless_prompt_queued_behind_running_turn(provider_run, prompt.id)
+        {
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
+        }
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
     }
 
@@ -2080,6 +2094,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     &visible_prompt,
                 );
             } else if !queued_in_claude
+                && !prompt.steers_a_running_turn()
                 && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_composer_visible(&recent)
@@ -2089,6 +2104,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 // UserPromptSubmit changes the marker to `accepted` before
                 // this grace period expires on successful submissions, so an
                 // idle composer with no acknowledgement is safe to retype.
+                // A busy Claude shows the same composer while it writes a
+                // steer to its queue, so a steer is never typed again.
                 let input = claude_headless_prompt_input(prompt, context_file);
                 append_claude_headless_debug(
                     context_file,

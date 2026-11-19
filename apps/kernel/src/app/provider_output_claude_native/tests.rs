@@ -2931,6 +2931,68 @@ fn an_idle_composer_still_retypes_a_prompt_claude_never_received() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// A steer typed into Claude while it runs a tool: the composer footer shows, Enter went in long
+/// ago and Claude has not yet written its queue record.
+fn steer_typed_into_a_busy_claude(
+    queued_in_claude: bool,
+) -> (
+    DaemonApp,
+    RuntimeProviderRun,
+    KernelPromptDispatch,
+    String,
+    PathBuf,
+) {
+    let (app, run, mut dispatch, context_file, root) =
+        unacknowledged_prompt_after_a_stop(queued_in_claude);
+    dispatch.target_active_prompt_id = Some("prompt-running".to_string());
+    dispatch.steering = true;
+    (app, run, dispatch, context_file, root)
+}
+
+#[test]
+fn a_steer_claude_has_not_queued_yet_is_never_typed_a_second_time() {
+    let (mut app, run, dispatch, context_file, root) = steer_typed_into_a_busy_claude(false);
+    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app).process_prompt_dispatch_attempt(
+        "session-1",
+        run.id(),
+        &run,
+        &dispatch,
+        &no_context_handoff,
+    );
+    assert_eq!(
+        attempt.expect("the steer only waits for Claude's receipt"),
+        ClaudeNativeDispatchAttempt::AwaitingInjection
+    );
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some("injected:prompt-queued"),
+        "a busy Claude shows its composer; typing the steer again would deliver it twice"
+    );
+    assert_eq!(read_claude_headless_submit_retry(&context_file).count, 1);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_steer_claude_holds_in_its_queue_is_accepted_at_once() {
+    let (mut app, run, dispatch, context_file, root) = steer_typed_into_a_busy_claude(false);
+    // The queue record arrives while the marker no longer reads `injected:`.
+    write_claude_native_marker(&context_file, "permission:prompt-running");
+    record_claude_headless_enqueue(&context_file, &["ok".to_string()]);
+    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app).process_prompt_dispatch_attempt(
+        "session-1",
+        run.id(),
+        &run,
+        &dispatch,
+        &no_context_handoff,
+    );
+    assert_eq!(
+        attempt.expect("a queued steer is delivered"),
+        ClaudeNativeDispatchAttempt::Completed,
+        "Claude's queue record is its receipt: the steer must not wait for the running turn to end"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn the_enqueue_record_of_the_injected_prompt_marks_it_queued_in_claude() {
     let (_app, run, _dispatch, context_file, root) = unacknowledged_prompt_after_a_stop(false);
