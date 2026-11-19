@@ -6,14 +6,14 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum LegacySkillRootKind {
+pub(crate) enum RetiredSkillRootKind {
     Installed,
     Materialized,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct LegacySkillRoot {
+pub(crate) struct RetiredSkillRoot {
     pub path: PathBuf,
-    pub kind: LegacySkillRootKind,
+    pub kind: RetiredSkillRootKind,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct OwnedSkillCopy {
@@ -30,7 +30,7 @@ fn refused() -> io::Error {
         "legacy skill cleanup ownership changed; startup remains closed",
     )
 }
-pub(super) fn collect(roots: &[LegacySkillRoot]) -> io::Result<Vec<OwnedSkillCopy>> {
+pub(super) fn collect(roots: &[RetiredSkillRoot]) -> io::Result<Vec<OwnedSkillCopy>> {
     let mut copies = Vec::new();
     for source in roots {
         if !source.path.is_absolute() {
@@ -52,8 +52,8 @@ pub(super) fn collect(roots: &[LegacySkillRoot]) -> io::Result<Vec<OwnedSkillCop
             &root,
             &root,
             match source.kind {
-                LegacySkillRootKind::Installed => 1,
-                LegacySkillRootKind::Materialized => 3,
+                RetiredSkillRootKind::Installed => 1,
+                RetiredSkillRootKind::Materialized => 3,
             },
             &mut copies,
         )?;
@@ -271,9 +271,9 @@ mod tests {
         let old = root.package("skills/review");
         let new = root.package("skills/packages/skill-1/digest");
         fs::write(root.0.join("skills/unrelated"), "keep").unwrap();
-        let plan = collect(&[LegacySkillRoot {
+        let plan = collect(&[RetiredSkillRoot {
             path: root.0.join("skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         }])
         .unwrap();
         assert_eq!(plan.len(), 1);
@@ -288,9 +288,9 @@ mod tests {
         let root = Root::new();
         let old = root.package("cache/home/review/digest");
         let new = root.package("cache/home/lease/skill-1/digest");
-        let plan = collect(&[LegacySkillRoot {
+        let plan = collect(&[RetiredSkillRoot {
             path: root.0.join("cache"),
-            kind: LegacySkillRootKind::Materialized,
+            kind: RetiredSkillRootKind::Materialized,
         }])
         .unwrap();
         assert_eq!(plan.len(), 1);
@@ -304,9 +304,9 @@ mod tests {
         let root = Root::new();
         let old = root.package("skills/review");
         let unrelated = root.package("elsewhere/keep");
-        let plan = collect(&[LegacySkillRoot {
+        let plan = collect(&[RetiredSkillRoot {
             path: root.0.join("skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         }])
         .unwrap();
         fs::rename(&old, root.0.join("original")).unwrap();
@@ -324,9 +324,9 @@ mod tests {
         let root = Root::new();
         let old = root.package("skills/review");
         fs::write(old.join("helper"), "remaining").unwrap();
-        let plan = collect(&[LegacySkillRoot {
+        let plan = collect(&[RetiredSkillRoot {
             path: root.0.join("skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         }])
         .unwrap();
         let journal = serde_json::to_string(&plan).unwrap();
@@ -356,9 +356,9 @@ mod tests {
         )
         .unwrap();
         std::os::unix::fs::symlink(root.join("unrelated"), root.join("product/state")).unwrap();
-        let result = collect(&[LegacySkillRoot {
+        let result = collect(&[RetiredSkillRoot {
             path: root.join("product/state/cache"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         }]);
         let preserved = root.join("unrelated/cache/review/SKILL.md").exists();
         std::fs::remove_dir_all(&root).unwrap();

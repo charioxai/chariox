@@ -1,5 +1,5 @@
 //! MP-08 / MP-10 / MP-11: owning startup admission, before session restoration or runtime admission.
-use super::skill_reset::{self, LegacySkillRoot, LegacySkillRootKind};
+use super::skill_reset::{self, RetiredSkillRoot, RetiredSkillRootKind};
 use crate::{config::DaemonConfig, error::DaemonError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::{
@@ -20,20 +20,20 @@ fn roots(
     config: &DaemonConfig,
     home: &Path,
     global_owner: bool,
-) -> Result<(Vec<LegacySkillRoot>, Vec<PathBuf>), DaemonError> {
+) -> Result<(Vec<RetiredSkillRoot>, Vec<PathBuf>), DaemonError> {
     let mut legacy = Vec::new();
     if global_owner {
-        legacy.push(LegacySkillRoot {
+        legacy.push(RetiredSkillRoot {
             path: home.join("skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         });
-        legacy.push(LegacySkillRoot {
+        legacy.push(RetiredSkillRoot {
             path: home.join("state/skill-materializations"),
-            kind: LegacySkillRootKind::Materialized,
+            kind: RetiredSkillRootKind::Materialized,
         });
-        legacy.push(LegacySkillRoot {
+        legacy.push(RetiredSkillRoot {
             path: home.join("managed-context/kernel-context/user/skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         });
     }
     let private = absolute(&config.private_runtime_state_root())?;
@@ -42,9 +42,9 @@ fn roots(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => private,
         Err(_) => return Err(failure()),
     };
-    legacy.push(LegacySkillRoot {
+    legacy.push(RetiredSkillRoot {
         path: private.join("skill-materializations"),
-        kind: LegacySkillRootKind::Materialized,
+        kind: RetiredSkillRootKind::Materialized,
     });
     if let Some(isolation) =
         std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT").filter(|value| !value.is_empty())
@@ -55,20 +55,20 @@ fn roots(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => isolation,
             Err(_) => return Err(failure()),
         };
-        legacy.push(LegacySkillRoot {
+        legacy.push(RetiredSkillRoot {
             path: isolation.join("user/skills"),
-            kind: LegacySkillRootKind::Installed,
+            kind: RetiredSkillRootKind::Installed,
         });
-        legacy.push(LegacySkillRoot {
+        legacy.push(RetiredSkillRoot {
             path: isolation.join("state/skill-materializations"),
-            kind: LegacySkillRootKind::Materialized,
+            kind: RetiredSkillRootKind::Materialized,
         });
     }
     let mut seen = BTreeSet::new();
     legacy.retain(|root| {
         seen.insert((
             root.path.clone(),
-            matches!(root.kind, LegacySkillRootKind::Installed),
+            matches!(root.kind, RetiredSkillRootKind::Installed),
         ))
     });
     let global_artifacts = home.join("workflow-code");
