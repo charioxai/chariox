@@ -16,7 +16,10 @@ const MAX_STATE_BYTES: u64 = 1024 * 1024;
 /// convention); holding it keeps this update from landing between Claude's read
 /// and its write.
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(10);
-const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// A Claude process can end while it holds the lock (`claude auth status` on a
+/// profile with no login does), and only the lock's age tells that apart from a
+/// save in progress, so the wait outlasts the staleness window.
+const LOCK_WAIT: Duration = Duration::from_secs(12);
 const COMMIT_ATTEMPTS: usize = 8;
 
 fn error(message: impl Into<String>) -> DaemonError {
@@ -291,6 +294,24 @@ mod tests {
         });
         update(&state_path, &trust("/work/a")).unwrap();
         releaser.join().unwrap();
+        assert!(state_path.exists());
+        assert!(!lock.exists(), "the kernel's own lock is released");
+    }
+
+    /// `claude auth status` on a profile with no login exits while it holds
+    /// the lock, so the kernel's status check leaves one behind just before
+    /// the first launch.
+    #[test]
+    fn a_lock_left_by_a_process_that_ended_is_reclaimed() {
+        let dir = state_dir("claude-state-abandoned-lock");
+        let state_path = dir.path().join(".claude.json");
+        let lock = dir.path().join(".claude.json.lock");
+        fs::create_dir(&lock).unwrap();
+        fs::File::open(&lock)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2))
+            .unwrap();
+        update(&state_path, &trust("/work/a")).unwrap();
         assert!(state_path.exists());
         assert!(!lock.exists(), "the kernel's own lock is released");
     }
