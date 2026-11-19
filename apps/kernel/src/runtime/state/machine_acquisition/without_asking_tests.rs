@@ -818,6 +818,61 @@ async fn a_refused_retry_of_a_lost_answer_keeps_the_machine_counted() {
     assert!(message.contains("(1) are already running"), "{message}");
 }
 
+/// Review 5969099840: two overlapping attempts at the same request, both refused, each release
+/// their own reservation once: the ledger ends empty, and the place and the day's budget are free.
+#[tokio::test]
+async fn overlapping_attempts_that_are_all_refused_free_the_place_and_the_budget() {
+    let service = service().await;
+    let (state, token, _room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), Some(1_000))).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    service.script.lock().unwrap().acquire = AcquireReply::Held {
+        gate: gate.clone(),
+        refuse: true,
+    };
+    let reached = |count: usize| {
+        let acquires = service.acquires.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while acquires.lock().unwrap().len() < count {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the attempt reaches the service");
+        }
+    };
+    let first = spawn_acquire(&state, &token, "r1", "small");
+    reached(1).await;
+    let second = spawn_acquire(&state, &token, "r1", "small");
+    reached(2).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !(first.is_finished() && second.is_finished()) {
+            gate.notify_one();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both attempts are answered");
+    for call in [first, second] {
+        assert!(call.await.unwrap().is_err(), "the service refused it");
+    }
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert!(acquired.is_empty(), "nothing was acquired: {acquired:?}");
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        acquire(&state, &token, "after", "small"),
+    )
+    .await
+    .expect("no owner decision while the place and the budget are free")
+    .unwrap();
+}
+
 /// Review 5968697039 finding 1: a retry that fails its reauthorization was never sent, and it
 /// leaves the lost request counted.
 #[tokio::test]

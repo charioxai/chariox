@@ -27,9 +27,9 @@ pub(crate) enum Admission {
 pub(crate) struct AcquisitionHold {
     agent_id: String,
     request_id: String,
-    /// Whether this attempt admitted the request. Only its refusal, or its never being sent, proves
-    /// no machine exists: a retry's answer says nothing about an earlier attempt.
-    first: bool,
+    /// Whether this attempt counts in its pending or uncertain ledger row, so its own answer settles
+    /// that count once. A replay of a request the service already answered counts in none.
+    counted: bool,
 }
 
 impl AcquisitionHold {
@@ -155,30 +155,14 @@ impl KernelRuntimeState {
             } => (request_id, Some(job_ref)),
             _ => return Ok(Admission::Off),
         };
-        let mut hold = AcquisitionHold {
+        let hold = AcquisitionHold {
             agent_id: agent.into(),
             request_id: request_id.clone(),
-            first: false,
+            counted: true,
         };
-        // A retry of a request admitted before takes no new place and is never asked again: the
-        // service replays its answer, which settles the same row. Two attempts may now have
-        // reached the service, so an unsettled row becomes uncertain before this one is sent.
-        if self
-            .owned
-            .durable_state_store
-            .write_acquired_machine(AcquiredMachineWrite::Uncertain { key: hold.key() })?
-            || self
-                .owned
-                .durable_state_store
-                .acquired_machine(AcquiredMachineLookup::Request {
-                    agent_id: agent,
-                    request_id,
-                })?
-                .is_some()
-        {
-            return Ok(Admission::Within(hold));
+        if let Some(retry) = self.retry_admitted(&hold)? {
+            return Ok(Admission::Within(retry));
         }
-        hold.first = true;
         let settings = self.owned.config_projection.snapshot().user_config.agents;
         if settings.offload_without_asking != Some(true) {
             return Ok(Admission::Off);
@@ -243,6 +227,10 @@ impl KernelRuntimeState {
                     max_live: max,
                 })?;
         if !admitted {
+            // An attempt at the same request was admitted meanwhile: this one is its retry.
+            if let Some(retry) = self.retry_admitted(&hold)? {
+                return Ok(Admission::Within(retry));
+            }
             return Ok(Admission::Outside(format!(
                 "the most machines acquired without asking at the same time ({max}) are already running"
             )));
@@ -250,10 +238,35 @@ impl KernelRuntimeState {
         Ok(Admission::Within(hold))
     }
 
-    /// Applies the service's answer to an admitted request. Accepted, the machine runs and the Room
-    /// is told; the attempt that admitted it refused, its place is free again. A refused retry
-    /// changes nothing, and any other end makes it uncertain, so a machine the service may have
-    /// created keeps its place and its cost, and the agent is told the request_id to retry with.
+    /// A retry of a request admitted before takes no new place and is never asked again: the
+    /// service replays its answer, which settles the same row. While the row is unsettled the retry
+    /// counts as one more attempt waiting for its answer.
+    fn retry_admitted(
+        &self,
+        hold: &AcquisitionHold,
+    ) -> Result<Option<AcquisitionHold>, DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let counted =
+            store.write_acquired_machine(AcquiredMachineWrite::Retry { key: hold.key() })?;
+        let admitted = counted
+            || store
+                .acquired_machine(AcquiredMachineLookup::Request {
+                    agent_id: &hold.agent_id,
+                    request_id: &hold.request_id,
+                })?
+                .is_some();
+        Ok(admitted.then(|| AcquisitionHold {
+            agent_id: hold.agent_id.clone(),
+            request_id: hold.request_id.clone(),
+            counted,
+        }))
+    }
+
+    /// Applies the service's answer to one attempt at an admitted request. Accepted, the machine
+    /// runs and the Room is told. Refused, the attempt releases its count, and the place is free
+    /// again once every attempt was refused and no answer was lost. Any other end makes it
+    /// uncertain, so a machine the service may have created keeps its place and its cost, and the
+    /// agent is told the request_id to retry with.
     pub(crate) fn settle_acquisition(
         &self,
         hold: AcquisitionHold,
@@ -266,9 +279,9 @@ impl KernelRuntimeState {
             Err(error) if crate::runtime::cloud_api_client::cloud_error_is_refusal(error) => {
                 self.withdraw_acquisition(hold);
             }
-            Ok(_) => {}
+            Ok(_) => self.lose_acquisition_answer(&hold),
             Err(error) => {
-                self.record_acquired_machine(AcquiredMachineWrite::Uncertain { key: hold.key() });
+                self.lose_acquisition_answer(&hold);
                 return Err(acquisition_error(
                     "acquisition_uncertain",
                     &format!("{error}. The service's answer was lost, so the machine may exist: it counts against the owner's limits for acquiring without asking until you retry with request_id \"{}\", which returns the machine the service made for it, or makes it now", hold.request_id),
@@ -278,11 +291,19 @@ impl KernelRuntimeState {
         sent
     }
 
-    /// An attempt that was refused or never sent: the request leaves the ledger only when this
-    /// attempt admitted it and no other attempt made it uncertain.
+    /// An attempt that was refused or never sent releases its count: the request leaves the ledger
+    /// when it was the last attempt and no answer was lost.
     pub(crate) fn withdraw_acquisition(&self, hold: AcquisitionHold) {
-        if hold.first {
-            self.record_acquired_machine(AcquiredMachineWrite::Withdraw { key: hold.key() });
+        if hold.counted {
+            self.record_acquired_machine(AcquiredMachineWrite::Release { key: hold.key() });
+        }
+    }
+
+    /// An attempt whose answer was lost: the machine may exist, so its request stays counted until
+    /// a settled outcome.
+    fn lose_acquisition_answer(&self, hold: &AcquisitionHold) {
+        if hold.counted {
+            self.record_acquired_machine(AcquiredMachineWrite::Lost { key: hold.key() });
         }
     }
 

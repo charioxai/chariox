@@ -7372,8 +7372,8 @@ service's rate). Each record moves along one state table, every step a compare-a
 
 | state | holds a place and costs | next |
 |---|---|---|
-| pending | yes, from the send | running when the service accepts it; removed when the service refuses the attempt that admitted it, that attempt was never sent, or a job's cleanup confirms no machine exists; uncertain when its answer is lost or a retry is sent |
-| uncertain | yes | running when a retry is accepted; removed only when a job's cleanup confirms no machine exists. A refused retry, or one the kernel no longer allows, leaves it as it is. Every lost answer names the request_id, given or generated, to retry with. |
+| pending | yes, from the send | running when the service accepts an attempt. It counts the attempts still waiting for an answer: a retry sent adds one; an attempt refused, or never sent because the kernel no longer allows it, removes one, and the record is removed when that was the last. Uncertain when an attempt's answer is lost, or the kernel restarts while attempts wait. Removed when a job's cleanup confirms no machine exists. |
+| uncertain | yes | running when a retry is accepted; removed only when a job's cleanup confirms no machine exists. Retries are counted as from pending, but a refused one never removes it. Every lost answer names the request_id, given or generated, to retry with. |
 | running | yes | deleting when the service says so; ended when deletion is confirmed |
 | deleting | yes | ended when the service confirms deletion, or a list sent while it was running no longer has it |
 | ended | no | — |

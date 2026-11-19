@@ -8,25 +8,23 @@ use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
 /// Where one acquisition is in its life. A row is created `Pending` and leaves the ledger only
-/// when it is certain no machine exists: an answer to another attempt proves nothing about the
-/// first, so once a request is `Uncertain` only the service's machine or a fenced job cleanup
-/// settles it.
+/// when it is certain no machine exists. While it is pending or uncertain the row counts the
+/// attempts at its request still waiting for an answer: each attempt settles its own count once.
 ///
 /// | state | counts toward the maximum | costs | moves to, on |
 /// |---|---|---|---|
-/// | (none) | | | `Pending`: admitted while fewer than the maximum rows are live. |
-/// | `Pending` | yes | from its start | `Running`: the service accepted it. Removed: the service refused the attempt that admitted it, that attempt was never sent, or job cleanup confirmed no machine exists. `Uncertain`: its answer was lost, or a retry of the same request goes ahead. |
-/// | `Uncertain` | yes | from its start | `Running`: a retry's answer or job cleanup returns its machine. Removed: job cleanup confirmed no machine exists. A retry that is refused or never sent leaves it uncertain; a retry takes no new place. |
+/// | (none) | | | `Pending` with one attempt: admitted while fewer than the maximum rows are live. |
+/// | `Pending` | yes | from its start | `Running`: the service accepted an attempt. One more attempt: a retry of the same request goes ahead, taking no new place. One fewer attempt: the service refused one, or it was never sent; removed when it was the last. `Uncertain`, one fewer attempt: an attempt's answer was lost, or the kernel restarted while attempts waited. Removed: job cleanup confirmed no machine exists. |
+/// | `Uncertain` | yes | from its start | `Running`: a retry's answer or job cleanup returns its machine. One more or one fewer attempt, as from `Pending`, but a refusal never removes it: no refusal rules out the machine whose answer was lost. Removed: job cleanup confirmed no machine exists. |
 /// | `Running` | yes | yes | `Deleting`: the service says it is being deleted. `Ended`: the service confirms it deleted, or a list sent while it was running no longer has it. |
 /// | `Deleting` | yes | yes | `Ended`, as from `Running`. |
 /// | `Ended` | no | until its end | nothing. |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcquiredState {
-    /// Sent to the service by the attempt that admitted it, which applies its answer (unless the
-    /// kernel restarted before it came).
+    /// Every attempt sent for it is waiting for its answer, or was refused: once the last attempt
+    /// is refused, no machine exists.
     Pending,
-    /// More than one attempt may have reached the service, or an answer was lost: a machine may
-    /// exist that no refusal can rule out.
+    /// An attempt's answer was lost: a machine may exist that no refusal can rule out.
     Uncertain,
     Running {
         allocation_ref: String,
@@ -75,7 +73,8 @@ pub(crate) enum AcquisitionKey {
 
 #[derive(Debug)]
 pub(crate) enum AcquiredMachineWrite {
-    /// Inserts `machine` as pending while fewer than `max_live` rows are live.
+    /// Inserts `machine` as pending, with its first attempt, while fewer than `max_live` rows are
+    /// live.
     Admit {
         machine: AcquiredMachine,
         max_live: u32,
@@ -87,12 +86,13 @@ pub(crate) enum AcquiredMachineWrite {
         key: AcquisitionKey,
         allocation_ref: String,
     },
-    /// A pending or uncertain row whose answer may have been lost, or which a retry goes ahead
-    /// with, becomes uncertain.
-    Uncertain { key: AcquisitionKey },
-    /// A pending row whose only attempt was refused or never sent leaves the ledger. An uncertain
-    /// row stays.
-    Withdraw { key: AcquisitionKey },
+    /// A retry of a pending or uncertain request goes ahead: one more attempt waits.
+    Retry { key: AcquisitionKey },
+    /// One attempt of a pending or uncertain request was refused or never sent. A pending row whose
+    /// last attempt this was leaves the ledger; an uncertain row stays.
+    Release { key: AcquisitionKey },
+    /// One attempt's answer was lost: its pending or uncertain row becomes uncertain.
+    Lost { key: AcquisitionKey },
     /// A pending or uncertain row for which a fenced job cleanup confirmed no machine exists leaves
     /// the ledger.
     Remove { key: AcquisitionKey },
@@ -117,8 +117,13 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
                 CHECK ((state IN ('pending', 'uncertain')) = (allocation_ref IS NULL)),
             started_ms INTEGER NOT NULL,
             ended_ms INTEGER CHECK ((state = 'ended') = (ended_ms IS NOT NULL)),
+            attempts INTEGER NOT NULL CHECK (CASE state WHEN 'pending' THEN attempts > 0
+                WHEN 'uncertain' THEN attempts >= 0 ELSE attempts = 0 END),
             PRIMARY KEY (agent_id, request_id)
-        );",
+        );
+        -- The kernel is starting: no answer to an attempt sent before can still arrive.
+        UPDATE durable_acquired_machines SET state = 'uncertain', attempts = 0
+        WHERE state IN ('pending', 'uncertain');",
     )
 }
 
@@ -250,8 +255,8 @@ pub(super) fn apply(
         AcquiredMachineWrite::Admit { machine, max_live } => transaction.execute(
             "INSERT INTO durable_acquired_machines
                 (agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency, state,
-                    started_ms)
-            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8
+                    started_ms, attempts)
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 1
             WHERE (SELECT COUNT(*) FROM durable_acquired_machines WHERE state != 'ended') < ?9
             ON CONFLICT DO NOTHING",
             params![
@@ -274,7 +279,8 @@ pub(super) fn apply(
                 return Ok(0);
             };
             let started = transaction.execute(
-                "UPDATE durable_acquired_machines SET state = 'running', allocation_ref = ?3
+                "UPDATE durable_acquired_machines
+                SET state = 'running', allocation_ref = ?3, attempts = 0
                 WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')
                     AND NOT EXISTS (SELECT 1 FROM durable_acquired_machines WHERE allocation_ref = ?3)",
                 params![agent_id, request_id, allocation_ref],
@@ -288,23 +294,44 @@ pub(super) fn apply(
             }
             started
         }
-        AcquiredMachineWrite::Uncertain { key } => {
+        AcquiredMachineWrite::Retry { key } => {
             let Some((agent_id, request_id)) = resolve(transaction, key)? else {
                 return Ok(0);
             };
             transaction.execute(
-                "UPDATE durable_acquired_machines SET state = 'uncertain'
+                "UPDATE durable_acquired_machines SET attempts = attempts + 1
                 WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
                 params![agent_id, request_id],
             )?
         }
-        AcquiredMachineWrite::Withdraw { key } => {
+        AcquiredMachineWrite::Release { key } => {
+            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
+                return Ok(0);
+            };
+            let removed = transaction.execute(
+                "DELETE FROM durable_acquired_machines
+                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending' AND attempts = 1",
+                params![agent_id, request_id],
+            )?;
+            if removed > 0 {
+                removed
+            } else {
+                transaction.execute(
+                    "UPDATE durable_acquired_machines SET attempts = attempts - 1
+                    WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')
+                        AND attempts > 0",
+                    params![agent_id, request_id],
+                )?
+            }
+        }
+        AcquiredMachineWrite::Lost { key } => {
             let Some((agent_id, request_id)) = resolve(transaction, key)? else {
                 return Ok(0);
             };
             transaction.execute(
-                "DELETE FROM durable_acquired_machines
-                WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending'",
+                "UPDATE durable_acquired_machines SET state = 'uncertain', attempts = attempts - 1
+                WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')
+                    AND attempts > 0",
                 params![agent_id, request_id],
             )?
         }
@@ -425,7 +452,7 @@ mod tests {
                 }
             ));
         }
-        let store = DurableKernelStateStore::open(path).unwrap();
+        let store = DurableKernelStateStore::open(path.clone()).unwrap();
         assert!(admit(&store, "c", None));
         assert!(
             !admit(&store, "d", None),
@@ -471,20 +498,54 @@ mod tests {
             .iter()
             .all(|machine| machine.request_id != "a"));
         assert!(admit(&store, "d", None));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Retry { key: request("d") }
+        ));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Release { key: request("d") }
+        ));
+        assert_eq!(
+            state_of(&store, "d"),
+            Some(AcquiredState::Pending),
+            "the retry still waits for its answer"
+        );
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Release { key: request("d") }
+        ));
+        assert_eq!(
+            state_of(&store, "d"),
+            None,
+            "every attempt was refused, so no machine exists"
+        );
         assert!(
-            write(&store, AcquiredMachineWrite::Withdraw { key: request("d") }),
-            "the attempt that admitted a request withdraws it while it is pending"
+            !write(&store, AcquiredMachineWrite::Release { key: request("d") }),
+            "each attempt releases once"
         );
         assert!(admit(&store, "d", None));
         assert!(write(
             &store,
-            AcquiredMachineWrite::Uncertain { key: request("c") }
+            AcquiredMachineWrite::Lost { key: request("c") }
         ));
         assert!(
-            !write(&store, AcquiredMachineWrite::Withdraw { key: request("c") }),
+            !write(&store, AcquiredMachineWrite::Release { key: request("c") }),
+            "a lost answer is not released by a refusal"
+        );
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Retry { key: request("c") }
+        ));
+        assert!(write(
+            &store,
+            AcquiredMachineWrite::Release { key: request("c") }
+        ));
+        assert_eq!(
+            state_of(&store, "c"),
+            Some(AcquiredState::Uncertain),
             "only a settled outcome removes an uncertain request"
         );
-        assert_eq!(state_of(&store, "c"), Some(AcquiredState::Uncertain));
         assert!(write(
             &store,
             AcquiredMachineWrite::Accept {
@@ -493,15 +554,20 @@ mod tests {
             }
         ));
         assert!(
-            !write(
-                &store,
-                AcquiredMachineWrite::Uncertain { key: request("c") }
-            ),
+            !write(&store, AcquiredMachineWrite::Retry { key: request("c") })
+                && !write(&store, AcquiredMachineWrite::Lost { key: request("c") }),
             "a running machine is never uncertain again"
         );
-        assert!(write(
+        drop(store);
+        let store = DurableKernelStateStore::open(path).unwrap();
+        assert_eq!(
+            state_of(&store, "d"),
+            Some(AcquiredState::Uncertain),
+            "an attempt sent before a restart never gets its answer"
+        );
+        assert!(!write(
             &store,
-            AcquiredMachineWrite::Uncertain { key: request("d") }
+            AcquiredMachineWrite::Release { key: request("d") }
         ));
         assert!(write(
             &store,
