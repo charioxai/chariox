@@ -2,10 +2,21 @@
 //! under it.
 //! Every change is one compare-and-set on the row of (agent_id, request_id); the transitions and
 //! why each one is safe are in `runtime/state/machine_acquisition/choice.rs`.
+//!
+//! This module owns the row's lifetime. A row stays for `REPLAY_WINDOW_MS` after its last write,
+//! the time a retry of the request_id must still get the answer of the first try. After that no
+//! read sees it, the next write removes it, and opening the store removes what a restart left.
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-use super::{DurableKernelStateStore, DurableWriteOperation};
+use super::{DurableKernelStateStore, DurableWriteOperation, FINISHED_RETENTION_MS};
 use crate::error::DaemonError;
+
+const REPLAY_WINDOW_MS: u64 = FINISHED_RETENTION_MS;
+
+/// Rows last written at or before this time are past their replay window.
+fn expired_before(now_ms: u64) -> i64 {
+    now_ms.saturating_sub(REPLAY_WINDOW_MS) as i64
+}
 
 /// What an acquire asks the service for. Stored as its class_id and region; no class_id is the
 /// service's default.
@@ -60,6 +71,9 @@ pub(crate) enum AcquireChoiceWrite {
         option: AcquireOption,
         allocation_ref: String,
     },
+    /// The service closed the request: nothing was or will be allocated under it. The row stays
+    /// for the replay window, so a retry gets the same answer.
+    Closed { option: AcquireOption },
 }
 
 #[derive(Debug)]
@@ -67,6 +81,7 @@ pub(crate) struct AcquireChoiceTransition {
     agent_id: String,
     request_id: String,
     write: AcquireChoiceWrite,
+    now_ms: u64,
 }
 
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
@@ -76,9 +91,18 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             class_id TEXT, region TEXT CHECK (class_id IS NOT NULL OR region IS NULL),
             state TEXT NOT NULL CHECK (state IN ('pending', 'accepted')),
             allocation_ref TEXT CHECK ((state = 'accepted') = (allocation_ref IS NOT NULL)),
+            touched_ms INTEGER NOT NULL,
             PRIMARY KEY (agent_id, request_id)
-        );",
-    )
+        );
+        CREATE INDEX IF NOT EXISTS durable_acquire_choices_touched
+            ON durable_acquire_choices (touched_ms);",
+    )?;
+    // Rows a restart left past their window: their try is long over.
+    connection.execute(
+        "DELETE FROM durable_acquire_choices WHERE touched_ms <= ?1",
+        params![expired_before(crate::session::unix_epoch_ms())],
+    )?;
+    Ok(())
 }
 
 impl DurableKernelStateStore {
@@ -86,12 +110,13 @@ impl DurableKernelStateStore {
         &self,
         agent_id: &str,
         request_id: &str,
+        now_ms: u64,
     ) -> Result<Option<AcquireChoice>, DaemonError> {
         self.lock_connection("acquire_choices.read")?
             .query_row(
                 "SELECT class_id, region, state, allocation_ref FROM durable_acquire_choices
-                WHERE agent_id = ?1 AND request_id = ?2",
-                params![agent_id, request_id],
+                WHERE agent_id = ?1 AND request_id = ?2 AND touched_ms > ?3",
+                params![agent_id, request_id, expired_before(now_ms)],
                 |row| {
                     let state = match (row.get::<_, String>(2)?.as_str(), row.get(3)?) {
                         ("accepted", Some(allocation_ref)) => {
@@ -118,6 +143,7 @@ impl DurableKernelStateStore {
         agent_id: &str,
         request_id: &str,
         write: AcquireChoiceWrite,
+        now_ms: u64,
     ) -> Result<bool, DaemonError> {
         self.writer
             .execute(DurableWriteOperation::AcquireChoice(
@@ -125,13 +151,15 @@ impl DurableKernelStateStore {
                     agent_id: agent_id.into(),
                     request_id: request_id.into(),
                     write,
+                    now_ms,
                 },
             ))
             .map(|changed| changed == 1)
     }
 }
 
-/// A row in another state changes nothing and leaves the rest of the batch to commit.
+/// A row in another state changes nothing and leaves the rest of the batch to commit. Rows past
+/// their window go first, so a write never meets one.
 pub(super) fn apply(
     transaction: &Transaction<'_>,
     transition: &AcquireChoiceTransition,
@@ -140,19 +168,32 @@ pub(super) fn apply(
         agent_id,
         request_id,
         write,
+        now_ms,
     } = transition;
+    transaction.execute(
+        "DELETE FROM durable_acquire_choices WHERE touched_ms <= ?1",
+        params![expired_before(*now_ms)],
+    )?;
     let changed = match write {
         AcquireChoiceWrite::Choose { option } => transaction.execute(
-            "INSERT INTO durable_acquire_choices (agent_id, request_id, class_id, region, state)
-            VALUES (?1, ?2, ?3, ?4, 'pending')
+            "INSERT INTO durable_acquire_choices
+                (agent_id, request_id, class_id, region, state, touched_ms)
+            VALUES (?1, ?2, ?3, ?4, 'pending', ?5)
             ON CONFLICT (agent_id, request_id) DO NOTHING",
-            params![agent_id, request_id, option.class_id(), option.region()],
+            params![
+                agent_id,
+                request_id,
+                option.class_id(),
+                option.region(),
+                *now_ms as i64
+            ],
         )?,
         AcquireChoiceWrite::Accept {
             option,
             allocation_ref,
         } => transaction.execute(
-            "UPDATE durable_acquire_choices SET state = 'accepted', allocation_ref = ?5
+            "UPDATE durable_acquire_choices
+            SET state = 'accepted', allocation_ref = ?5, touched_ms = ?6
             WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4
                 AND (state != 'accepted' OR allocation_ref = ?5)",
             params![
@@ -160,7 +201,20 @@ pub(super) fn apply(
                 request_id,
                 option.class_id(),
                 option.region(),
-                allocation_ref
+                allocation_ref,
+                *now_ms as i64
+            ],
+        )?,
+        AcquireChoiceWrite::Closed { option } => transaction.execute(
+            "UPDATE durable_acquire_choices SET touched_ms = ?5
+            WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4
+                AND state = 'pending'",
+            params![
+                agent_id,
+                request_id,
+                option.class_id(),
+                option.region(),
+                *now_ms as i64
             ],
         )?,
     };
@@ -177,6 +231,10 @@ fn state_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn now() -> u64 {
+        crate::session::unix_epoch_ms()
+    }
 
     fn option(class_id: &str) -> AcquireOption {
         AcquireOption::Named {
@@ -204,7 +262,7 @@ mod tests {
         let path = directory.path().join("kernel.db");
         let state = |store: &DurableKernelStateStore| {
             store
-                .acquire_choice("agent", "r1")
+                .acquire_choice("agent", "r1", now())
                 .unwrap()
                 .map(|choice| (choice.option.class_id().unwrap().to_owned(), choice.state))
         };
@@ -213,43 +271,43 @@ mod tests {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
             assert_eq!(state(&store), None);
             assert!(!store
-                .write_acquire_choice("agent", "r1", accept("small", "a1"))
+                .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
                 .unwrap());
             assert!(store
-                .write_acquire_choice("agent", "r1", choose("small"))
+                .write_acquire_choice("agent", "r1", choose("small"), now())
                 .unwrap());
             // A concurrent try that chose second keeps the first choice.
             assert!(!store
-                .write_acquire_choice("agent", "r1", choose("big"))
+                .write_acquire_choice("agent", "r1", choose("big"), now())
                 .unwrap());
             assert_eq!(state(&store), pending("small"));
             // Each agent's request_id is its own.
             assert!(store
-                .write_acquire_choice("other", "r1", choose("big"))
+                .write_acquire_choice("other", "r1", choose("big"), now())
                 .unwrap());
         }
         // Restarted after a try was sent: the retry resends "small".
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
         assert_eq!(state(&store), pending("small"));
         assert!(!store
-            .write_acquire_choice("agent", "r1", choose("big"))
+            .write_acquire_choice("agent", "r1", choose("big"), now())
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", accept("big", "a1"))
+            .write_acquire_choice("agent", "r1", accept("big", "a1"), now())
             .unwrap());
         assert_eq!(state(&store), pending("small"));
         assert!(store
-            .write_acquire_choice("agent", "r1", accept("small", "a1"))
+            .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
             .unwrap());
         // Accepted is final: a replay of the same allocation is fine, nothing else changes it.
         assert!(store
-            .write_acquire_choice("agent", "r1", accept("small", "a1"))
+            .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", accept("small", "a2"))
+            .write_acquire_choice("agent", "r1", accept("small", "a2"), now())
             .unwrap());
         assert!(!store
-            .write_acquire_choice("agent", "r1", choose("big"))
+            .write_acquire_choice("agent", "r1", choose("big"), now())
             .unwrap());
         drop(store);
         let store = DurableKernelStateStore::open(path).unwrap();
@@ -274,19 +332,19 @@ mod tests {
         {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
             assert!(store
-                .write_acquire_choice("agent", "r1", default())
+                .write_acquire_choice("agent", "r1", default(), now())
                 .unwrap());
             assert!(!store
-                .write_acquire_choice("agent", "r1", choose("small"))
+                .write_acquire_choice("agent", "r1", choose("small"), now())
                 .unwrap());
             // An acceptance of a named option is not one of the default.
             assert!(!store
-                .write_acquire_choice("agent", "r1", accept("small", "a1"))
+                .write_acquire_choice("agent", "r1", accept("small", "a1"), now())
                 .unwrap());
         }
         let store = DurableKernelStateStore::open(path).unwrap();
         assert_eq!(
-            store.acquire_choice("agent", "r1").unwrap(),
+            store.acquire_choice("agent", "r1", now()).unwrap(),
             Some(AcquireChoice {
                 option: AcquireOption::ServiceDefault,
                 state: AcquireChoiceState::Pending,
@@ -299,12 +357,135 @@ mod tests {
                 AcquireChoiceWrite::Accept {
                     option: AcquireOption::ServiceDefault,
                     allocation_ref: "a1".into()
-                }
+                },
+                now()
             )
             .unwrap());
         assert_eq!(
-            store.acquire_choice("agent", "r1").unwrap().unwrap().option,
+            store
+                .acquire_choice("agent", "r1", now())
+                .unwrap()
+                .unwrap()
+                .option,
             AcquireOption::ServiceDefault
         );
+    }
+
+    fn state_at(
+        store: &DurableKernelStateStore,
+        agent_id: &str,
+        now_ms: u64,
+    ) -> Option<AcquireChoiceState> {
+        store
+            .acquire_choice(agent_id, "r1", now_ms)
+            .unwrap()
+            .map(|choice| choice.state)
+    }
+
+    #[test]
+    fn a_row_is_read_for_its_window_after_its_last_write_and_the_next_write_removes_it() {
+        let directory = crate::test_support::TestTempDir::new("acquire-choices-window");
+        let store = DurableKernelStateStore::open(directory.path().join("kernel.db")).unwrap();
+        let start = now();
+        assert!(store
+            .write_acquire_choice("agent", "r1", choose("small"), start)
+            .unwrap());
+        assert_eq!(
+            state_at(&store, "agent", start + REPLAY_WINDOW_MS - 1),
+            Some(AcquireChoiceState::Pending)
+        );
+        assert_eq!(state_at(&store, "agent", start + REPLAY_WINDOW_MS), None);
+        // A write inside the window restarts it.
+        assert!(store
+            .write_acquire_choice("agent", "r1", accept("small", "a1"), start + 1_000)
+            .unwrap());
+        assert!(state_at(&store, "agent", start + REPLAY_WINDOW_MS).is_some());
+        // The first write past the window removes the row and leaves other agents' rows alone.
+        let later = start + 1_000 + REPLAY_WINDOW_MS;
+        assert!(store
+            .write_acquire_choice("other", "r1", choose("big"), later - 1)
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("other", "r2", choose("big"), later)
+            .unwrap());
+        assert_eq!(state_at(&store, "agent", start), None, "the row is gone");
+        assert!(state_at(&store, "other", later).is_some());
+        // A request_id used again after its window chooses anew.
+        assert!(store
+            .write_acquire_choice("agent", "r1", choose("big"), later)
+            .unwrap());
+        assert_eq!(
+            store
+                .acquire_choice("agent", "r1", later)
+                .unwrap()
+                .unwrap()
+                .option,
+            option("big")
+        );
+    }
+
+    #[test]
+    fn opening_the_store_removes_rows_a_restart_left_past_their_window() {
+        let directory = crate::test_support::TestTempDir::new("acquire-choices-startup");
+        let path = directory.path().join("kernel.db");
+        let long_ago = now() - REPLAY_WINDOW_MS - 1;
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            // A try died with the kernel in the middle of its request, long ago and just now.
+            assert!(store
+                .write_acquire_choice("agent", "r2", choose("small"), now())
+                .unwrap());
+            // Written with an old clock, as a row of an earlier run: no write of today removed it.
+            assert!(store
+                .write_acquire_choice("agent", "r1", choose("small"), long_ago)
+                .unwrap());
+            assert_eq!(
+                state_at(&store, "agent", long_ago),
+                Some(AcquireChoiceState::Pending)
+            );
+        }
+        let store = DurableKernelStateStore::open(path).unwrap();
+        assert_eq!(
+            state_at(&store, "agent", long_ago),
+            None,
+            "the old row is gone"
+        );
+        assert_eq!(
+            store
+                .acquire_choice("agent", "r2", now())
+                .unwrap()
+                .map(|choice| choice.state),
+            Some(AcquireChoiceState::Pending)
+        );
+    }
+
+    #[test]
+    fn a_closed_request_keeps_its_row_for_a_new_window() {
+        let directory = crate::test_support::TestTempDir::new("acquire-choices-closed");
+        let store = DurableKernelStateStore::open(directory.path().join("kernel.db")).unwrap();
+        let start = now();
+        let closed = || AcquireChoiceWrite::Closed {
+            option: option("small"),
+        };
+        assert!(!store
+            .write_acquire_choice("agent", "r1", closed(), start)
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r1", choose("small"), start)
+            .unwrap());
+        assert!(!store
+            .write_acquire_choice(
+                "agent",
+                "r1",
+                AcquireChoiceWrite::Closed {
+                    option: option("big")
+                },
+                start
+            )
+            .unwrap());
+        assert!(store
+            .write_acquire_choice("agent", "r1", closed(), start + REPLAY_WINDOW_MS - 1)
+            .unwrap());
+        assert!(state_at(&store, "agent", start + REPLAY_WINDOW_MS + 1).is_some());
     }
 }

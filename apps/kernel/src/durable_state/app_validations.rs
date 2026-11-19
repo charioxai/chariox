@@ -2,7 +2,7 @@
 //! An operation binds owner, installation, generation, action and the exact
 //! canonical parameters; a person approves or denies it through a trusted
 //! kernel interaction, and an approval is consumed once at the effect boundary.
-use super::{DurableKernelStateStore, DurableWriterRequest};
+use super::{DurableKernelStateStore, DurableWriterRequest, FINISHED_RETENTION_MS};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc;
@@ -13,7 +13,6 @@ pub(crate) const APPROVAL_USE_MS: u64 = 10 * 60 * 1000;
 /// Unfinished operations per installation.
 const MAX_OPEN: i64 = 16;
 /// Denied, expired and consumed operations are kept this long, then removed.
-const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValidationState {

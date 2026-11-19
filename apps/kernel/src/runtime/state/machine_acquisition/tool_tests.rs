@@ -469,6 +469,28 @@ fn assert_closed(error: &str, request_id: &str) {
     assert!(!error.contains("machines list"), "{error}");
 }
 
+fn now() -> u64 {
+    crate::session::unix_epoch_ms()
+}
+
+fn choose_big(state: &KernelRuntimeState, agent: &str, request_id: &str, at_ms: u64) {
+    assert!(state
+        .owned
+        .durable_state_store
+        .write_acquire_choice(
+            agent,
+            request_id,
+            crate::durable_state::acquire_choices::AcquireChoiceWrite::Choose {
+                option: AcquireOption::Named {
+                    class_id: "big".into(),
+                    region: Some("south".into()),
+                },
+            },
+            at_ms,
+        )
+        .unwrap());
+}
+
 fn acquire_args(request_id: &str) -> serde_json::Value {
     serde_json::json!({ "request_id": request_id })
 }
@@ -581,7 +603,7 @@ async fn a_refusal_after_a_lost_response_keeps_the_option_and_the_retry_recovers
         let row = state
             .owned
             .durable_state_store
-            .acquire_choice(&agent, &request_id)
+            .acquire_choice(&agent, &request_id, now())
             .unwrap()
             .unwrap();
         assert_eq!(row.state, AcquireChoiceState::Pending, "{code}");
@@ -666,7 +688,7 @@ async fn a_late_refusal_of_an_overlapping_try_keeps_the_option_the_committed_try
             state
                 .owned
                 .durable_state_store
-                .acquire_choice(&agent, "r1")
+                .acquire_choice(&agent, "r1", now())
                 .unwrap()
                 .unwrap()
                 .state,
@@ -843,6 +865,7 @@ async fn a_try_that_loses_the_choice_sends_the_winners_option() {
                     region: Some("south".into()),
                 },
             },
+            now(),
         )
         .unwrap());
     let result = state
@@ -942,7 +965,7 @@ async fn a_failure_before_the_acquire_is_sent_keeps_the_option_and_recovers_with
             state
                 .owned
                 .durable_state_store
-                .acquire_choice(&agent, &request_id)
+                .acquire_choice(&agent, &request_id, now())
                 .unwrap()
                 .map(|choice| choice.state),
             Some(AcquireChoiceState::Pending),
@@ -982,7 +1005,7 @@ async fn an_accepted_default_request_replays_the_default_after_options_appear() 
         state
             .owned
             .durable_state_store
-            .acquire_choice(&agent, "r1")
+            .acquire_choice(&agent, "r1", now())
             .unwrap()
             .map(|choice| choice.option),
         Some(AcquireOption::ServiceDefault)
@@ -1006,4 +1029,67 @@ async fn an_accepted_default_request_replays_the_default_after_options_appear() 
     assert!(acquires
         .iter()
         .all(|acquire| acquire["class_id"].is_null() && acquire["region"].is_null()));
+}
+
+const WINDOW_MS: u64 = crate::durable_state::FINISHED_RETENTION_MS;
+
+#[tokio::test]
+async fn a_retry_inside_the_replay_window_keeps_its_option_and_one_after_it_chooses_again() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let agent = agent_of(&state, &token);
+    choose_big(&state, &agent, "inside", now() - WINDOW_MS + 60_000);
+    choose_big(&state, &agent, "after", now() - WINDOW_MS - 1);
+    for request_id in ["inside", "after"] {
+        state
+            .machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id))
+            .await
+            .unwrap();
+    }
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires[0]["class_id"], "big");
+    assert_eq!(acquires[1]["class_id"], "small");
+}
+
+#[tokio::test]
+async fn a_settled_acquisition_removes_the_rows_past_their_window() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let agent = agent_of(&state, &token);
+    let old = now() - WINDOW_MS - 1;
+    choose_big(&state, &agent, "old", old);
+    let store = &state.owned.durable_state_store;
+    // Read with a clock from before the row aged out: the row is still there.
+    assert!(store.acquire_choice(&agent, "old", old).unwrap().is_some());
+    state
+        .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
+        .await
+        .unwrap();
+    assert!(store.acquire_choice(&agent, "old", old).unwrap().is_none());
+    assert!(store.acquire_choice(&agent, "r1", now()).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_closed_refusal_keeps_the_request_for_a_new_window() {
+    let service = service(
+        vec![option("big", "south", true), option("small", "north", true)],
+        &["big"],
+    )
+    .await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let agent = agent_of(&state, &token);
+    choose_big(&state, &agent, "r1", now() - WINDOW_MS + 60_000);
+    let error = state
+        .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_closed(&error, "r1");
+    // Two minutes on, the first write's window has ended; the closed refusal's has not.
+    assert!(state
+        .owned
+        .durable_state_store
+        .acquire_choice(&agent, "r1", now() + 120_000)
+        .unwrap()
+        .is_some());
 }

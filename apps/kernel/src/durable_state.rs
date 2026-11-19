@@ -103,6 +103,8 @@ pub struct DurableKernelStateStore {
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
 }
 
+/// How long a finished record stays readable before the next write or the next start drops it.
+pub(crate) const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 /// Appended events a live subscriber may fall behind before it loses some.
 const APPENDED_EVENT_BACKLOG: usize = 1_024;
