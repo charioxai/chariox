@@ -127,8 +127,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   its arrival (below the client's 8 s request timeout).
 - **Compact wire (489).** A reset packet carries the binding and header
   (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
-  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`,
-  `fragment` (492)). A
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `focus_visible`,
+  `selection`, `fragment` (492)). A
   delta carries `wire`, `sequence`, its ops, and only the header fields that
   differ from its base (an explicit `null` replaces); its base is
   `sequence - 1`, and the viewer restores the rest from its binding and the
@@ -212,7 +212,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   Focus transitions travel explicitly (492): viewer `focusin` sends `focus`,
   focus leaving to nothing while the mirror keeps focus sends `blur` (the
   kernel blurs only while that control is still its live focus), and a kernel
-  header `focused: null` blurs the viewer's control. The caret (a collapsed
+  header `focused: null` blurs the viewer's control. `focus_visible` is whether
+  the page's focused element matches `:focus-visible` (a key moved or followed
+  the focus, not a mouse press); the viewer focuses its copy with the same
+  `focusVisible`, so it draws the focus ring only where the page does. The caret (a collapsed
   selection) travels inside editable content only. A press's focus/selection
   waits up to 50 ms for the rest of its click, so a menu the page renders a
   frame later shares the packet; after an acknowledged viewer focus, packets

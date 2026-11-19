@@ -34,6 +34,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-requirements-550.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-viewport-first-629.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-visited-links-629.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-focus-visible-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-pointer-cursor-document-mode-920.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-done-text-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-verification-992.json",

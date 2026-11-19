@@ -395,9 +395,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         // Focus and selection taken by a pointer press wait (50 ms at most) for the rest of its click, so the
         // click's own changes (a menu rendered a frame later) leave in the same packet; other moves wake now.
         listen('pointerdown', () => { pressedAt = performance.now(); });
-        const moved = () => { const { focused, selection, range } = focusState(); if (JSON.stringify([focused, selection, range]) !== reported) wake(); };
+        const moved = () => { const { focused, focus_visible, selection, range } = focusState(); if (JSON.stringify([focused, focus_visible, selection, range]) !== reported) wake(); };
         const soon = () => { if (performance.now() - pressedAt < 100) setTimeout(moved, 50); else moved(); };
         listen('focusin', soon);
+        // A key (or a press) can turn the focused element's ring on (off) without moving the focus.
+        const later = () => setTimeout(moved, 0); listen('keydown', later); listen('pointerup', later);
         // Popover and dialog transitions (toggle does not bubble: capture sees it); the cursor samples the rest.
         const stateEvent = event => { const target = event.composedPath()[0] ?? event.target; if (target?.nodeType === 1) { dirty.state.add(target); wake(); } };
         listen('toggle', stateEvent); listen('close', stateEvent); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; soon(); });
@@ -944,7 +946,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
       // A focused text control's own range travels as a form op: part of the state a focus or selection event may move.
       const range = ['input', 'textarea'].includes(focused?.localName) ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-      return { focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, range };
+      const shown = focusId && kindOf.get(focusId) !== 'mask' ? focusId : null;
+      // Whether the page's browser draws its focus ring (:focus-visible: a key, not a mouse press, moved or followed it):
+      // the viewer focuses its copy the same way instead of guessing from how the focus reached it.
+      return { focused: shown, focus_visible: shown !== null && focused.matches(':focus-visible'), selection, range };
     };
     // MP-08/MP-10: the focus/selection state the last drain reported. A focus or selection event that leaves it
     // unchanged (focus emulation restoring the same element) does not end the long poll before the input it precedes.
@@ -976,9 +981,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     let reported = '', reportedComplete = false;
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
-      const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
+      const { focused, focus_visible, selection, range } = focusState(); reported = JSON.stringify([focused, focus_visible, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };

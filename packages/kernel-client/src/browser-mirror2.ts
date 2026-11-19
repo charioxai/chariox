@@ -100,6 +100,7 @@ export class BrowserMirror2Renderer {
   // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
+  private kernelFocusVisible = false // whether the page draws a focus ring on it (it matches :focus-visible there)
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private resetSerial = 0 // local only: IDs and cached focus never cross a snapshot
   private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
@@ -227,8 +228,13 @@ export class BrowserMirror2Renderer {
     const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
     const focused = id && !elsewhere ? this.dom.get(id) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
     this.focusSent = id
+    // The copy draws a focus ring only where the page does: a script focus() alone would draw one after a mouse press.
+    // Focusing the focused element again changes nothing, so a ring that turns on or off takes a blur first.
+    // (TypeScript's DOM types do not name FocusOptions.focusVisible yet; Chrome, Firefox and Safari take it.)
+    const ring = this.kernelFocusVisible
+    if (focused && active === focused && focused.matches(':focus-visible') !== ring) focused.blur()
     // A control built while detached could not take its caret: restore it once focused.
-    if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+    if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true, focusVisible: ring } as FocusOptions); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
     // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
     else if (!id && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
   }
@@ -842,7 +848,7 @@ export class BrowserMirror2Renderer {
       if (packet.document_id !== this.documentId) this.documentAt = performance.now()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
-      this.kernelFocus = packet.focused
+      this.kernelFocus = packet.focused; this.kernelFocusVisible = packet.focus_visible === true
       rangeRestored = restoreMirror2Range(this.doc, savedRange, node => this.ids.has(node), node => this.records.get(this.ids.get(node) ?? '')?.kind === 'mask')
       const selectionKey = packet.selection ? JSON.stringify({kind:'selection',anchor_id:packet.selection.anchor_id,anchor_offset:packet.selection.anchor_offset,focus_id:packet.selection.focus_id,focus_offset:packet.selection.focus_offset}) : ''
       if (this.selectionHold && (selectionKey === this.selectionHold.key || packet.sequence > this.selectionHold.until)) this.selectionHold = null
@@ -1063,9 +1069,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' ? false : name === 'font_failures' ? [] : null)
+    const header = (name: 'scroll' | 'focused' | 'focus_visible' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' || name === 'focus_visible' ? false : name === 'font_failures' ? [] : null)
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), focus_visible: header('focus_visible'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)

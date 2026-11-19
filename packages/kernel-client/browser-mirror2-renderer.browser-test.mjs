@@ -416,6 +416,25 @@ test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s
   } finally { await page.close(); }
 });
 
+// browserfidelity r14 (F7): the kernel's focus_visible decides the copy's focus ring; a script focus() alone draws one.
+test('MP-08: the viewer focuses the kernel\'s focus with its ring only where the page draws one (focus_visible), also when only the ring changes; nothing is echoed', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button' }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { tabindex: '0' } }])), focused: 'n4', focus_visible: false });
+    const ring = () => page.evaluate(() => { const e = window.r.frame.contentDocument.activeElement; return [e.localName, e.matches(':focus-visible')]; });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.deepEqual(await ring(), ['button', false], 'MP-08: a focus the page took by a mouse press draws no ring');
+    await apply(page, delta(2, [], { focused: 'n4', focus_visible: true }));
+    assert.deepEqual(await ring(), ['button', true], 'MP-08: a key on the page turns the ring on, the focus unchanged');
+    await apply(page, delta(3, [], { focused: 'n5', focus_visible: true }));
+    assert.deepEqual(await ring(), ['div', true], 'MP-08: Tab moves the focus with its ring');
+    await apply(page, delta(4, [], { focused: 'n5', focus_visible: false }));
+    assert.deepEqual(await ring(), ['div', false], 'MP-08: a press on the focused element turns the ring off');
+    await frames();
+    assert.deepEqual(await sent(), [], 'MP-08: the kernel-driven focus and ring changes are not echoed');
+  } finally { await page.close(); }
+});
+
 test('MP-10: protocol 492 the viewer takes the kernel\'s UA state (open popover, modal dialog with backdrop, indeterminate checkbox, custom element definitions) and marks the fragment\'s target', async () => {
   const page = await viewer();
   try {

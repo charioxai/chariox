@@ -732,6 +732,30 @@ test("MP-08: review #941-3 focus inside an attached cross-origin frame names the
     assert.equal(await focusOf(top), top, "MP-08: focus leaving the frame reaches the viewer");
   }, { "/two": { type: "text/html", body: '<!doctype html><input id="a"><input id="b"><script>onmessage=e=>document.getElementById(e.data).focus()</script>' } }));
 
+// browserfidelity r14 (F7): the viewer draws a focus ring only where the page's browser does. A mouse press focuses
+// without one, a key (also one after the press, which moves no focus) turns it on; inside a cross-origin frame too.
+test("MP-08: the header says whether the page's focus draws its ring (:focus-visible): a press no, a key yes, in a frame too", () => mirrored(
+  '<button id="one" style="width:120px;height:30px">one</button><button id="two">two</button><iframe src="http://localhost:PORT/inner" style="width:300px;height:100px"></iframe>', async ({ next, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    const id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)?.[0];
+    const [one, two, three] = [id("one"), id("two"), id("three")];
+    assert(three && Number(three.slice(1)) >= 1e9, "MP-10: the frame's button is mirrored");
+    assert.equal(snapshot.focus_visible, false, "MP-08: nothing focused draws no ring");
+    let focused = snapshot.focused, ring = snapshot.focus_visible, sequence = snapshot.sequence;
+    const stateOf = async want => { for (let i = 0; i < 6 && JSON.stringify([focused, ring]) !== JSON.stringify(want); i++) { const packet = await next(1000); sequence = packet.sequence; if (Object.hasOwn(packet, "focused")) focused = packet.focused; if (Object.hasOwn(packet, "focus_visible")) ring = packet.focus_visible; } return [focused, ring]; };
+    await input(sequence, { kind: "click", node_id: one, x: 10, y: 10 });
+    assert.deepEqual(await stateOf([one, false]), [one, false], "MP-08: a mouse press focuses the button without a ring");
+    await input(sequence, { kind: "key", key: "ArrowDown" });
+    assert.deepEqual(await stateOf([one, true]), [one, true], "MP-08: a key after the press turns the ring on without moving the focus");
+    await input(sequence, { kind: "key", key: "Tab" });
+    assert.deepEqual(await stateOf([two, true]), [two, true], "MP-08: Tab moves the focus with its ring");
+    await input(sequence, { kind: "click", node_id: three, x: 10, y: 10 });
+    assert.deepEqual(await stateOf([three, false]), [three, false], "MP-08: a press inside the frame focuses its button without a ring");
+    await input(sequence, { kind: "key", key: "ArrowDown" });
+    assert.deepEqual(await stateOf([three, true]), [three, true], "MP-08: a key inside the frame turns its ring on");
+  }, { "/inner": { type: "text/html", body: '<!doctype html><button id="three" style="width:120px;height:30px">three</button>' } }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));

@@ -30,7 +30,7 @@ const OPS = {
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
-  snapshot_complete: same, font_failures: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
+  focus_visible: same, snapshot_complete: same, font_failures: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
 const apply = (value, schema, what) => Object.fromEntries(Object.entries(value).map(([name, field]) => { if (!Object.hasOwn(schema, name)) throw new Error(`MP-11: unrebased mirror ${what} field`); return [name, field === undefined ? field : schema[name](field)]; }));
 export function rebaseRecord(record, slot) {
   if (!slot) return record;
@@ -46,7 +46,7 @@ export function rebaseOp(op, slot) {
 export const rebaseDelta = (delta, slot) => apply(delta, DELTA(slot), 'delta');
 
 // A child's focused leaf and selection in viewer ids (its page sees only the owner focused).
-const rebaseFocus = (header, slot) => { const { focused, selection } = rebaseDelta({ focused: header.focused, selection: header.selection }, slot); return { focused, selection }; };
+const rebaseFocus = (header, slot) => { const { focused, selection } = rebaseDelta({ focused: header.focused, selection: header.selection }, slot); return { focused, focus_visible: header.focus_visible === true, selection }; };
 
 export class MirrorFrames {
   constructor(mirror) { this.mirror = mirror; this.failures = []; }
@@ -188,7 +188,7 @@ export class MirrorFrames {
         }
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
         out.ops.push(...ops, ...await this.sheetOps(entry.child, entry.slot, raw.sheets)); out.changed.push(...delta.changed); out.resources.push(...resources);
-        entry.focus = { focused: delta.focused, selection: delta.selection };
+        entry.focus = { focused: delta.focused, focus_visible: delta.focus_visible === true, selection: delta.selection };
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
         if ((delta.fragment ?? null) !== entry.fragment) { entry.fragment = delta.fragment ?? null; out.ops.push({ op: 'fragment', id: entry.documentId, fragment: entry.fragment }); }
@@ -213,7 +213,7 @@ export class MirrorFrames {
     let view = source, at = source.focused;
     for (let depth = 0; at && depth <= MAX_DEPTH; depth++) {
       const entry = stream.frames.get(at); if (!entry) break;
-      view = { ...view, focused: entry.focus.focused ?? view.focused, selection: entry.focus.selection ?? view.selection }; at = entry.focus.focused;
+      view = { ...view, focused: entry.focus.focused ?? view.focused, focus_visible: entry.focus.focused ? entry.focus.focus_visible : view.focus_visible, selection: entry.focus.selection ?? view.selection }; at = entry.focus.focused;
     }
     return view;
   }
