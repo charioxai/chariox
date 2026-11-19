@@ -1729,20 +1729,29 @@ fn urgent_send_to_a_busy_receiver(
         assert_eq!(sent.payload["status"], "steering");
         let sequence = sent.payload["sequence"].as_u64().unwrap();
         assert_eq!(sent.payload["message_id"], sequence.to_string());
-        assert_ne!(
-            runtime
-                .owned
-                .durable_state_store
-                .agent_inbox(&session_id, receiver.id(), 0)
-                .unwrap()[0]
-                .state,
-            "accepted",
-            "the receiver's provider has not taken it while its lane is held"
+        let held = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&session_id, receiver.id(), 0)
+            .unwrap()[0]
+            .state
+            .clone();
+        assert!(
+            held != "accepted" && held != "acknowledged",
+            "the receiver's provider has not taken it while its lane is held: {held}"
         );
 
         change_sender(&mut *app.lock().await, &sender_run);
         drop(lane);
-        wait_for_message_state(&runtime, &session_id, receiver.id(), sequence, "accepted").await;
+        // A message its wake delivered is settled with the delivery.
+        wait_for_message_state(
+            &runtime,
+            &session_id,
+            receiver.id(),
+            sequence,
+            "acknowledged",
+        )
+        .await;
         assert_eq!(
             runtime
                 .owned
@@ -1880,12 +1889,13 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
         .as_u64()
         .expect("message should return a durable inbox sequence");
     let runtime = router.runtime_state();
+    // A message its wake delivered is settled with the delivery.
     wait_for_message_state(
         &runtime,
         &session_id,
         &stale_b_id,
         message_sequence,
-        "accepted",
+        "acknowledged",
     )
     .await;
     let b_inbox_after_first = runtime

@@ -392,7 +392,8 @@ async fn owner_stop_of_work_a_done_turn_retains_keeps_messages_pending_until_the
             .unwrap()
             .expect("the owner's prompt ends the stop")
             .state,
-        "accepted"
+        "acknowledged",
+        "the wake that delivers the message settles it"
     );
 }
 
