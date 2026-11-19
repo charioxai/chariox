@@ -75,7 +75,7 @@ export type AgentActiveTurn = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   status: "none" | "queued" | "running" | "cancelling" | "settling"
-  phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
+  phase: "accepted" | "awaiting_first_output" | "thinking" | "streaming" | "settling"
   started_at_ms?: number | null
 }
 

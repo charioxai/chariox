@@ -39,18 +39,28 @@ fn apply_system_message(
     {
         record_claude_session_id(state, batch, session_id);
     }
-    if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+    match value.get("subtype").and_then(Value::as_str) {
         // The summary replaces the history that held the run base.
-        state.delivered_hidden_base = None;
-        batch
-            .native_compactions
-            .extend(crate::app::claude_compaction_turn_id(value, None));
-    }
-    if value.get("subtype").and_then(Value::as_str) == Some("init") {
-        state.turn_watchdog.record_process_init();
-        state.runtime_tools_unavailable = runtime_tools_status(value)
-            .filter(|status| *status != "connected")
-            .map(str::to_string);
+        Some("compact_boundary") => {
+            state.delivered_hidden_base = None;
+            batch
+                .native_compactions
+                .extend(crate::app::claude_compaction_turn_id(value, None));
+        }
+        Some("init") => {
+            state.turn_watchdog.record_process_init();
+            state.runtime_tools_unavailable = runtime_tools_status(value)
+                .filter(|status| *status != "connected")
+                .map(str::to_string);
+        }
+        // Claude streams its reasoning as empty deltas; only this count says it thinks.
+        Some("thinking_tokens") => batch.note_thinking(
+            value
+                .get("estimated_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        ),
+        _ => {}
     }
     if batch.resolved_model.is_none() {
         if let Some(model) =
@@ -133,6 +143,9 @@ fn apply_stream_event(
     if event_kind == "content_block_start" {
         if let Some(block) = event.get("content_block") {
             let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("text");
+            if main && matches!(block_kind, "thinking" | "redacted_thinking") {
+                batch.note_thinking(0);
+            }
             if let Some(text) = claude_block_text(block, block_kind) {
                 emit_authoritative_text(
                     provider_run_id,

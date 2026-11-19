@@ -763,6 +763,8 @@ impl KernelRuntimeState {
             owned.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {
             owned.note_prompt_output(provider_run_id);
+        } else if let Some(tokens) = poll_result.thinking_tokens {
+            owned.active_turns.mark_thinking(provider_run_id, tokens);
         }
         // A step is finished when the batch ends on a tool call's end or an assistant message's
         // end: the provider is between two steps then, not inside one.

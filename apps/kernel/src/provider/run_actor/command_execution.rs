@@ -525,6 +525,7 @@ pub(super) fn execute_output_poll_command(
                 )
             }),
             resolved_resume_state,
+            thinking_tokens: None,
         }));
     }
     if run.adapter_key() == "claude" {
@@ -620,6 +621,7 @@ pub(super) fn execute_output_poll_command(
         resolved_usage: None,
         account_usage: None,
         resolved_resume_state: None,
+        thinking_tokens: None,
     }))
 }
 

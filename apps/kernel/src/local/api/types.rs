@@ -605,5 +605,7 @@ pub use workspace::*;
 /// capability names them (docs/PROTOCOL.md, "Kernel terminals"); a job request may name a machine the agent
 /// already holds (`machine`), which runs it through that machine's own kernel; Skills v2: Chariox and Project
 /// skill catalogs, the Auto / Manual / Off states, packages, repository install and update, and delivery to every
-/// execution place; the per-agent skill grants and the `skill` extension kind are gone.
+/// execution place; the per-agent skill grants and the `skill` extension kind are gone; an agent's active turn has
+/// the phase `thinking` while the model reasons without visible output (`awaiting_first_output` is the provider still
+/// reading the context).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
