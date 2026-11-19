@@ -29,6 +29,7 @@ pub(super) struct Team {
     pub(super) child_run: String,
     pub(super) task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
     pub(super) correction: bool,
+    _worktree: crate::test_support::TestWorktree,
 }
 
 /// A parent and its child in one room; the child has an active turn and a task, not yet settled.
@@ -47,6 +48,7 @@ pub(super) async fn team_with(
         room,
         parent,
         mut kids,
+        _worktree,
         ..
     } = family(label, 1, settle_cancelled, parent_running).await;
     let Kid {
@@ -65,6 +67,7 @@ pub(super) async fn team_with(
         child_run,
         task,
         correction,
+        _worktree,
     }
 }
 

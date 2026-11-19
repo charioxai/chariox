@@ -1150,6 +1150,150 @@ async fn a_delivered_prompt_folds_inside_the_held_notification_until_its_result(
     folded_turn_finishes_at_result(ProviderOwnTurnSignal::Running).await;
 }
 
+// Review 5975524512: the adapter ends the notification before the queued prompt's result.
+#[tokio::test]
+async fn a_folded_held_answer_excludes_the_separate_queued_prompt_reply_and_calls() {
+    let team = child_with_a_call_running("background-hold-separate-queued-reply").await;
+    // The output pump holds the run's lane while the next prompt waits for its actual write.
+    let lane = team
+        .runtime
+        .provider_runtime_lanes
+        .acquire(&team.child_run)
+        .await;
+    let message_prompt = status_message(&team, false).await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("notification began"),
+        ],
+    )
+    .await;
+    drop(lane);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = team
+                .runtime
+                .owned
+                .session_store
+                .get_session(&team.room)
+                .unwrap();
+            if team
+                .runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &team.child)
+                .is_some_and(|prompt| {
+                    prompt.id() == message_prompt
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the queued prompt must pass through the provider write and receipt");
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![text_chunk("notification continued after the queued write")],
+    )
+    .await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        false,
+        vec![text_chunk("notification ended before the queued reply")],
+    )
+    .await;
+    assert!(!working(&team));
+    assert_eq!(finishes_of_task(&team).len(), 1);
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::None,
+        true,
+        vec![
+            text_chunk("SEPARATE_QUEUED_REPLY"),
+            tool_chunk(&serde_json::json!({
+                "id": "queued-only-kernel-call",
+                "tool": "chariox_kernel_request",
+                "status": "completed",
+                "input": {"request": {"GetSessionState": {"session_id": team.room}}},
+            })),
+        ],
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            apply_own_turn(&team, ProviderOwnTurnSignal::None, false, Vec::new()).await;
+            if team
+                .runtime
+                .owned
+                .durable_state_store
+                .agent_turn_task(&team.room, &team.child, &message_prompt)
+                .unwrap()
+                .unwrap()
+                .state
+                == ExecutionState::Done
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the separate queued reply must settle after its output becomes quiet");
+    assert_eq!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_turn_task(&team.room, &team.child, &message_prompt)
+            .unwrap()
+            .unwrap()
+            .state,
+        ExecutionState::Done,
+        "the separate queued reply must finish normally",
+    );
+    let held_answer = message_answer(&team, team.child_prompt.id());
+    let queued_answer = message_answer(&team, &message_prompt);
+    assert!(
+        held_answer.contains("notification ended before the queued reply"),
+        "{held_answer}"
+    );
+    assert!(
+        queued_answer.contains("SEPARATE_QUEUED_REPLY"),
+        "{queued_answer}"
+    );
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.child))
+        .unwrap();
+    let held_entries =
+        super::super::agent_task_projection::prompt_turn_entries(&entries, team.child_prompt.id());
+    let queued_entries =
+        super::super::agent_task_projection::prompt_turn_entries(&entries, &message_prompt);
+    assert!(queued_entries
+        .iter()
+        .any(|entry| entry.text.contains("queued-only-kernel-call")));
+    let held_has_queued_call = held_entries
+        .iter()
+        .any(|entry| entry.text.contains("queued-only-kernel-call"));
+    assert!(
+        !held_answer.contains("SEPARATE_QUEUED_REPLY")
+            && !held_has_queued_call,
+        "the held task's answer and completed-call evidence must close before the separate reply: {held_answer}; queued_call={held_has_queued_call}",
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
+}
+
 // Transition T6 (review 5971171601): the notification turn ends before it was adopted. The held
 // task finishes at that end, after the ending batch is in history: its one finish carries the
 // output of every batch of the turn, and the message's answer carries none of it.

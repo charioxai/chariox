@@ -32,7 +32,9 @@
 //! its answer is read from.
 use super::*;
 use crate::provider::ProviderOwnTurnSignal;
-use crate::runtime::prompt_state::{OwnTurnBinding, PendingOwnTurn, ProviderTurnAdoption};
+use crate::runtime::prompt_state::{
+    OwnTurnBinding, PendingOwnTurn, PendingTurnOutput, ProviderTurnAdoption,
+};
 
 /// What history shows where a turn the provider started on its own begins.
 const PROVIDER_OWN_TURN_TEXT: &str = "Background command finished";
@@ -44,6 +46,7 @@ pub(super) struct HeldRelease {
     agent_id: String,
     provider_run_id: String,
     prompt_id: String,
+    folded_prompt: Option<Box<crate::session::PromptQueueItem>>,
 }
 
 impl KernelRuntimeState {
@@ -145,7 +148,7 @@ impl KernelRuntimeState {
         let Some(PendingOwnTurn {
             provider_run_id: pending_run,
             binding,
-            output: _,
+            output,
         }) = owned
             .prompt_state_owner
             .end_provider_turn(&session, agent_id, provider_run_id)
@@ -170,6 +173,10 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
                 provider_run_id: pending_run,
                 prompt_id,
+                folded_prompt: match output {
+                    PendingTurnOutput::Folded { into, .. } => Some(into),
+                    PendingTurnOutput::BehindPrompt | PendingTurnOutput::HeldSegment => None,
+                },
             }),
             OwnTurnBinding::Fresh => None,
         })
@@ -183,6 +190,18 @@ impl KernelRuntimeState {
         session_id: &str,
         release: HeldRelease,
     ) -> Result<(), DaemonError> {
+        if let Some(prompt) = release.folded_prompt {
+            // The steering boundary kept the notification inside the held answer. Its ending
+            // batch is now in history; a resumed boundary gives later output to this prompt alone.
+            self.owned.append_resumed_prompt_history(
+                session_id,
+                prompt.source_attachment_id(),
+                &release.agent_id,
+                prompt.prompt(),
+                prompt.id(),
+                crate::session::unix_epoch_ms(),
+            )?;
+        }
         for task in self.owned.held_tasks_after_notification(
             session_id,
             &release.agent_id,
