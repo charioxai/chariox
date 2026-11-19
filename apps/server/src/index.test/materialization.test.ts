@@ -187,7 +187,6 @@ test("gateway materializes exported publication packages through the kernel", as
     await writeFile(join(root, "requirements.json"), JSON.stringify({
       schema_version: 1,
       mcps: [{ name: "playwright" }],
-      skills: [{ name: "qa" }],
       scripts: [{ name: "deploy" }],
       connectors: [{ name: "github" }],
       credentials: [{ name: "github-token", used_by: "github" }],
@@ -210,7 +209,6 @@ test("gateway materializes exported publication packages through the kernel", as
             opencode: ["gpt-5"],
           })
           if ("ListMcpServers" in request) return { McpServersListed: { mcps: [{ name: "playwright" }] } }
-          if ("ListSkills" in request) return { SkillsListed: { skills: [{ name: "qa" }] } }
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
           if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
           if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
@@ -233,7 +231,6 @@ test("gateway materializes exported publication packages through the kernel", as
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
       "GetProviderCatalog",
       "ListMcpServers",
-      "ListSkills",
       "ListScripts",
       "ListConnectors",
       "ListCredentials",
@@ -550,10 +547,11 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
         send: async (request) => {
           requests.push(request)
           if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5"] })
+          if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment" } } }
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
-              session: { id: "runtime-session-1" },
+              session: { id: "runtime-session-provider-binding" },
               agent_id_map: { "agent-1": "agent-2" },
             },
           }
@@ -561,17 +559,18 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
       },
     })
 
-    const materializeRequest = requests.at(-1) as {
+    const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
       MaterializeWorkflowPublication: {
         snapshot: {
           agents: Array<{ provider: string; model: string | null; effort?: string | null }>
         }
       }
     }
-    assert.equal(config.session_id, "runtime-session-1")
+    assert.equal(config.session_id, "runtime-session-provider-binding")
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
       "GetProviderCatalog",
       "MaterializeWorkflowPublication",
+      "AttachToSession",
     ])
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "codex")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5")
@@ -937,7 +936,6 @@ test("gateway fails package materialization before runtime creation when require
           send: async (request) => {
             requests.push(request)
             if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: [] })
-            if ("ListSkills" in request) return { SkillsListed: { skills: [] } }
             if ("ListCredentials" in request) return { CredentialsListed: { credentials: [] } }
             throw new Error(`unexpected request: ${JSON.stringify(request)}`)
           },
@@ -947,7 +945,6 @@ test("gateway fails package materialization before runtime creation when require
     )
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
       "GetProviderCatalog",
-      "ListSkills",
       "ListCredentials",
     ])
   } finally {
