@@ -2019,3 +2019,111 @@ async fn panes_stream_maintenance_cannot_strand_a_ready_sibling() {
         "MP-08 / MP-10 maintenance stranded B behind blocked A without another provider event"
     );
 }
+
+#[tokio::test]
+async fn a_turn_that_thinks_without_text_shows_thinking_until_its_first_output() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-thinking");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-structured-thinking",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "think hard\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let active_prompt = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should load")
+        .active_prompt_for_agent(agent.id())
+        .expect("active prompt should exist")
+        .clone();
+    runtime.start_active_turn_with_trace_id(
+        session.id(),
+        agent.id(),
+        active_prompt.id(),
+        run.id(),
+        "trace-structured-thinking",
+    );
+    runtime
+        .owned
+        .active_turns
+        .mark_awaiting_first_output(run.id());
+    let phase = || {
+        runtime
+            .owned
+            .active_turns
+            .get(run.id())
+            .expect("active turn should be tracked")
+            .phase
+    };
+    let apply = |batch| {
+        runtime.apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            batch,
+        )
+    };
+
+    // Claude reports only a thinking-token count while the model reasons.
+    apply(crate::provider::ProviderPromptSignalBatch {
+        thinking_tokens: Some(1_200),
+        ..Default::default()
+    })
+    .await
+    .expect("thinking batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Thinking);
+    assert_eq!(
+        crate::runtime::projection::AgentTurnRuntimePhase::from(&phase()),
+        crate::runtime::projection::AgentTurnRuntimePhase::Thinking
+    );
+
+    apply(crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: Some("structured-thinking-answer".to_string()),
+            bytes: b"answer".to_vec(),
+        }],
+        ..Default::default()
+    })
+    .await
+    .expect("answer batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Streaming);
+
+    // Thinking never moves a streaming turn back.
+    apply(crate::provider::ProviderPromptSignalBatch {
+        thinking_tokens: Some(50),
+        ..Default::default()
+    })
+    .await
+    .expect("later thinking batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Streaming);
+}

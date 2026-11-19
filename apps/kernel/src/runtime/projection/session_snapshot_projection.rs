@@ -52,7 +52,10 @@ pub enum AgentPromptRuntimeStatus {
 #[serde(rename_all = "snake_case")]
 pub enum AgentTurnRuntimePhase {
     Accepted,
+    /// The provider is reading the context: show "Reading context" with the elapsed time.
     AwaitingFirstOutput,
+    /// The model reasons before it answers and streams nothing readable: show "Thinking".
+    Thinking,
     Streaming,
     Settling,
 }
@@ -447,6 +450,7 @@ impl From<&ActiveTurnPhase> for AgentTurnRuntimePhase {
         match value {
             ActiveTurnPhase::Accepted => Self::Accepted,
             ActiveTurnPhase::AwaitingFirstOutput => Self::AwaitingFirstOutput,
+            ActiveTurnPhase::Thinking => Self::Thinking,
             ActiveTurnPhase::Streaming => Self::Streaming,
             ActiveTurnPhase::Settling => Self::Settling,
         }

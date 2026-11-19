@@ -597,4 +597,6 @@ pub use workspace::*;
 /// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
 /// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
 /// agent's inbox while its prompt carries one line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// Provisional 1067: an agent's active turn has the phase `thinking` while the model reasons without
+/// visible output; `awaiting_first_output` is the provider still reading the context.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1067;
