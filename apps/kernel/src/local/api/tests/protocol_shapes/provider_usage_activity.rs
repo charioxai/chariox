@@ -1044,7 +1044,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
         snapshot.pointer("/phase"),
         Some(&serde_json::json!("awaiting_first_output"))
     );
-    // Local 1067: a model that reasons without visible output is `thinking`.
+    // Local 1012: a model that reasons without visible output is `thinking`.
     let thinking = crate::runtime::projection::AgentActiveTurnProjection {
         phase: crate::runtime::projection::AgentTurnRuntimePhase::Thinking,
         ..active_turn.clone()
