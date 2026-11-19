@@ -75,6 +75,7 @@ impl KernelRuntimeState {
         let promote = async {
             let mut interval = provider_admission_interval();
             let mut next_worker_retry = tokio::time::Instant::now();
+            let mut memory_was_available = false;
             loop {
                 interval.tick().await;
                 if !self.owned.publication_activation.is_active() {
@@ -85,6 +86,15 @@ impl KernelRuntimeState {
                 if retry_workers {
                     next_worker_retry = now + Duration::from_secs(1);
                 }
+                let memory_available = self
+                    .owned
+                    .prompt_state_owner
+                    .provider_launch_wait()
+                    .is_none();
+                // A replacement can briefly release its old process memory while it
+                // rebuilds its state. Resume held turns only after headroom persists.
+                let resume_local = memory_was_available && memory_available;
+                memory_was_available = memory_available;
                 for (session_id, agent_id) in
                     self.owned.prompt_state_owner.provider_launch_waiters()
                 {
@@ -100,7 +110,7 @@ impl KernelRuntimeState {
                                 tracing::warn!(%error, %session_id, %agent_id, "Could not advance a remote turn waiting for memory");
                             }
                         }
-                    } else if !self.sample_provider_turn_pressure(&admission) {
+                    } else if resume_local && !self.sample_provider_turn_pressure(&admission) {
                         Box::pin(self.advance_project_queued_prompt_after_settlement(
                             &session_id,
                             &agent_id,
@@ -245,6 +255,9 @@ mod tests {
             };
             assert_eq!(serde_json::to_value(prompt).unwrap()["launch_wait"], WAIT);
         }
+        state
+            .recover_queue_head_after_restart(session.id(), agent.id())
+            .unwrap();
         assert!(state
             .owned
             .provider_store

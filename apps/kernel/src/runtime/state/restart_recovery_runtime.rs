@@ -1078,6 +1078,12 @@ impl KernelRuntimeState {
         if agent.remote_execution().is_some() {
             return Ok(None);
         }
+        if self
+            .owned
+            .hold_queued_provider_turn(&session, agent_id, &prompt)?
+        {
+            return Ok(None);
+        }
 
         let fresh_context = self
             .owned
