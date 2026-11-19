@@ -15,16 +15,31 @@ impl KernelRuntimeState {
         failure: Option<&TurnOutcome>,
         public_answer: Option<&serde_json::Value>,
     ) -> Result<(), DaemonError> {
+        if let Some(parent) = self
+            .record_child_finished(task, failure, public_answer)
+            .await?
+        {
+            Box::pin(self.deliver_agent_inbox(&task.room_id, &parent)).await?;
+        }
+        Ok(())
+    }
+
+    async fn record_child_finished(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&TurnOutcome>,
+        public_answer: Option<&serde_json::Value>,
+    ) -> Result<Option<String>, DaemonError> {
         // The agent no longer holds decisions: they move up before anyone is told it finished.
         self.move_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
             .await?;
         let child = self.owned.agent_store.get_agent(&task.agent_id)?;
         let Some(parent_id) = child.parent_agent_id() else {
-            return Ok(());
+            return Ok(None);
         };
         let parent = match self.owned.agent_store.get_agent(parent_id) {
             Ok(parent) if parent.session_id() == task.room_id && !parent.archived() => parent,
-            _ => return Ok(()),
+            _ => return Ok(None),
         };
         let deadline_reached = self
             .owned
@@ -47,7 +62,7 @@ impl KernelRuntimeState {
             )
             .await
         {
-            return Ok(());
+            return Ok(None);
         }
         let mut event = ledger::occurrence(
             &task.room_id,
@@ -59,7 +74,7 @@ impl KernelRuntimeState {
                 "child_agent_id": child.id(),
                 "child_alias": child.alias(),
                 "child_task_id": task.task_id,
-                "success": task.state == ExecutionState::Done,
+                "success": outcome.kind == crate::provider::TurnOutcomeKind::Completed,
                 "outcome": outcome,
                 "deadline_reached": deadline_reached,
                 "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {
@@ -73,11 +88,39 @@ impl KernelRuntimeState {
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::Occur(event))?;
-        Box::pin(self.deliver_agent_inbox(&task.room_id, parent.id())).await
+        Ok(Some(parent.id().to_owned()))
     }
 }
 
 impl KernelRuntimeState {
+    /// A blocking waiter stopped with the old kernel. Reuse the exact answer
+    /// already recorded for its task and let the inbox deliver it once.
+    pub(super) async fn recover_child_completions(&self) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
+        for end in store.agent_undelivered_delegate_ends()? {
+            let Some(task) = store.agent_task(&end.task)? else {
+                continue;
+            };
+            if !self
+                .owned
+                .agent_store
+                .get_agent(&task.agent_id)
+                .is_ok_and(|child| child.parent_agent_id() == Some(end.parent.as_str()))
+            {
+                continue;
+            }
+            let failure = end
+                .answer
+                .as_ref()
+                .and_then(|answer| answer.get("outcome"))
+                .cloned()
+                .and_then(|outcome| serde_json::from_value::<TurnOutcome>(outcome).ok());
+            self.record_child_finished(&task, failure.as_ref(), end.answer.as_ref())
+                .await?;
+        }
+        Ok(())
+    }
+
     /// A restart ended the child's turn; its parent reads that as an interruption it can retry.
     pub(super) async fn announce_child_interrupted(
         &self,
@@ -110,7 +153,10 @@ impl KernelRuntimeOwnedState {
         failure: Option<&TurnOutcome>,
     ) -> TurnOutcome {
         if task.state == ExecutionState::Done {
-            TurnOutcome::completed()
+            failure
+                .filter(|outcome| outcome.is_error())
+                .cloned()
+                .unwrap_or_else(TurnOutcome::completed)
         } else {
             // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
             let mut outcome = failure

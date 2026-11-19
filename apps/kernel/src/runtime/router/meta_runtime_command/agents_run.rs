@@ -148,6 +148,7 @@ impl CommandRouter {
                 }
             }
         }
+        self.runtime_state.authorize_current_external_command()?;
         for (index, worker) in &mut ended {
             items[*index] = Some(self.deliver(session, caller, worker)?);
         }
@@ -164,7 +165,6 @@ impl CommandRouter {
             )
             .into();
         }
-        self.runtime_state.authorize_current_external_command()?;
         Ok(RuntimeToolResult { ok: true, payload })
     }
 

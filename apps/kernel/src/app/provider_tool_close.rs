@@ -154,6 +154,37 @@ pub(crate) fn ended_open_provider_tool_rows(
         .collect()
 }
 
+pub(crate) const FOREGROUND_COMMAND_RESTART_REASON: &str =
+    "The kernel restarted while this command was running. The exit status was not reported.";
+
+pub(crate) fn interrupted_foreground_provider_tool_rows(
+    entries: Vec<SessionHistoryEntry>,
+) -> Vec<EndedProviderToolRow> {
+    latest_provider_tool_records(entries)
+        .into_values()
+        .filter(|(_, record)| {
+            record
+                .get("tool")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case("bash"))
+                && record.get("background") != Some(&true.into())
+                && provider_tool_record_status(record)
+                    .as_deref()
+                    .and_then(provider_tool_phase)
+                    == Some(ProviderToolPhase::Open)
+        })
+        .map(|(merge_key, mut record)| {
+            record.insert("status".into(), ProviderToolEnding::Failed.status().into());
+            record.insert("error".into(), FOREGROUND_COMMAND_RESTART_REASON.into());
+            record.insert(
+                "finished_at_ms".into(),
+                crate::session::unix_epoch_ms().into(),
+            );
+            ended_row(merge_key, record)
+        })
+        .collect()
+}
+
 /// The run's provider process is gone, so every background command it still
 /// ran ended no later than `ended_at_ms`, the moment the kernel learned it.
 /// One still open reads as cancelled: nobody reported how it ended.
@@ -271,6 +302,23 @@ mod tests {
             ])),
             BackgroundCalls::Running
         );
+    }
+
+    #[test]
+    fn restart_ends_a_foreground_command_without_fabricating_its_exit_code() {
+        let rows = tool_rows(&[
+            serde_json::json!({"id":"interrupted","tool":"Bash","status":"running"}),
+            serde_json::json!({"id":"finished","tool":"bash","status":"running"}),
+            serde_json::json!({"id":"finished","tool":"bash","status":"completed","output":"done"}),
+            serde_json::json!({"id":"background","tool":"Bash","status":"running","background":true}),
+            serde_json::json!({"id":"read","tool":"Read","status":"running"}),
+        ]);
+        let ended = ended(interrupted_foreground_provider_tool_rows(rows));
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0]["id"], "interrupted");
+        assert_eq!(ended[0]["status"], "error");
+        assert_eq!(ended[0]["error"], FOREGROUND_COMMAND_RESTART_REASON);
+        assert!(ended[0].get("exit_code").is_none());
     }
 
     #[test]

@@ -310,6 +310,7 @@ pub(super) fn task_public_output_entries<'a>(
         .skip(start + 1)
         .take_while(|e| {
             e.kind != Kind::UserPrompt
+                || e.is_external_recovery_envelope()
                 || e.merge_key.as_deref().is_some_and(|key| {
                     key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
                 })

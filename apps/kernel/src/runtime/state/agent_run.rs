@@ -115,7 +115,7 @@ impl KernelRuntimeState {
                 now: crate::session::unix_epoch_ms(),
             })?;
         }
-        Ok(())
+        store.record_agent_worker_result_returned(room, caller, &end.task.task_id)
     }
 
     /// One worker of a finished call: its status and, for a worker that finished, its answer.
@@ -136,11 +136,13 @@ impl KernelRuntimeState {
                 .public_agent_task_answer_within(task, None, WORKER_ANSWER_CHARS)?
                 .and_then(|answer| answer["excerpt"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            result["status"] = "done".into();
             if answer.starts_with('…') {
                 result["answer_truncated"] = true.into();
             }
             result["answer"] = answer.into();
+        }
+        if end.outcome.kind == crate::provider::TurnOutcomeKind::Completed {
+            result["status"] = "done".into();
         } else {
             result["status"] = if end.outcome.kind == crate::provider::TurnOutcomeKind::Cancelled {
                 "cancelled"

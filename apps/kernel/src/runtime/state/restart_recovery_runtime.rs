@@ -251,6 +251,9 @@ impl KernelRuntimeState {
                 serde_json::json!({ "error": error.to_string() }),
             ),
         }
+        if let Err(error) = self.recover_child_completions().await {
+            tracing::warn!(%error, "could not recover pending worker answers");
+        }
         let started = std::time::Instant::now();
         // The unlock is held across the next attempt so the redelivery never needs to prompt.
         let mut vault_unlocks = Vec::new();
@@ -502,6 +505,9 @@ impl KernelRuntimeState {
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
+        self.recover_child_completions()
+            .await
+            .expect("worker answer recovery");
         let recovery_targets = self.durable_restart_recovery_targets();
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         self.recover_durable_runtime_after_restart_targets(
@@ -1466,6 +1472,11 @@ impl KernelRuntimeState {
                 return Ok(UncertainLocalRecoveryOutcome::ContinuationInFlight);
             }
         }
+        let command_interrupted = self.owned.end_foreground_provider_tools_left_by_restart(
+            session_id,
+            agent.id(),
+            &prompt,
+        )?;
         self.persist_recovered_provider_session(agent, adapter_key, &provider_session_id)?;
         self.dispatch_prompt_continuation(
             session_id,
@@ -1473,7 +1484,17 @@ impl KernelRuntimeState {
             &prompt,
             recovery_material.hidden_system_context,
             recovery_material.attachments,
-            provider_restart_continuation_prompt,
+            |operation_id| {
+                let mut continuation = provider_restart_continuation_prompt(operation_id);
+                if command_interrupted {
+                    continuation.push(' ');
+                    continuation.push_str(crate::app::FOREGROUND_COMMAND_RESTART_REASON);
+                    continuation.push_str(
+                        " Do not rerun it automatically. Report its interruption when you answer.",
+                    );
+                }
+                continuation
+            },
         )
         .await
         .map_err(|failure| failure.error)?;

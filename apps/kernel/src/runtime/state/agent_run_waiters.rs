@@ -75,6 +75,10 @@ impl AgentRunWaiters {
     pub(crate) fn pause_next_claim(&self) -> oneshot::Receiver<()> {
         self.1.arm()
     }
+
+    pub(crate) fn discard_paused_claim(&self) {
+        self.1.discard();
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +127,10 @@ mod pause_test {
             let _ = held.reached.send(());
             let _ = held.resume.await;
             Some(held.sent)
+        }
+
+        pub(super) fn discard(&self) {
+            self.releasing.lock().unwrap().take();
         }
 
         /// Called by the abandoning call: lets the held claim send and waits until it has.

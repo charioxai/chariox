@@ -145,6 +145,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Saved)
         }
+        Operation::WorkerResultReturned { room, parent, task } => {
+            tx.execute(
+                "INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success)
+                 VALUES(?1,?2,?3,1) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",
+                params![room, format!("worker-result-returned:{task}"), parent],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,

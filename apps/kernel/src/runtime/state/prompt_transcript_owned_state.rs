@@ -123,6 +123,28 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    /// End the original command history before the provider gets its continuation.
+    pub(super) fn end_foreground_provider_tools_left_by_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let mut interrupted = false;
+        if let Some(run) = prompt.durable_delivery_provider_run_id() {
+            let rows = crate::app::interrupted_foreground_provider_tool_rows(
+                self.operational_history_store
+                    .load_provider_tool_entries_for_prompt(session_id, run, prompt.id())?,
+            );
+            interrupted = !rows.is_empty();
+            self.append_ended_provider_tool_rows(session_id, run, agent_id, rows);
+        }
+        Ok(interrupted
+            || self
+                .operational_history_store
+                .foreground_command_interrupted_by_restart(session_id, agent_id, prompt.id())?)
+    }
+
     /// Ends the background commands of a run whose provider process is gone
     /// (see `crate::app::ended_background_provider_tool_rows`).
     pub(super) fn end_background_provider_tools(
