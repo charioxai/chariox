@@ -304,6 +304,19 @@ mod tests {
         })
     }
 
+    /// Asserts that a read the test started while holding the app lock finishes anyway. A
+    /// session state read builds its answer on a blocking worker (it reads the durable store and
+    /// the process table), so it gets a bound, not a single scheduler turn.
+    async fn assert_finishes_without_app_lock<T>(task: &tokio::task::JoinHandle<T>, why: &str) {
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !task.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(finished.is_ok(), "{why}");
+    }
+
     fn assert_ownership_denied(error: DaemonError, user_id: &str, owner_user_id: &str) {
         assert!(
             matches!(

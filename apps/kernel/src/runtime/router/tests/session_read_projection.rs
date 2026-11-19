@@ -135,11 +135,7 @@ async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "ListSessions warm-up should hydrate GetSessionState projection entries without app lock access"
-    );
+    assert_finishes_without_app_lock(&state_task, "ListSessions warm-up should hydrate GetSessionState projection entries without app lock access").await;
 
     drop(app_guard);
     let state_response = state_task

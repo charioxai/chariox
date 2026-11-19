@@ -55,11 +55,7 @@ async fn session_runtime_publishes_attach_and_focus_projection_without_router_sn
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "session state should come from the SessionRuntime-published projection without taking the app lock"
-    );
+    assert_finishes_without_app_lock(&state_task, "session state should come from the SessionRuntime-published projection without taking the app lock").await;
     drop(app_guard);
 
     let state_response = state_task
