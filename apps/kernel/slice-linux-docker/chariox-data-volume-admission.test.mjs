@@ -8,9 +8,12 @@ import {
   expectedVolumeBytes,
   selectDataVolumeDevice,
 } from "./chariox-data-volume-admission.mjs"
+import { parseBinding, parseStorageInput } from "./slice-data-volume-protected-io.mjs"
 
 const SERIAL = "12345"
 const UUID = "12345678-1234-1234-1234-123456789abc"
+const LOOP = "/dev/loop7"
+const BACKING_FILE = { majorMinor: "252:1", inode: "4242" }
 
 function makeDevices({ sizeBytes = 10 * BYTES_PER_GIB, filesystem = "", uuid = "", mounted = false, partitionedVolume = false } = {}) {
   return [
@@ -47,7 +50,14 @@ function fakeAdmission({
   busyFilesystem = false,
   hasHolder = false,
   partitionedVolume = false,
+  fileVolume = false,
+  rootFreeBytes = 100 * BYTES_PER_GIB,
 } = {}) {
+  const volumePath = fileVolume ? LOOP : "/dev/sdb"
+  let backingFile
+  let attached = false
+  // udev probes a newly attached loop device; until then lsblk reports no filesystem.
+  let probed = false
   let filesystem = initialFilesystem
   let filesystemUuid = initialFilesystem ? UUID : ""
   let mounted = false
@@ -58,12 +68,28 @@ function fakeAdmission({
   const commands = {
     run(command, args) {
       calls.push([command, args])
+      if (command === "/usr/sbin/losetup" && args.includes("--find")) {
+        assert.ok(backingFile, "losetup attaches only an existing backing file")
+        if (!attached) probed = false
+        attached = true
+        return LOOP
+      }
+      if (command === "/usr/sbin/losetup" && args.includes("--list")) {
+        return JSON.stringify({ loopdevices: [{
+          name: LOOP, "back-ino": Number(backingFile.inode), "back-maj:min": backingFile.majorMinor, offset: 0, sizelimit: 0, ro: false,
+        }] })
+      }
+      if (command === "/usr/bin/lsblk" && args.includes("--nodeps")) {
+        assert.ok(attached, "the loop device exists only while attached")
+        const known = probed && filesystem
+        return JSON.stringify({ blockdevices: [{ path: LOOP, size: backingFile.sizeBytes, fstype: known ? filesystem : null, uuid: known ? filesystemUuid : null, "maj:min": "7:7" }] })
+      }
       if (command === "/usr/bin/lsblk" && args.includes("--json")) {
         return JSON.stringify({ blockdevices: makeDevices({ sizeBytes, filesystem, uuid: filesystemUuid, mounted, partitionedVolume }) })
       }
       if (command === "/usr/bin/findmnt" && args.includes("--target")) return "/dev/vda1"
       if (command === "/usr/bin/realpath") {
-        return args[1].startsWith("/dev/disk/by-uuid/") ? "/dev/sdb" : args[1]
+        return args[1].startsWith("/dev/disk/by-uuid/") ? volumePath : args[1]
       }
       if (command === "/usr/bin/lsblk") return mounted ? `${DATA_ROOT}\n` : ""
       if (command === "/usr/sbin/blockdev") return String(blockdevSizeBytes)
@@ -74,7 +100,10 @@ function fakeAdmission({
         return ""
       }
       if (command === "/usr/sbin/blkid") return UUID
-      if (command === "/usr/bin/udevadm") return ""
+      if (command === "/usr/bin/udevadm") {
+        probed = attached
+        return ""
+      }
       if (command === "/usr/bin/systemd-mount") {
         mounted = true
         return ""
@@ -103,7 +132,7 @@ function fakeAdmission({
               stdout: JSON.stringify({
                 filesystems: [{
                   target: DATA_ROOT,
-                  source: "/dev/sdb",
+                  source: volumePath,
                   fstype: "xfs",
                   options: "rw,prjquota",
                 }],
@@ -116,8 +145,17 @@ function fakeAdmission({
     },
   }
   const io = {
-    readStorageInput: () => ({ serial: SERIAL, sizeGb: 10 }),
-    readBinding: () => binding,
+    readStorageInput: () => parseStorageInput(fileVolume
+      ? { fileDataVolumeSizeGb: 10 }
+      : { expectedDataVolumeSerial: SERIAL, expectedDataVolumeSizeGb: 10 }),
+    readBinding: () => binding && parseBinding(binding),
+    backingFile: () => backingFile,
+    backingFileSpace: () => rootFreeBytes,
+    createBackingFile: (bytes) => {
+      assert.equal(backingFile, undefined)
+      backingFile = { ...BACKING_FILE, sizeBytes: bytes }
+      return backingFile
+    },
     writeBinding: (value) => { binding = value },
     ensureMountpoint: () => true,
     holders: () => hasHolder,
@@ -129,7 +167,8 @@ function fakeAdmission({
     commands,
     io,
     calls,
-    simulateReboot() { mounted = false },
+    simulateReboot() { mounted = false; attached = false },
+    replaceBackingFile() { backingFile = { ...backingFile, inode: "4343" } },
     simulateDockerStart() { ownership = "1001:1001:710" },
     setFilesystemUse(value) { busyFilesystem = value },
     setOwnership(value) { ownership = value },
@@ -223,6 +262,86 @@ test("fresh matching blank volume is formatted once, bound, mounted, and quota-v
   assert.deepEqual(admitDataVolume(fake), result)
   assert.equal(writes(), before)
   assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 2)
+})
+
+test("a file-backed volume is created once, bound by its backing file and UUID, and attached again after a reboot", () => {
+  const fake = fakeAdmission({ fileVolume: true })
+  const result = admitDataVolume(fake)
+  assert.deepEqual(result, { admitted: true, backingFile: BACKING_FILE, sizeGb: 10, filesystemUuid: UUID })
+  assert.deepEqual(fake.binding, {
+    schemaVersion: 1,
+    backingFile: BACKING_FILE,
+    expectedDataVolumeSizeGb: 10,
+    filesystemUuid: UUID,
+  })
+  assert.deepEqual(fake.observation, {
+    schemaVersion: 1,
+    backingFile: BACKING_FILE,
+    dataVolumeSizeGb: 10,
+    filesystemUuid: UUID,
+    devicePath: LOOP,
+    majorMinor: "7:7",
+    mountTarget: DATA_ROOT,
+  })
+  assert.ok(fake.calls.some(([command, args]) => command === "/usr/sbin/mkfs.xfs" && args.at(-1) === LOOP))
+  assert.ok(fake.calls.some(([command, args]) =>
+    command === "/usr/bin/systemd-mount" && args.includes("--options=pquota") && args.at(-1) === DATA_ROOT,
+  ))
+
+  fake.simulateReboot()
+  assert.deepEqual(admitDataVolume(fake), result)
+  assert.equal(fake.calls.filter(([command]) => command === "/usr/sbin/mkfs.xfs").length, 1)
+  assert.equal(fake.calls.filter(([command]) => command === "/usr/bin/systemd-mount").length, 2)
+  // Each admission attaches the backing file before and after mounting (losetup reuses a live
+  // attachment) and reads it only after udev has probed it.
+  const attachAndSettle = fake.calls
+    .filter(([command, args]) => (command === "/usr/sbin/losetup" && args.includes("--find")) || command === "/usr/bin/udevadm")
+    .map(([command]) => command === "/usr/bin/udevadm" ? "settle" : "attach")
+  assert.deepEqual(attachAndSettle, ["attach", "settle", "settle", "attach", "settle", "attach", "settle", "attach", "settle"])
+})
+
+test("a replaced backing file or a volume of the other kind is refused before formatting", () => {
+  const replaced = fakeAdmission({ fileVolume: true })
+  admitDataVolume(replaced)
+  replaced.simulateReboot()
+  replaced.replaceBackingFile()
+  assert.throws(() => admitDataVolume(replaced), /backing file was replaced/)
+  assert.equal(replaced.calls.filter(([command]) => command === "/usr/sbin/mkfs.xfs").length, 1)
+
+  const provider = fakeAdmission()
+  admitDataVolume(provider)
+  const file = fakeAdmission({ fileVolume: true })
+  file.io.readBinding = provider.io.readBinding
+  assert.throws(() => admitDataVolume(file), /identity does not match the protected bootstrap input/)
+  assert.equal(file.calls.length, 0)
+})
+
+test("a root filesystem without room for the file-backed volume refuses before creating it", () => {
+  const fake = fakeAdmission({ fileVolume: true, rootFreeBytes: 10 * BYTES_PER_GIB - 1 })
+  assert.throws(() => admitDataVolume(fake), /root filesystem has .* bytes free.*larger disk/)
+  assert.equal(fake.calls.length, 0)
+})
+
+test("the storage input and the binding accept exactly one shape of each volume kind", () => {
+  assert.deepEqual(parseStorageInput({ fileDataVolumeSizeGb: 51 }), { kind: "fileVolume", sizeGb: 51 })
+  assert.deepEqual(
+    parseStorageInput({ expectedDataVolumeSerial: SERIAL, expectedDataVolumeSizeGb: 10 }),
+    { kind: "providerVolume", serial: SERIAL, sizeGb: 10 },
+  )
+  for (const invalid of [
+    undefined,
+    {},
+    { fileDataVolumeSizeGb: 0 },
+    { fileDataVolumeSizeGb: "51" },
+    { fileDataVolumeSizeGb: 51, expectedDataVolumeSerial: SERIAL },
+    { expectedDataVolumeSerial: "0", expectedDataVolumeSizeGb: 10 },
+  ]) {
+    assert.throws(() => parseStorageInput(invalid), /data-volume identity or size is invalid/)
+  }
+  const file = { schemaVersion: 1, backingFile: BACKING_FILE, expectedDataVolumeSizeGb: 10, filesystemUuid: UUID }
+  assert.equal(parseBinding(file).kind, "fileVolume")
+  assert.throws(() => parseBinding({ ...file, backingFile: { ...BACKING_FILE, sizeBytes: 1 } }), /fields are invalid/)
+  assert.throws(() => parseBinding({ ...file, expectedDataVolumeSerial: SERIAL }), /unsupported shape/)
 })
 
 test("capacity mismatch and stale unbound signatures fail before formatting", () => {

@@ -6,6 +6,7 @@ import { realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { parseProjectQuotaState } from "./slice-disk-quota-xfs-readback.mjs"
 import * as volumeDevice from "./slice-data-volume-device.mjs"
+import * as fileVolumeDevice from "./slice-data-volume-file.mjs"
 import * as protectedIo from "./slice-data-volume-protected-io.mjs"
 
 export const {
@@ -171,20 +172,47 @@ function applyDockerRootOwnership(io, commands) {
   }
 }
 
+// The input names one of two volume kinds; everything after discovery is shared.
+function providerVolume(input, commands) {
+  return {
+    discover: () => volumeDevice.discoverVolumeDevice(commands, input.serial),
+    boundTo: (binding) => binding.kind === "providerVolume" && binding.expectedDataVolumeSerial === input.serial,
+    identity: { expectedDataVolumeSerial: input.serial },
+    observed: (device) => ({ dataVolumeSerial: device.serial }),
+    reported: { serial: input.serial },
+  }
+}
+
+function fileVolume(commands, io, binding, wantedBytes) {
+  const bound = binding?.kind === "fileVolume" ? binding : undefined
+  const { majorMinor, inode } = fileVolumeDevice.ensureBackingFile(io, wantedBytes, bound)
+  const backingFile = { majorMinor, inode }
+  return {
+    discover: () => fileVolumeDevice.attachBackingFile(commands, backingFile),
+    boundTo: (value) => value.kind === "fileVolume" && fileVolumeDevice.sameBackingFile(value.backingFile, backingFile),
+    identity: { backingFile },
+    observed: () => ({ backingFile }),
+    reported: { backingFile },
+  }
+}
+
 export function admitDataVolume({ commands = systemCommands, io = systemIo } = {}) {
   io.clearObservation()
   const input = io.readStorageInput()
-  if (!input) fail("Path-1 admission requires a protected storage bootstrap input")
+  if (!input) fail("managed data-volume admission requires a protected storage bootstrap input")
   const wantedBytes = expectedVolumeBytes(input.sizeGb)
-  let device = volumeDevice.discoverVolumeDevice(commands, input.serial)
+  const binding = io.readBinding()
+  if (binding && binding.kind !== input.kind) {
+    fail("persistent data-volume identity does not match the protected bootstrap input")
+  }
+  const volume = input.kind === "fileVolume"
+    ? fileVolume(commands, io, binding, wantedBytes)
+    : providerVolume(input, commands)
+  let device = volume.discover()
   if (device.sizeBytes !== wantedBytes) {
     fail(`data volume block capacity mismatch: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
   }
-  const binding = io.readBinding()
-  if (binding && (
-    binding.expectedDataVolumeSerial !== input.serial ||
-    binding.expectedDataVolumeSizeGb !== input.sizeGb
-  )) {
+  if (binding && (!volume.boundTo(binding) || binding.expectedDataVolumeSizeGb !== input.sizeGb)) {
     fail("persistent data-volume identity does not match the protected bootstrap input")
   }
   const mount = findDataMount(commands)
@@ -212,13 +240,13 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
     const filesystemUuid = readVolumeUuid(commands, device.path)
     io.writeBinding({
       schemaVersion: 1,
-      expectedDataVolumeSerial: input.serial,
+      ...volume.identity,
       expectedDataVolumeSizeGb: input.sizeGb,
       filesystemUuid,
     })
     mountDataRoot(commands, device, filesystemUuid, true)
   }
-  device = volumeDevice.discoverVolumeDevice(commands, input.serial)
+  device = volume.discover()
   if (device.sizeBytes !== wantedBytes) {
     fail(`data volume block capacity changed during admission: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
   }
@@ -231,7 +259,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   applyDockerRootOwnership(io, commands)
   io.writeObservation({
     schemaVersion: 1,
-    dataVolumeSerial: device.serial,
+    ...volume.observed(device),
     dataVolumeSizeGb: device.sizeBytes / BYTES_PER_GIB,
     filesystemUuid: verifiedBinding.filesystemUuid,
     devicePath: device.path,
@@ -240,7 +268,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   })
   return {
     admitted: true,
-    serial: input.serial,
+    ...volume.reported,
     sizeGb: input.sizeGb,
     filesystemUuid: verifiedBinding.filesystemUuid,
   }
