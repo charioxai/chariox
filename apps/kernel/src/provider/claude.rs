@@ -31,6 +31,7 @@ use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::CLAUDE_RUNTIME_FILES_PREFIX;
+pub(crate) use mcp_config::CLAUDE_RUNTIME_MCP_SERVER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
@@ -48,6 +49,12 @@ const CLAUDE_ENV_OVERRIDE: &str = "CHARIOX_CLAUDE_BIN";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
+/// Claude Code waits this long for its MCP servers before a turn starts (30 s
+/// by default), as Codex does with `startup_timeout_sec`. A busy kernel then
+/// still hands the turn its Chariox tools; a turn that starts without them is
+/// ended by the runtime (`claude_runtime::events`).
+const CLAUDE_MCP_STARTUP_TIMEOUT_ENV: &str = "MCP_TIMEOUT";
+const CLAUDE_MCP_STARTUP_TIMEOUT_MS: u64 = 90_000;
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
@@ -558,7 +565,13 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
 }
 
 fn claude_process_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())]);
+    let mut env = BTreeMap::from([
+        (CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string()),
+        (
+            CLAUDE_MCP_STARTUP_TIMEOUT_ENV.to_string(),
+            CLAUDE_MCP_STARTUP_TIMEOUT_MS.to_string(),
+        ),
+    ]);
     env.extend(request.provider_account_env.clone());
     apply_claude_root_yolo_environment(&mut env, request.permission_level.unwrap_or_default());
     if let Some(tokens) = request

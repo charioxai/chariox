@@ -443,6 +443,7 @@ pub(super) fn execute_output_poll_command(
         return Ok(Some(ProviderPromptSignalBatch {
             process_memory_limit_bytes: None,
             process_outside_ended: false,
+            turn_outcome: None,
             chunks: poll
                 .chunks
                 .into_iter()
@@ -530,6 +531,7 @@ pub(super) fn execute_output_poll_command(
     Ok(Some(ProviderPromptSignalBatch {
         process_memory_limit_bytes: None,
         process_outside_ended: false,
+        turn_outcome: None,
         chunks: drain
             .chunks
             .into_iter()

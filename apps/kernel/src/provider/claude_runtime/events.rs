@@ -43,6 +43,11 @@ fn apply_system_message(
         // The summary replaces the history that held the run base.
         state.delivered_hidden_base = None;
     }
+    if value.get("subtype").and_then(Value::as_str) == Some("init") {
+        state.runtime_tools_unavailable = runtime_tools_status(value)
+            .filter(|status| *status != "connected")
+            .map(str::to_string);
+    }
     if batch.resolved_model.is_none() {
         if let Some(model) =
             string_field(value, "model").and_then(|model| format_claude_model(&model))
@@ -51,6 +56,21 @@ fn apply_system_message(
             batch.resolved_model_source = Some("claude.system");
         }
     }
+}
+
+/// Claude's `init` names each MCP server with its connection status; it waits
+/// up to `MCP_TIMEOUT` for them, then starts the turn whatever they answered.
+fn runtime_tools_status(value: &Value) -> Option<&str> {
+    value
+        .get("mcp_servers")?
+        .as_array()?
+        .iter()
+        .find(|server| {
+            server.get("name").and_then(Value::as_str)
+                == Some(crate::provider::claude::CLAUDE_RUNTIME_MCP_SERVER)
+        })?
+        .get("status")?
+        .as_str()
 }
 
 fn apply_stream_event(

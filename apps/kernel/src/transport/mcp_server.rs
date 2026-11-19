@@ -75,29 +75,28 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     // Dropping/aborting this server closes notification streams as well as the
     // listener; streams never retain a strong CommandRouter indefinitely.
     let (_lifetime, shutdown) = tokio::sync::watch::channel(());
-    let mut catalogs = catalog::CatalogMonitor::new(&router);
+    let catalogs = Arc::new(catalog::CatalogMonitor::new());
+    let watching = Arc::clone(&catalogs).watch(Arc::clone(&router));
+    tokio::pin!(watching);
     let health = router.transport_health_store();
     loop {
-        let admission =
-            super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp");
-        tokio::pin!(admission);
-        // Catalog refreshes must not reset an in-progress admission backoff.
-        let (stream, _) = loop {
-            tokio::select! {
-                accepted = &mut admission => break accepted,
-                _ = catalogs.changed() => { catalogs.refresh(&router); },
-            }
+        // Accepting never waits for catalog work: a provider that cannot
+        // connect within its own timeout starts its turn without tools.
+        let (stream, _) = tokio::select! {
+            accepted = super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp") => accepted,
+            never = &mut watching => match never {},
         };
-        catalogs.observe_running(&router);
         let router = Arc::clone(&router);
+        let catalogs = Arc::clone(&catalogs);
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let mut stopped = shutdown.clone();
             let service = service_fn(move |request| {
                 let router = Arc::clone(&router);
+                let catalogs = Arc::clone(&catalogs);
                 let shutdown = shutdown.clone();
-                async move { handle_http_request(router, request, shutdown).await }
+                async move { handle_http_request(router, catalogs, request, shutdown).await }
             });
             let connection = http1::Builder::new().serve_connection(io, service);
             tokio::pin!(connection);
@@ -114,10 +113,11 @@ pub(crate) async fn run_mcp_http_server_on_listener(
 
 async fn handle_http_request(
     router: Arc<CommandRouter>,
+    catalogs: Arc<catalog::CatalogMonitor>,
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, Infallible> {
-    let response = match handle_http_request_inner(router, request, shutdown).await {
+    let response = match handle_http_request_inner(router, catalogs, request, shutdown).await {
         Ok(response) => response,
         Err(error) => text_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -129,6 +129,7 @@ async fn handle_http_request(
 
 async fn handle_http_request_inner(
     router: Arc<CommandRouter>,
+    catalogs: Arc<catalog::CatalogMonitor>,
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, DaemonError> {
@@ -179,6 +180,9 @@ async fn handle_http_request_inner(
             StatusCode::NOT_FOUND,
             "not found".to_string(),
         ));
+    }
+    if let Some(token) = parse_bearer_token(request.headers()) {
+        catalogs.seed(&router, &token).await;
     }
 
     match *request.method() {

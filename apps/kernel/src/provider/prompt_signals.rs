@@ -39,6 +39,9 @@ pub struct ProviderPromptSignalBatch {
     // termination evidence. PTY/stderr classifiers keep terminal_failure for
     // prompt settlement but must not be promoted across that trust boundary.
     pub explicit_provider_error: bool,
+    /// How the turn ended when the kernel itself, not the harness's error
+    /// text, knows why; it replaces classifying `terminal_failure`.
+    pub turn_outcome: Option<crate::provider::TurnOutcome>,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,

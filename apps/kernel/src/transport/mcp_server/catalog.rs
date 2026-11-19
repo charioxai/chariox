@@ -1,5 +1,6 @@
 //! MCP 2025 Streamable HTTP catalog delivery. Invalidation hints contain no
 //! identities or tools; each connection compares its own authenticated catalog.
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use futures_util::stream;
@@ -9,51 +10,102 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::*;
 
+type Signature = Vec<(String, String, Value)>;
+
 /// Arms continuations and reloads for real catalog changes; notification
-/// streams compare the full listed `snapshot` instead.
+/// streams compare the full listed `snapshot` instead. It runs beside the
+/// accept loop: computing every running provider's catalog can take seconds on
+/// a busy kernel, and a provider whose first connection waits behind it starts
+/// its turn without its tools.
 pub(super) struct CatalogMonitor {
-    changes: broadcast::Receiver<()>,
-    catalogs: std::collections::BTreeMap<String, Vec<(String, String, Value)>>,
+    catalogs: std::sync::Mutex<std::collections::BTreeMap<String, Signature>>,
 }
 
 impl CatalogMonitor {
-    pub(super) fn new(router: &CommandRouter) -> Self {
-        let mut monitor = Self {
-            changes: changes().subscribe(),
+    pub(super) fn new() -> Self {
+        Self {
             catalogs: Default::default(),
-        };
-        monitor.observe_running(router);
-        monitor
-    }
-
-    pub(super) async fn changed(&mut self) {
-        let _ = self.changes.recv().await; // lag also requires comparing current catalogs
-    }
-
-    pub(super) fn observe_running(&mut self, router: &CommandRouter) {
-        // Seed new runs before their first MCP request; do not erase a pending
-        // difference for existing runs when a concurrent HTTP connection arrives.
-        for token in router.runtime_tool_catalog_auth_tokens() {
-            self.catalogs
-                .entry(token.clone())
-                .or_insert_with(|| router.runtime_catalog_signature(&token));
         }
     }
 
-    pub(super) fn refresh(&mut self, router: &CommandRouter) -> usize {
-        let mut changed = 0;
-        let tokens = router.runtime_tool_catalog_auth_tokens();
-        self.catalogs.retain(|token, _| tokens.contains(token));
-        for token in tokens {
-            let next = router.runtime_catalog_signature(&token);
-            if let Some(previous) = self.catalogs.insert(token.clone(), next.clone()) {
-                if previous != next {
-                    router.runtime_tool_catalog_changed_for_auth_token(&token);
-                    changed += 1;
+    /// Refreshes once at start and again after every change hint; hints that
+    /// arrive during a refresh are folded into the next one.
+    pub(super) async fn watch(self: Arc<Self>, router: Arc<CommandRouter>) -> Infallible {
+        let mut changes = changes().subscribe();
+        loop {
+            let (monitor, router) = (Arc::clone(&self), Arc::clone(&router));
+            let _ = tokio::task::spawn_blocking(move || monitor.refresh(&router)).await;
+            let _ = changes.recv().await; // lag also requires comparing current catalogs
+            while changes.try_recv().is_ok() {}
+        }
+    }
+
+    /// Records a new run's catalog before its first MCP request is served, so
+    /// a change between that listing and the next refresh is not missed.
+    pub(super) async fn seed(self: &Arc<Self>, router: &Arc<CommandRouter>, token: &str) {
+        if self.lock().contains_key(token) {
+            return;
+        }
+        let (monitor, router, token) = (Arc::clone(self), Arc::clone(router), token.to_owned());
+        let _ = tokio::task::spawn_blocking(move || {
+            if router.runtime_mcp_catalog_run(&token).is_none() {
+                return;
+            }
+            let signature = router.runtime_catalog_signature(&token);
+            monitor.lock().entry(token).or_insert(signature);
+        })
+        .await;
+    }
+
+    /// Only this refresh replaces a known run's catalog; a run seeded while it
+    /// computed keeps the catalog its first request was served after.
+    pub(super) fn refresh(&self, router: &CommandRouter) -> usize {
+        let known = self.lock().keys().cloned().collect::<BTreeSet<_>>();
+        let next = router
+            .runtime_tool_catalog_auth_tokens()
+            .into_iter()
+            .map(|token| {
+                let signature = router.runtime_catalog_signature(&token);
+                (token, signature)
+            })
+            .collect::<Vec<_>>();
+        // Read after computing, so a run seeded meanwhile is not dropped.
+        let running = router
+            .runtime_tool_catalog_auth_tokens()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut changed = Vec::new();
+        {
+            let mut catalogs = self.lock();
+            catalogs.retain(|token, _| running.contains(token));
+            for (token, signature) in next {
+                if !running.contains(&token) {
+                    continue;
+                }
+                match catalogs.get_mut(&token) {
+                    Some(current) if known.contains(&token) => {
+                        if *current != signature {
+                            *current = signature;
+                            changed.push(token);
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        catalogs.insert(token, signature);
+                    }
                 }
             }
         }
-        changed
+        for token in &changed {
+            router.runtime_tool_catalog_changed_for_auth_token(token);
+        }
+        changed.len()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Signature>> {
+        self.catalogs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
