@@ -759,7 +759,18 @@ impl KernelRuntimeState {
                             prompt_written = true;
                             deadline = now + prompt_timer(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT);
                         } else if !prompt_written
-                            && crate::app::claude_headless_owner_decision_pending(&provider_run)
+                            && crate::app::claude_headless_owner_decision_marker(&provider_run)
+                                .is_some_and(|marker| {
+                                    owned
+                                        .session_store
+                                        .get_session(&dispatch.session_id)
+                                        .is_ok_and(|session| {
+                                            session
+                                                .active_interactions()
+                                                .iter()
+                                                .any(|card| marker.contains(card.id()))
+                                        })
+                                })
                         {
                             deadline = now + prompt_timer(crate::provider::CLAUDE_START_BUDGET);
                         }

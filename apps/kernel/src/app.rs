@@ -92,7 +92,7 @@ pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
-    claude_headless_owner_decision_pending, claude_headless_prompt_queued_behind_running_turn,
+    claude_headless_owner_decision_marker, claude_headless_prompt_queued_behind_running_turn,
     claude_headless_prompt_written, claude_headless_stuck_screen_line,
     claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
     claude_permission_title, claude_workspace_trust_declined, format_claude_permission_message,

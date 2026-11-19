@@ -1,8 +1,8 @@
 //! What holds a Claude headless start back, and what to tell the person when it runs out of time.
 use super::permission::{
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
-    claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
-    claude_native_marker, claude_permission_recent_file,
+    claude_headless_workspace_trust_interaction_marker, claude_native_marker,
+    claude_permission_recent_file,
 };
 use crate::provider::RuntimeProviderRun;
 
@@ -24,18 +24,15 @@ fn prompt_written_marker(marker: &str, prompt_id: &str) -> bool {
         .any(|rest| rest.split(':').next() == Some(prompt_id))
 }
 
-/// True while the start waits on a person's answer: the workspace-trust card (or its screen) or a
-/// permission card. Its own deadline governs, so the start budget does not run.
-pub(crate) fn claude_headless_owner_decision_pending(run: &RuntimeProviderRun) -> bool {
-    let Some(context_file) = run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
-        return false;
-    };
-    claude_native_marker(context_file).is_some_and(|marker| {
-        claude_headless_workspace_trust_interaction_marker(&marker)
+/// The marker of the card the start waits on, while it names one: the workspace-trust card or a
+/// permission card. The caller checks the card is still open; a card lost with a hot reload or a
+/// restart holds nothing back.
+pub(crate) fn claude_headless_owner_decision_marker(run: &RuntimeProviderRun) -> Option<String> {
+    let context_file = run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
+    claude_native_marker(context_file).filter(|marker| {
+        claude_headless_workspace_trust_interaction_marker(marker)
             || marker.starts_with("permission:")
-    }) || claude_permission_recent_file(context_file)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .is_some_and(|screen| claude_headless_workspace_trust_visible(&screen))
+    })
 }
 
 /// The first line of the screen Claude shows when it is not its composer, so the person can see
