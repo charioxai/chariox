@@ -249,8 +249,7 @@ impl KernelRuntimeState {
             return;
         }
         if action == "owner-cards" {
-            self.raise_owner_cards_for_test(vault.parent().unwrap())
-                .await;
+            self.raise_owner_cards_for_test(results).await;
             return;
         }
         if action == "guest" {
