@@ -737,6 +737,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let snapshot = serde_json::json!([
         LocalDaemonResponse::RemoteMachinesListed {
             renewing: false,
+            directory: None,
             machines: vec![machine],
             offline_machines: Vec::new(),
         },

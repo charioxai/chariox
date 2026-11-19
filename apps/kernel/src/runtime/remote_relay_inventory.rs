@@ -60,8 +60,10 @@ pub(crate) async fn projected_remote_machines_response(
     let crate::local::RemoteMachineInventory {
         machines,
         offline_machines,
+        directory,
     } = remote_relay_inventory_projection.inventory();
     Ok(LocalDaemonResponse::RemoteMachinesListed {
+        directory,
         renewing,
         machines,
         offline_machines,

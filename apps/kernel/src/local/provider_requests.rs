@@ -142,8 +142,10 @@ impl DaemonApp {
         let RemoteMachineInventory {
             machines,
             offline_machines,
+            directory,
         } = self.remote_relay_inventory_projection_store().inventory();
         Ok(LocalDaemonResponse::RemoteMachinesListed {
+            directory,
             renewing: false,
             machines,
             offline_machines,

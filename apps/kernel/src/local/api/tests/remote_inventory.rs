@@ -234,6 +234,7 @@ fn local_request_api_lists_offline_machines_apart_from_the_machines_to_pick() {
     harness.with_app_mut(|app| {
         app.remote_relay_inventory_projection_store().update(
             crate::local::RemoteMachineInventory {
+                directory: None,
                 machines: Vec::new(),
                 offline_machines: vec![crate::local::OfflineMachineRecord {
                     directory: None,
@@ -254,6 +255,7 @@ fn local_request_api_lists_offline_machines_apart_from_the_machines_to_pick() {
     {
         LocalDaemonResponse::RemoteMachinesListed {
             renewing: false,
+            directory: _,
             machines,
             offline_machines,
         } => {

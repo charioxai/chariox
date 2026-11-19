@@ -23,6 +23,7 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
 
     let listed = LocalDaemonResponse::RemoteMachinesListed {
         renewing: false,
+        directory: None,
         machines: vec![RemoteMachineRecord {
             directory: None,
             machine_id: "machine-1".into(),
@@ -78,5 +79,49 @@ fn local_daemon_protocol_machine_presence_shape_is_versioned() {
         serde_json::json!({
             "RemoteMachineForgotten": { "machine_id": "machine-2", "display_name": "laptop" }
         })
+    );
+}
+
+// Local 1065: the list names the Cloud directory the answering kernel reads, and each machine the
+// directory that recorded it, so a client applies its account's membership only to its own
+// directory's machines; a list the kernel is still renewing says so.
+#[test]
+fn local_daemon_protocol_machine_directory_shape_is_versioned() {
+    let directory = "https://cloud.test/account-1/realm-1";
+    let listed = LocalDaemonResponse::RemoteMachinesListed {
+        renewing: true,
+        directory: Some(directory.into()),
+        machines: Vec::new(),
+        offline_machines: vec![OfflineMachineRecord {
+            directory: Some(directory.into()),
+            machine_id: "machine-2".into(),
+            display_name: "laptop".into(),
+            last_seen_ms: 42,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(listed).unwrap(),
+        serde_json::json!({
+            "RemoteMachinesListed": {
+                "machines": [],
+                "offline_machines": [{
+                    "machine_id": "machine-2",
+                    "display_name": "laptop",
+                    "last_seen_ms": 42,
+                    "directory": directory
+                }],
+                "directory": directory,
+                "renewing": true
+            }
+        })
+    );
+    let changed = crate::transport::kernel_protocol::KernelEvent::RemoteMachinesChanged {
+        machines: Vec::new(),
+        offline_machines: Vec::new(),
+        directory: Some(directory.into()),
+    };
+    assert_eq!(
+        serde_json::to_value(changed).unwrap()["directory"],
+        serde_json::json!(directory)
     );
 }

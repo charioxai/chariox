@@ -242,4 +242,9 @@ pub struct OfflineMachineRecord {
 pub struct RemoteMachineInventory {
     pub machines: Vec<RemoteMachineRecord>,
     pub offline_machines: Vec<OfflineMachineRecord>,
+    /// The Cloud directory this kernel's live list reads (its active Cloud profile), absent on a
+    /// private relay: a client applies its account's membership only to machines of the
+    /// directory it shares with the answering kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }

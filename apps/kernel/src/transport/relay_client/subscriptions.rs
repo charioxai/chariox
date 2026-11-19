@@ -1214,6 +1214,7 @@ async fn run_relay_room_list_subscription_loop(
                     KernelEvent::RemoteMachinesChanged {
                         machines: inventory.machines,
                         offline_machines: inventory.offline_machines,
+                        directory: inventory.directory,
                     },
                 )
                 .await

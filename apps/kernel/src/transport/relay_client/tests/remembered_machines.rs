@@ -272,6 +272,7 @@ async fn seed_healthy_primary_inventory(app: &Arc<Mutex<DaemonApp>>) {
     let projection = app.lock().await.remote_relay_inventory_projection_store();
     projection.update(
         crate::local::RemoteMachineInventory {
+            directory: None,
             machines: vec![crate::local::RemoteMachineRecord {
                 directory: None,
                 machine_id: "machine-live".to_string(),
@@ -689,6 +690,100 @@ async fn a_live_pass_overtaken_by_remove_does_not_publish_the_old_approval() {
     assert!(
         machine.pending,
         "a pass that started before the Remove published the old approval: {machine:?}"
+    );
+
+    relay_stop_tx
+        .send(())
+        .expect("relay thread should be waiting");
+    relay_thread.join().expect("relay thread should join");
+}
+
+// Presence state table, row "two passes in flight" (#1474 review 5969964480): a slow pass that
+// started first and ends last does not overwrite the list a newer pass published. The slow pass is
+// held at its probe of a kernel that never answers; meanwhile another machine connects and a
+// newer pass, with a short probe bound, lists it and publishes first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_pass_that_ends_after_a_newer_one_does_not_take_its_kernels_away() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    approve("slow-machine");
+    approve("late-machine");
+    let (addr, registry, relay_stop_tx, relay_thread) = spawn_relay();
+    let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let mut slow = register_silent_kernel(&relay_url, "slow-kernel", "slow-machine").await;
+    wait_for_daemon_registration(registry.clone(), "slow-kernel").await;
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("secret".to_string());
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
+    let projection = app.lock().await.remote_relay_inventory_projection_store();
+    refresh_remote_inventory_projection_for_app_with_relay_state(&app)
+        .await
+        .expect("the first pass lists the slow machine");
+
+    // The slow kernel is known now, so the next pass probes it and waits there, its list already
+    // read: the late machine is not in it.
+    let older = {
+        let app = Arc::clone(&app);
+        tokio::spawn(async move {
+            refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
+        })
+    };
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let Some(Ok(Message::Text(text))) = slow.next().await else {
+                panic!("the kernel's socket closed before the probe");
+            };
+            if text.contains("daemon_incoming_peer_request") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the older pass should probe the slow kernel");
+
+    let _late = register_silent_kernel(&relay_url, "late-kernel", "late-machine").await;
+    wait_for_daemon_registration(registry, "late-kernel").await;
+    let mut quick = config;
+    quick.relay_request_timeout_ms = 300;
+    app.lock().await.config_projection_store().update(quick);
+    refresh_remote_inventory_projection_for_app_with_relay_state(&app)
+        .await
+        .expect("the newer pass publishes first");
+    let late_kernels =
+        |projection: &crate::runtime::projection::RemoteRelayInventoryProjectionStore| {
+            listed(projection, "late-machine").map(|machine| {
+                (
+                    machine.presence,
+                    machine
+                        .kernels
+                        .into_iter()
+                        .map(|kernel| kernel.kernel_id)
+                        .collect::<Vec<_>>(),
+                )
+            })
+        };
+    let newer_list = Some((
+        RemoteMachinePresence::Online,
+        vec!["late-kernel".to_string()],
+    ));
+    assert_eq!(
+        late_kernels(&projection),
+        newer_list,
+        "the newer pass lists it"
+    );
+
+    older
+        .await
+        .expect("pass task")
+        .expect("a superseded pass ends without error: the newer list stands");
+    assert_eq!(
+        late_kernels(&projection),
+        newer_list,
+        "the older pass, ending last, overwrote the newer list"
     );
 
     relay_stop_tx

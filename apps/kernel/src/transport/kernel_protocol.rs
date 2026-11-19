@@ -205,6 +205,9 @@ pub(crate) enum KernelEvent {
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
         offline_machines: Vec<OfflineMachineRecord>,
+        /// As `RemoteMachineInventory::directory`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
     },
     RoomListChanged {
         inventory_version: String,

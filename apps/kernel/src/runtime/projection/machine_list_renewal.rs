@@ -13,6 +13,10 @@
 //! | Renewing(gen), superseded by gen+1 | its pass ends | unchanged | a_superseded_renewal_does_not_settle_the_newer_one |
 //! | Fresh or Failed started at or after the bound | request | unchanged (the request gets that result) | a_renewal_that_finishes_as_a_second_request_arrives_answers_both |
 //! | Fresh, Failed or Renewing started before the bound | request | Renewing(gen+1) | a_finished_renewal_that_went_stale_is_not_reused |
+//!
+//! A superseded renewal keeps running; this table settles only who waits for which renewal. What
+//! a pass writes is fenced where it writes: the projection numbers every pass when it starts and
+//! only the newest to start publishes (`RemoteRelayInventoryProjectionStore::publish_live`).
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
