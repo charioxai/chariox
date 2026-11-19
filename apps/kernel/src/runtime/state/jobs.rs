@@ -19,6 +19,8 @@ mod execute;
 mod held;
 #[cfg(test)]
 mod held_tests;
+#[cfg(test)]
+mod marker_tests;
 mod never_fit;
 #[cfg(test)]
 mod never_fit_tests;

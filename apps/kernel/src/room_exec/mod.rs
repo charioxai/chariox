@@ -29,6 +29,7 @@ use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
+pub(crate) use buffer::OUTPUT_LOSS_NOTICE;
 pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
