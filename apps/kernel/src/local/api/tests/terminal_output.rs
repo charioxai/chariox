@@ -18,6 +18,7 @@ fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &
 
 mod attachment_scoping;
 mod basic_pump;
+mod long_reply;
 mod native_output;
 mod native_output_batch;
 mod parallel_prompts;
