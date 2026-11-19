@@ -3468,6 +3468,15 @@ Workflow trigger and deployment direction:
 - protocol 1012: an agent's `active_turn.phase` is `thinking` while the model reasons and streams nothing a
   person can read (Claude reports only a thinking-token count then); `awaiting_first_output` is the provider still
   reading the context. Clients show "Thinking" or "Reading context" with the time since `started_at_ms`, not a bare spinner.
+- protocol 1012: machine list membership and renewal. `RemoteMachineRecord` and
+  `OfflineMachineRecord` carry `directory`, the Cloud directory (API, account, realm) whose live list
+  first recorded the machine; absent for a machine of a private relay, a pairing or an approval. A
+  kernel forgets a remembered machine of a directory once two consecutive reads of that directory
+  omit it (Remove unlinks it in Cloud), and never a machine of another directory or of a private relay.
+  A client applies the account's membership only to machines with a `directory`. `ListRemoteMachines`
+  on a stale list renews it first; when the renewal outlasts the answer budget the answer is the last
+  list with `renewing: true` (omitted when false), the renewal goes on, and its list follows as
+  `remote_machines_changed`. Relay registrations carry each kernel's local protocol at peer 449.
 - protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the

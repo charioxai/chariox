@@ -1963,7 +1963,7 @@ mod tests {
         let approved = |machine_id: &str| {
             DaemonConfig::machine_registry_entries()
                 .iter()
-                .any(|entry| entry.machine_id == machine_id && entry.approved && !entry.forgotten)
+                .any(|entry| entry.machine_id == machine_id && entry.approved)
         };
         assert!(!approved("machine-target"));
         approve_transfer_target_machine("machine-target");

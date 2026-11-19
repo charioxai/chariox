@@ -51,6 +51,7 @@ mod kernel_operation_interactions;
 mod kernel_resources;
 mod kernel_trash;
 mod landing8;
+mod machine_presence;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;

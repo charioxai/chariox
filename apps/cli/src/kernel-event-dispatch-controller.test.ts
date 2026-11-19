@@ -180,11 +180,12 @@ test("kernel event dispatch applies relay and remote-machine patches without ref
       machine_alias: "worker",
       display_name: "worker",
       trust_status: "approved",
-      online: true,
+      presence: "online",
       pending: false,
       kernel_count: 1,
       available_providers: ["opencode"],
     }],
+    offline_machines: [],
   })
 
   assert.deepEqual(harness.calls, [

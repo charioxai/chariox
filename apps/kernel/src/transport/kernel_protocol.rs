@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, RoomListLaunchTarget,
-    RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
+    LocalDaemonRequest, OfflineMachineRecord, PasskeyPrompt, RelayStatus, RemoteMachineRecord,
+    RoomListLaunchTarget, RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
@@ -208,6 +208,10 @@ pub(crate) enum KernelEvent {
     },
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
+        offline_machines: Vec<OfflineMachineRecord>,
+        /// As `RemoteMachineInventory::directory`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
     },
     RoomListChanged {
         inventory_version: String,

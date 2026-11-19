@@ -146,6 +146,15 @@ fn should_refresh_remote_inventory(dynamic_relay: bool, managed_slice_worker: bo
     dynamic_relay && !managed_slice_worker
 }
 
+/// Whether this connector owns the kernel's remote inventory. A slice-private connector shares the
+/// primary's projection and must not replace it.
+fn owns_remote_inventory(router: &CommandRouter, static_relay: &Option<StaticRelayConfig>) -> bool {
+    should_refresh_remote_inventory(
+        static_relay.is_none(),
+        router.managed_slice_relay_identity().is_some(),
+    )
+}
+
 fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
     CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
         + Duration::from_millis(stable_jitter_ms(
@@ -654,6 +663,12 @@ async fn run_daemon_relay_connector_inner(
             disconnect_relay(&state, "shutdown before relay connect", presence).await;
             break 'connector;
         }
+        // Every pass starts disconnected: before a first connect, after a failed one, and while
+        // waiting for a token or a relay configuration. The list shows what the kernel remembers
+        // and ages it, whatever stalls the connect.
+        if owns_remote_inventory(&router, &static_relay) {
+            retain_remembered_remote_machines(&router);
+        }
 
         if static_relay.is_none() {
             let config = router.relay_config_snapshot();
@@ -957,7 +972,6 @@ async fn run_daemon_relay_connector_inner(
                 });
                 if let Err(reason) = sent {
                     writer_task.abort();
-                    clear_remote_inventory_projection(&router);
                     disconnect_relay(&state, &reason, presence).await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                     record_relay_reconnect(&router, &relay_url, &reason, delay);
@@ -982,7 +996,6 @@ async fn run_daemon_relay_connector_inner(
                         Ok(count) => count,
                         Err(error) => {
                             writer_task.abort();
-                            clear_remote_inventory_projection(&router);
                             disconnect_relay(&state, &error, presence).await;
                             let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                             record_relay_reconnect(&router, &relay_url, &error, delay);
@@ -1029,10 +1042,7 @@ async fn run_daemon_relay_connector_inner(
                 // A rename of the computer reaches Cloud and the relay at the next heartbeat tick,
                 // not at the next 30 s presence refresh.
                 let mut published_machine_name = router.machine_name();
-                let refresh_remote_inventory = should_refresh_remote_inventory(
-                    static_relay.is_none(),
-                    router.managed_slice_relay_identity().is_some(),
-                );
+                let refresh_remote_inventory = owns_remote_inventory(&router, &static_relay);
                 let mut inventory_refresh_task = refresh_remote_inventory
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
@@ -1059,7 +1069,6 @@ async fn run_daemon_relay_connector_inner(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
-                                clear_remote_inventory_projection(&router);
                                 disconnect_relay(&state, "daemon shutting down", presence).await;
                                 break 'connector;
                             }
@@ -1085,7 +1094,6 @@ async fn run_daemon_relay_connector_inner(
                                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                                             abort_subscription_tasks(&router, &subscription_tasks).await;
                                             writer_task.abort();
-                                            clear_remote_inventory_projection(&router);
                                             disconnect_relay(&state, "relay receipt writer stalled", presence).await;
                                             break "relay receipt writer stalled";
                                         }
@@ -1130,7 +1138,6 @@ async fn run_daemon_relay_connector_inner(
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&router, &subscription_tasks).await;
                                         writer_task.abort();
-                                        clear_remote_inventory_projection(&router);
                                         disconnect_relay(
                                             &state,
                                             &disconnect_reason,
@@ -1153,7 +1160,6 @@ async fn run_daemon_relay_connector_inner(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&router);
                                     disconnect_relay(&state, "relay close frame received", presence).await;
                                     break "relay close frame received";
                                 }
@@ -1169,7 +1175,6 @@ async fn run_daemon_relay_connector_inner(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&router);
                                     disconnect_relay(&state, reason, presence).await;
                                     break reason;
                                 }
@@ -1181,7 +1186,6 @@ async fn run_daemon_relay_connector_inner(
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
-                            clear_remote_inventory_projection(&router);
                             disconnect_relay(&state, "relay writer ended", presence).await;
                             break "relay writer ended";
                         }
@@ -1322,7 +1326,10 @@ async fn run_daemon_relay_connector_inner(
                                 published_accounts = accounts;
                             }
                             if refresh_remote_inventory {
-                                let attached = !subscription_tasks.lock().await.is_empty();
+                                // Local clients and relay clients alike: either one following
+                                // the machine list keeps it fresh.
+                                let attached = router.remote_machines_watched()
+                                    || !subscription_tasks.lock().await.is_empty();
                                 let due = remote_inventory_refresh_due(
                                     heartbeat_tick,
                                     &mut inventory_refresh_task,
@@ -1355,7 +1362,6 @@ async fn run_daemon_relay_connector_inner(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
-                                clear_remote_inventory_projection(&router);
                                 disconnect_relay(&state, "relay heartbeat send failed", presence).await;
                                 break "relay heartbeat send failed";
                             }
@@ -1398,6 +1404,11 @@ async fn run_daemon_relay_connector_inner(
                         serde_json::json!({ "reads": cancelled_reads, "reason": reconnect_reason }),
                     );
                 }
+                // The connection ended: the live list gives way to the remembered one at once,
+                // not after the reconnect delay.
+                if owns_remote_inventory(&router, &static_relay) {
+                    retain_remembered_remote_machines(&router);
+                }
                 drop_backoff.after_connection(connected_at.elapsed());
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt)
                     .max(drop_backoff.delay(&daemon_id));
@@ -1417,7 +1428,6 @@ async fn run_daemon_relay_connector_inner(
                         "error": error.to_string(),
                     }),
                 );
-                clear_remote_inventory_projection(&router);
                 disconnect_relay(&state, "relay socket connect failed", presence).await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);

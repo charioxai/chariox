@@ -211,7 +211,8 @@ export type RoomListWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEnd
 
 export type WaitingRoomRelayStatusView = KernelRelayStatus
 
-export type WaitingRoomRemoteMachineView = KernelRemoteMachineRecord
+/** The TUI shows a reconnecting machine as not online; machines gone longer never reach it. */
+export type WaitingRoomRemoteMachineView = Omit<KernelRemoteMachineRecord, "presence"> & { online: boolean }
 
 export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 

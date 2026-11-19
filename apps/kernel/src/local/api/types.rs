@@ -615,4 +615,7 @@ pub use workspace::*;
 /// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
 /// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
 /// A requested reply has an explicit no-answer outcome when handled during independent work.
+/// The machine list separates live/reconnecting machines (presence) from offline_machines.
+/// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
+/// Relay registrations and machine records include each kernel's registered local protocol.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;

@@ -2751,9 +2751,10 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "worker-public-key".to_string(),
+            local_protocol: None,
         };
         app.remote_relay_inventory_projection_store()
-            .update(Vec::new(), vec![worker.clone()]);
+            .update(Default::default(), vec![worker.clone()]);
         let mut discovery_config = app.config().clone();
         discovery_config.relay_token = Some("scoped-discovery-token".to_string());
 

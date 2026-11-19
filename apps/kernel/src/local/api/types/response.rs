@@ -295,7 +295,9 @@ pub enum LocalDaemonResponse {
     SliceStateReset { slice: SliceRecord, removed_state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceBackupCreated { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, instructions: String, },
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
-    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
+    /// `renewing`: the list is the last one while a renewal is still running (it follows as
+    /// `remote_machines_changed`).
+    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, offline_machines: Vec<OfflineMachineRecord>, #[serde(default, skip_serializing_if = "Option::is_none")] directory: Option<String>, #[serde(default, skip_serializing_if = "std::ops::Not::not")] renewing: bool, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
     /// A direct current relay registration observation. This does not prove
     /// historical heartbeat-ID absence or full MP-10 acceptance.
@@ -351,7 +353,7 @@ pub enum LocalDaemonResponse {
     WorkspaceCommitMessageGenerated { message: String, },
     WorkspaceGitActionCompleted { result: WorkspaceGitActionResult, },
     RemoteMachineApproved { machine: RemoteMachineRecord, },
-    RemoteMachineForgotten { machine: RemoteMachineRecord, },
+    RemoteMachineForgotten { machine_id: String, display_name: String, },
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },

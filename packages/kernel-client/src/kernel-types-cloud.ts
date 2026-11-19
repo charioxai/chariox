@@ -115,12 +115,31 @@ export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null
   display_name: string
-  trust_status: "approved" | "pending" | "forgotten"
-  online: boolean
+  trust_status: "approved" | "pending"
+  /** `reconnecting`: dropped less than 10 minutes ago. A machine gone longer is an `OfflineMachineRecord`. */
+  presence: "online" | "reconnecting"
   pending: boolean
   kernel_count: number
   available_providers?: string[]
   provider_accounts?: ProviderAccountSummary[]
+  /** The machine's live kernels with the protocol each registered with; `local_protocol` absent for a kernel older than the field. */
+  kernels?: RemoteMachineKernel[]
+  /** Protocol 1012: the Cloud directory the machine belongs to; absent for a machine of a private relay. */
+  directory?: string | null
+}
+
+export type RemoteMachineKernel = {
+  kernel_id: string
+  local_protocol?: number | null
+}
+
+/** A machine gone past the reconnecting window: shown only in the Machines window's offline table. */
+export type OfflineMachineRecord = {
+  machine_id: string
+  display_name: string
+  last_seen_ms: number
+  /** Protocol 1012: as `RemoteMachineRecord.directory`. */
+  directory?: string | null
 }
 
 /** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */
@@ -348,6 +367,8 @@ export type RelayKernelPresence = {
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number
+  /** The kernel's local protocol version; null when the kernel predates the field. */
+  local_protocol?: number | null
 }
 
 export type ProviderAccountSummary = {

@@ -211,6 +211,7 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
                     accepting_remote_leases: false,
                     leased_agent_count: 0,
                     local_session_count: 0,
+                    local_protocol: None,
                 },
                 &config.relay_private_key,
             )

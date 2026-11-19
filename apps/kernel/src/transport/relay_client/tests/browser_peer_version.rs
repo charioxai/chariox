@@ -146,6 +146,7 @@ async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>)
                 accepting_remote_leases: true,
                 leased_agent_count: 0,
                 local_session_count: 0,
+                local_protocol: None,
             };
             socket
                 .send(Message::Text(

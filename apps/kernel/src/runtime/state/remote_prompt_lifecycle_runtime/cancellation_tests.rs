@@ -302,6 +302,7 @@ async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: S
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: worker_public_key,
+                local_protocol: None,
             }),
             error: None,
         },

@@ -111,10 +111,12 @@ use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;
 #[cfg(test)]
 pub(crate) use peer_requests::send_authenticated_peer_request_for_test;
-pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
-    abort_inventory_refresh_task, clear_remote_inventory_projection, inventory_refresh_wanted,
-    remote_inventory_refresh_due, spawn_remote_inventory_projection_refresh,
+    abort_inventory_refresh_task, inventory_refresh_wanted, remote_inventory_refresh_due,
+    retain_remembered_remote_machines, spawn_remote_inventory_projection_refresh,
+};
+pub(crate) use remote_inventory::{
+    refresh_remote_inventory_projection, retain_remembered_machines,
 };
 use subscriptions::{
     abort_subscription_tasks, handle_relay_subscribe, handle_relay_unsubscribe,

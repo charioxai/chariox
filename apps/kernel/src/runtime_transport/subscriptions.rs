@@ -8,7 +8,7 @@ use tokio::time::{sleep, timeout};
 
 #[cfg(test)]
 use crate::error::DaemonError;
-use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::local::{RelayStatus, RemoteMachineInventory};
 use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::CommandRouter;
@@ -949,7 +949,9 @@ async fn run_room_list_subscription_loop(
     let mut previous_catalog_revision = None;
     let mut room_list_event_projection = RoomListEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
-    let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
+    let mut previous_remote_machines: Option<RemoteMachineInventory> = None;
+    // This client follows the machine list: the relay connector keeps it fresh meanwhile.
+    let _remote_machines_watch = router.watch_remote_machines();
     let mut previous_provider_catalog = None;
     let mut previous_slices = None;
     let mut inventory_dirty = true;
@@ -1091,15 +1093,19 @@ async fn run_room_list_subscription_loop(
                 advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.transport_remote_machines_snapshot();
-            if previous_remote_machines.as_ref() != Some(&machines) {
-                previous_remote_machines = Some(machines.clone());
+            let inventory = router.transport_remote_machines_snapshot();
+            if previous_remote_machines.as_ref() != Some(&inventory) {
+                previous_remote_machines = Some(inventory.clone());
                 if !emit_kernel_event(
                     &runtime,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
-                    KernelEvent::RemoteMachinesChanged { machines },
+                    KernelEvent::RemoteMachinesChanged {
+                        machines: inventory.machines,
+                        offline_machines: inventory.offline_machines,
+                        directory: inventory.directory,
+                    },
                     Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                     None,
                     None,

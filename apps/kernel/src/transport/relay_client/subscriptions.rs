@@ -1249,9 +1249,9 @@ async fn run_relay_room_list_subscription_loop(
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.relay_remote_machines_snapshot(&subscriber.caller);
-            if previous_remote_machines.as_ref() != Some(&machines) {
-                previous_remote_machines = Some(machines.clone());
+            let inventory = router.relay_remote_machines_snapshot(&subscriber.caller);
+            if previous_remote_machines.as_ref() != Some(&inventory) {
+                previous_remote_machines = Some(inventory.clone());
                 if emit_relay_event(
                     &router,
                     &outgoing_tx,
@@ -1259,7 +1259,11 @@ async fn run_relay_room_list_subscription_loop(
                     &client_public_key,
                     &event_runtime,
                     ROOM_LIST_SUBSCRIPTION_SCOPE,
-                    KernelEvent::RemoteMachinesChanged { machines },
+                    KernelEvent::RemoteMachinesChanged {
+                        machines: inventory.machines,
+                        offline_machines: inventory.offline_machines,
+                        directory: inventory.directory,
+                    },
                 )
                 .await
                 .is_err()
