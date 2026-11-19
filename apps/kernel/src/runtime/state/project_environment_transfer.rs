@@ -25,6 +25,7 @@ struct PeerSource {
     runtime: KernelRuntimeState,
     owner: String,
     kernel: String,
+    project_id: String,
 }
 
 impl PeerSource {
@@ -44,10 +45,10 @@ impl PeerSource {
 }
 
 impl EnvironmentSource for PeerSource {
-    async fn read(&self, project_id: &str) -> Result<SourceSnapshot, SourceError> {
+    async fn read(&self) -> Result<SourceSnapshot, SourceError> {
         match self
             .ask(RelayPeerRequest::ReadProjectEnvironment {
-                project_id: project_id.into(),
+                project_id: self.project_id.clone(),
             })
             .await?
         {
@@ -72,14 +73,10 @@ impl EnvironmentSource for PeerSource {
         }
     }
 
-    async fn pull_secret(
-        &self,
-        project_id: &str,
-        name: &str,
-    ) -> Result<Option<Zeroizing<String>>, SourceError> {
+    async fn pull_secret(&self, name: &str) -> Result<Option<Zeroizing<String>>, SourceError> {
         match self
             .ask(RelayPeerRequest::PullProjectEnvironmentSecret {
-                project_id: project_id.into(),
+                project_id: self.project_id.clone(),
                 name: name.into(),
             })
             .await?
@@ -95,13 +92,12 @@ impl EnvironmentSource for PeerSource {
 
     async fn pull_registration(
         &self,
-        project_id: &str,
         kind: EnvironmentEntryKind,
         name: &str,
     ) -> Result<Option<Registration>, SourceError> {
         match self
             .ask(RelayPeerRequest::PullProjectEnvironmentRegistration {
-                project_id: project_id.into(),
+                project_id: self.project_id.clone(),
                 entry_kind: kind,
                 name: name.into(),
             })
@@ -116,15 +112,10 @@ impl EnvironmentSource for PeerSource {
         }
     }
 
-    async fn pull_file(
-        &self,
-        project_id: &str,
-        path: &str,
-        offset: u64,
-    ) -> Result<Option<FileSlice>, SourceError> {
+    async fn pull_file(&self, path: &str, offset: u64) -> Result<Option<FileSlice>, SourceError> {
         match self
             .ask(RelayPeerRequest::PullProjectEnvironmentFile {
-                project_id: project_id.into(),
+                project_id: self.project_id.clone(),
                 path: path.into(),
                 offset,
             })
@@ -221,10 +212,15 @@ impl KernelRuntimeState {
         let runtime = self.clone();
         let project_id = project.id().to_string();
         let checkouts: Vec<PathBuf> = project.workspace_ids().iter().map(PathBuf::from).collect();
+        let source_project_id = project
+            .copy_origin()
+            .filter(|origin| origin.kernel_id == request.source_kernel_id)
+            .map_or(project.id(), |origin| origin.project_id.as_str());
         let source = PeerSource {
             runtime: self.clone(),
             owner: caller_user_id.into(),
             kernel: request.source_kernel_id,
+            project_id: source_project_id.into(),
         };
         let entries = request.entries;
         tokio::spawn(async move {

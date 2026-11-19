@@ -36,6 +36,13 @@ impl Default for SessionProjectSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCopyOrigin {
+    pub kernel_id: String,
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProject {
     id: String,
     owner_user_id: String,
@@ -46,6 +53,8 @@ pub struct RuntimeProject {
     #[serde(default)]
     workspace_ids: Vec<String>,
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copy_origin: Option<ProjectCopyOrigin>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,6 +87,7 @@ impl RuntimeProject {
             },
             workspace_id,
             name: name.into(),
+            copy_origin: None,
             pinned: false,
             pinned_at_ms: None,
             kind,
@@ -96,6 +106,14 @@ impl RuntimeProject {
         if self.owner_user_id == super::DEFAULT_LOCAL_USER_ID {
             self.owner_user_id = owner.into();
         }
+    }
+
+    pub(crate) fn copy_origin(&self) -> Option<&ProjectCopyOrigin> {
+        self.copy_origin.as_ref()
+    }
+
+    pub(crate) fn set_copy_origin(&mut self, origin: Option<ProjectCopyOrigin>) {
+        self.copy_origin = origin;
     }
 
     pub fn owner_user_id(&self) -> &str {

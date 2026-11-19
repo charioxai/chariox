@@ -772,10 +772,29 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     };
     assert_eq!(projects.len(), 2);
     assert_ne!(projects[0].destination_root, projects[1].destination_root);
-    for (project, expected) in projects.iter().zip([
-        b"Copied project content\n".as_slice(),
-        b"Second project content\n",
-    ]) {
+    let runtime = router.runtime_state();
+    let registered = runtime.list_projects("owner-user", false).await;
+    for ((project, original), expected) in projects
+        .iter()
+        .zip(["owner-project", "owner-project-two"])
+        .zip([
+            b"Copied project content\n".as_slice(),
+            b"Second project content\n",
+        ])
+    {
+        assert_ne!(project.project_id, original);
+        let origin = crate::session::ProjectCopyOrigin {
+            kernel_id: source.daemon_id.clone(),
+            project_id: original.into(),
+        };
+        assert_eq!(project.copy_origin.as_ref(), Some(&origin));
+        assert_eq!(
+            registered
+                .iter()
+                .find(|copy| copy.id() == project.project_id)
+                .and_then(crate::session::RuntimeProject::copy_origin),
+            Some(&origin),
+        );
         assert_eq!(
             std::fs::read(PathBuf::from(&project.repositories[0].workspace_path).join("README.md"))
                 .unwrap(),

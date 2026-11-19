@@ -1128,7 +1128,13 @@ fn launch_target_from_receipt(
                     } else {
                         imported.project_id.clone()
                     };
-                    development_launch_target(&target_project_id, &imported.receipt)
+                    let copy_origin = entry.plan.destination.as_ref().map(|_| {
+                        crate::session::ProjectCopyOrigin {
+                            kernel_id: entry.source_kernel_id.clone(),
+                            project_id: imported.project_id.clone(),
+                        }
+                    });
+                    development_launch_target(&target_project_id, copy_origin, &imported.receipt)
                 })
                 .collect::<Result<Vec<_>, DaemonError>>()?;
             ManagedContextDevelopmentLaunchTarget::FromSource { projects: targets }
@@ -1146,6 +1152,7 @@ fn launch_target_from_receipt(
 
 fn development_launch_target(
     project_id: &str,
+    copy_origin: Option<crate::session::ProjectCopyOrigin>,
     receipt: &crate::managed_context::development::DevelopmentContextPublicationReceipt,
 ) -> Result<crate::local::ManagedContextProjectLaunchTarget, DaemonError> {
     let destination_root = receipt
@@ -1186,6 +1193,7 @@ fn development_launch_target(
         .collect::<Result<Vec<_>, DaemonError>>()?;
     Ok(crate::local::ManagedContextProjectLaunchTarget {
         project_id: project_id.to_string(),
+        copy_origin,
         destination_root,
         primary_repository_id: receipt.primary_repository_id.clone(),
         repositories,
@@ -1223,7 +1231,7 @@ fn recover_launch_target_from_publication(
                 transfer_error("schema-3 managed context publication could not be recovered")
             })?;
             crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-                projects: vec![development_launch_target(project_id, &receipt)?],
+                projects: vec![development_launch_target(project_id, None, &receipt)?],
             }
         }
     };
