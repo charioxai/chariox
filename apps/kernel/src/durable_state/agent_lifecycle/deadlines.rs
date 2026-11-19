@@ -18,12 +18,12 @@ pub(super) fn armed(db: &Connection) -> Result<Vec<AgentDeadline>, DaemonError> 
     rows.map(|row| decode(&row.map_err(sql)?)).collect()
 }
 
-/// The owner's explicit limit moves with the deadline it backs, or a later edit would undo the pause.
-pub(super) fn shift_intent(
+/// The owner's explicit limit moves with the deadline it backs, or a later edit would undo the move.
+pub(super) fn move_intent(
     db: &Connection,
     room: &str,
     agent: &str,
-    down_ms: u64,
+    to: impl FnOnce(u64) -> Result<u64, DaemonError>,
 ) -> Result<(), DaemonError> {
     let intent: Option<i64> = db
         .query_row(
@@ -34,10 +34,7 @@ pub(super) fn shift_intent(
         .optional()
         .map_err(sql)?;
     if let Some(intent) = intent {
-        let moved = deadline_clock::shifted(
-            u64::try_from(intent).map_err(|_| error("invalid deadline intent"))?,
-            down_ms,
-        )?;
+        let moved = to(u64::try_from(intent).map_err(|_| error("invalid deadline intent"))?)?;
         db.execute(
             "UPDATE agent_deadline_intents SET deadline_ms=?3 WHERE room_id=?1 AND agent_id=?2",
             params![room, agent, sql_integer(moved)?],
@@ -231,7 +228,7 @@ impl DurableKernelStateStore {
     }
     pub(crate) fn agent_deadlines_awaiting_rearm(
         &self,
-    ) -> Result<Vec<(String, String)>, DaemonError> {
+    ) -> Result<Vec<WorkerHeldDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
         deadline_clock::awaiting_rearm(&db)
     }

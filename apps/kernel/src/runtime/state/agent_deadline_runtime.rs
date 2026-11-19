@@ -38,6 +38,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
         // A reached deadline ends the agent's work, so only who acts for its owner arms one.
@@ -142,7 +143,7 @@ impl KernelRuntimeState {
 
     /// Asks the worker that runs a leased agent to arm the deadline on its backing agent. An
     /// agent that runs on this kernel needs nothing here.
-    async fn arm_leased_agent_deadline(
+    pub(super) async fn arm_leased_agent_deadline(
         &self,
         agent: &crate::agent::AgentInstance,
         deadline_ms: Option<u64>,
@@ -285,39 +286,6 @@ impl KernelRuntimeState {
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map(|_| ())
-    }
-
-    /// After a kernel start the worker of a leased agent still holds the deadline from before the
-    /// pause: tell it the shifted one. An unreachable worker keeps its entry for the next sweep.
-    pub(super) async fn rearm_leased_agent_deadlines(&self) -> Result<(), DaemonError> {
-        let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
-        let store = &self.owned.durable_state_store;
-        let mut first_error = None;
-        for (room, agent_id) in store.agent_deadlines_awaiting_rearm()? {
-            let armed = store
-                .agent_deadline(&room, &agent_id)?
-                .filter(|deadline| deadline.state == AgentDeadlineState::Armed);
-            let leased = self
-                .owned
-                .agent_store
-                .get_agent(&agent_id)
-                .ok()
-                .filter(|agent| agent.remote_execution().is_some());
-            if let (Some(deadline), Some(agent)) = (armed, leased) {
-                if let Err(error) = self
-                    .arm_leased_agent_deadline(&agent, Some(deadline.deadline_ms))
-                    .await
-                {
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            }
-            store.agent_lifecycle(Operation::DeadlineRearmed {
-                room,
-                agent: agent_id,
-            })?;
-        }
-        first_error.map_or(Ok(()), Err)
     }
 
     /// The agent's own work, or work of any sub-agent below it (A4).

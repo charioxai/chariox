@@ -1,5 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: a leased agent's deadline is enforced by the worker that runs it.
-use super::leased_worker_route_tests::{leased_home, LeasedHome, LEASED_AGENT};
+use super::leased_worker_route_tests::{leased_home, LEASED_AGENT};
 use super::*;
 use crate::local::{AgentDeadlineState, SetAgentDeadlineRequest};
 use crate::runtime::router::CommandRouter;
@@ -86,107 +86,9 @@ async fn a_worker_that_does_not_confirm_leaves_the_home_without_a_deadline() {
         .is_none());
 }
 
-/// A home that restarts after arming a leased agent's deadline: its worker still holds the old one.
-async fn home_restarted_after_arming(name: &str) -> (LeasedHome, u64) {
-    let mut home = leased_home(name).await;
-    let owner = home
-        .state
-        .owned
-        .session_store
-        .get_session(&home.session_id)
-        .unwrap()
-        .owner_user_id()
-        .to_string();
-    let armed_ms = crate::session::unix_epoch_ms() + 600_000;
-    let call = home.state.set_agent_deadline(
-        &owner,
-        SetAgentDeadlineRequest {
-            session_id: home.session_id.clone(),
-            agent_id: home.agent_id.clone(),
-            deadline_ms: Some(armed_ms),
-        },
-    );
-    let reply = home
-        .rig
-        .answer(|_| RelayPeerResponse::LeasedAgentDeadlineSet {
-            leased_agent_id: LEASED_AGENT.into(),
-        });
-    let (result, _) = tokio::join!(call, reply);
-    result.unwrap();
-    home.state
-        .owned
-        .durable_state_store
-        .agent_lifecycle(
-            crate::durable_state::agent_lifecycle::Operation::ResumeDeadlines {
-                now: crate::session::unix_epoch_ms() + 120_000,
-            },
-        )
-        .unwrap();
-    (home, armed_ms)
-}
-
-#[tokio::test]
-async fn after_a_restart_the_home_tells_the_worker_the_shifted_deadline() {
-    let (mut home, armed_ms) = home_restarted_after_arming("leased-deadline-rearm").await;
-    let store = &home.state.owned.durable_state_store;
-    let shifted = store
-        .agent_deadline(&home.session_id, &home.agent_id)
-        .unwrap()
-        .unwrap()
-        .deadline_ms;
-    assert!(shifted >= armed_ms + 119_000, "{shifted} {armed_ms}");
-
-    let call = home.state.rearm_leased_agent_deadlines();
-    let reply = home
-        .rig
-        .answer(|_| RelayPeerResponse::LeasedAgentDeadlineSet {
-            leased_agent_id: LEASED_AGENT.into(),
-        });
-    let (result, request) = tokio::join!(call, reply);
-    result.expect("the worker confirms the shifted deadline");
-    assert!(matches!(
-        request,
-        RelayPeerRequest::SetLeasedAgentDeadline { leased_agent_id, deadline_ms: sent }
-            if leased_agent_id == LEASED_AGENT && sent == Some(shifted)
-    ));
-    assert!(store.agent_deadlines_awaiting_rearm().unwrap().is_empty());
-    // Nothing is left to tell the worker: no second request, so no answer is needed.
-    home.state.rearm_leased_agent_deadlines().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_worker_that_does_not_confirm_is_told_again_at_the_next_sweep() {
-    let (mut home, _) = home_restarted_after_arming("leased-deadline-rearm-retry").await;
-    let call = home.state.rearm_leased_agent_deadlines();
-    let reply = home
-        .rig
-        .answer(|_| RelayPeerResponse::LeasedAgentDestroyed {
-            leased_agent_id: LEASED_AGENT.into(),
-        });
-    let (result, _) = tokio::join!(call, reply);
-    assert!(
-        matches!(&result, Err(DaemonError::MachineRequest { code, .. })
-            if code == "agent_deadline_worker_refused"),
-        "{result:?}"
-    );
-    let store = &home.state.owned.durable_state_store;
-    assert_eq!(
-        store.agent_deadlines_awaiting_rearm().unwrap(),
-        vec![(home.session_id.clone(), home.agent_id.clone())]
-    );
-    let call = home.state.rearm_leased_agent_deadlines();
-    let reply = home
-        .rig
-        .answer(|_| RelayPeerResponse::LeasedAgentDeadlineSet {
-            leased_agent_id: LEASED_AGENT.into(),
-        });
-    let (result, _) = tokio::join!(call, reply);
-    result.expect("the retry reaches the worker");
-    assert!(store.agent_deadlines_awaiting_rearm().unwrap().is_empty());
-}
-
 /// A worker with one leased agent and no home connected.
-fn worker_with_leased_agent() -> (KernelRuntimeState, crate::execution_lease::LeasedAgent) {
+pub(super) fn worker_with_leased_agent() -> (KernelRuntimeState, crate::execution_lease::LeasedAgent)
+{
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();

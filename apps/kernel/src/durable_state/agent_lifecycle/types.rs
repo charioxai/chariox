@@ -284,6 +284,11 @@ pub(crate) enum Operation {
         room: String,
         agent: String,
     },
+    /// The worker refused the shifted deadline for good: the value it holds governs.
+    DeadlineKeptByWorker {
+        room: String,
+        agent: String,
+    },
     /// A kernel start gives back the time since the last beat.
     ResumeDeadlines {
         now: u64,

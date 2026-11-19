@@ -18,6 +18,7 @@ mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
+pub(crate) use deadline_clock::WorkerHeldDeadline;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
 mod inbox_lookup_tests;
