@@ -469,10 +469,11 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
-        let ended = self
-            .provider_store
-            .terminate_run_provider_only(&finished.session_id, &finished.provider_run_id)?
-            .into_run();
+        let ended = self.provider_store.retire_run_before_prompt_write(
+            &finished.session_id,
+            &finished.provider_run_id,
+            &finished.prompt_id,
+        )?;
         self.clear_active_provider_run_session_pointer(&finished.session_id, ended.id())?;
         self.provider_run_projection.update(ended);
         // The actor refused before any provider write. Keep the same admitted

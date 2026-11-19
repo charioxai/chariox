@@ -1213,6 +1213,22 @@ async fn idle_process_submit_rejection_retires_the_run_and_redispatches_the_prom
         panic!("expected one redispatch");
     };
     assert_eq!(dispatch.prompt_id, prompt_id);
+    // A completion-driven output pump can reconcile the ended run before
+    // the replacement dispatch acquires its lane.
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), old.id())
+        .await
+        .unwrap());
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(&agent_id)
+            .unwrap()
+            .id(),
+        prompt_id
+    );
     let fresh = app
         .lock()
         .await

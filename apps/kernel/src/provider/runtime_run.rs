@@ -140,6 +140,8 @@ pub struct RuntimeProviderRun {
     provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_diagnostic: Option<String>,
+    #[serde(skip)]
+    unwritten_prompt_to_redispatch: Option<String>,
     started_at_ms: u64,
     // Clones share it, so a Claude child the run actor restarts moves it for every
     // holder of the run.
@@ -246,6 +248,7 @@ impl RuntimeProviderRun {
                 .and_then(|state| state.provider_session_id(&request.adapter_key))
                 .map(str::to_string),
             terminal_diagnostic: None,
+            unwritten_prompt_to_redispatch: None,
             started_at_ms: now,
             process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
@@ -319,6 +322,7 @@ impl RuntimeProviderRun {
             external_provider_import: None,
             provider_session_id: None,
             terminal_diagnostic: None,
+            unwritten_prompt_to_redispatch: None,
             started_at_ms: now,
             process_started_at_ms: ProcessStart::default(),
             last_activity_at_ms: now,
@@ -829,6 +833,14 @@ impl RuntimeProviderRun {
 
     pub fn terminal_diagnostic(&self) -> Option<&str> {
         self.terminal_diagnostic.as_deref()
+    }
+
+    pub(crate) fn unwritten_prompt_to_redispatch(&self) -> Option<&str> {
+        self.unwritten_prompt_to_redispatch.as_deref()
+    }
+
+    pub(super) fn preserve_unwritten_prompt(&mut self, prompt_id: &str) {
+        self.unwritten_prompt_to_redispatch = Some(prompt_id.to_owned());
     }
 
     pub fn set_terminal_diagnostic(&mut self, diagnostic: impl Into<String>) {
