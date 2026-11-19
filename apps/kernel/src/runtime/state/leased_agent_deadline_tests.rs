@@ -87,7 +87,8 @@ async fn a_worker_that_does_not_confirm_leaves_the_home_without_a_deadline() {
 }
 
 /// A worker with one leased agent and no home connected.
-fn worker_with_leased_agent() -> (KernelRuntimeState, crate::execution_lease::LeasedAgent) {
+pub(super) fn worker_with_leased_agent() -> (KernelRuntimeState, crate::execution_lease::LeasedAgent)
+{
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
@@ -282,4 +283,30 @@ async fn edited_worker_deadlines_do_not_fire_at_the_old_time() {
         .unwrap();
     worker.tick_agent_deadlines(old + 120_000).await.unwrap();
     assert!(get().is_none());
+}
+
+/// The scheduler's tick is what a stopped kernel later resumes from.
+#[tokio::test]
+async fn the_deadline_tick_leaves_the_beat_a_kernel_start_resumes_from() {
+    let (worker, leased) = worker_with_leased_agent();
+    let deadline_ms = crate::session::unix_epoch_ms() + 600_000;
+    worker
+        .set_relay_leased_agent_deadline(&leased.id, Some(deadline_ms))
+        .await
+        .unwrap();
+    let tick_ms = crate::session::unix_epoch_ms();
+    worker.tick_agent_deadlines(tick_ms).await.unwrap();
+    let store = &worker.owned.durable_state_store;
+    store
+        .agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::ResumeDeadlines {
+                now: tick_ms + 120_000,
+            },
+        )
+        .unwrap();
+    let resumed = store
+        .agent_deadline(&leased.backing_session_id, &leased.backing_agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.deadline_ms, deadline_ms + 120_000);
 }
