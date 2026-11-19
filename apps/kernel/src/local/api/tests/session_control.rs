@@ -12,18 +12,30 @@ fn a_room_can_create_more_than_1024_idle_agents() {
     else {
         panic!("expected a new Room");
     };
-    let agents = (0..1025)
-        .map(|index| serde_json::json!({"alias": format!("idle-{index}"), "provider": "dev-stub"}))
-        .collect::<Vec<_>>();
-    let request = serde_json::from_value(serde_json::json!({"SpawnAgents": {
-        "session_id": session.id(), "agents": agents, "no_subscribe": true
-    }}))
-    .unwrap();
-    let LocalDaemonResponse::AgentsSpawned { agents, .. } = harness.dispatch(request).unwrap()
+    for range in [0..400, 400..800, 800..1025] {
+        let count = range.len();
+        let agents = range
+            .map(|index| serde_json::json!({"alias": format!("idle-{index}"), "provider": "dev-stub"}))
+            .collect::<Vec<_>>();
+        let request = serde_json::from_value(serde_json::json!({"SpawnAgents": {
+            "session_id": session.id(), "agents": agents, "no_subscribe": true
+        }}))
+        .unwrap();
+        let LocalDaemonResponse::AgentsSpawned { agents, .. } = harness.dispatch(request).unwrap()
+        else {
+            panic!("expected idle Room agents");
+        };
+        assert_eq!(agents.len(), count);
+    }
+    let LocalDaemonResponse::AgentsListed { agents } = harness
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .unwrap()
     else {
-        panic!("expected idle Room agents");
+        panic!("expected the Room agents");
     };
-    assert_eq!(agents.len(), 1025);
+    assert_eq!(agents.len(), 1026);
 }
 
 #[test]

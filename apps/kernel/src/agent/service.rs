@@ -487,7 +487,7 @@ impl AgentService {
     ) -> Result<AgentInstance, DaemonError> {
         let agent = self.get_agent(agent_id)?;
         let session_id = agent.session_id().to_string();
-        let session = sessions.get_session(&session_id)?;
+        sessions.get_session(&session_id)?;
         self.store
             .get_mut(agent_id)
             .expect("agent checked")
