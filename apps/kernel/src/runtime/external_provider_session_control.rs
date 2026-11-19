@@ -95,13 +95,14 @@ fn registered_external_provider_profile_roots_for(
         runtime_state.provider_account_authority_owner_user_id(owner_user_id);
     // A worker keeps its leased profile under the lease owner's own id, not the local alias.
     let registry = runtime_state.provider_account_profile_registry();
-    [account_owner_user_id.as_str(), owner_user_id]
+    let environment = [account_owner_user_id.as_str(), owner_user_id]
         .into_iter()
         .find_map(|owner| {
             registry
                 .resolve_environment(owner, provider, account_profile)
                 .ok()
-        })
+        });
+    environment
         .map(|environment| profile_roots(provider, &environment))
         .unwrap_or_default()
 }
