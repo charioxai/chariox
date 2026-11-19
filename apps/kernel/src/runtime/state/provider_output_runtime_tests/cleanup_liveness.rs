@@ -433,9 +433,14 @@ async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replaceme
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
             .expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_model("default"),
+        )
+        .expect("test agent should spawn");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -448,9 +453,9 @@ async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replaceme
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "codex",
+                "dev-stub",
                 "default",
-                "gpt-5",
+                "default",
             )
             .with_agent_id(agent.id()),
         )
@@ -693,9 +698,14 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
             .expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_model("default"),
+        )
+        .expect("test agent should spawn");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -708,9 +718,9 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "codex",
+                "dev-stub",
                 "default",
-                "gpt-5",
+                "default",
             )
             .with_agent_id(agent.id()),
         )
