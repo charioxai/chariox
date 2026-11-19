@@ -1792,6 +1792,7 @@ mod agent_run;
 #[cfg(test)]
 mod agent_run_test_support;
 mod agent_run_waiters;
+mod agent_spawn_prompt;
 mod agent_subtree_cascade;
 pub(crate) use agent_run::WorkerCaller;
 pub(crate) use agent_run_waiters::WorkerEnd;

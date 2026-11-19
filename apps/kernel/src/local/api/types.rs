@@ -612,4 +612,4 @@ pub use workspace::*;
 /// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
 /// Agent settings updates drop `self_settings` from the request and agent record.
 /// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1082;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1083;

@@ -542,6 +542,11 @@ export type AgentInstance = {
   parent_agent_id?: { agent_id: string; room_id?: string; started_by?: string } | null
   /** The parent's command id of the spawn that created this agent. */
   spawn_key?: string | null
+  /** The authority ceiling admitted for a peer spawn with a first prompt. */
+  peer_spawn_limit?: {
+    mode: "build" | "plan"
+    permission_level: "required" | "yolo"
+  } | null
   id: string
   agent_ref: string
   session_id: string

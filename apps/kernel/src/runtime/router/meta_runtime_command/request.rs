@@ -47,6 +47,8 @@ pub(super) fn meta_agent_request(
                 ));
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                initial_task: spawn.initial_task,
+                peer_spawn: None,
                 max_context_tokens: spawn.max_context_tokens,
                 no_subscribe: false,
                 account_profile: spawn.account_profile,

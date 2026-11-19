@@ -34,7 +34,7 @@ fn app_accounts_contract_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0a1be65fb89cf5aac2332b768520065a91b4fa08153f71428d513bf268a7a1a6"
+        "9e9ce8f971f5f13a41e3673f45cb3e3ef024dec00b531eb4134e63326c011758"
     );
     // The reply names a Vault entry by id and carries no value field at all.
     for forged in [

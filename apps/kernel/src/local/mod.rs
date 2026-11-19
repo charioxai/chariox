@@ -36,6 +36,8 @@ pub use api::{
     TestNotificationSubscriptionRequest, UpdateNotificationSubscriptionRequest,
 };
 mod api;
+#[doc(hidden)]
+pub use api::PeerSpawnOrigin;
 pub use api::{
     AgentDeadline, AgentDeadlineState, AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals,
     GetAgentDeadlineRequest, ListDescendantsRequest, SetAgentDeadlineRequest,

@@ -9,6 +9,12 @@ pub struct AliasAgentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnAgentRequest {
+    /// First prompt to admit as part of spawning the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_task: Option<String>,
+    /// Set only by the receiving kernel after admitting a peer spawn.
+    #[serde(skip)]
+    pub peer_spawn: Option<PeerSpawnOrigin>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub no_subscribe: bool,
     pub session_id: String,
@@ -35,6 +41,15 @@ pub struct SpawnAgentRequest {
     pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub metaagent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSpawnOrigin {
+    pub(crate) kernel_id: String,
+    pub(crate) owner_id: String,
+    pub(crate) author_name: String,
+    pub(crate) limit: crate::session::EffectiveAgentExecutionConfig,
+    pub(crate) follow: Option<crate::transport::relay_peer::PeerFollow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +90,8 @@ pub struct SpawnAgentsRequestItem {
 impl SpawnAgentsRequestItem {
     pub fn into_spawn_agent_request(self, session_id: String) -> SpawnAgentRequest {
         SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: self.max_context_tokens,
             no_subscribe: false,
             session_id,

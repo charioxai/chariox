@@ -762,7 +762,7 @@ impl KernelRuntimeState {
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
             self.owned.admit_goal_prompt(&mut prepared)?;
-            let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
+            let delegated_parent = self.delegated_prompt_parent()?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
                 authorize()?;

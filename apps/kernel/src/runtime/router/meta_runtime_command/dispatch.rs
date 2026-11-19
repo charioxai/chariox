@@ -760,6 +760,8 @@ impl CommandRouter {
         }
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: spawn.initial_task,
+            peer_spawn: None,
             max_context_tokens: spawn.max_context_tokens,
             no_subscribe: false,
             session_id: target_room
@@ -870,7 +872,7 @@ impl CommandRouter {
             model: spawn.model.or_else(|| inherited(metaagent.model())),
             effort: spawn.effort.or_else(|| inherited(metaagent.effort())),
             alias: spawn.alias,
-            prompt: None,
+            prompt: spawn.initial_task,
             permission_level: spawn
                 .permission_level
                 .or(metaagent.permission_level_override()),

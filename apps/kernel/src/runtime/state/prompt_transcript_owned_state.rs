@@ -1240,6 +1240,7 @@ impl KernelRuntimeOwnedState {
         workflow_run_id: Option<&str>,
         workflow_node_run_id: Option<&str>,
         timestamp_ms: Option<u64>,
+        prompt_author: Option<&str>,
     ) -> Result<(), DaemonError> {
         // Take the session snapshot before the transcript mutex for the same
         // lock-order reason as provider-output history appends below.
@@ -1252,6 +1253,7 @@ impl KernelRuntimeOwnedState {
             attachments,
         )
         .with_prompt_origin(prompt_origin);
+        entry.prompt_author = prompt_author.map(str::to_string);
         if let Some(timestamp_ms) = timestamp_ms {
             entry.timestamp_ms = timestamp_ms;
         }
@@ -1362,6 +1364,7 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt_sent_at_ms),
+            prompt.prompt_author(),
         )
     }
 

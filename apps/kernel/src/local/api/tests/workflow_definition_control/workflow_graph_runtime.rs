@@ -15,6 +15,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -123,6 +125,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -351,6 +355,8 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     };
     let source_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

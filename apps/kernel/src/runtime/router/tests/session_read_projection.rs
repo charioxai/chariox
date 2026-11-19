@@ -376,6 +376,8 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
     let (app, router, session_id, _worktree) = session_inspection_projection_setup();
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,

@@ -297,6 +297,8 @@ pub struct AgentInstance {
     /// an agent a person created never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawn_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     role: AgentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,6 +385,7 @@ impl AgentInstance {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             meta_mode: None,
             alias,
@@ -462,6 +465,17 @@ impl AgentInstance {
 
     pub(crate) fn set_spawn_key(&mut self, key: Option<String>) {
         self.spawn_key = key;
+    }
+
+    pub(crate) fn peer_spawn_limit(&self) -> Option<crate::session::EffectiveAgentExecutionConfig> {
+        self.peer_spawn_limit
+    }
+
+    pub(crate) fn set_peer_spawn_limit(
+        &mut self,
+        limit: Option<crate::session::EffectiveAgentExecutionConfig>,
+    ) {
+        self.peer_spawn_limit = limit;
     }
 
     /// Only spawning and the user-only `SetAgentParent` call this; no agent
@@ -1084,6 +1098,8 @@ pub struct CreateAgentRequest {
     pub parent_agent_id: Option<AgentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_key: Option<String>,
+    #[serde(skip)]
+    pub(crate) peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -1108,6 +1124,7 @@ impl CreateAgentRequest {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),

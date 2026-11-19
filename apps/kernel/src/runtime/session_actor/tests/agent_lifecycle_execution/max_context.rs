@@ -64,6 +64,8 @@ async fn spawn(
     max_context_tokens: Option<u64>,
 ) -> Result<crate::agent::AgentInstance, DaemonError> {
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens,
         no_subscribe: false,
         account_profile: None,

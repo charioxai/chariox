@@ -300,6 +300,18 @@ impl SessionRuntimeStore {
                 }))
                 .await;
         }
+        let peer_spawn = request.peer_spawn;
+        if request.initial_task.as_deref().is_some_and(|task| {
+            task.trim().is_empty() || (caller_metaagent_id.is_none() && peer_spawn.is_none())
+        }) {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agent.spawn",
+                    message: "an initial task must be nonempty and submitted by the spawning agent"
+                        .to_string(),
+                }))
+                .await;
+        }
         let session = match self.state.session_snapshot(&request.session_id).await {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
@@ -342,6 +354,15 @@ impl SessionRuntimeStore {
             Ok(parent) => parent,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
+        let author = peer_spawn
+            .as_ref()
+            .map(|peer| peer.author_name.as_str())
+            .or_else(|| {
+                parent
+                    .as_ref()
+                    .map(|agent| agent.alias().unwrap_or_else(|| agent.agent_ref()))
+            });
+        let initial_prompt = author.zip(request.initial_task);
         // A parent's command id, or a peer spawn's request from another kernel, names one agent.
         if let Some(key) = idempotency_key.as_deref() {
             let parent_id = parent.as_ref().map(|parent| parent.id());
@@ -353,6 +374,12 @@ impl SessionRuntimeStore {
                     agent.parent_agent_id() == parent_id && agent.spawn_key() == Some(key)
                 });
             if let Some(agent) = existing {
+                if let Err(error) = self
+                    .admit_spawn_follow_and_prompt(&agent, peer_spawn.as_ref(), initial_prompt)
+                    .await
+                {
+                    return self.with_session_projection_action_result(Err(error)).await;
+                }
                 return self
                     .with_session_projection_action_result(Ok(LocalDaemonResponse::AgentSpawned {
                         agent,
@@ -415,8 +442,11 @@ impl SessionRuntimeStore {
         } else {
             (model, effort)
         };
-        let create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
+        let mut create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
             .with_owner_user_id(owner_user_id);
+        if initial_prompt.is_some() {
+            create_request.peer_spawn_limit = peer_spawn.as_ref().map(|peer| peer.limit);
+        }
         let create_request = match parent.as_ref() {
             Some(parent) => create_request.with_parent(parent),
             None => create_request,
@@ -531,6 +561,12 @@ impl SessionRuntimeStore {
                         return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
+                if let Err(error) = self
+                    .admit_spawn_follow_and_prompt(&agent, peer_spawn.as_ref(), initial_prompt)
+                    .await
+                {
+                    return self.with_session_projection_action_result(Err(error)).await;
+                }
                 // A person's new agent becomes the focus and gets the session's
                 // foreground App, like any focus change. An agent-initiated
                 // spawn does not: it would bind without authorization.
@@ -563,6 +599,30 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+
+    async fn admit_spawn_follow_and_prompt(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        peer_spawn: Option<&crate::local::PeerSpawnOrigin>,
+        initial_prompt: Option<(&str, String)>,
+    ) -> Result<(), DaemonError> {
+        // Register the follower before dispatch so a fast first turn still reports its result.
+        if let Some(peer) = peer_spawn {
+            if let Some(follow) = peer.follow.clone() {
+                self.state.follow_spawned_room_peer(
+                    &peer.kernel_id,
+                    &peer.owner_id,
+                    follow,
+                    agent.session_id(),
+                    agent.id(),
+                )?;
+            }
+        }
+        if let Some((author, task)) = initial_prompt {
+            self.state.start_spawn_prompt(agent, author, task).await?;
+        }
+        Ok(())
     }
 
     pub(in crate::runtime::session_actor) async fn spawn_agents(

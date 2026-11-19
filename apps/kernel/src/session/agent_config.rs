@@ -6,7 +6,7 @@ use super::RuntimeSession;
 pub const SESSION_AGENT_MODE_CONFIG_KEY: &str = "agents.mode";
 pub const SESSION_AGENT_PERMISSION_CONFIG_KEY: &str = "agents.permissions";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectiveAgentExecutionConfig {
     pub mode: AgentExecutionMode,
     pub permission_level: AgentPermissionLevel,
@@ -77,6 +77,9 @@ pub(crate) fn effective_agent_execution_config_with_parents(
     if agent.parent_limit_waived() {
         return config;
     }
+    if let Some(limit) = agent.peer_spawn_limit() {
+        config = config.lower(limit);
+    }
     let mut seen = std::collections::HashSet::from([agent.id().to_owned()]);
     let mut parent_id = agent.parent_agent_id().map(str::to_owned);
     while let Some(id) = parent_id.take() {
@@ -93,6 +96,9 @@ pub(crate) fn effective_agent_execution_config_with_parents(
         config = config.lower(parent_config);
         if parent.parent_limit_waived() {
             break;
+        }
+        if let Some(limit) = parent.peer_spawn_limit() {
+            config = config.lower(limit);
         }
         parent_id = parent.parent_agent_id().map(str::to_owned);
     }

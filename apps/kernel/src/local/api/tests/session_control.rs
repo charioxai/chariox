@@ -431,6 +431,8 @@ fn session_attach_clears_a_missing_active_provider_run() {
     });
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -507,6 +509,8 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         .expect("initial attachment should succeed");
     let remote_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -863,6 +867,8 @@ fn local_request_api_spawns_and_focuses_agents() {
     });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

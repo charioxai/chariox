@@ -159,6 +159,7 @@ impl AgentService {
             agent.set_owner_user_id(request.owner_user_id);
             agent.set_parent_agent(request.parent_agent_id);
             agent.set_spawn_key(request.spawn_key);
+            agent.set_peer_spawn_limit(request.peer_spawn_limit);
             agent.set_role(request.role);
             agent.set_account_profile(request.account_profile);
             agent.set_execution_mode_override(request.execution_mode_override);
@@ -278,6 +279,7 @@ impl AgentService {
         agent.set_owner_user_id(request.owner_user_id);
         agent.set_parent_agent(request.parent_agent_id);
         agent.set_spawn_key(request.spawn_key);
+        agent.set_peer_spawn_limit(request.peer_spawn_limit);
         if request.role == crate::agent::AgentRole::Meta {
             return Err(DaemonError::LocalTransport {
                 operation: "create agent",

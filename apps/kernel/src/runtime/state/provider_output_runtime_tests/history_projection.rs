@@ -263,6 +263,7 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
             None,
             None,
             None,
+            None,
         )
         .expect("owned prompt history should append");
 
@@ -308,6 +309,7 @@ async fn owned_user_prompt_history_does_not_write_the_legacy_jsonl_store() {
             &[],
             crate::session::PromptOrigin::Chariox,
             Some("prompt-owned-legacy-history-fail"),
+            None,
             None,
             None,
             None,
@@ -360,6 +362,7 @@ async fn owned_user_prompt_history_preserves_external_prompt_origin() {
             &[],
             crate::session::PromptOrigin::External,
             Some("prompt-external-user-history"),
+            None,
             None,
             None,
             None,

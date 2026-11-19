@@ -862,6 +862,13 @@ unreachable kernel or a restart only delays it; a pass every 30 s and at start f
 left, and a link older than seven days is dropped with an error log. Agents the creator only
 messaged or followed, and sub-agents (which follow their parent), are not touched.
 
+An agent may give a new agent its first prompt with `agent spawn --task '<text>'`.
+The spawn carries the task to the kernel that owns the new agent. Admission
+uses the new agent’s authority, limited by the spawner. Across kernels the agent
+keeps the admitted mode and permission ceiling for agent-initiated settings
+changes. The transcript records the spawner as `prompt_author`. Replaying the same spawn does not start
+another prompt. A message sent separately to a peer remains an inbox message.
+
 Before delegation, message submission or workflow invocation, the kernel
 persists `room.obligation.registered` with actor/room/run/prompt, kind and
 resource reference. A dispatch receipt records accepted resource identity or

@@ -1,4 +1,4 @@
-pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--room <room> [--kernel <kernel-ref>] [--no-follow]] [--command-id <id>]";
+pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--room <room> [--kernel <kernel-ref>] [--no-follow]] [--command-id <id>] [--task <first-prompt>]";
 
 use super::super::{MetaCommandDoc, MetaCommandPolicy};
 

@@ -81,6 +81,8 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: Some("Inspect the current change and report.".to_string()),
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -103,12 +105,16 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
         Some(&serde_json::json!("kernel-worker"))
     );
     assert_eq!(snapshot.pointer("/SpawnAgent/machine_ref"), None);
+    assert_eq!(
+        snapshot.pointer("/SpawnAgent/initial_task"),
+        Some(&serde_json::json!("Inspect the current change and report.")),
+    );
     let serialized =
         serde_json::to_string(&snapshot).expect("kernel-targeted spawn snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "712cecc5815da7fa33661de8db724f62e1aa90cfdbe56e332a5d13fbc8f4b848"
+        "e1132df5bdd5761e492920f089edb206cf55d8b0c8bd89585f71490eb73cb547"
     );
 }
 
@@ -120,6 +126,8 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,

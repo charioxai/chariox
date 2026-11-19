@@ -256,6 +256,8 @@ impl LocalRouterTestHarness {
     ) -> AgentInstance {
         match self
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                initial_task: None,
+                peer_spawn: None,
                 max_context_tokens: None,
                 no_subscribe: false,
                 account_profile: None,

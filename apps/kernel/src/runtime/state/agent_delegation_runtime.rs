@@ -2,16 +2,15 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation};
 impl KernelRuntimeState {
-    pub(super) fn delegated_prompt_parent(
-        &self,
-        room: &str,
-    ) -> Result<Option<String>, DaemonError> {
+    pub(super) fn delegated_prompt_parent(&self) -> Result<Option<String>, DaemonError> {
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(None);
         }
         let Some((actor, run)) = &self.room_provider_origin else {
             return Ok(None);
         };
+        let origin = self.owned.agent_store.get_agent(actor)?;
+        let room = origin.session_id();
         let session = self.owned.session_store.get_session(room)?;
         let active = self
             .owned

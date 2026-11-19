@@ -251,6 +251,8 @@ async fn other_owner() {
         .all(|agent| agent.alias() != Some("px")));
     // The admission itself refuses a room of another owner for a member (a guest of that room).
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         session_id: foreign.clone(),

@@ -330,6 +330,7 @@ impl KernelRuntimeState {
                     None,
                     None,
                     Some(started_at_ms),
+                    None,
                 )?;
                 owned.note_started_prompt_sent_at(session_id, agent_id, started_at_ms)?;
                 if owned.config_projection.snapshot().room_agent_tools {

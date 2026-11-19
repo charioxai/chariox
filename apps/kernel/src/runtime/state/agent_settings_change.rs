@@ -174,6 +174,9 @@ impl KernelRuntimeOwnedState {
         let agents = self.agent_store.list_agents();
         let limiting =
             |holds_lower: &dyn Fn(&crate::session::EffectiveAgentExecutionConfig) -> bool| {
+                if agent.peer_spawn_limit().as_ref().is_some_and(holds_lower) {
+                    return "the spawning agent".to_string();
+                }
                 for parent in crate::agent::authority_limit::ancestors(agent, &agents) {
                     let Ok(room) = self.session_store.get_session(parent.session_id()) else {
                         break;

@@ -110,6 +110,7 @@ fn history_page_entry(
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
         entry: crate::history::SessionHistoryEntry {
+            prompt_author: None,
             session_id: "session-1".to_string(),
             provider_run_id: Some("provider-run-1".to_string()),
             agent_id: Some(agent_id.to_string()),

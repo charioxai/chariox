@@ -408,6 +408,10 @@ impl KernelRuntimeState {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
             sender: caller.stamp,
+            sender_name: sender
+                .alias()
+                .unwrap_or_else(|| sender.agent_ref())
+                .to_string(),
             room: spawn.room.trim().into(),
             provider: spawn.provider,
             account_profile: spawn.account_profile,
