@@ -1098,7 +1098,7 @@ impl KernelRuntimeState {
                 crate::agent::ProviderResumeClearOutcome::Required => {
                     return Err(
                         crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error()
-                    )
+                    );
                 }
                 crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
@@ -1286,7 +1286,7 @@ impl KernelRuntimeState {
         loop {
             match self.owned.provider_store.get_run(provider_run_id) {
                 Ok(run) if run.state() == crate::provider::ProviderRunState::Running => {
-                    return Ok(())
+                    return Ok(());
                 }
                 Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {}
                 _ => {
@@ -1295,7 +1295,7 @@ impl KernelRuntimeState {
                         message: format!(
                             "provider run `{provider_run_id}` ended before it was ready; change the settings and send the request again"
                         ),
-                    })
+                    });
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -3246,12 +3246,21 @@ mod tests {
         );
     }
 
-    /// A runtime whose active turn waits on a pending popup (ORCH-15).
-    async fn runtime_blocked_on_a_popup() -> (KernelRuntimeState, String, String, String) {
+    async fn runtime_blocked_on_native_interaction(
+        kind: crate::session::RuntimeInteractionKind,
+    ) -> (KernelRuntimeState, String, String, String) {
+        use crate::session::{
+            DurablePromptDeliveryPhase, NativeInteractionOrigin, RuntimeInteractionKind,
+        };
+
+        let phase = match kind {
+            RuntimeInteractionKind::Choice => DurablePromptDeliveryPhase::Accepted,
+            RuntimeInteractionKind::Permission => DurablePromptDeliveryPhase::Dispatching,
+        };
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
-            crate::session::DurablePromptDeliveryPhase::Accepted,
+            phase,
             std::env::current_dir()
                 .expect("test workspace should resolve")
                 .to_string_lossy()
@@ -3265,10 +3274,19 @@ mod tests {
             .expect("the agent has a run")
             .id()
             .to_owned();
+        let origin = match kind {
+            RuntimeInteractionKind::Choice => NativeInteractionOrigin::Prompt {
+                provider_run_id: run_id,
+                prompt_id: prompt_id.clone(),
+            },
+            RuntimeInteractionKind::Permission => NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: run_id,
+            },
+        };
         let popup = crate::session::RuntimeInteraction::new(
             "popup-before-restart",
             agent_id.clone(),
-            crate::session::RuntimeInteractionKind::Choice,
+            kind,
             crate::session::RuntimeInteractionLevel::Info,
             Some("Which one?".into()),
             "Pick a branch",
@@ -3279,10 +3297,7 @@ mod tests {
             Some(280),
             None,
         )
-        .with_native_origin(Some(crate::session::NativeInteractionOrigin::Prompt {
-            provider_run_id: run_id,
-            prompt_id: prompt_id.clone(),
-        }));
+        .with_native_origin(Some(origin));
         let _pending = runtime
             .create_runtime_interaction(&session_id, popup)
             .await
@@ -3341,7 +3356,9 @@ mod tests {
     /// interrupted by the restart; the model is not resumed into a refusal nobody gave.
     #[tokio::test]
     async fn a_restart_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
-        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(crate::session::RuntimeInteractionKind::Choice)
+                .await;
         assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
             .await;
     }
@@ -3350,7 +3367,9 @@ mod tests {
     /// withdrawal itself leaves the mark that ends the turn as interrupted by the restart.
     #[tokio::test]
     async fn a_graceful_stop_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
-        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(crate::session::RuntimeInteractionKind::Choice)
+                .await;
         runtime
             .owned
             .withdraw_agent_interactions_for_shutdown(&session_id)
@@ -3364,6 +3383,35 @@ mod tests {
                 .active_interaction_for_agent(&agent_id)
                 .is_none(),
             "the withdrawn popup is no card after the stop"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_graceful_stop_with_a_pending_startup_permission_ends_the_turn_as_interrupted() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_native_interaction(
+            crate::session::RuntimeInteractionKind::Permission,
+        )
+        .await;
+        runtime
+            .owned
+            .withdraw_agent_interactions_for_shutdown(&session_id)
+            .expect("the stop withdraws the startup permission");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session");
+        assert!(session.active_interaction_for_agent(&agent_id).is_none());
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .expect("the interrupted prompt is still active")
+                .question_wait_stopped(),
+            "the pending startup permission must leave a durable interruption mark"
         );
         assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
             .await;
