@@ -7,18 +7,27 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
-/// Where one acquisition is in its life. A row is created `Pending` and leaves the ledger only
-/// when it is certain no machine exists. While it is pending or uncertain the row counts the
-/// attempts at its request still waiting for an answer: each attempt settles its own count once.
+/// Where one acquisition is in its life. One row per request (agent and request_id). While it is
+/// pending or uncertain the row counts its attempts in flight: each attempt the agent sends holds
+/// one count, from the step that registers it until its own answer settles it, once. Every
+/// transition is one compare-and-set in one transaction of the kernel's single durable writer, so
+/// no other transition can come between its check and its write.
 ///
-/// | state | counts toward the maximum | costs | moves to, on |
+/// | transition | caller, for one attempt or row | row before → after | carries |
 /// |---|---|---|---|
-/// | (none) | | | `Pending` with one attempt: admitted while fewer than the maximum rows are live. |
-/// | `Pending` | yes | from its start | `Running`: the service accepted an attempt. One more attempt: a retry of the same request goes ahead, taking no new place. One fewer attempt: the service refused one, or it was never sent; removed when it was the last. `Uncertain`, one fewer attempt: an attempt's answer was lost, or the kernel restarted while attempts waited. Removed: job cleanup confirmed no machine exists. |
-/// | `Uncertain` | yes | from its start | `Running`: a retry's answer or job cleanup returns its machine. One more or one fewer attempt, as from `Pending`, but a refusal never removes it: no refusal rules out the machine whose answer was lost. Removed: job cleanup confirmed no machine exists. |
-/// | `Running` | yes | yes | `Deleting`: the service says it is being deleted. `Ended`: the service confirms it deleted, or a list sent while it was running no longer has it. |
-/// | `Deleting` | yes | yes | `Ended`, as from `Running`. |
-/// | `Ended` | no | until its end | nothing. |
+/// | `Attempt`, request recorded and unsettled | the attempt's admission (`admit_without_asking`) | `Pending`/`Uncertain`, n in flight → the same, n + 1 | a counted hold; the service replays its answer |
+/// | `Attempt`, request recorded and settled | the attempt's admission | `Running`/`Deleting`/`Ended` → unchanged | an uncounted hold: its answer only replays the settled one |
+/// | `Attempt`, admitted | the attempt's admission, within the owner's classes | none → `Pending`, 1 in flight, while fewer than the maximum rows are live and today's cost is below the cap; otherwise none, and the owner is asked | a counted hold |
+/// | `Accept` | the attempt answered with a machine (`settle_acquisition`), or a fenced job cleanup that found it | `Pending`/`Uncertain` → `Running`, none in flight; when the allocation is already another row's, this row is removed | the allocation |
+/// | `Release` | the attempt refused (`settle_acquisition`) or never sent (`withdraw_acquisition`) | `Pending`, 1 in flight → removed: no attempt can still make a machine. `Pending`, n > 1 → n − 1. `Uncertain`, n > 0 → n − 1: a lost answer may still hide a machine | the counted hold, consumed |
+/// | `Lost` | the attempt's answer lost (`settle_acquisition`) | `Pending`/`Uncertain`, n > 0 → `Uncertain`, n − 1 | the counted hold, consumed; the agent is told the request_id to retry with |
+/// | `Remove` | a fenced job cleanup that found no machine | `Pending`/`Uncertain` → removed | the job |
+/// | kernel start | `initialize` | `Pending`/`Uncertain` → `Uncertain`, none in flight: no answer sent before can arrive | — |
+/// | `Deleting` | the service says the machine is being deleted | `Running` → `Deleting` | the allocation |
+/// | `End` | the service confirms the deletion, or a list sent while it ran no longer has it | `Running`/`Deleting` → `Ended` | the allocation and its end |
+///
+/// Every live state counts toward the maximum and costs from its start; `Ended` costs until its
+/// end. A hold dropped without its answer keeps its count, so the request stays counted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcquiredState {
     /// Every attempt sent for it is waiting for its answer, or was refused: once the last attempt
@@ -61,6 +70,81 @@ pub(crate) struct AcquiredMachine {
     pub(crate) state: AcquiredState,
 }
 
+pub(crate) const MINUTE_MS: u64 = 60_000;
+
+impl AcquiredMachine {
+    /// What it costs between `from_ms` and `until_ms`, by started minute.
+    pub(crate) fn cost_micros(&self, from_ms: u64, until_ms: u64) -> u64 {
+        let end = match &self.state {
+            AcquiredState::Ended { ended_ms, .. } => (*ended_ms).min(until_ms),
+            AcquiredState::Pending
+            | AcquiredState::Uncertain
+            | AcquiredState::Running { .. }
+            | AcquiredState::Deleting { .. } => until_ms,
+        };
+        let start = self.started_ms.max(from_ms);
+        if end <= start {
+            return 0;
+        }
+        (end - start).div_ceil(MINUTE_MS) * self.rate_micros
+    }
+}
+
+/// One attempt at an agent's request, registered in one step.
+#[derive(Debug)]
+pub(crate) enum AcquisitionAttempt {
+    /// Counted only when its request is already recorded.
+    Recorded {
+        agent_id: String,
+        request_id: String,
+    },
+    /// Within the owner's classes: counted in its request's row, which is created pending when
+    /// there is none, while fewer than `max_live` rows are live and the cost of the day that began
+    /// at `day_ms` is below `daily_cap_micros`.
+    Admit {
+        machine: AcquiredMachine,
+        max_live: u32,
+        daily_cap_micros: Option<u64>,
+        day_ms: u64,
+    },
+}
+
+/// How an attempt counts in its request's row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Registered {
+    /// It holds one count in its request's pending or uncertain row, which its answer settles.
+    Counted,
+    /// Its request is settled (running, deleting or ended): its answer replays that one.
+    Replay,
+}
+
+/// What an admission within the owner's classes became.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admitted {
+    Registered(Registered),
+    /// Not admitted: the most rows are live.
+    AtMaximum,
+    /// Not admitted: today's cost reached the cap.
+    AtCap,
+}
+
+// What `register` answers through the writer, which carries a number.
+const NOT_RECORDED: u64 = 0;
+const COUNTED: u64 = 1;
+const REPLAY: u64 = 2;
+const AT_MAXIMUM: u64 = 3;
+const AT_CAP: u64 = 4;
+
+fn registered(code: u64) -> Result<Registered, DaemonError> {
+    match code {
+        COUNTED => Ok(Registered::Counted),
+        REPLAY => Ok(Registered::Replay),
+        code => Err(state_error(format!(
+            "an attempt's registration answered {code}, which it never answers"
+        ))),
+    }
+}
+
 /// The row a write names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AcquisitionKey {
@@ -73,12 +157,8 @@ pub(crate) enum AcquisitionKey {
 
 #[derive(Debug)]
 pub(crate) enum AcquiredMachineWrite {
-    /// Inserts `machine` as pending, with its first attempt, while fewer than `max_live` rows are
-    /// live.
-    Admit {
-        machine: AcquiredMachine,
-        max_live: u32,
-    },
+    /// Registers one attempt: see `AcquisitionAttempt`.
+    Attempt(AcquisitionAttempt),
     /// A pending or uncertain row the service accepted runs. When the allocation is already another
     /// row's (the service replayed an earlier request), this row leaves instead: one machine is one
     /// row.
@@ -86,8 +166,6 @@ pub(crate) enum AcquiredMachineWrite {
         key: AcquisitionKey,
         allocation_ref: String,
     },
-    /// A retry of a pending or uncertain request goes ahead: one more attempt waits.
-    Retry { key: AcquisitionKey },
     /// One attempt of a pending or uncertain request was refused or never sent. A pending row whose
     /// last attempt this was leaves the ledger; an uncertain row stays.
     Release { key: AcquisitionKey },
@@ -179,32 +257,64 @@ impl DurableKernelStateStore {
             .map_err(|error| state_error(error.to_string()))
     }
 
-    /// The row of one agent request, or of the machine `allocation_ref`.
+    /// The row of the machine `allocation_ref`.
     pub(crate) fn acquired_machine(
         &self,
-        find: AcquiredMachineLookup<'_>,
+        allocation_ref: &str,
     ) -> Result<Option<AcquiredMachine>, DaemonError> {
         let connection = self.lock_connection("acquired_machines.read")?;
-        let (filter, values): (&str, Vec<&str>) = match find {
-            AcquiredMachineLookup::Request {
-                agent_id,
-                request_id,
-            } => (
-                "agent_id = ?1 AND request_id = ?2",
-                vec![agent_id, request_id],
-            ),
-            AcquiredMachineLookup::Allocation(allocation_ref) => {
-                ("allocation_ref = ?1", vec![allocation_ref])
-            }
-        };
         connection
             .query_row(
-                &format!("SELECT {COLUMNS} FROM durable_acquired_machines WHERE {filter}"),
-                rusqlite::params_from_iter(values),
+                &format!(
+                    "SELECT {COLUMNS} FROM durable_acquired_machines WHERE allocation_ref = ?1"
+                ),
+                params![allocation_ref],
                 read_row,
             )
             .optional()
             .map_err(|error| state_error(error.to_string()))
+    }
+
+    /// Counts one more attempt at a request already recorded, in one step; none when it is not.
+    pub(crate) fn count_recorded_attempt(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+    ) -> Result<Option<Registered>, DaemonError> {
+        match self.register_attempt(AcquisitionAttempt::Recorded {
+            agent_id: agent_id.into(),
+            request_id: request_id.into(),
+        })? {
+            NOT_RECORDED => Ok(None),
+            code => registered(code).map(Some),
+        }
+    }
+
+    /// Admits one attempt within the owner's classes, in one step: see
+    /// `AcquisitionAttempt::Admit`.
+    pub(crate) fn admit_attempt(
+        &self,
+        machine: AcquiredMachine,
+        max_live: u32,
+        daily_cap_micros: Option<u64>,
+        day_ms: u64,
+    ) -> Result<Admitted, DaemonError> {
+        match self.register_attempt(AcquisitionAttempt::Admit {
+            machine,
+            max_live,
+            daily_cap_micros,
+            day_ms,
+        })? {
+            AT_MAXIMUM => Ok(Admitted::AtMaximum),
+            AT_CAP => Ok(Admitted::AtCap),
+            code => registered(code).map(Admitted::Registered),
+        }
+    }
+
+    fn register_attempt(&self, attempt: AcquisitionAttempt) -> Result<u64, DaemonError> {
+        self.writer.execute(DurableWriteOperation::AcquiredMachine(
+            AcquiredMachineWrite::Attempt(attempt),
+        ))
     }
 
     /// Applies `write` when the row is in the state it expects; false when it is not.
@@ -216,15 +326,6 @@ impl DurableKernelStateStore {
             .execute(DurableWriteOperation::AcquiredMachine(write))
             .map(|changed| changed > 0)
     }
-}
-
-/// How to find one row.
-pub(crate) enum AcquiredMachineLookup<'a> {
-    Request {
-        agent_id: &'a str,
-        request_id: &'a str,
-    },
-    Allocation(&'a str),
 }
 
 /// The (agent_id, request_id) of the row `key` names, if it exists.
@@ -252,25 +353,7 @@ pub(super) fn apply(
     write: &AcquiredMachineWrite,
 ) -> rusqlite::Result<u64> {
     let changed = match write {
-        AcquiredMachineWrite::Admit { machine, max_live } => transaction.execute(
-            "INSERT INTO durable_acquired_machines
-                (agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency, state,
-                    started_ms, attempts)
-            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 1
-            WHERE (SELECT COUNT(*) FROM durable_acquired_machines WHERE state != 'ended') < ?9
-            ON CONFLICT DO NOTHING",
-            params![
-                machine.agent_id,
-                machine.request_id,
-                machine.job_ref,
-                machine.room_id,
-                machine.class_id,
-                machine.rate_micros as i64,
-                machine.currency,
-                machine.started_ms as i64,
-                max_live
-            ],
-        )?,
+        AcquiredMachineWrite::Attempt(attempt) => return register(transaction, attempt),
         AcquiredMachineWrite::Accept {
             key,
             allocation_ref,
@@ -293,16 +376,6 @@ pub(super) fn apply(
                 )?;
             }
             started
-        }
-        AcquiredMachineWrite::Retry { key } => {
-            let Some((agent_id, request_id)) = resolve(transaction, key)? else {
-                return Ok(0);
-            };
-            transaction.execute(
-                "UPDATE durable_acquired_machines SET attempts = attempts + 1
-                WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
-                params![agent_id, request_id],
-            )?
         }
         AcquiredMachineWrite::Release { key } => {
             let Some((agent_id, request_id)) = resolve(transaction, key)? else {
@@ -362,6 +435,78 @@ pub(super) fn apply(
     Ok(changed as u64)
 }
 
+/// Registers `attempt` in one transaction: counted in its request's unsettled row, a replay of its
+/// settled row, or, for an admission within the limits, its request's new pending row.
+fn register(transaction: &Transaction<'_>, attempt: &AcquisitionAttempt) -> rusqlite::Result<u64> {
+    let (agent_id, request_id) = match attempt {
+        AcquisitionAttempt::Recorded {
+            agent_id,
+            request_id,
+        } => (agent_id, request_id),
+        AcquisitionAttempt::Admit { machine, .. } => (&machine.agent_id, &machine.request_id),
+    };
+    let counted = transaction.execute(
+        "UPDATE durable_acquired_machines SET attempts = attempts + 1
+        WHERE agent_id = ?1 AND request_id = ?2 AND state IN ('pending', 'uncertain')",
+        params![agent_id, request_id],
+    )?;
+    if counted > 0 {
+        return Ok(COUNTED);
+    }
+    let recorded: bool = transaction.query_row(
+        "SELECT EXISTS (SELECT 1 FROM durable_acquired_machines
+            WHERE agent_id = ?1 AND request_id = ?2)",
+        params![agent_id, request_id],
+        |row| row.get(0),
+    )?;
+    if recorded {
+        return Ok(REPLAY);
+    }
+    let AcquisitionAttempt::Admit {
+        machine,
+        max_live,
+        daily_cap_micros,
+        day_ms,
+    } = attempt
+    else {
+        return Ok(NOT_RECORDED);
+    };
+    let mut today = transaction.prepare(&format!(
+        "SELECT {COLUMNS} FROM durable_acquired_machines WHERE state != 'ended' OR ended_ms >= ?1"
+    ))?;
+    let today = today
+        .query_map(params![*day_ms as i64], read_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let spent: u64 = today
+        .iter()
+        .map(|row| row.cost_micros(*day_ms, machine.started_ms))
+        .sum();
+    if daily_cap_micros.is_some_and(|cap| spent >= cap) {
+        return Ok(AT_CAP);
+    }
+    let live = today.iter().filter(|row| row.state.is_live()).count();
+    if live >= *max_live as usize {
+        return Ok(AT_MAXIMUM);
+    }
+    transaction.execute(
+        "INSERT INTO durable_acquired_machines
+            (agent_id, request_id, job_ref, room_id, class_id, rate_micros, currency, state,
+                started_ms, attempts)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, 1)",
+        params![
+            machine.agent_id,
+            machine.request_id,
+            machine.job_ref,
+            machine.room_id,
+            machine.class_id,
+            machine.rate_micros as i64,
+            machine.currency,
+            machine.started_ms as i64,
+        ],
+    )?;
+    Ok(COUNTED)
+}
+
 fn state_error(message: String) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "acquired_machines",
@@ -371,7 +516,10 @@ fn state_error(message: String) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
+    use super::Registered::{Counted, Replay};
     use super::*;
+
+    const ADMITTED: Admitted = Admitted::Registered(Counted);
 
     fn request(request_id: &str) -> AcquisitionKey {
         AcquisitionKey::Request {
@@ -380,10 +528,15 @@ mod tests {
         }
     }
 
-    fn admit(store: &DurableKernelStateStore, request_id: &str, job_ref: Option<&str>) -> bool {
+    fn admit_within(
+        store: &DurableKernelStateStore,
+        request_id: &str,
+        job_ref: Option<&str>,
+        (daily_cap_micros, started_ms): (Option<u64>, u64),
+    ) -> Admitted {
         store
-            .write_acquired_machine(AcquiredMachineWrite::Admit {
-                machine: AcquiredMachine {
+            .admit_attempt(
+                AcquiredMachine {
                     agent_id: "agent".into(),
                     request_id: request_id.into(),
                     job_ref: job_ref.map(str::to_owned),
@@ -391,12 +544,22 @@ mod tests {
                     class_id: "small".into(),
                     rate_micros: 1_000,
                     currency: "EUR".into(),
-                    started_ms: 10,
+                    started_ms,
                     state: AcquiredState::Pending,
                 },
-                max_live: 2,
-            })
+                2,
+                daily_cap_micros,
+                0,
+            )
             .unwrap()
+    }
+
+    fn admit(store: &DurableKernelStateStore, request_id: &str, job_ref: Option<&str>) -> Admitted {
+        admit_within(store, request_id, job_ref, (None, 10))
+    }
+
+    fn retry(store: &DurableKernelStateStore, request_id: &str) -> Option<Registered> {
+        store.count_recorded_attempt("agent", request_id).unwrap()
     }
 
     fn write(store: &DurableKernelStateStore, write: AcquiredMachineWrite) -> bool {
@@ -405,11 +568,10 @@ mod tests {
 
     fn state_of(store: &DurableKernelStateStore, request_id: &str) -> Option<AcquiredState> {
         store
-            .acquired_machine(AcquiredMachineLookup::Request {
-                agent_id: "agent",
-                request_id,
-            })
+            .acquired_machines(0)
             .unwrap()
+            .into_iter()
+            .find(|machine| machine.agent_id == "agent" && machine.request_id == request_id)
             .map(|machine| machine.state)
     }
 
@@ -419,11 +581,16 @@ mod tests {
         let path = directory.path().join("kernel.db");
         {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
-            assert!(admit(&store, "a", None));
-            assert!(!admit(&store, "a", None), "a retry takes no second place");
-            assert!(admit(&store, "b", Some("job-b")));
-            assert!(
-                !admit(&store, "c", None),
+            assert_eq!(admit(&store, "a", None), ADMITTED);
+            assert_eq!(
+                admit(&store, "a", None),
+                ADMITTED,
+                "a retry is counted in its request's place and takes no second one"
+            );
+            assert_eq!(admit(&store, "b", Some("job-b")), ADMITTED);
+            assert_eq!(
+                admit(&store, "c", None),
+                Admitted::AtMaximum,
                 "two at the same time is the limit"
             );
             let accept = |key, allocation_ref: &str| AcquiredMachineWrite::Accept {
@@ -453,9 +620,10 @@ mod tests {
             ));
         }
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
-        assert!(admit(&store, "c", None));
-        assert!(
-            !admit(&store, "d", None),
+        assert_eq!(admit(&store, "c", None), ADMITTED);
+        assert_eq!(
+            admit(&store, "d", None),
+            Admitted::AtMaximum,
             "a deleting machine still holds its place"
         );
         assert!(write(
@@ -471,7 +639,7 @@ mod tests {
                 allocation_ref: "alloc-a".into()
             }
         ));
-        assert!(admit(&store, "d", None));
+        assert_eq!(admit(&store, "d", None), ADMITTED);
         assert!(
             !write(
                 &store,
@@ -497,11 +665,17 @@ mod tests {
             .unwrap()
             .iter()
             .all(|machine| machine.request_id != "a"));
-        assert!(admit(&store, "d", None));
-        assert!(write(
-            &store,
-            AcquiredMachineWrite::Retry { key: request("d") }
-        ));
+        assert_eq!(
+            admit_within(&store, "d", None, (Some(2_000), 100)),
+            Admitted::AtCap,
+            "the ended machine's minute and the pending one's reach today's cap"
+        );
+        assert_eq!(
+            admit_within(&store, "d", None, (Some(2_001), 100)),
+            ADMITTED,
+            "below the cap, with a place free"
+        );
+        assert_eq!(retry(&store, "d"), Some(Counted));
         assert!(write(
             &store,
             AcquiredMachineWrite::Release { key: request("d") }
@@ -524,7 +698,9 @@ mod tests {
             !write(&store, AcquiredMachineWrite::Release { key: request("d") }),
             "each attempt releases once"
         );
-        assert!(admit(&store, "d", None));
+        assert_eq!(retry(&store, "e"), None, "a retry never creates a row");
+        assert_eq!(state_of(&store, "e"), None);
+        assert_eq!(admit(&store, "d", None), ADMITTED);
         assert!(write(
             &store,
             AcquiredMachineWrite::Lost { key: request("c") }
@@ -533,10 +709,7 @@ mod tests {
             !write(&store, AcquiredMachineWrite::Release { key: request("c") }),
             "a lost answer is not released by a refusal"
         );
-        assert!(write(
-            &store,
-            AcquiredMachineWrite::Retry { key: request("c") }
-        ));
+        assert_eq!(retry(&store, "c"), Some(Counted));
         assert!(write(
             &store,
             AcquiredMachineWrite::Release { key: request("c") }
@@ -553,9 +726,13 @@ mod tests {
                 allocation_ref: "alloc-c".into(),
             }
         ));
+        assert_eq!(
+            retry(&store, "c"),
+            Some(Replay),
+            "a retry of a settled request only replays its answer"
+        );
         assert!(
-            !write(&store, AcquiredMachineWrite::Retry { key: request("c") })
-                && !write(&store, AcquiredMachineWrite::Lost { key: request("c") }),
+            !write(&store, AcquiredMachineWrite::Lost { key: request("c") }),
             "a running machine is never uncertain again"
         );
         drop(store);

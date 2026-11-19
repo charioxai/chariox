@@ -426,6 +426,53 @@ async fn ledger_reaches(state: &KernelRuntimeState, done: impl Fn(&[AcquiredMach
     });
 }
 
+/// Makes the next attempt at `request_id` stop where it found no row for its request. The receiver
+/// hears when it stopped; a send on the sender lets it go on.
+fn stop_unrecorded_attempt(
+    request_id: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (stopped, stopped_heard) = std::sync::mpsc::channel();
+    let (go_on, go_on_heard) = std::sync::mpsc::channel::<()>();
+    *without_asking::UNRECORDED_ATTEMPT.lock().unwrap() = Some((
+        request_id.into(),
+        Box::new(move || {
+            stopped.send(()).unwrap();
+            go_on_heard
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the test lets the attempt go on");
+        }),
+    ));
+    (stopped_heard, go_on)
+}
+
+async fn has_stopped(stopped: std::sync::mpsc::Receiver<()>) {
+    tokio::task::spawn_blocking(move || stopped.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .expect("the attempt stops where it found no row");
+}
+
+/// Waits until the service has received `count` acquires.
+async fn acquires_reach(service: &Service, count: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.acquires.lock().unwrap().len() < count {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the attempt reaches the service");
+}
+
+/// The service holds the next acquire until the returned gate is notified, then refuses or creates.
+fn hold_next_acquire(service: &Service, refuse: bool) -> Arc<tokio::sync::Notify> {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    service.script.lock().unwrap().acquire = AcquireReply::Held {
+        gate: gate.clone(),
+        refuse,
+    };
+    gate
+}
+
 fn running(machine: &AcquiredMachine, allocation_ref: &str) -> bool {
     machine.state
         == AcquiredState::Running {
@@ -873,6 +920,93 @@ async fn overlapping_attempts_that_are_all_refused_free_the_place_and_the_budget
     .unwrap();
 }
 
+/// Review 5969421887: attempt B at a request finds no row; before B goes on, attempt A creates
+/// the row and is sent. B must count in that row, so A's refusal cannot free the place while B is
+/// in flight, and B's machine is recorded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attempt_registered_while_a_sibling_admits_keeps_the_place_through_its_refusal() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    let (stopped, go_on) = stop_unrecorded_attempt("gap-held");
+    let b = spawn_acquire(&state, &token, "gap-held", "small");
+    has_stopped(stopped).await;
+    let refuse_a = hold_next_acquire(&service, true);
+    let a = spawn_acquire(&state, &token, "gap-held", "small");
+    acquires_reach(&service, 1).await;
+    let create_b = hold_next_acquire(&service, false);
+    go_on.send(()).unwrap();
+    acquires_reach(&service, 2).await;
+    refuse_a.notify_one();
+    assert!(a.await.unwrap().is_err(), "the service refused A");
+    let acquired = state
+        .owned
+        .durable_state_store
+        .acquired_machines(0)
+        .unwrap();
+    assert_eq!(
+        acquired.len(),
+        1,
+        "B is still in flight, so its request keeps its place: {acquired:?}"
+    );
+    create_b.notify_one();
+    b.await.unwrap().expect("the service created B's machine");
+    ledger_reaches(&state, |acquired| {
+        acquired.len() == 1 && running(&acquired[0], "alloc-1")
+    })
+    .await;
+    acquire_waits_for_a_card(&state, &token, &room, "after", "small").await;
+}
+
+/// Attempt B finds no row and, before it goes on, attempt A is admitted, refused and released: B
+/// is admitted anew, within the limits, and its machine is recorded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attempt_that_finds_its_siblings_row_released_is_admitted_anew() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    let (stopped, go_on) = stop_unrecorded_attempt("gap-freed");
+    let b = spawn_acquire(&state, &token, "gap-freed", "small");
+    has_stopped(stopped).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Refused;
+    acquire(&state, &token, "gap-freed", "small")
+        .await
+        .expect_err("the service refused A");
+    ledger_reaches(&state, <[AcquiredMachine]>::is_empty).await;
+    service.script.lock().unwrap().acquire = AcquireReply::Machine;
+    go_on.send(()).unwrap();
+    b.await.unwrap().expect("B goes ahead with no card");
+    ledger_reaches(&state, |acquired| {
+        acquired.len() == 1 && running(&acquired[0], "alloc-1")
+    })
+    .await;
+    acquire_waits_for_a_card(&state, &token, &room, "after", "small").await;
+}
+
+/// Attempts A and B at one request are both in flight; A is refused, then B's machine arrives: the
+/// refusal leaves B's count, so the machine is recorded and keeps the place.
+#[tokio::test]
+async fn a_machine_that_arrives_after_a_siblings_refusal_is_recorded() {
+    let service = service().await;
+    let (state, token, room, _workspace) =
+        agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
+    let refuse_a = hold_next_acquire(&service, true);
+    let a = spawn_acquire(&state, &token, "both", "small");
+    acquires_reach(&service, 1).await;
+    let create_b = hold_next_acquire(&service, false);
+    let b = spawn_acquire(&state, &token, "both", "small");
+    acquires_reach(&service, 2).await;
+    refuse_a.notify_one();
+    assert!(a.await.unwrap().is_err(), "the service refused A");
+    create_b.notify_one();
+    b.await.unwrap().expect("the service created B's machine");
+    ledger_reaches(&state, |acquired| {
+        acquired.len() == 1 && running(&acquired[0], "alloc-1")
+    })
+    .await;
+    acquire_waits_for_a_card(&state, &token, &room, "after", "small").await;
+}
+
 /// Review 5968697039 finding 1: a retry that fails its reauthorization was never sent, and it
 /// leaves the lost request counted.
 #[tokio::test]
@@ -1068,28 +1202,33 @@ async fn a_machine_being_deleted_counts_until_its_deletion_is_confirmed() {
 /// its confirmed deletion ends it.
 #[tokio::test]
 async fn a_jobs_cleanup_settles_its_pending_acquisition() {
-    use crate::durable_state::acquired_machines::{AcquiredMachineLookup, AcquiredMachineWrite};
+    use crate::durable_state::acquired_machines::{Admitted, Registered};
     let service = service().await;
     let (state, _token, room, _workspace) =
         agent_kernel(service.api_url.clone(), allowed(None, Some(2), None)).await;
     let store = &state.owned.durable_state_store;
     for job in ["job-gone", "job-found"] {
-        assert!(store
-            .write_acquired_machine(AcquiredMachineWrite::Admit {
-                machine: AcquiredMachine {
-                    agent_id: "agent".into(),
-                    request_id: format!("job:{job}"),
-                    job_ref: Some(job.into()),
-                    room_id: room.clone(),
-                    class_id: "small".into(),
-                    rate_micros: 1_000,
-                    currency: "EUR".into(),
-                    started_ms: crate::session::unix_epoch_ms(),
-                    state: AcquiredState::Pending,
-                },
-                max_live: 2,
-            })
-            .unwrap());
+        assert_eq!(
+            store
+                .admit_attempt(
+                    AcquiredMachine {
+                        agent_id: "agent".into(),
+                        request_id: format!("job:{job}"),
+                        job_ref: Some(job.into()),
+                        room_id: room.clone(),
+                        class_id: "small".into(),
+                        rate_micros: 1_000,
+                        currency: "EUR".into(),
+                        started_ms: crate::session::unix_epoch_ms(),
+                        state: AcquiredState::Pending,
+                    },
+                    2,
+                    None,
+                    0,
+                )
+                .unwrap(),
+            Admitted::Registered(Registered::Counted)
+        );
     }
     service.machines.lock().unwrap().push(Listed {
         allocation_ref: "alloc-job".into(),
@@ -1103,11 +1242,10 @@ async fn a_jobs_cleanup_settles_its_pending_acquisition() {
         .unwrap();
     let row = |request_id: &str| {
         store
-            .acquired_machine(AcquiredMachineLookup::Request {
-                agent_id: "agent",
-                request_id,
-            })
+            .acquired_machines(0)
             .unwrap()
+            .into_iter()
+            .find(|machine| machine.agent_id == "agent" && machine.request_id == request_id)
             .map(|machine| machine.state)
     };
     assert_eq!(row("job:job-gone"), None);

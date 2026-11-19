@@ -7378,6 +7378,12 @@ service's rate). Each record moves along one state table, every step a compare-a
 | deleting | yes | ended when the service confirms deletion, or a list sent while it was running no longer has it |
 | ended | no | — |
 
+Each attempt registers in one step, in the same transaction as the check it depends on: it is counted
+in its request's pending or uncertain record, replays a settled one, or, when the request has no
+record, creates it pending while fewer than the maximum are live and today's cost is below the cap. So a
+refusal frees the place only when no attempt at the request is still in flight, and concurrent first
+attempts never pass the maximum or the cap together.
+
 The place is taken before the request reaches the service, so concurrent requests never exceed the
 maximum. The request runs to the service's answer even when the agent's call is cancelled. A retry of a
 request already recorded (same agent and request_id) takes no new place and raises no card: the

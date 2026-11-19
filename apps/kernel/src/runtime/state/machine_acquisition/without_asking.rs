@@ -4,12 +4,12 @@
 //! Each answer the service gives moves the request's ledger row along `AcquiredState`.
 use super::*;
 use crate::durable_state::acquired_machines::{
-    AcquiredMachine, AcquiredMachineLookup, AcquiredMachineWrite, AcquiredState, AcquisitionKey,
+    AcquiredMachine, AcquiredMachineWrite, AcquiredState, AcquisitionKey, Admitted, Registered,
+    MINUTE_MS,
 };
 use crate::local::{ControlPlaneMachineRow, ControlPlaneResponse, JobMachineRate};
 
 const DAY_MS: u64 = 86_400_000;
-const MINUTE_MS: u64 = 60_000;
 
 /// Whether an agent's acquisition needs the owner's card.
 pub(crate) enum Admission {
@@ -22,17 +22,22 @@ pub(crate) enum Admission {
     Within(AcquisitionHold),
 }
 
-/// An admitted request on its way to the service; `settle_acquisition` applies the answer.
+/// One admitted attempt on its way to the service; `settle_acquisition` applies its answer. Its
+/// count in the ledger was taken in the same step that found or created its request's row (see
+/// `AcquiredState`), so a sibling attempt's refusal frees the row only once no attempt is in
+/// flight. The hold is consumed by the transition that settles it, so it settles once.
 #[derive(Debug)]
 pub(crate) struct AcquisitionHold {
     agent_id: String,
     request_id: String,
-    /// Whether this attempt counts in its pending or uncertain ledger row, so its own answer settles
-    /// that count once. A replay of a request the service already answered counts in none.
-    counted: bool,
+    registered: Registered,
 }
 
 impl AcquisitionHold {
+    fn counted(&self) -> bool {
+        self.registered == Registered::Counted
+    }
+
     fn key(&self) -> AcquisitionKey {
         AcquisitionKey::Request {
             agent_id: self.agent_id.clone(),
@@ -108,20 +113,25 @@ fn requested<'a>(
     }
 }
 
-/// What `machine` costs between `from_ms` and `until_ms`, by started minute.
-fn cost_micros(machine: &AcquiredMachine, from_ms: u64, until_ms: u64) -> u64 {
-    let end = match &machine.state {
-        AcquiredState::Ended { ended_ms, .. } => (*ended_ms).min(until_ms),
-        AcquiredState::Pending
-        | AcquiredState::Uncertain
-        | AcquiredState::Running { .. }
-        | AcquiredState::Deleting { .. } => until_ms,
+#[cfg(test)]
+type Seam = (String, Box<dyn FnOnce() + Send>);
+
+/// Test seam: runs once, for the request it names, where an attempt found no row for its request.
+#[cfg(test)]
+pub(super) static UNRECORDED_ATTEMPT: std::sync::Mutex<Option<Seam>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn unrecorded_attempt(request_id: &str) {
+    let seam = {
+        let mut seam = UNRECORDED_ATTEMPT.lock().unwrap();
+        match &*seam {
+            Some((named, _)) if named == request_id => seam.take(),
+            _ => None,
+        }
     };
-    let start = machine.started_ms.max(from_ms);
-    if end <= start {
-        return 0;
+    if let Some((_, run)) = seam {
+        run();
     }
-    (end - start).div_ceil(MINUTE_MS) * machine.rate_micros
 }
 
 fn capitalized(text: &str) -> String {
@@ -155,14 +165,21 @@ impl KernelRuntimeState {
             } => (request_id, Some(job_ref)),
             _ => return Ok(Admission::Off),
         };
-        let hold = AcquisitionHold {
-            agent_id: agent.into(),
-            request_id: request_id.clone(),
-            counted: true,
+        let hold = |registered| {
+            Admission::Within(AcquisitionHold {
+                agent_id: agent.into(),
+                request_id: request_id.clone(),
+                registered,
+            })
         };
-        if let Some(retry) = self.retry_admitted(&hold)? {
-            return Ok(Admission::Within(retry));
+        let store = &self.owned.durable_state_store;
+        // A retry of a request admitted before takes no new place and is never asked again: the
+        // service replays its answer, which settles the same row.
+        if let Some(registered) = store.count_recorded_attempt(agent, request_id)? {
+            return Ok(hold(registered));
         }
+        #[cfg(test)]
+        unrecorded_attempt(request_id);
         let settings = self.owned.config_projection.snapshot().user_config.agents;
         if settings.offload_without_asking != Some(true) {
             return Ok(Admission::Off);
@@ -192,74 +209,39 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         let day = now - now % DAY_MS;
-        let acquired = self.owned.durable_state_store.acquired_machines(day)?;
         let max = settings
             .offload_max_machines
             .unwrap_or(crate::config::DEFAULT_OFFLOAD_MAX_MACHINES);
-        if let Some(cap) = settings.offload_daily_cap_micros {
-            let spent: u64 = acquired
-                .iter()
-                .map(|machine| cost_micros(machine, day, now))
-                .sum();
-            if spent >= cap {
-                return Ok(Admission::Outside(format!(
+        let machine = AcquiredMachine {
+            agent_id: agent.into(),
+            request_id: request_id.clone(),
+            job_ref: job_ref.cloned(),
+            room_id: room.into(),
+            class_id: requested.class_id.into(),
+            rate_micros: requested.rate.amount_micros,
+            currency: requested.rate.currency.clone(),
+            started_ms: now,
+            state: AcquiredState::Pending,
+        };
+        let cap = settings.offload_daily_cap_micros;
+        match store.admit_attempt(machine, max, cap, day)? {
+            Admitted::Registered(registered) => Ok(hold(registered)),
+            Admitted::AtMaximum => Ok(Admission::Outside(format!(
+                "the most machines acquired without asking at the same time ({max}) are already running"
+            ))),
+            Admitted::AtCap => {
+                let spent: u64 = store
+                    .acquired_machines(day)?
+                    .iter()
+                    .map(|machine| machine.cost_micros(day, now))
+                    .sum();
+                Ok(Admission::Outside(format!(
                     "machines acquired without asking cost {} today, at the daily cap of {}",
                     amount(spent, &requested.rate.currency),
-                    amount(cap, &requested.rate.currency)
-                )));
+                    amount(cap.unwrap_or_default(), &requested.rate.currency)
+                )))
             }
         }
-        let admitted =
-            self.owned
-                .durable_state_store
-                .write_acquired_machine(AcquiredMachineWrite::Admit {
-                    machine: AcquiredMachine {
-                        agent_id: agent.into(),
-                        request_id: request_id.clone(),
-                        job_ref: job_ref.cloned(),
-                        room_id: room.into(),
-                        class_id: requested.class_id.into(),
-                        rate_micros: requested.rate.amount_micros,
-                        currency: requested.rate.currency.clone(),
-                        started_ms: now,
-                        state: AcquiredState::Pending,
-                    },
-                    max_live: max,
-                })?;
-        if !admitted {
-            // An attempt at the same request was admitted meanwhile: this one is its retry.
-            if let Some(retry) = self.retry_admitted(&hold)? {
-                return Ok(Admission::Within(retry));
-            }
-            return Ok(Admission::Outside(format!(
-                "the most machines acquired without asking at the same time ({max}) are already running"
-            )));
-        }
-        Ok(Admission::Within(hold))
-    }
-
-    /// A retry of a request admitted before takes no new place and is never asked again: the
-    /// service replays its answer, which settles the same row. While the row is unsettled the retry
-    /// counts as one more attempt waiting for its answer.
-    fn retry_admitted(
-        &self,
-        hold: &AcquisitionHold,
-    ) -> Result<Option<AcquisitionHold>, DaemonError> {
-        let store = &self.owned.durable_state_store;
-        let counted =
-            store.write_acquired_machine(AcquiredMachineWrite::Retry { key: hold.key() })?;
-        let admitted = counted
-            || store
-                .acquired_machine(AcquiredMachineLookup::Request {
-                    agent_id: &hold.agent_id,
-                    request_id: &hold.request_id,
-                })?
-                .is_some();
-        Ok(admitted.then(|| AcquisitionHold {
-            agent_id: hold.agent_id.clone(),
-            request_id: hold.request_id.clone(),
-            counted,
-        }))
     }
 
     /// Applies the service's answer to one attempt at an admitted request. Accepted, the machine
@@ -294,7 +276,7 @@ impl KernelRuntimeState {
     /// An attempt that was refused or never sent releases its count: the request leaves the ledger
     /// when it was the last attempt and no answer was lost.
     pub(crate) fn withdraw_acquisition(&self, hold: AcquisitionHold) {
-        if hold.counted {
+        if hold.counted() {
             self.record_acquired_machine(AcquiredMachineWrite::Release { key: hold.key() });
         }
     }
@@ -302,7 +284,7 @@ impl KernelRuntimeState {
     /// An attempt whose answer was lost: the machine may exist, so its request stays counted until
     /// a settled outcome.
     fn lose_acquisition_answer(&self, hold: &AcquisitionHold) {
-        if hold.counted {
+        if hold.counted() {
             self.record_acquired_machine(AcquiredMachineWrite::Lost { key: hold.key() });
         }
     }
@@ -410,7 +392,7 @@ impl KernelRuntimeState {
             .count();
         let spent: u64 = acquired
             .iter()
-            .map(|machine| cost_micros(machine, day, now))
+            .map(|machine| machine.cost_micros(day, now))
             .sum();
         self.tell_room(
             &machine,
@@ -448,7 +430,7 @@ impl KernelRuntimeState {
                 ended_ms
                     .saturating_sub(machine.started_ms)
                     .div_ceil(MINUTE_MS),
-                amount(cost_micros(&machine, 0, ended_ms), &machine.currency),
+                amount(machine.cost_micros(0, ended_ms), &machine.currency),
             ),
         );
     }
@@ -471,7 +453,7 @@ impl KernelRuntimeState {
     fn acquired_machine_by_allocation(&self, allocation_ref: &str) -> Option<AcquiredMachine> {
         self.owned
             .durable_state_store
-            .acquired_machine(AcquiredMachineLookup::Allocation(allocation_ref))
+            .acquired_machine(allocation_ref)
             .ok()
             .flatten()
     }
@@ -518,14 +500,14 @@ mod tests {
         let running = machine(AcquiredState::Running {
             allocation_ref: "a".into(),
         });
-        assert_eq!(cost_micros(&running, 0, DAY_MS), 1_000);
+        assert_eq!(running.cost_micros(0, DAY_MS), 1_000);
         // Only today's part counts against today's cap.
-        assert_eq!(cost_micros(&running, DAY_MS, DAY_MS + 3 * MINUTE_MS), 3_000);
+        assert_eq!(running.cost_micros(DAY_MS, DAY_MS + 3 * MINUTE_MS), 3_000);
         let ended = machine(AcquiredState::Ended {
             allocation_ref: "a".into(),
             ended_ms: DAY_MS + 1,
         });
-        assert_eq!(cost_micros(&ended, 0, DAY_MS * 2), 1_000);
-        assert_eq!(cost_micros(&ended, DAY_MS + 2, DAY_MS * 2), 0);
+        assert_eq!(ended.cost_micros(0, DAY_MS * 2), 1_000);
+        assert_eq!(ended.cost_micros(DAY_MS + 2, DAY_MS * 2), 0);
     }
 }
