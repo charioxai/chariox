@@ -104,11 +104,6 @@ mod stall_tests {
         let store = crate::provider::ProviderProcessServiceStore::new(
             crate::provider::ProviderProcessService::new(),
         );
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while crate::runtime::process_resources::snapshot_row_count_for_test() == 0 {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(20));
-        }
         for ignore_term in [false, true] {
             let descendants = crate::test_support::TestWorktree::new("account-child");
             let child_pid_file = descendants.path().join("child.pid");
@@ -144,6 +139,13 @@ mod stall_tests {
                 invalidate_codex_account_endpoint("stall-owner", "stall-profile");
                 done.send(()).unwrap();
             });
+            // The sampler drops its table after a second nobody reads it, so read one just before
+            // descriptors run out.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while crate::runtime::process_resources::snapshot_row_count_for_test() == 0 {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let mut original = std::mem::MaybeUninit::<libc::rlimit>::uninit();
             assert_eq!(
                 unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, original.as_mut_ptr()) },

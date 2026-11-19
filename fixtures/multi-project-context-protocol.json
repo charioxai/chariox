@@ -1,0 +1,136 @@
+{
+  "createSlice": {
+    "CreateSlice": {
+      "name": "docs",
+      "backend": "local_docker",
+      "os": "linux",
+      "display_mode": "headless",
+      "workspace_id": null,
+      "worktree_id": null,
+      "workspace_mount": null,
+      "development": {
+        "kind": "source_projects",
+        "projects": [
+          {
+            "project_id": "project-docs",
+            "repositories": [
+              { "role": "primary", "workspaceId": "/work/docs", "worktreeId": null }
+            ]
+          }
+        ]
+      },
+      "worker_kernel_ref": null,
+      "display_url": null,
+      "provider_auth": [],
+      "from_saved_state": null,
+      "base": null
+    }
+  },
+  "ownerManagedTransfer": {
+    "StartManagedContextTransfer": {
+      "interactive": true,
+      "ownerManaged": {
+        "target": {
+          "relayRealmId": "realm",
+          "machineId": "machine",
+          "kernelId": "kernel",
+          "relayPublicKey": "public",
+          "keyThumbprint": "pin"
+        },
+        "contextSelection": {
+          "kernelContext": "source_kernel_without_credentials",
+          "developmentSetup": {
+            "kind": "source_projects",
+            "projects": [
+              {
+                "projectId": "project-app",
+                "repositories": [
+                  { "role": "primary", "workspaceId": "/work/app", "worktreeId": null },
+                  { "role": "supporting", "workspaceId": "/work/lib", "worktreeId": "worktree-lib" }
+                ]
+              },
+              {
+                "projectId": "project-docs",
+                "repositories": [
+                  { "role": "primary", "workspaceId": "/work/docs", "worktreeId": null }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "launchTarget": {
+    "kernelId": "kernel",
+    "contextId": "context-1",
+    "planDigest": "digest-1",
+    "development": {
+      "kind": "from_source",
+      "projects": [
+        {
+          "projectId": "copy-context-1-0",
+          "destinationRoot": "/home/chariox/project-app",
+          "primaryRepositoryId": "repository-app",
+          "repositories": [
+            {
+              "repositoryId": "repository-app",
+              "role": "primary",
+              "targetDirectory": "app",
+              "workspacePath": "/home/chariox/project-app/app",
+              "headSha": "1111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        {
+          "projectId": "copy-context-1-1",
+          "destinationRoot": "/home/chariox/project-docs",
+          "primaryRepositoryId": "repository-docs",
+          "repositories": [
+            {
+              "repositoryId": "repository-docs",
+              "role": "primary",
+              "targetDirectory": "app",
+              "workspacePath": "/home/chariox/project-docs/app",
+              "headSha": "2222222222222222222222222222222222222222"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "retiredRequests": [
+    {
+      "CreateSlice": {
+        "name": "docs",
+        "development": {
+          "kind": "source_project",
+          "project_id": "project-docs",
+          "repositories": [{ "role": "primary", "workspaceId": "/work/docs", "worktreeId": null }]
+        }
+      }
+    },
+    {
+      "StartManagedContextTransfer": {
+        "interactive": true,
+        "ownerManaged": {
+          "target": {
+            "relayRealmId": "realm",
+            "machineId": "machine",
+            "kernelId": "kernel",
+            "relayPublicKey": "public",
+            "keyThumbprint": "pin"
+          },
+          "contextSelection": {
+            "kernelContext": "empty",
+            "developmentSetup": {
+              "kind": "source_project",
+              "projectId": "project-app",
+              "repositories": [{ "role": "primary", "workspaceId": "/work/app", "worktreeId": null }]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

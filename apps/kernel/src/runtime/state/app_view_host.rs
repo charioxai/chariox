@@ -5,6 +5,30 @@ use crate::{error::DaemonError, runtime::browser_controller_app_view::BrowserApp
 use serde_json::Value;
 use std::{future::Future, pin::Pin};
 
+/// A kernel started with this set to `1` refuses to project an App into a kernel browser, so a drill proves a
+/// client reached every App's view natively: the person's window never needs the projection.
+const REFUSE_PROJECTED_ENV: &str = "CHARIOX_REFUSE_PROJECTED_APP_VIEWS";
+
+/// Every App page a kernel browser would show passes here as an `Open`, whether a Room's Tab or a user-domain one.
+fn projected_open(route: &str, request: &BrowserAppViewRequest) -> Result<(), DaemonError> {
+    let BrowserAppViewRequest::Open {
+        installation_id, ..
+    } = request
+    else {
+        return Ok(());
+    };
+    if std::env::var(REFUSE_PROJECTED_ENV).as_deref() == Ok("1") {
+        eprintln!("refused: App view projected into a kernel browser ({route} route, installation {installation_id})");
+        return Err(super::app_view_runtime::open_error(
+            "This kernel does not project App views into its browser. Open the App in your client's own window.",
+        ));
+    }
+    eprintln!(
+        "App view projected into a kernel browser ({route} route, installation {installation_id})"
+    );
+    Ok(())
+}
+
 pub(super) trait AppViewHost {
     fn command(
         &self,
@@ -26,6 +50,7 @@ impl AppViewHost for RoomAppViewHost<'_> {
             use crate::transport::room_browser_controller::{
                 RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
             };
+            projected_open("room", &request)?;
             match Box::pin(
                 self.state
                     .room_browser_controller_command(self.session, Command::AppView { request }),
@@ -53,6 +78,7 @@ impl AppViewHost for KernelBrowserAppViewHost<'_> {
         request: BrowserAppViewRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, DaemonError>> + Send + '_>> {
         Box::pin(async move {
+            projected_open("user", &request)?;
             Box::pin(self.state.kernel_browser_app_view(
                 self.owner.into(),
                 request,

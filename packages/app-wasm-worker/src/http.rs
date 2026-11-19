@@ -1,5 +1,5 @@
 use crate::{
-    bindings::chariox::app::{app_types::AppError, http},
+    bindings::chariox::app1_0_0::{app_types::AppError, http},
     broker::{context, number, text},
     host::{app_error, Host},
     ipc::{error, Ipc},

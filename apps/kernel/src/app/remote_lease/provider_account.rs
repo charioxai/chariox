@@ -26,9 +26,18 @@ impl RemoteLeaseRuntime<'_> {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
         // Replicas are registered under the lease owner, not the worker's local
-        // user or another lease's owner. Resolve aliases before changing a run.
-        self.app.provider_account_profile_registry()
-            .get(&lease.owner_user_id, provider, account_profile)
+        // user or another lease's owner; an installed copy under the account
+        // authority. Resolve aliases before changing a run.
+        let registry = self.app.provider_account_profile_registry();
+        let account_owner = crate::account_profile::provider_account_authority_owner_for_lease(
+            self.app.config(),
+            &registry,
+            &lease.owner_user_id,
+            provider,
+            account_profile,
+        )?;
+        registry
+            .get(&account_owner, provider, account_profile)
             .map(|profile| profile.profile_id)
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "update leased agent profile",
@@ -66,6 +75,43 @@ impl RemoteLeaseRuntime<'_> {
         context: &RemoteProviderAccountSyncContext,
         owner_user_id: &str,
     ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
+        let lease = self.lease_for_provider_account_context(context)?;
+        if lease.owner_user_id != owner_user_id {
+            return Err(Self::provider_account_owner_mismatch());
+        }
+        Ok(lease)
+    }
+
+    /// The account a worker returns for a lease is either the lease owner's
+    /// replica or a login installed under the account authority.
+    pub(crate) fn validate_remote_provider_account_result(
+        &self,
+        context: &RemoteProviderAccountSyncContext,
+        account_owner_user_id: &str,
+    ) -> Result<(), DaemonError> {
+        let lease = self.lease_for_provider_account_context(context)?;
+        let authority = crate::account_profile::provider_account_authority_owner_user_id(
+            self.app.config(),
+            &lease.owner_user_id,
+        );
+        if account_owner_user_id != lease.owner_user_id && account_owner_user_id != authority {
+            return Err(Self::provider_account_owner_mismatch());
+        }
+        Ok(())
+    }
+
+    fn provider_account_owner_mismatch() -> DaemonError {
+        DaemonError::LocalTransport {
+            operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
+            message: "provider-account materialization owner does not match the execution lease"
+                .to_string(),
+        }
+    }
+
+    fn lease_for_provider_account_context(
+        &self,
+        context: &RemoteProviderAccountSyncContext,
+    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
         let lease = self
             .app
             .execution_leases
@@ -82,14 +128,6 @@ impl RemoteLeaseRuntime<'_> {
                 operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message:
                     "provider-account materialization context does not match the execution lease"
-                        .to_string(),
-            });
-        }
-        if lease.owner_user_id != owner_user_id {
-            return Err(DaemonError::LocalTransport {
-                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
-                message:
-                    "provider-account materialization owner does not match the execution lease"
                         .to_string(),
             });
         }
@@ -182,7 +220,7 @@ exit 2
         std::fs::create_dir_all(root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -212,7 +250,7 @@ exit 2
         std::fs::create_dir_all(&root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -270,7 +308,11 @@ exit 2
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
             .expect_err("remote Claude refresh credentials must be rejected");
-        assert!(error.to_string().contains("setup-token launch path"));
+        let refusal = error.to_string();
+        // The account-copy drill proves the advised steps: a native-only login
+        // is refused, and after the setup-token step it is offered and copied.
+        assert!(refusal.contains("/provider setup-token claude"));
+        assert!(refusal.contains("/provider accounts copy"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
         let mut wrong_owner = materialization;
@@ -294,7 +336,7 @@ exit 2
         let _native_auth = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let mut app = crate::DaemonApp::bootstrap(config).unwrap();
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease(
@@ -443,6 +485,127 @@ exit 2
             .ensure_remote_provider_account(context, other)
             .unwrap();
         assert_eq!(replica.profile_id, "home-other");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // A transfer or an account copy installs under the account authority
+    // (`local` for the configured Cloud user), whoever owns the lease.
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_of_the_cloud_user_uses_the_login_installed_under_the_account_authority() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-account-authority-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let materialization = |owner: &str| ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: owner.to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "home-work".to_string(),
+                label: "Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    serde_json::to_vec(&serde_json::json!({
+                        "opencode": {"type": "api", "key": "synthetic-home"}
+                    }))
+                    .unwrap(),
+                ),
+            }],
+            generated_at_ms: 1,
+        };
+        let mut installed = materialization("local");
+        installed.profile.profile_id = "worker-work".to_string();
+        let receipt = registry
+            .materialize_managed_context_replica("local", "context-a", &"a".repeat(64), &installed)
+            .unwrap();
+        registry
+            .record_transfer_origin("local", &receipt, "home-kernel", "home-work")
+            .unwrap();
+        for (lease_owner, runs_on_installed) in [
+            ("local", true),
+            ("cloud-owner", true),
+            ("collaborator", false),
+        ] {
+            let lease = RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease(
+                    "home-kernel",
+                    "home-session",
+                    "home-agent",
+                    false,
+                    lease_owner,
+                )
+                .unwrap();
+            let context = RemoteProviderAccountSyncContext {
+                home_kernel_id: "home-kernel".to_string(),
+                home_session_id: "home-session".to_string(),
+                home_agent_id: "home-agent".to_string(),
+                execution_lease_id: lease.id.clone(),
+            };
+            let profile = RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), materialization(lease_owner))
+                .unwrap();
+            if runs_on_installed {
+                assert_eq!(profile.profile_id, "worker-work", "{lease_owner}");
+                assert_eq!(profile.owner_user_id, "local", "{lease_owner}");
+                RemoteLeaseRuntime::new(&mut app)
+                    .validate_remote_provider_account_result(&context, &profile.owner_user_id)
+                    .unwrap();
+            } else {
+                assert_eq!(profile.profile_id, "home-work", "{lease_owner}");
+                assert_eq!(profile.owner_user_id, lease_owner);
+            }
+            // The leased agent runs on the account the lease resolved.
+            let leased = RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent_from_base_directory(
+                    &root,
+                    &lease.id,
+                    "opencode",
+                    &profile.profile_id,
+                    Some("model".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                app.provider_account_owner_for_execution(
+                    &leased.backing_session_id,
+                    Some(&leased.backing_agent_id),
+                )
+                .unwrap(),
+                profile.owner_user_id,
+                "{lease_owner}"
+            );
+            assert_eq!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .resolve_leased_profile_account(&leased, "opencode", &profile.profile_id)
+                    .unwrap(),
+                profile.profile_id,
+                "{lease_owner}"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -693,7 +856,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -724,7 +887,7 @@ exit 2
                 None,
             )
             .expect("old native validation failure should persist");
-        let parent = root.join("provider-accounts/owner-a/opencode");
+        let parent = root.join("kernel/provider-accounts/owner-a/opencode");
         std::fs::write(parent.join("old-worker/worker-note"), b"worker-owned")
             .expect("worker data should be present");
         let mut fixed = old.clone();
@@ -860,7 +1023,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -904,7 +1067,7 @@ exit 2
             profile.as_object_mut().unwrap().remove(field);
         }
         std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
-        let provider_parent = root.join("provider-accounts/owner-a/opencode");
+        let provider_parent = root.join("kernel/provider-accounts/owner-a/opencode");
         std::fs::remove_dir_all(&provider_parent).expect("simulate absent old provider parent");
 
         let mut app = crate::DaemonApp::bootstrap(config).expect("old worker should reopen");
@@ -954,7 +1117,7 @@ exit 2
         let _cleanup = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -1005,7 +1168,7 @@ exit 2
             profile.as_object_mut().unwrap().remove(field);
         }
         std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
-        let managed_root = root.join("provider-accounts/owner-a/opencode/old-worker");
+        let managed_root = root.join("kernel/provider-accounts/owner-a/opencode/old-worker");
         std::fs::rename(&managed_root, root.join("retired-worker-root"))
             .expect("retire original worker root");
         std::fs::create_dir_all(&managed_root).expect("replace root without credentials");

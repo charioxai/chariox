@@ -48,7 +48,7 @@ The reproducible live entry is Cloud's
 `apps/web/scripts/app-view-delivery-live.mjs`. It boots the exact supplied kernel,
 pairs it normally using the public device approval mutation as setup, installs a
 real signed reference package, and imports the production Web client and delivery
-adapter into the actual built hosted waiting-room page. Asset bytes travel only
+adapter into the actual built hosted Room list page. Asset bytes travel only
 through that client's encrypted hosted WSS connection. DPR1/2 verify signature,
 entry hash,64KiB bounds, fresh authorized cache hits and rejection after Close.
 `--base` proves that the same real path rejects the new request before the change.
@@ -69,7 +69,7 @@ close cleanly. Evidence: `appview/r7/av2-live-green4/results.json`, base4 and
 base-standard receipts, and `AV2_IDENTITY.json` under
 `/root/.codex/evidence/browser-resume-20260930/`.
 
-The built waiting-room page hosts the production Web transport adapter in this
+The built Room list page hosts the production Web transport adapter in this
 drill. Its normal shell remains Connecting; it does not demonstrate a connected
 Room, normal App-open UI or reference execution. Pairing setup uses the normal
 public approval POST because the pinned validation API predates the current

@@ -3,7 +3,8 @@
 use super::*;
 use std::process::{Command, Stdio};
 
-const SUB_AGENT_SENTENCE: &str = "A sub-agent cannot ask for kernel access. Ask your parent agent.";
+const SUB_AGENT_SENTENCE: &str =
+    "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.";
 
 struct Launched(std::process::Child);
 
@@ -16,7 +17,7 @@ impl Drop for Launched {
 
 // The test process stands in for the kernel, so its child is a process the kernel launched.
 #[tokio::test]
-async fn a_sub_agent_is_told_to_ask_its_parent_agent() {
+async fn a_launched_agent_is_told_only_the_person_can_grant_access() {
     crate::test_support::isolated_env_test!();
     let root = crate::test_support::TestWorktree::new("access-sub-agent");
     let router = reopen_kernel(&root);

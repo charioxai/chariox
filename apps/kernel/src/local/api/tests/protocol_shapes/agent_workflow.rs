@@ -319,6 +319,16 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
             needs_user: true,
             deadline_ms: None,
             created_at_ms: 5,
+            usage_limit_stop: Some(crate::agent::UsageLimitStop {
+                prompt_id: "p".into(),
+                provider: "codex".into(),
+                account_profile: "work".into(),
+                account_label: "work".into(),
+                stopped_at_ms: 3,
+                resumes_at_ms: Some(9),
+                refused: 0,
+                state: crate::agent::UsageLimitStopState::Asking,
+            }),
         }],
     };
     assert_eq!(
@@ -329,7 +339,9 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 "alias":"worker","provider":"codex","model":null,"execution_mode":"plan",
                 "permission_level":"required","effort":"high","account_profile":"work",
                 "workspace_id":"app","worktree_id":"app-2","worker_kernel_id":"worker","depth":1,
-                "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5}]}}})
+                "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5,
+                "usage_limit_stop":{"prompt_id":"p","provider":"codex","account_profile":"work",
+                    "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}}}]}}})
     );
     assert_eq!(
         serde_json::to_value(crate::local::OutsideEventValue::AgentTree {

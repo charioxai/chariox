@@ -1,6 +1,9 @@
 //! HTTP namespace on the existing worker peer. Current authority is checked
 //! by the durable writer before every socket start or stream operation enqueue.
-use super::{decode, policy::AppHttpPolicy, streams::HttpStreams, HttpError, HttpLimits};
+use super::{
+    account::AccountVault, decode, policy::AppHttpPolicy, streams::HttpStreams, HttpError,
+    HttpLimits,
+};
 use crate::durable_state::app_validations::EffectReceipt;
 use crate::{
     durable_state::DurableKernelStateStore, runtime::app_operation_budget::AppOperationBudget,
@@ -21,6 +24,7 @@ use tokio::{runtime::Handle, sync::Semaphore};
 pub(crate) struct HttpContext {
     pub(crate) limits: Arc<HttpLimits>,
     pub(crate) runtime: Handle,
+    pub(crate) vault: Arc<dyn AccountVault>,
 }
 #[derive(Clone)]
 pub(crate) struct AppHttpBroker {
@@ -28,6 +32,7 @@ pub(crate) struct AppHttpBroker {
     store: DurableKernelStateStore,
     owner: String,
     policy: Arc<AppHttpPolicy>,
+    vault: Arc<dyn AccountVault>,
     streams: HttpStreams,
     admission: Arc<Semaphore>,
 }
@@ -46,6 +51,7 @@ impl AppHttpBroker {
         context: HttpContext,
     ) -> super::Result<Self> {
         let policy = Arc::new(AppHttpPolicy::compile(package, catalog.clone())?);
+        let vault = context.vault.clone();
         let streams = HttpStreams::new(
             owner.clone(),
             catalog,
@@ -61,6 +67,7 @@ impl AppHttpBroker {
             store,
             owner,
             policy,
+            vault,
             streams,
             admission,
         })
@@ -144,6 +151,12 @@ impl AppHttpBroker {
                 receipt.digest = operation.digest;
                 Ok((operation.parameters, receipt))
             };
+            let accounts = super::account::Accounts {
+                store: &broker.store,
+                owner: &broker.owner,
+                installation: catalog.installation_id(),
+                vault: broker.vault.as_ref(),
+            };
             let (job, receiver) = broker.streams.job(
                 &broker.policy,
                 command,
@@ -152,6 +165,7 @@ impl AppHttpBroker {
                 request.cancellation,
                 permit,
                 &approved,
+                &accounts,
             )?;
             broker.store.enqueue_app_http(job);
             Ok::<_, HttpError>(receiver)
@@ -202,6 +216,26 @@ fn remote(failure: HttpError) -> RemoteError {
         HttpError::ConnectionAuthority => (
             "APP_HTTP_CONNECTION_UNSUPPORTED",
             "Opaque connection authority is not available for this HTTP operation",
+        ),
+        HttpError::AccountRequired => (
+            "APP_HTTP_ACCOUNT_REQUIRED",
+            "This destination is reached with an account: pass connection-id `account:<label>`",
+        ),
+        HttpError::AccountUnknown => (
+            "APP_HTTP_ACCOUNT_UNKNOWN",
+            "The owner has not bound this account to the App; ask them to bind it in the App's permissions",
+        ),
+        HttpError::RouteNotDeclared => (
+            "APP_HTTP_ROUTE_NOT_DECLARED",
+            "This method and path are not in the App's signed route table",
+        ),
+        HttpError::AccountNotAllowed => (
+            "APP_HTTP_ACCOUNT_NOT_ALLOWED",
+            "The owner allows this account less authority than this call needs",
+        ),
+        HttpError::AccountUnavailable => (
+            "APP_HTTP_ACCOUNT_UNAVAILABLE",
+            "The account's Vault entry could not be read; unlock the Vault or bind the account again",
         ),
         HttpError::ProtectedEffect => (
             "APP_HTTP_EFFECT_UNSUPPORTED",

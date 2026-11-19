@@ -123,19 +123,6 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
-        let session = self.session_store.get_session(session_id)?;
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent profile",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the profile after it finishes"
-                ),
-            });
-        }
         self.ensure_agent_config_not_provider_native_tui(
             session_id,
             agent_id,
@@ -245,7 +232,14 @@ impl KernelRuntimeOwnedState {
                     effort: target_effort.map(str::to_string),
                 });
         let mut terminated_run_ids = Vec::new();
+        // A running turn keeps its process: the step-boundary swap or the next dispatch replaces
+        // it, since the record now differs from the run.
+        let active_turn = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+            .is_some();
         if remote_update.is_none()
+            && !active_turn
             && (provider_model_or_account_changed || target_effort != agent.effort())
         {
             if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
@@ -339,18 +333,10 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let active_turn = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "commit remote agent profile",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the profile after it finishes"
-                ),
-            });
-        }
+            .is_some();
         if crate::provider::canonical_provider_family(&provider).is_some() {
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_owner_user_id(
@@ -372,7 +358,9 @@ impl KernelRuntimeOwnedState {
         // The worker has acknowledged the replacement profile. Completed turns
         // can still have a running home projection; retire it so projection
         // fallback and lagging snapshots cannot advertise the old profile.
-        if let Some(binding) = agent.remote_execution() {
+        // A running turn keeps its projection: the worker's step-boundary swap hands it to the
+        // successor run.
+        if let Some(binding) = agent.remote_execution().filter(|_| !active_turn) {
             self.provider_run_projection.retire_leased_agent_runs(
                 session_id,
                 agent_id,
@@ -413,8 +401,10 @@ impl KernelRuntimeOwnedState {
                 Some(account_profile),
                 resume_state,
             )?;
-        self.agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
+        if !active_turn {
+            self.agent_store
+                .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
+        }
         let agent = self.agent_store.get_agent(agent_id)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(agent)

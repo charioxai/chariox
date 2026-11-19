@@ -178,6 +178,15 @@ impl ShellIntegration {
         args
     }
 
+    /// The startup files a shell reads to report marks.
+    pub(super) fn files(&self) -> Vec<PathBuf> {
+        self.zsh_dir
+            .iter()
+            .chain(&self.bash_startup)
+            .cloned()
+            .collect()
+    }
+
     /// Environment that makes `shell` (a login shell path) report marks.
     pub(super) fn environment(&self, shell: &str) -> BTreeMap<String, String> {
         let name = Path::new(shell)

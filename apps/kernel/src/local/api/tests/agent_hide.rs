@@ -159,9 +159,9 @@ fn hidden_agent_is_flagged_in_the_public_snapshot() {
         panic!("session")
     };
     let flagged = |h: &LocalRouterTestHarness| {
-        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = h
-            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                GetWaitingRoomPublicSnapshotRequest,
+        let LocalDaemonResponse::RoomListSnapshot { snapshot } = h
+            .dispatch(LocalDaemonRequest::GetRoomListSnapshot(
+                GetRoomListSnapshotRequest,
             ))
             .unwrap()
         else {

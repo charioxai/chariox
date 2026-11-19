@@ -11,8 +11,6 @@ pub(crate) enum SudoRequestFailure {
 }
 
 impl SudoRequestFailure {
-    pub(crate) const ALL: [Self; 3] = [Self::Refused, Self::Expired, Self::RoomOwnerLocal];
-
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Refused => "kernel_sudo_refused",
@@ -40,9 +38,5 @@ impl SudoRequestFailure {
             code: self.code().into(),
             message: self.message().into(),
         }
-    }
-
-    pub(crate) fn is_public_code(code: &str) -> bool {
-        Self::ALL.into_iter().any(|failure| failure.code() == code)
     }
 }

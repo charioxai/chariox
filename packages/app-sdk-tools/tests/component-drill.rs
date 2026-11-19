@@ -31,7 +31,7 @@ wasmtime::component::bindgen!({
     exports: { "chariox:app/handlers.register": async },
 });
 
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext},
     http, registry, state,
 };
@@ -86,7 +86,7 @@ impl WasiView for Host {
         }
     }
 }
-impl chariox::app::app_types::Host for Host {}
+impl chariox::app1_0_0::app_types::Host for Host {}
 impl registry::Host for Host {
     fn tool(&mut self, name: String) {
         self.registered.push(name);
@@ -259,7 +259,7 @@ async fn instance(file: &str) -> wasmtime::Result<(Store<Host>, Drill, Arc<Count
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
-    app.chariox_app_handlers()
+    app.chariox_app1_0_0_handlers()
         .call_register(&mut store)
         .await?
         .unwrap();
@@ -290,7 +290,7 @@ async fn call(
             });
             let signal = signal?;
             let result = app
-                .chariox_app_handlers()
+                .chariox_app1_0_0_handlers()
                 .call_call_tool(
                     accessor,
                     name.to_owned(),
@@ -354,7 +354,7 @@ async fn cancelled_todo_add_never_starts_a_transaction() -> wasmtime::Result<()>
                     })
                 })?;
                 let result = app
-                    .chariox_app_handlers()
+                    .chariox_app1_0_0_handlers()
                     .call_call_tool(
                         accessor,
                         "add".into(),
@@ -514,7 +514,7 @@ async fn quickjs_timer_cleanup_preserves_concurrent_invocations() -> wasmtime::R
                     std::future::pending::<wasmtime::Result<String>>(),
                 )
             })?;
-            let slow = app.chariox_app_handlers().call_call_tool(
+            let slow = app.chariox_app1_0_0_handlers().call_call_tool(
                 accessor,
                 "timer".into(),
                 "{}".into(),
@@ -523,7 +523,7 @@ async fn quickjs_timer_cleanup_preserves_concurrent_invocations() -> wasmtime::R
             );
             let fast = async {
                 tokio::time::sleep(Duration::from_millis(5)).await;
-                app.chariox_app_handlers()
+                app.chariox_app1_0_0_handlers()
                     .call_call_tool(
                         accessor,
                         "encoding".into(),

@@ -368,7 +368,7 @@ async fn prepare_home_local_room_display(
         )
         .expect("mark the home-owned headed slice running");
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id":&room,

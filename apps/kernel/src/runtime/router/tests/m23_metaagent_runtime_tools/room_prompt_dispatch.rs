@@ -234,6 +234,13 @@ async fn spawn_keeps_claude_account() {
             Default::default(),
         )
         .unwrap();
+    crate::test_support::seed_account_models(
+        &app.provider_catalog_projection_store(),
+        actor.owner_user_id(),
+        "claude",
+        &profile.profile_id,
+        &["room-model"],
+    );
     let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);

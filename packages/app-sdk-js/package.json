@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": { "types": "./src/index.d.ts", "default": "./src/index.js" } },
-  "scripts": { "test": "node --test --test-concurrency=2 test/*.test.mjs" }
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./event-routing": {
+      "types": "./src/event-routing.d.ts",
+      "default": "./src/event-routing.js"
+    },
+    "./workspace": {
+      "types": "./src/workspace.d.ts",
+      "default": "./src/workspace.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=2 test/*.test.mjs"
+  }
 }

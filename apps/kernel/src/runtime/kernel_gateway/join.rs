@@ -11,6 +11,7 @@ use super::error::GatewayError;
 use super::link::{Link, LinkParams};
 use super::paired::PairedKernel;
 use super::self_hosted::status_of;
+use super::update_needed;
 use super::{map_failure, map_open_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
     GatewayKernel, GatewayKernelStatus, GatewayKernelVia, JoinKernelLinkRequest,
@@ -118,10 +119,15 @@ impl KernelGateway {
             crate::session::unix_epoch_ms(),
             REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        let answer = link
-            .request(request_id, &plaintext, JOIN_DEADLINE)
-            .await
-            .map_err(|failure| map_failure(&token.target_daemon_id, failure))?;
+        let answer = match link.request(request_id, &plaintext, JOIN_DEADLINE).await {
+            Ok(answer) => answer,
+            Err(failure) => {
+                let error = map_failure(&token.target_daemon_id, failure);
+                return Err(
+                    update_needed::after_refusal(&token.target_daemon_id, &link, error).await,
+                );
+            }
+        };
         let answer: Value = serde_json::from_slice(&answer)
             .map_err(|error| refused(format!("the kernel's answer was unreadable ({error}).")))?;
         let admitted = answer
@@ -129,9 +135,12 @@ impl KernelGateway {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !admitted {
-            return Err(refused(
+            let refusal = refused(
                 "the kernel did not admit this kernel's key; it may run an older Chariox kernel. Update it and make a new link.",
-            ));
+            );
+            return Err(
+                update_needed::after_refusal(&token.target_daemon_id, &link, refusal).await,
+            );
         }
         let mut presence = paired_presence(&token, link.target_public_key());
         if let Ok(status) = status_of(&link).await {
@@ -197,6 +206,7 @@ mod tests {
         assert_eq!(presence.machine_alias.as_deref(), Some("Old Name"));
         assert_eq!(presence.kernel_alias, None);
         TargetStatus {
+            protocol: None,
             capabilities: vec!["kernel_gateway_v1".into()],
             machine_alias: Some("Studio Box".into()),
         }

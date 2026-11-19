@@ -5,7 +5,7 @@
 //! retries and a visible failed (poison) or expired outcome. Payloads are
 //! dropped once an occurrence is settled. Routing grants the App nothing else.
 
-use chariox_app_package::{EventDirection, Limits, VerifiedApp};
+use chariox_app_package::{EventDirection, EventOption, Limits, VerifiedApp};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -47,8 +47,15 @@ pub type Result<T> = std::result::Result<T, InboxError>;
 
 /// The publisher-signed incoming event schemas of one verified release.
 pub struct IncomingCatalog {
-    events: BTreeMap<String, (u32, jsonschema::JSONSchema)>,
+    events: BTreeMap<String, IncomingEvent>,
 }
+
+struct IncomingEvent {
+    version: u32,
+    validator: jsonschema::JSONSchema,
+    options: Vec<EventOption>,
+}
+
 impl IncomingCatalog {
     pub fn compile(package: &impl VerifiedApp) -> Result<Self> {
         let mut events = BTreeMap::new();
@@ -62,9 +69,15 @@ impl IncomingCatalog {
                 &Limits::default(),
             )
             .map_err(|_| InboxError::Schema)?;
+            let options = chariox_app_package::event_options(&declaration.payload_schema)
+                .map_err(|_| InboxError::Schema)?;
             events.insert(
                 declaration.name.clone(),
-                (declaration.schema_version, validator),
+                IncomingEvent {
+                    version: declaration.schema_version,
+                    validator,
+                    options,
+                },
             );
         }
         Ok(Self { events })
@@ -72,12 +85,19 @@ impl IncomingCatalog {
 
     /// The declared version of an incoming event, if the release has one.
     pub fn version(&self, name: &str) -> Option<u32> {
-        self.events.get(name).map(|(version, _)| *version)
+        self.events.get(name).map(|event| event.version)
+    }
+
+    /// The subscription options an incoming event declares.
+    pub fn options(&self, name: &str) -> &[EventOption] {
+        self.events
+            .get(name)
+            .map_or(&[], |event| event.options.as_slice())
     }
 
     pub fn validate(&self, name: &str, payload: &Value) -> Result<()> {
-        let (_, validator) = self.events.get(name).ok_or(InboxError::Schema)?;
-        if validator.is_valid(payload) {
+        let event = self.events.get(name).ok_or(InboxError::Schema)?;
+        if event.validator.is_valid(payload) {
             Ok(())
         } else {
             Err(InboxError::Schema)
@@ -98,6 +118,13 @@ pub struct InboxRoute {
     /// while a copy claims its event interest, then resumes it when the copy
     /// leaves. This is not a worker or event-connection health indicator.
     pub active: bool,
+    /// The owner's or the App's own pause (protocol 1011), kept apart from the
+    /// handover above so a copy leaving never resumes a route someone paused.
+    pub paused: bool,
+    /// Created by the App itself through its signed `eventRouting` capability
+    /// (protocol 1011), not by the owner: only these routes are the App's to
+    /// pause or remove, and they end with its connection grant.
+    pub app_managed: bool,
     /// Set when occurrences come from an event generator connection; absent
     /// for routes fed only by the owner (`TestAppInboxRoute`).
     pub source: Option<InboxSource>,
@@ -118,6 +145,11 @@ pub struct InboxSource {
 }
 
 impl InboxRoute {
+    /// Whether the route takes occurrences: not handed over and not paused.
+    pub fn admits(&self) -> bool {
+        self.active && !self.paused
+    }
+
     /// The opaque id event services deliver this route's occurrences under.
     /// It names no owner or App.
     pub fn binding_id(&self) -> String {
@@ -183,6 +215,17 @@ pub fn initialize(connection: &Connection) -> Result<()> {
              ALTER TABLE app_inbox_routes ADD COLUMN connection_id TEXT;
              ALTER TABLE app_inbox_routes ADD COLUMN connection_scope TEXT;
              ALTER TABLE app_inbox_routes ADD COLUMN filter_json TEXT;",
+        )?;
+    }
+    let has_pause: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_inbox_routes') WHERE name='paused')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_pause {
+        connection.execute_batch(
+            "ALTER TABLE app_inbox_routes ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE app_inbox_routes ADD COLUMN app_managed INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     for column in ["payload_schema_json", "manifest_digest"] {
@@ -285,8 +328,8 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     tx.execute(
         "INSERT INTO app_inbox_routes(route_id,owner_id,installation_id,event_name,
             source_event_type,source_event_version,active,created_at_ms,
-            binding_id,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            binding_id,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest,app_managed)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             route.route_id,
             route.owner_id,
@@ -303,6 +346,7 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
             source.map(|source| &source.filter_json),
             source.and_then(|source| source.payload_schema_json.as_deref()),
             source.and_then(|source| source.manifest_digest.as_deref()),
+            route.app_managed,
         ],
     )
     .map_err(|error| match error {
@@ -335,8 +379,27 @@ pub fn remove_route_in(
     Ok(())
 }
 
-/// Pauses or resumes a route. A paused route accepts no occurrence; those it
-/// already accepted are still delivered.
+/// Pauses or resumes a route on the owner's or the App's request. A paused
+/// route accepts no occurrence; those it already accepted are still delivered.
+pub fn set_route_paused_in(
+    tx: &Connection,
+    owner_id: &str,
+    installation_id: &str,
+    route_id: &str,
+    paused: bool,
+) -> Result<()> {
+    let changed = tx.execute(
+        "UPDATE app_inbox_routes SET paused=?4 WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
+        params![owner_id, installation_id, route_id, paused],
+    )?;
+    if changed == 0 {
+        return Err(InboxError::NotFound);
+    }
+    Ok(())
+}
+
+/// The deployment handover pauses or resumes an owner's route. A paused route accepts no
+/// occurrence; those it already accepted are still delivered.
 pub fn set_route_active_in(
     tx: &Connection,
     owner_id: &str,
@@ -382,6 +445,8 @@ fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
         source_event_type: row.get(4)?,
         source_event_version: row.get(5)?,
         active: row.get(6)?,
+        paused: row.get(13)?,
+        app_managed: row.get(14)?,
         source: match generator_id {
             Some(generator_id) => Some(InboxSource {
                 generator_id,
@@ -396,7 +461,7 @@ fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
     })
 }
 const ROUTE_COLUMNS: &str = "route_id,owner_id,installation_id,event_name,source_event_type,\
-    source_event_version,active,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest";
+    source_event_version,active,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest,paused,app_managed";
 
 /// Every route an event generator feeds, across owners, for the kernel's
 /// subscription and delivery claims.
@@ -473,7 +538,7 @@ pub fn accept_in(
     now_ms: u64,
 ) -> Result<Accepted> {
     text(occurrence_id)?;
-    if !route.active {
+    if !route.admits() {
         return Err(InboxError::NotFound);
     }
     let payload_json = serde_json::to_string(payload).map_err(|_| InboxError::Invalid)?;

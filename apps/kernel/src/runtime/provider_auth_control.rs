@@ -89,6 +89,15 @@ pub(crate) async fn execute_provider_auth_request(
                 execute_send_provider_login_input_request(runtime_state, &owner_user_id, request)
                     .await
             }
+            LocalDaemonRequest::SendProviderLoginVaultEntry(request) => {
+                super::provider_login_vault_entry::execute_send_provider_login_vault_entry_request(
+                    runtime_state,
+                    command,
+                    &owner_user_id,
+                    request,
+                )
+                .await
+            }
             LocalDaemonRequest::CancelProviderLogin(request) => {
                 execute_cancel_provider_login_request(runtime_state, &owner_user_id, request).await
             }
@@ -133,7 +142,7 @@ pub(crate) async fn execute_get_provider_auth_status_request(
         runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
-        runtime_state.record_waiting_room_change();
+        runtime_state.record_room_list_change();
     }
     result
 }
@@ -284,6 +293,12 @@ async fn start_terminal_provider_auth(
         backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
         operation,
         setup_token: setup_login.clone(),
+        vault_origin: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
+            crate::account_profile::provider_enrollment_vault_origin(provider, method.as_deref())
+        } else {
+            None
+        },
+        typed_secret: None,
         serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         code_submitted: false,
         message: None,
@@ -404,10 +419,10 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))
                 .await;
         }
-        runtime_state.provider_login_process_store().append_output(
+        runtime_state.provider_login_process_store().append_note(
             owner_user_id,
             &request.login_id,
-            std::iter::once(b"Provider login timed out after 10 minutes.\n".to_vec()),
+            "Provider login timed out after 10 minutes.\n",
             now_ms,
         )?;
         let login = runtime_state.provider_login_process_store().set_state(
@@ -727,10 +742,10 @@ fn append_provider_login_refresh_failure(
     operation: crate::runtime::state::ProviderAuthProcessOperation,
     error: &DaemonError,
 ) -> Result<crate::local::ProviderLoginStatus, DaemonError> {
-    runtime_state.provider_login_process_store().append_output(
+    runtime_state.provider_login_process_store().append_note(
         owner_user_id,
         login_id,
-        std::iter::once(provider_auth_refresh_failure_message(operation, error).into_bytes()),
+        &provider_auth_refresh_failure_message(operation, error),
         crate::session::unix_epoch_ms(),
     )
 }
@@ -949,6 +964,8 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
                     backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
                     operation: crate::runtime::state::ProviderAuthProcessOperation::Login,
                     setup_token: None,
+                    vault_origin: None,
+                    typed_secret: None,
                     serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     code_submitted: false,
                     message: None,
@@ -1059,7 +1076,7 @@ pub(crate) async fn execute_logout_provider_request(
 }
 
 /// Serialize draining, writes, cancellation, and retry for every login backend.
-async fn serialized_login_record(
+pub(super) async fn serialized_login_record(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     login_id: &str,

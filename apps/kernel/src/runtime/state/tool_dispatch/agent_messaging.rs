@@ -74,6 +74,48 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(super) async fn handle_promote_agent_message_runtime_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args =
+            serde_json::from_value::<crate::transport::runtime_tools::PromoteAgentMessageArgs>(
+                arguments,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "runtime_tool.promote_agent_message",
+                message: format!("invalid promote-agent-message arguments: {error}"),
+            })?;
+        self.promote_agent_message(session, sender, args).await
+    }
+
+    /// A room command's promotion: the tool's own path, on behalf of the provider run that ran it.
+    pub(crate) async fn promote_agent_message_for_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()))
+            .handle_promote_agent_message_runtime_tool(session, sender, arguments)
+            .await
+    }
+
+    /// The message tool's own path for a state that already acts as the sender's turn
+    /// (`with_worker_caller_origin`), whether that turn runs here or on a leased worker.
+    pub(crate) async fn send_agent_message_as_caller(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.handle_send_agent_message_runtime_tool(session, sender, arguments)
+            .await
+    }
+
     pub(super) async fn handle_send_agent_message_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,
@@ -522,12 +564,7 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Regular => "regular",
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
-        "state": match agent.state() {
-            crate::agent::AgentState::Idle => "idle",
-            crate::agent::AgentState::Working => "working",
-            crate::agent::AgentState::Focused => "focused",
-            crate::agent::AgentState::Error => "error",
-        },
+        "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session

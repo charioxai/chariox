@@ -349,10 +349,10 @@ Outcomes:
   - persisted `daemon_id`
   - persisted `machine_id`
   - optional human-friendly daemon alias
-- daemon outbound registration to one active relay endpoint at a time, configured from the CLI or waiting-room relay panel
-- the CLI always starts in the normal waiting room; local sessions are never blocked by relay setup or relay failures
-- relay auto-connect happens in the background after a relay is configured; the waiting room updates when connected, and active sessions may surface a small informational footer when remote capability becomes available
-- the waiting room keeps relay status and relay actions together under a `Relay` section, including the currently configured relay and the option to configure another one while connected
+- daemon outbound registration to one active relay endpoint at a time, configured from the CLI or Room list relay panel
+- the CLI always starts in the normal Room list; local sessions are never blocked by relay setup or relay failures
+- relay auto-connect happens in the background after a relay is configured; the Room list updates when connected, and active sessions may surface a small informational footer when remote capability becomes available
+- the Room list keeps relay status and relay actions together under a `Relay` section, including the currently configured relay and the option to configure another one while connected
 - the same CLI supports both local direct operation and relay-mediated remote operation without a separate remote CLI app
 - remote terminal attachment through relay using the same daemon-owned request/event semantics
 - remote event subscription, heartbeat, reconnect, and resume behavior
@@ -367,7 +367,7 @@ Outcomes:
 Exit criteria:
 
 - a daemon can register to a configured relay in the background and remain connected through an outbound connection
-- the waiting room shows local status, relay status/actions, and machine status in one surface
+- the Room list shows local status, relay status/actions, and machine status in one surface
 - a CLI can connect through the relay to a selected daemon by id or alias
 - remote prompt submission and output streaming work without changing daemon session authority
 - the relay remains a transport broker, not a workspace/workflow authority
@@ -387,7 +387,7 @@ The default hosted-relay onboarding path should be browser/device login, not ter
 
 Target flow:
 
-- the waiting room exposes `Connect to Chariox Cloud`
+- the Room list exposes `Connect to Chariox Cloud`
 - `/relay cloud login` with no arguments starts device login
 - the CLI asks the kernel to start cloud login with stable local CLI and machine ids
 - Chariox Cloud returns a verification URL, short user code, device code, expiry, and polling interval
@@ -396,7 +396,7 @@ Target flow:
 - the user logs in or registers in Chariox Cloud, chooses or creates an account, and approves the local device
 - the kernel polls cloud until approved
 - cloud returns account/user/realm profile, paired client/machine ids, and a revocable cloud session token
-- the kernel persists cloud auth state, mints short-lived relay runtime tokens, configures relay, and remote machines appear in the normal waiting-room machine surface
+- the kernel persists cloud auth state, mints short-lived relay runtime tokens, configures relay, and remote machines appear in the normal Room list machine surface
 
 Logout is part of v1:
 
@@ -409,7 +409,7 @@ Delivered implementation:
 - Chariox Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
 - the kernel owns device-login start, poll, persisted cloud profile state, and logout
 - the CLI no-argument `/relay cloud login` path calls the kernel for device login and opens the browser with URL/code fallback
-- the waiting room `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
+- the Room list `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
 - the kernel owns hosted relay client pairing, machine pairing, relay connect/runtime-token minting, and client-token minting
 - the CLI default hosted path is now presentation only: it opens the browser, mirrors the returned profile for display/preferences, and renders notices
 - the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Chariox Cloud, then verifies kernel-owned pair/connect/client-token and remote session attach
@@ -418,7 +418,7 @@ Delivered implementation:
 
 Self-hosted relay discovery remains identity-less:
 
-- the waiting room may show machines visible through a manually configured self-hosted relay token/realm
+- the Room list may show machines visible through a manually configured self-hosted relay token/realm
 - no cloud user directory, collaborator history, account membership, or identity service is implied for self-hosted relays
 - trust and approval remain local kernel state
 
@@ -477,7 +477,7 @@ The lab should support multiple persistent worker containers so users can keep s
 
 Outcomes:
 
-- remote machine registration on top of relay connectivity, with machine status displayed in the waiting room; pending machines are shown inline in the machine section rather than as a separate mode
+- remote machine registration on top of relay connectivity, with machine status displayed in the Room list; pending machines are shown inline in the machine section rather than as a separate mode
 - all machine management operations are available as in-CLI slash commands: `/machine list`, `/machine kernels <machine-ref>`, `/machine approve <machine-ref>`, `/machine forget <machine-ref>`, and `/machine rename <machine-ref> <alias>`
 - remote daemons can host top-level Chariox-managed agents for the same logical collaboration model
 - session membership spanning multiple machines

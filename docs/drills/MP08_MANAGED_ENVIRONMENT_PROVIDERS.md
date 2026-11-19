@@ -6,7 +6,7 @@ except the one leased turn. Compute vendors, images, quotas and prices stay in C
 1. Build the base, enroll a real home kernel in an isolated hosted Cloud stack as its owner, link the Codex,
    OpenCode and Claude profiles, sign in `gh` in the home kernel's own HOME, and create a small Project whose
    `origin` is the private GitHub repository.
-2. Launch two machines with the ordinary managed-environment request the Waiting Room sends:
+2. Launch two machines with the ordinary managed-environment request the Room list sends:
    - Empty kernel context and Empty development, selected account Codex only.
    - Copied kernel context (portable configuration and the target-sealed Vault), Current Project, selected
      accounts Codex and OpenCode, selected GitHub credential.
@@ -28,7 +28,7 @@ except the one leased turn. Compute vendors, images, quotas and prices stay in C
 7. Release every machine through the Cloud lifecycle, read provider usage before delete, and census twice at
    least 60 seconds apart.
 
-Launch through the Waiting Room instead of the Cloud API: select the home Machine, Kernel and Project, pick the
+Launch through the Room list instead of the Cloud API: select the home Machine, Kernel and Project, pick the
 Provider, Account and Model, choose "+ New Chariox-managed machine...", set Kernel context from (the home kernel),
 Development setup (Current Project), Provider accounts source (one account of the selected provider) and Git credentials
 source (GitHub), press Done, and "Create machine and start session". The source kernel then asks "Review your Project

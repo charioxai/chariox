@@ -805,7 +805,7 @@ test("MP-08/MP-11 defaults recover after the first live report when relay routin
   void boot.deferred?.waitingRoomDefaults?.then(() => { outcome = "ready" }, () => { outcome = "failed" })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(outcome, "pending")
-  report({ event: "waiting_room_rows_changed" })
+  report({ event: "room_list_rows_changed" })
   assert.deepEqual(await boot.deferred?.waitingRoomDefaults, { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" })
   assert.equal(reads, 2)
   assert.equal(disposed, 1)

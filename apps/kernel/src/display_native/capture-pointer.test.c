@@ -20,6 +20,13 @@ static int pressed_button(Display *d,Window w,struct Capture *c){
     while(XCheckWindowEvent(d,w,ButtonPressMask,&e)){n++;button=e.xbutton.button;}
     return n==1?button:-1;
 }
+/* A click where the pointer already is sends no motion: XTest reports even a zero-length move,
+ * and Chromium's rAF-aligned mousemove then spends the frame the click's paint needed. */
+static int motions(Display *d,Window w,struct Capture *c){
+    int n=0;XEvent e;XSync(c->display,False);XSync(d,False);
+    while(XCheckWindowEvent(d,w,PointerMotionMask|ButtonPressMask|ButtonReleaseMask,&e))if(e.type==MotionNotify)n++;
+    return n;
+}
 static int released_at(Display *d,Window w,struct Capture *c,int *x,int *y){
     int n=0,motions=0;XEvent e;XSync(c->display,False);XSync(d,False);
     while(XCheckWindowEvent(d,w,ButtonReleaseMask|Button1MotionMask,&e)){
@@ -49,6 +56,10 @@ int main(void) {
     { int x=0,y=0;released_at(d,w,c,&x,&y);
       assert(cx_capture_drag(c,10,10,70,70)==1);assert(pressed_button(d,w,c)==-1);
       assert(cx_capture_drag(c,10,10,50,20)==0);assert(released_at(d,w,c,&x,&y)>=4);assert(x==50&&y==20);assert(presses(d,w,c)==1); }
+    XSelectInput(d,w,PointerMotionMask|ButtonPressMask|ButtonReleaseMask);XSync(d,False);
+    assert(cx_capture_click(c,20,30)==0);assert(motions(d,w,c)>=1);
+    assert(cx_capture_click(c,20,30)==0);assert(motions(d,w,c)==0);
+    assert(cx_capture_wheel(c,20,30,0,1)==0);assert(motions(d,w,c)==0);
     XSelectInput(d,w,ButtonPressMask);XSync(d,False);
     XUnmapWindow(d,popup);XSync(d,False);
     assert(cx_capture_click(c,70,70)==0);assert(presses(d,w,c)==1);

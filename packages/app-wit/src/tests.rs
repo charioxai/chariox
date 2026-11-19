@@ -62,21 +62,44 @@ fn an_additive_minor_links_old_imports_and_requires_explicit_world_registration(
     let old = v1();
     let (mut resolve, _) = contract::resolve();
     let package = resolve
-        .push_str("v1.1.wit", include_str!("../tests/fixtures/v1.1.wit"))
+        .push_str("v1.2.wit", include_str!("../tests/fixtures/v1.2.wit"))
         .unwrap();
     let world = resolve.select_world(&[package], Some("app")).unwrap();
     check_against(&old, &resolve, world).unwrap();
     check_against(&component(&resolve, world), &resolve, world).unwrap();
     assert_eq!(
-        check_component(&old, "chariox:app/app@1.1.0"),
+        check_component(&old, "chariox:app/app@1.2.0"),
         Err(ComponentError::UnsupportedWorld {
-            world: "chariox:app/app@1.1.0".into()
+            world: "chariox:app/app@1.2.0".into()
         })
     );
     let new = component(&resolve, world);
     assert!(
-        matches!(check_component(&new, APP_WORLD), Err(ComponentError::ImportNotAllowed { import }) if import == "chariox:app/diagnostics@1.1.0")
+        matches!(check_component(&new, APP_WORLD), Err(ComponentError::ImportNotAllowed { import }) if import == "chariox:app/diagnostics@1.2.0")
     );
+}
+
+fn event_routing_component() -> Vec<u8> {
+    let (resolve, _) = contract::resolve();
+    let package = contract::minor_1_1(&resolve);
+    let world = resolve.select_world(&[package], Some("app")).unwrap();
+    component(&resolve, world)
+}
+
+#[test]
+fn the_event_routing_minor_is_admitted_only_in_its_own_world() {
+    let routing = event_routing_component();
+    check_component(&routing, APP_WORLD_1_1).unwrap();
+    assert!(
+        matches!(check_component(&routing, APP_WORLD), Err(ComponentError::ImportNotAllowed { import }) if import == "chariox:app/event-routing@1.1.0")
+    );
+    check_component(&v1(), APP_WORLD_1_1).unwrap();
+}
+
+#[test]
+fn a_component_importing_the_minor_interfaces_targets_the_minor_world() {
+    assert_eq!(app_world_of(&v1()), APP_WORLD);
+    assert_eq!(app_world_of(&event_routing_component()), APP_WORLD_1_1);
 }
 
 #[test]

@@ -23,17 +23,30 @@ const shared: Record<string, string[][]> = {
     ["automation", "list", "install-1"],
     ["automation", "add", "install-1", "reminders", "todo_due", "session-1", "workflow-1", "--scheduled"],
     ["automation", "disable", "install-1", "reminders", "2"],
+    ["automation", "pause", "install-1", "reminders", "2"],
   ],
   inbox: [
     ["inbox", "list", "install-1"],
     ["inbox", "add", "install-1", "route-1", "message_received", "message"],
     ["inbox", "remove", "install-1", "route-1"],
+    ["inbox", "pause", "install-1", "route-1"],
+    ["inbox", "resume", "install-1", "route-1"],
     ["inbox", "test", "install-1", "route-1", "occurrence-1", "{}"],
   ],
   connection: [
     ["connection", "list", "install-1"],
     ["connection", "grant", "install-1", "slack/team-1"],
     ["connection", "revoke", "install-1", "team-1"],
+  ],
+  account: [
+    ["account", "list", "install-1"],
+    ["account", "grant", "install-1", "work", "github", "entry-1", "--allow", "write"],
+    ["account", "revoke", "install-1", "work"],
+  ],
+  standing: [
+    ["standing", "list", "install-1"],
+    ["standing", "grant", "install-1", "work", "owner/repo", "merge", "--days", "7"],
+    ["standing", "revoke", "install-1", "standing-1"],
   ],
   file: [["file", "revoke", "install-1"], ["file", "revoke", "install-1", "operation-1"]],
 }
@@ -124,9 +137,11 @@ test("App command parity snapshot", () => {
     "restart: cli=restart INSTALLATION | tui=restart INSTALLATION",
     "open: cli=open INSTALLATION --session SESSION | tui=open INSTALLATION [--session SESSION]",
     "uninstall: cli=uninstall INSTALLATION [--generation N] [--delete-data] | tui=uninstall INSTALLATION [--generation N] [--delete-data]",
-    "automation: cli=automation list|add|disable INSTALLATION … | tui=automation list|add|disable INSTALLATION …",
-    "inbox: cli=inbox list|add|remove|test INSTALLATION … | tui=inbox list|add|remove|test INSTALLATION …",
+    "automation: cli=automation list|add|disable|pause INSTALLATION … | tui=automation list|add|disable|pause INSTALLATION …",
+    "inbox: cli=inbox list|add|remove|pause|resume|test INSTALLATION … | tui=inbox list|add|remove|pause|resume|test INSTALLATION …",
     "connection: cli=connection list|grant|revoke INSTALLATION … | tui=connection list|grant|revoke INSTALLATION …",
+    "account: cli=account list|grant|revoke INSTALLATION … | tui=account list|grant|revoke INSTALLATION …",
+    "standing: cli=standing list|grant|revoke INSTALLATION … | tui=standing list|grant|revoke INSTALLATION …",
     'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|actions\|set\|/)

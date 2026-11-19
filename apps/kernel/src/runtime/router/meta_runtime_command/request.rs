@@ -139,6 +139,12 @@ pub(super) fn meta_agent_request(
                 _ => Err(usage()),
             }
         }
+        Some("resume") => {
+            super::resume_args::meta_agent_resume_request(session, metaagent, &args[1..], agents)
+        }
+        Some("settings") => {
+            super::settings_args::meta_agent_settings_request(session, metaagent, &args[1..], agents)
+        }
         Some("usage") if args.len() == 1 => Ok(LocalDaemonRequest::GetProviderUsageSnapshot(
             crate::local::GetProviderUsageSnapshotRequest {},
         )),
@@ -146,7 +152,7 @@ pub(super) fn meta_agent_request(
             crate::local::ListProviderAccountProfilesRequest { provider: None },
         )),
         _ => Err(meta_command_error(
-            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles> ...",
+            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles|settings|resume> ...",
         )),
     }
 }
@@ -368,6 +374,73 @@ fn room_command_agent(
     }
 }
 
+pub(super) const RESPONSIBLE_USAGE: &str = "usage: workflow responsible <workflow-ref> [you | me | <agent-ref> | <kernel>/<room>/<agent>] [--room <room> [--kernel <kernel>|--machine <machine>]]";
+
+/// Who a `workflow responsible` command names: `None` reads, `you` is the person, `me` the
+/// caller, an agent reference one of the caller's Room and `<kernel>/<room>/<agent>` any agent.
+pub(super) fn responsible_target(
+    session: &crate::session::RuntimeSession,
+    actor: &crate::agent::AgentInstance,
+    target: &[String],
+    agents: &[crate::agent::AgentInstance],
+) -> Result<Option<WorkflowResponsibleTarget>, DaemonError> {
+    Ok(Some(match target {
+        [] => return Ok(None),
+        [target] if target == "you" => WorkflowResponsibleTarget::Person,
+        [target] if target == "me" => WorkflowResponsibleTarget::Agent {
+            kernel_id: session.host_daemon_id().to_string(),
+            room_id: session.id().to_string(),
+            agent_id: actor.id().to_string(),
+        },
+        [target] => match target.split('/').collect::<Vec<_>>().as_slice() {
+            [kernel_id, room_id, agent_id] => WorkflowResponsibleTarget::Agent {
+                kernel_id: (*kernel_id).to_string(),
+                room_id: (*room_id).to_string(),
+                agent_id: (*agent_id).to_string(),
+            },
+            [_] => WorkflowResponsibleTarget::Agent {
+                kernel_id: session.host_daemon_id().to_string(),
+                room_id: session.id().to_string(),
+                agent_id: crate::runtime::room_tool_admission::resolve_agent(
+                    agents,
+                    session.id(),
+                    target,
+                )?
+                .id()
+                .to_string(),
+            },
+            _ => return Err(meta_command_error(RESPONSIBLE_USAGE)),
+        },
+        _ => return Err(meta_command_error(RESPONSIBLE_USAGE)),
+    }))
+}
+
+/// `workflow responsible <workflow-ref> [target]` for a workflow of the caller's own Room.
+fn meta_workflow_responsible_request(
+    session: &crate::session::RuntimeSession,
+    actor: &crate::agent::AgentInstance,
+    args: &[String],
+    agents: &[crate::agent::AgentInstance],
+) -> Result<LocalDaemonRequest, DaemonError> {
+    let [workflow_ref, target @ ..] = args else {
+        return Err(meta_command_error(RESPONSIBLE_USAGE));
+    };
+    let session_id = session.id().to_string();
+    Ok(match responsible_target(session, actor, target, agents)? {
+        None => LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
+            session_id,
+            workflow_ref: workflow_ref.clone(),
+        }),
+        Some(responsible) => {
+            LocalDaemonRequest::SetWorkflowResponsible(SetWorkflowResponsibleRequest {
+                session_id,
+                workflow_ref: workflow_ref.clone(),
+                responsible,
+            })
+        }
+    })
+}
+
 pub(super) fn meta_workflow_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
@@ -418,6 +491,7 @@ pub(super) fn meta_workflow_request(
                 expected_workflow_revision: None,
             }))
         }
+        Some("responsible") => meta_workflow_responsible_request(session, metaagent, &args[1..], agents),
         Some("node") => match args.get(1).map(String::as_str) {
             Some("add") => {
                 if args.len() != 4 {

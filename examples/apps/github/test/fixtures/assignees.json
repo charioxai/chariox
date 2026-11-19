@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/assignees?per_page=100&page=1",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"c9568f837197a10bb6b1af5412fef41aacb15943c66778f9ed7c495c69b79025\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4727",
+  "x-ratelimit-reset": "1794736579",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"login\": \"mgutierrez09\",\n  \"id\": 33031955,\n  \"node_id\": \"MDQ6VXNlcjMzMDMxOTU1\",\n  \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n  \"html_url\": \"https://github.com/mgutierrez09\",\n  \"type\": \"User\",\n  \"user_view_type\": \"public\",\n  \"site_admin\": false\n }\n]"
+}

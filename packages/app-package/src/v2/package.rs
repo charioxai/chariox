@@ -346,13 +346,14 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
             PackageError::new(code, format!("component `{entry}`: {error}"))
         })
     };
-    if manifest.world != super::APP_WORLD {
+    if ![super::APP_WORLD, super::APP_WORLD_1_1].contains(&manifest.world.as_str()) {
         return Err(PackageError::new(
             ErrorCode::IncompatibleContract,
             format!(
-                "component `{}` requires supported App world `{}`, got `{}`",
+                "component `{}` requires supported App world `{}` or `{}`, got `{}`",
                 manifest.runtime.component,
                 super::APP_WORLD,
+                super::APP_WORLD_1_1,
                 manifest.world,
             ),
         ));

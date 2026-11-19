@@ -1,6 +1,10 @@
+#[cfg(not(target_os = "linux"))]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
+
+#[cfg(target_os = "linux")]
+mod proc_table;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ProcessSample {
@@ -88,6 +92,9 @@ pub(super) struct ProcessTree {
     /// running the provider's server): the harness. Commands are what it
     /// starts later.
     harness: std::collections::BTreeSet<u32>,
+    /// The program the root runs: the root itself, or what the Bubblewrap
+    /// sandbox at the root started (it only confines the program it starts).
+    workload: u32,
     /// Shells the harness started that ran several jobs at once (a tool call
     /// that starts a holder and a grower), by birth: each job is a command of
     /// its own, so the newest growing one can wait without the shell's other
@@ -136,6 +143,7 @@ impl ProcessTree {
             root_unread: Some(0),
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([root]),
+            workload: root,
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
@@ -194,6 +202,7 @@ impl ProcessTree {
             root_unread: None,
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([owned.root]),
+            workload: owned.root,
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
@@ -245,8 +254,9 @@ impl ProcessTree {
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
-        let rows = process_rows(self.root)?;
-        self.observe(&rows)?;
+        let table = process_rows(self.root)?;
+        self.observe(&table)?;
+        let rows = self.own_rows(&table)?;
         self.parents = rows
             .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
@@ -271,6 +281,19 @@ impl ProcessTree {
                 }
                 _ => None,
             };
+        }
+        self.workload = self.root;
+        while let Some(sandbox) = rows
+            .iter()
+            .find(|row| row.pid == self.workload && row.command == "bwrap")
+        {
+            let mut children = rows
+                .iter()
+                .filter(|row| row.parent == sandbox.pid && self.owned.contains_key(&row.pid));
+            match (children.next(), children.next()) {
+                (Some(program), None) => self.workload = program.pid,
+                _ => break,
+            }
         }
         self.launchers.retain(|pid, birth| {
             rows.iter()
@@ -324,6 +347,33 @@ impl ProcessTree {
                 }
             })
             .collect())
+    }
+
+    /// The rows of the root and the processes this tree owns, read now: the
+    /// shared table keeps what it first read of a process.
+    #[cfg(target_os = "linux")]
+    fn own_rows(&self, _table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        proc_table::current(self.ours())
+    }
+
+    /// The rows of the root and the processes this tree owns.
+    #[cfg(not(target_os = "linux"))]
+    fn own_rows(&self, table: &[Row]) -> Result<Vec<Row>, SamplingError> {
+        let ours = self.ours().collect::<std::collections::BTreeSet<_>>();
+        Ok(table
+            .iter()
+            .filter(|row| ours.contains(&row.pid))
+            .cloned()
+            .collect())
+    }
+
+    fn ours(&self) -> impl Iterator<Item = u32> + '_ {
+        std::iter::once(self.root).chain(
+            self.owned
+                .keys()
+                .copied()
+                .filter(move |pid| *pid != self.root),
+        )
     }
 
     fn observe(&mut self, rows: &[Row]) -> Result<(), SamplingError> {
@@ -399,6 +449,17 @@ impl ProcessTree {
     /// it inherited the marker from the process that started it.
     #[cfg(unix)]
     fn adopt_marked(&mut self, rows: &[Row]) {
+        self.adopt_marked_reading(rows, super::process_environment::read);
+    }
+
+    /// `adopt_marked` with the environment read by `environment`, so tests
+    /// can answer for processes the host may not have.
+    #[cfg(unix)]
+    fn adopt_marked_reading(
+        &mut self,
+        rows: &[Row],
+        environment: impl Fn(u32) -> std::io::Result<Vec<u8>>,
+    ) {
         let Some(marker) = self.marker.clone() else {
             return;
         };
@@ -417,7 +478,7 @@ impl ProcessTree {
             if known || self.owned.contains_key(&row.pid) {
                 continue;
             }
-            match super::process_environment::read(row.pid) {
+            match environment(row.pid) {
                 Ok(environment)
                     if environment
                         .split(|byte| *byte == 0)
@@ -432,8 +493,12 @@ impl ProcessTree {
                 Ok(_) => {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
-                // Another user's process: it never becomes readable.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Another user's process never becomes readable, and a kernel
+                // thread (or a process that is ending) has no environment.
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(libc::ESRCH) =>
+                {
                     self.unmarked.insert(row.pid, row.birth.clone());
                 }
                 // Exited, or not readable yet: ask again at the next sample.
@@ -717,7 +782,7 @@ impl ProcessTree {
     }
 
     pub fn is_root(&self, pid: u32) -> bool {
-        pid == self.root
+        pid == self.root || pid == self.workload
     }
 
     /// Part of the harness: never held or paused.
@@ -834,6 +899,8 @@ mod ownership_tests {
         ));
     }
 }
+/// One process as the table read it. On Linux the sampler's table reads a
+/// process once, so its resources there are those of its first read.
 #[derive(Clone)]
 pub(super) struct Row {
     pid: u32,
@@ -841,8 +908,9 @@ pub(super) struct Row {
     rss: u64,
     cpu: u64,
     age_ms: u64,
-    /// When the process started, as `ps` prints it (whole seconds): unlike the
-    /// elapsed time it is the same at every sample of one process.
+    /// When the process started (clock ticks since boot on Linux, the time `ps`
+    /// prints elsewhere): unlike the elapsed time it is the same at every sample
+    /// of one process.
     birth: String,
     sampled_at_ms: u64,
     command: String,
@@ -851,15 +919,23 @@ pub(super) struct Row {
 /// Why the process table could not be read.
 #[derive(Debug, Clone)]
 pub(super) enum SamplingError {
-    /// The kernel lacks resources to start `ps` or read a process or cgroup.
+    /// The kernel lacks resources to read the process table, a process or a cgroup.
     /// This says nothing about the tree; the next tick may read it.
     Short(i32),
     /// A signal ended `ps` before it answered, as a restart of the kernel does
     /// to the children it leaves behind. The tree is as it was; the next tick
     /// may read it.
+    #[cfg(not(target_os = "linux"))]
     Ended,
-    /// Nothing will change by trying again: `ps` is missing, refused or
-    /// answers with columns the monitor cannot read.
+    /// The sampler has read no table since it started or resumed; the next
+    /// tick may read it.
+    Pending,
+    /// `ps` did not answer within its deadline, as on a host whose CPUs are
+    /// all busy. The tree is as it was; the next tick may read it.
+    #[cfg(not(target_os = "linux"))]
+    TimedOut,
+    /// Nothing will change by trying again: /proc is not mounted, or `ps` is
+    /// missing, refused or answers with columns the monitor cannot read.
     Unusable(String),
 }
 impl std::fmt::Display for SamplingError {
@@ -870,7 +946,17 @@ impl std::fmt::Display for SamplingError {
                 "process resource monitor cannot sample for now: {}",
                 std::io::Error::from_raw_os_error(*errno)
             ),
+            #[cfg(not(target_os = "linux"))]
             Self::Ended => f.write_str("process resource monitor's ps was ended by a signal"),
+            Self::Pending => {
+                f.write_str("process resource monitor has not read the process table yet")
+            }
+            #[cfg(not(target_os = "linux"))]
+            Self::TimedOut => write!(
+                f,
+                "process resource monitor's ps timed out after {} s; the host is busy and the next sample retries",
+                PS_DEADLINE.as_secs()
+            ),
             Self::Unusable(message) => f.write_str(message),
         }
     }
@@ -897,7 +983,7 @@ fn shortage(error: &std::io::Error) -> Option<i32> {
     }
 }
 
-// The sampler owns ps and publishes a new immutable table. Readers never wait
+// The sampler owns the table reads and publishes a new immutable table. Readers never wait
 // for process creation, pipe I/O or a previous reader's refresh.
 #[derive(Clone)]
 struct RowObservation {
@@ -906,14 +992,26 @@ struct RowObservation {
     started_at: std::time::Instant,
 }
 
+/// Reading the process table reads every process, so the sampler reads only while
+/// watches read it: it pauses this long after the last read.
+const SAMPLER_IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+const SAMPLER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 struct RowSnapshot {
     rows: Option<RowObservation>,
     error: Option<SamplingError>,
+    last_read: std::time::Instant,
+    paused: bool,
+}
+
+enum SamplerSignal {
+    Resume,
+    Stop,
 }
 
 struct Sampler {
     snapshot: std::sync::Arc<crate::runtime::checked_lock::CheckedMutex<RowSnapshot>>,
-    stop: std::sync::mpsc::Sender<()>,
+    signal: std::sync::mpsc::Sender<SamplerSignal>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -924,10 +1022,12 @@ impl Sampler {
             RowSnapshot {
                 rows: None,
                 error: None,
+                last_read: std::time::Instant::now(),
+                paused: false,
             },
         ));
         let published = std::sync::Arc::clone(&snapshot);
-        let (stop, stopping) = std::sync::mpsc::channel();
+        let (signal, signals) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new().name("chariox-sampler".into()).spawn(move || {
             let mut failed = false;
             loop {
@@ -945,6 +1045,7 @@ impl Sampler {
                             started_at,
                         });
                         state.error = None;
+                        drop(state);
                         failed = false;
                     }
                     Err(error) => {
@@ -954,48 +1055,61 @@ impl Sampler {
                             crate::logging::warn_with_fields("process_resources.sampler", "process sample failed; retaining the last good snapshot", serde_json::json!({"operation": "ps", "error": error.to_string()}));
                             failed = true;
                         }
-                        if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
-                        continue;
                     }
                 }
+                if !matches!(signals.recv_timeout(SAMPLER_INTERVAL), Ok(SamplerSignal::Resume) | Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                let mut state = published.lock().unwrap_or_else(|e| e.into_inner());
+                if state.last_read.elapsed() < SAMPLER_IDLE {
+                    continue;
+                }
+                // A paused table goes stale, so readers see none until the
+                // first read after resuming.
+                state.rows = None;
+                state.error = None;
+                state.paused = true;
                 drop(state);
-                if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                if !matches!(signals.recv(), Ok(SamplerSignal::Resume)) { break; }
             }
         }).expect("process sampler thread must start");
         Self {
             snapshot,
-            stop,
+            signal,
             worker: Some(worker),
         }
     }
 
+    /// Marks the table as read now, and resumes a paused sampler.
+    fn demand(&self) -> crate::runtime::checked_lock::CheckedMutexGuard<'_, RowSnapshot> {
+        let mut state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_read = std::time::Instant::now();
+        if std::mem::take(&mut state.paused) {
+            let _ = self.signal.send(SamplerSignal::Resume);
+        }
+        state
+    }
+
     fn rows(&self) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.demand();
         state
             .rows
             .as_ref()
             .map(|snapshot| snapshot.rows.clone())
-            .ok_or_else(|| {
-                state
-                    .error
-                    .clone()
-                    .unwrap_or(SamplingError::Short(libc::EAGAIN))
-            })
+            .ok_or_else(|| state.error.clone().unwrap_or(SamplingError::Pending))
     }
 
     #[cfg(unix)]
     fn successful_observation(&self) -> Result<RowObservation, SamplingError> {
-        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.demand();
         if let Some(error) = &state.error {
             return Err(error.clone());
         }
-        state.rows.clone().ok_or(SamplingError::Short(libc::EAGAIN))
+        state.rows.clone().ok_or(SamplingError::Pending)
     }
 }
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        let _ = self.signal.send(SamplerSignal::Stop);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1004,6 +1118,12 @@ impl Drop for Sampler {
 
 fn sampler() -> &'static Sampler {
     static SAMPLER: std::sync::OnceLock<Sampler> = std::sync::OnceLock::new();
+    #[cfg(target_os = "linux")]
+    return SAMPLER.get_or_init(|| {
+        let mut table = proc_table::Table::default();
+        Sampler::new(move || table.read())
+    });
+    #[cfg(not(target_os = "linux"))]
     SAMPLER.get_or_init(|| Sampler::new(read_process_rows))
 }
 
@@ -1012,9 +1132,9 @@ thread_local! {
     static TEST_SAMPLER: std::cell::RefCell<Option<Sampler>> = const { std::cell::RefCell::new(None) };
 }
 
-/// A process table read now, within `ps`'s own deadline, never the cached one.
+/// A process table read now, never the cached one.
 fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(format!(
             "the current processes could not be read ({}); the process may still be running, retry",
             std::io::Error::from_raw_os_error(errno)
@@ -1028,7 +1148,7 @@ fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
 }
 
 pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
     #[cfg(test)]
@@ -1040,7 +1160,7 @@ pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, Sampli
 
 #[cfg(unix)]
 fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
     #[cfg(test)]
@@ -1055,7 +1175,7 @@ fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
     sampler().successful_observation()
 }
 
-/// Submitter changes need current ancestry without waiting for a ps child.
+/// Submitter changes need current ancestry without waiting for the next table read.
 pub(super) fn live_groups(root: u32) -> Vec<u32> {
     super::terminal_groups::read(root).unwrap_or_else(|error| {
         crate::logging::error_with_fields(
@@ -1074,7 +1194,7 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
     loop {
         match sampler().rows() {
             Ok(_) => return Ok(()),
-            Err(SamplingError::Short(libc::EAGAIN)) if std::time::Instant::now() < deadline => {}
+            Err(SamplingError::Pending) if std::time::Instant::now() < deadline => {}
             Err(error) => return Err(error),
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1082,32 +1202,40 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
 }
 
 pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
-    if let Some(errno) = ps_failure::injected(root) {
+    if let Some(errno) = table_failure::injected(root) {
         return Err(std::io::Error::from_raw_os_error(errno));
     }
-    let _ = sampler();
-    super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())
+    // The first read waits for no tick of the watch.
+    let _ = sampler().demand();
+    #[cfg(not(target_os = "linux"))]
+    super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())?;
+    Ok(())
 }
 
-fn run_ps() -> std::io::Result<std::process::Output> {
+/// A slower `ps` is retried at the next sample; the sampler keeps the last table.
+#[cfg(not(target_os = "linux"))]
+const PS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(not(target_os = "linux"))]
+fn run_ps(deadline: std::time::Duration) -> std::io::Result<std::process::Output> {
     crate::process_spawn::command("ps")
         .env("LC_ALL", "C")
         .args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="])
-        .output_with_deadline(std::time::Duration::from_secs(1))
+        .output_with_deadline(deadline)
 }
 
-/// Makes starting `ps` fail with an errno for the tree of one root process,
+/// Makes reading the process table fail with an errno for the tree of one root process,
 /// as a kernel at its descriptor limit does. Other trees, and the tests that
 /// watch them, are unaffected.
 #[cfg(not(test))]
-pub(super) mod ps_failure {
+pub(super) mod table_failure {
     pub(super) fn injected(_root: u32) -> Option<i32> {
         None
     }
 }
 
 #[cfg(test)]
-pub(super) mod ps_failure {
+pub(super) mod table_failure {
     static ERRNO: std::sync::Mutex<std::collections::BTreeMap<u32, i32>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -1130,7 +1258,8 @@ pub(super) mod ps_failure {
 
 /// Why `ps` did not answer: a signal ends it for now, an exit status means it
 /// cannot give the columns.
-pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
+#[cfg(not(target_os = "linux"))]
+fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
     if status.code().is_none() {
         return SamplingError::Ended;
     }
@@ -1140,10 +1269,22 @@ pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
+    proc_table::read()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
+    read_process_rows_within(PS_DEADLINE)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_process_rows_within(deadline: std::time::Duration) -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = run_ps().map_err(|error| match shortage(&error) {
+    let output = run_ps(deadline).map_err(|error| match shortage(&error) {
         Some(errno) => SamplingError::Short(errno),
+        None if error.kind() == std::io::ErrorKind::TimedOut => SamplingError::TimedOut,
         None => SamplingError::Unusable(format!(
             "process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"
         )),
@@ -1188,6 +1329,7 @@ fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     Ok(rows)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn elapsed_ms(text: &str) -> Option<u64> {
     let (days, clock) = text
         .split_once('-')
@@ -1245,11 +1387,37 @@ mod marker_cache_tests {
         assert!(kept_skipping, "a process already read was read again");
         assert!(adopted, "a marked process on a reused PID was skipped");
     }
+
+    /// Linux answers ESRCH for the environment of its own threads (about 450
+    /// on a busy host); asking again at every tick of every watch cost more
+    /// CPU than the process table itself.
+    /// The thread is answered for, not looked up: in a PID namespace the
+    /// host's kernel threads are not listed and PID 2 is an ordinary process.
+    #[test]
+    fn a_kernel_thread_is_read_once() {
+        let thread = row(2, "kernel-thread");
+        let reads = std::cell::Cell::new(0);
+        let kernel_thread = |_pid| {
+            reads.set(reads.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ESRCH))
+        };
+        let mut tree = ProcessTree::new(std::process::id());
+        tree.set_marker(&new_marker());
+        tree.adopt_marked_reading(std::slice::from_ref(&thread), kernel_thread);
+        tree.adopt_marked_reading(std::slice::from_ref(&thread), kernel_thread);
+        assert_eq!(
+            reads.get(),
+            1,
+            "a kernel thread is read again at the next sample"
+        );
+        assert!(!tree.owned.contains_key(&2));
+    }
 }
 
 #[cfg(all(test, unix))]
 mod snapshot_stall_tests {
     use super::*;
+    use crate::runtime::bounded_process::BoundedCommandExt as _;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1281,7 +1449,7 @@ mod snapshot_stall_tests {
                 return Ok(rows);
             }
             let _ = resumed.recv_timeout(Duration::from_secs(5));
-            Err(SamplingError::Ended)
+            Err(SamplingError::Short(libc::EAGAIN))
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while sampler.rows().is_err() {
@@ -1366,14 +1534,17 @@ mod snapshot_stall_tests {
                 }]);
             }
             if calls > 2 {
-                return Err(SamplingError::Ended);
+                return Err(SamplingError::Short(libc::EAGAIN));
             }
             let script = format!("import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(600)", target.to_string_lossy());
             let result = crate::process_spawn::command("python3")
                 .args(["-c", &script])
                 .output_with_deadline(Duration::from_millis(500));
-            assert!(result.is_err(), "the ps stand-in must hit its deadline");
-            Err(SamplingError::Ended)
+            assert!(
+                result.is_err(),
+                "the table-read stand-in must hit its deadline"
+            );
+            Err(SamplingError::Short(libc::EAGAIN))
         });
         let deadline = Instant::now() + Duration::from_secs(3);
         while !pid_file.exists() {
@@ -1400,6 +1571,42 @@ mod snapshot_stall_tests {
         drop(sampler);
         assert!(!crate::runtime::process_health::process_running(pid));
         assert!(timed_out, "stalled ps did not hit its process deadline");
+    }
+
+    #[test]
+    fn the_sampler_reads_no_process_table_while_nothing_reads_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = reads.clone();
+        let sampler = Sampler::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        let idle = reads.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            idle,
+            "a sampler nothing reads runs no ps"
+        );
+        assert!(
+            sampler.rows().is_err(),
+            "a paused sampler's table is stale, so it hands out none"
+        );
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline + Duration::from_secs(3));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            reads.load(Ordering::SeqCst) > idle,
+            "the next read resumes sampling"
+        );
     }
 }
 
@@ -1486,9 +1693,9 @@ mod stop_tests {
         let child = fork_child(&mut input, &mut output);
         let identity = inspect(child).unwrap().0;
         tree.observe(&read_process_rows().unwrap()).unwrap();
-        ps_failure::set(shell.id(), Some(libc::EMFILE));
+        table_failure::set(shell.id(), Some(libc::EMFILE));
         let stopped = tree.stop(None, || {}, || {});
-        ps_failure::set(shell.id(), None);
+        table_failure::set(shell.id(), None);
         let still_running = same_process(child, &identity) && shell.try_wait().unwrap().is_none();
         kill_if_still_there(child, &identity);
         let _ = shell.kill();
@@ -1499,5 +1706,24 @@ mod stop_tests {
             still_running,
             "nothing is signalled without a current table"
         );
+    }
+}
+
+// Linux reads /proc; only the `ps` path has a deadline.
+#[cfg(all(test, unix, not(target_os = "linux")))]
+mod ps_deadline_tests {
+    use super::*;
+
+    // b3, 2026-11-18: ps outlived its deadline on a busy host and the monitor
+    // told the owner to install ps, then treated the tree as unreadable.
+    #[test]
+    fn a_ps_that_outlives_its_deadline_is_a_retryable_timeout() {
+        let Err(error) = read_process_rows_within(std::time::Duration::from_nanos(1)) else {
+            panic!("no ps answers within a nanosecond");
+        };
+        let text = error.to_string();
+        assert!(matches!(error, SamplingError::TimedOut), "{text}");
+        assert!(text.contains("timed out"), "{text}");
+        assert!(!text.contains("install"), "{text}");
     }
 }

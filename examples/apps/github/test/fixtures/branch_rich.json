@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/branches/drill%2Fgha4-rich",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"8e690322dc38656cd225428b9e9dc63647ef69ea4991d575b3ccc3390c10bde9\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4725",
+  "x-ratelimit-reset": "1794736579",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "{\n \"name\": \"drill/gha4-rich\",\n \"commit\": {\n  \"sha\": \"271de153c2b8c196681165cc32ff2688634e1238\",\n  \"node_id\": \"C_kwDOVutRM9oAKDI3MWRlMTUzYzJiOGMxOTY2ODExNjVjYzMyZmYyNjg4NjM0ZTEyMzg\",\n  \"commit\": {\n   \"author\": {\n    \"name\": \"magutez\",\n    \"email\": \"33031955+mgutierrez09@users.noreply.github.com\",\n    \"date\": \"2026-11-15T05:20:26Z\"\n   },\n   \"committer\": {\n    \"name\": \"magutez\",\n    \"email\": \"33031955+mgutierrez09@users.noreply.github.com\",\n    \"date\": \"2026-11-15T05:20:26Z\"\n   },\n   \"message\": \"Add a large data file\",\n   \"tree\": {\n    \"sha\": \"76afe77a2226426716a29c2e9585cf305be046a2\"\n   },\n   \"comment_count\": 0,\n   \"verification\": {\n    \"verified\": false,\n    \"reason\": \"unsigned\",\n    \"signature\": null,\n    \"payload\": null,\n    \"verified_at\": null\n   }\n  },\n  \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/commit/271de153c2b8c196681165cc32ff2688634e1238\",\n  \"author\": {\n   \"login\": \"mgutierrez09\",\n   \"id\": 33031955,\n   \"node_id\": \"MDQ6VXNlcjMzMDMxOTU1\",\n   \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n   \"html_url\": \"https://github.com/mgutierrez09\",\n   \"type\": \"User\",\n   \"user_view_type\": \"public\",\n   \"site_admin\": false\n  },\n  \"committer\": {\n   \"login\": \"mgutierrez09\",\n   \"id\": 33031955,\n   \"node_id\": \"MDQ6VXNlcjMzMDMxOTU1\",\n   \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n   \"html_url\": \"https://github.com/mgutierrez09\",\n   \"type\": \"User\",\n   \"user_view_type\": \"public\",\n   \"site_admin\": false\n  },\n  \"parents\": [\n   {\n    \"sha\": \"bce395e49ff4c71b34066966b9b00cb21f361346\",\n    \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/commit/bce395e49ff4c71b34066966b9b00cb21f361346\"\n   }\n  ]\n },\n \"protected\": false,\n \"protection\": {\n  \"enabled\": false,\n  \"required_status_checks\": {\n   \"enforcement_level\": \"off\",\n   \"contexts\": [],\n   \"checks\": []\n  }\n }\n}"
+}

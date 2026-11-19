@@ -12,6 +12,8 @@ fn app_confirmation_shapes_are_pinned() {
         publisher_id: "com.chariox".into(),
         publisher_name: "Chariox".into(),
         action_name: "pay".into(),
+        input: "{\n  \"amount\": 1200\n}".into(),
+        preview: None,
     };
     let interaction = crate::session::RuntimeInteraction::new(
         "app-confirm-1",
@@ -19,7 +21,7 @@ fn app_confirmation_shapes_are_pinned() {
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Warning,
         Some("Confirm pay".into()),
-        "Campaign by Chariox asks you to confirm pay.\nInput: {\"amount\":1200}",
+        "Campaign by Chariox asks you to confirm pay.\nInput:\n{\n  \"amount\": 1200\n}",
         vec![
             crate::session::RuntimeInteractionChoice::new(
                 "confirm",
@@ -45,7 +47,8 @@ fn app_confirmation_shapes_are_pinned() {
         wire["app_confirmation"],
         serde_json::json!({
             "installation_id": "campaign", "app_id": "com.chariox.campaign", "app_name": "Campaign",
-            "publisher_id": "com.chariox", "publisher_name": "Chariox", "action_name": "pay"
+            "publisher_id": "com.chariox", "publisher_name": "Chariox", "action_name": "pay",
+            "input": "{\n  \"amount\": 1200\n}"
         })
     );
     // The frame is the kernel's whole statement: a partial or extended frame is refused.
@@ -53,7 +56,7 @@ fn app_confirmation_shapes_are_pinned() {
         serde_json::json!({"installation_id": "campaign", "app_name": "Campaign"}),
         serde_json::json!({
             "installation_id": "campaign", "app_id": "a", "app_name": "A", "publisher_id": "p",
-            "publisher_name": "P", "action_name": "pay", "icon": "x"
+            "publisher_name": "P", "action_name": "pay", "input": "{}", "icon": "x"
         }),
     ] {
         assert!(serde_json::from_value::<crate::local::AppConfirmationFrame>(refused).is_err());
@@ -82,6 +85,6 @@ fn app_confirmation_shapes_are_pinned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "6727ef315b0ddb737c86cfe86e676c082e0d8d919fcd60804e12af9393f8aa08"
+        "c8c844cfbe1be93205cb3aa5cbdc831b7740cc7fc77350cce87a8cc9f7df180f"
     );
 }

@@ -28,6 +28,10 @@ impl AgentEndpointAdapter for DevStubAdapter {
         Self::KEY
     }
 
+    fn resumes_conversation_in_new_process(&self) -> bool {
+        true
+    }
+
     fn connect(
         &self,
         request: &LaunchProviderRequest,
@@ -200,6 +204,10 @@ impl AgentEndpointAdapter for ManagedDevStubAdapter {
     }
 
     fn supports_turn_scoped_execution_config(&self) -> bool {
+        true
+    }
+
+    fn resumes_conversation_in_new_process(&self) -> bool {
         true
     }
 

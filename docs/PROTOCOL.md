@@ -16,6 +16,29 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Relay registration proof (relay peer 449)
+
+A relay token and a kernel's public key do not make a kernel. The relay answers
+every WebSocket upgrade with a fresh 32-byte challenge in the
+`x-chariox-registration-challenge` response header. `daemon_register` carries
+`proof`: the kernel identity key's P-256 ECDSA signature (SHA-256, 64-byte
+`r‖s`, base64) over the JSON array `["chariox-relay-registration-v1", <relay
+address>, <kernel id>, <hex SHA-256 of the relay token>, <challenge>]`. The relay
+address is the upgrade's `Host` header, lowercased: the kernel takes it from the
+relay URL it dials and the relay reads it from the same request, so a proof made
+for one relay is refused by another.
+
+The relay verifies the proof against the registration's `public_key` after the
+token check and before it binds a realm, admits the kernel or displaces the live
+connection of the same kernel. A refused proof closes only the refused socket,
+with the reason, and logs `relay_registration_proof_refused`. One challenge
+admits one registration: a second `daemon_register` on the same socket is closed
+with `relay connection already registered; reconnect to register again`. A
+heartbeat renews the token but cannot change the proven key; a heartbeat
+registration with another `public_key` closes the socket with `daemon identity
+key changed; reconnect to register it`. A kernel refuses a relay that offers no
+challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -356,7 +379,7 @@ Provider kinds/availability are projected from `provider_catalog`; a session's
 live agent roster is never part of this cache. Account selection and admission
 remain kernel-owned and caller-scoped.
 
-Both local and relay session/waiting-room subscriptions emit
+Both local and relay session/Room list subscriptions emit
 `client_catalog_changed { revision }` on catalog invalidation or changed model
 metadata. `revision` is a process-local change sequence, not a cross-restart
 content hash. It contains no account data. Clients fetch conditional snapshots
@@ -749,8 +772,12 @@ permission level or mode. Only the user changes the edge, with
 `SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
 `AgentParentChanged {agent}`); every agent caller, a sudo window included, is
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
-set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, and reads `agent usage` and
-`agent profiles`. `agent spawn` takes `--account-profile`, `--permission
+set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
+`agent profiles`. A message that is not urgent waits in its receiver's queue and never starts or steers a turn: a session lists it in
+`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `preview`: the first 200 characters, secrets redacted,
+`truncated`: the message is longer; at most the next ten per agent, so a Room's state stays small; the recipient reads the whole
+text from its inbox), and the person cancels it or sends it now with
+`CancelQueuedPrompt` / `SteerQueuedPrompt` on that id; its sender promotes it with `agent promote <message-id>`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
 same command id returns the same child. A child's directory may be inside the
@@ -842,6 +869,68 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+### Settings change while a turn runs, and a usage limit (local 1011)
+
+A person or an agent changes a running agent's settings with the requests that change an idle one,
+`UpdateAgentProfile` (provider, account profile, model, effort) and `UpdateAgentConfig` (mode,
+permission level, directory). A running turn no longer refuses them: the kernel writes the new settings
+to the agent at once, and answers `AgentProfileUpdated` / `AgentConfigUpdated` with `applies`
+(absent is `now`): `now` (the agent was idle, or its provider takes the setting in place: the next tool
+call reads the new mode or permission level; Claude sets both when its process starts, so for it they
+follow `at_step_boundary`), `at_step_boundary` (the turn goes on in a new provider
+process when its current tool call or message has finished, as the same prompt, task and pane turn,
+with one kernel note of what changed; several changes of one step make one swap) or `at_turn_end` (the
+provider cannot go on in a new process, for example another provider family, so the next turn starts
+with the change). A tool call, question or permission wait that is still open is never ended. The
+kernel records each accepted change as the durable event `agent.settings_changed` (old to new, who
+asked, `reason`, when it applies) and writes one pane line, "Model changed to X, continuing.", when the
+process took it. The first request that runs a changed process replaces it; a provider-native TUI is
+read-only as before, and a leased agent still refuses while its turn runs. The cost of the swap is a
+cold prompt cache for the first request of the new process (an account or model switch re-reads the
+conversation at full price); the kernel has no prices and the change card does not count it.
+
+An agent changes its own settings, or those of an agent below it, with the room command
+`agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P]
+[--provider P] [--reason TEXT]` or, in a second command, `[--mode build|plan] [--permission
+required|yolo] [--dir PATH]`; the command is the `UpdateAgentProfile` / `UpdateAgentConfig` request
+with `reason` and the caller as the origin, so there is no other authority. The person's allowed set is
+`AgentInstance.self_settings` `{models, efforts, account_profiles, directories}` (`"*"` allows any),
+changed only by the person with `UpdateAgentConfig.self_settings`. An agent changing itself within
+the set applies at once; a value outside it, a provider change or a higher mode or permission level
+takes one kernel-operation card ("<agent> wants to change its model to X", Allow once / Allow always /
+Deny; Allow always adds the value to the set, a /sudo task needs no card), and a level above what its
+parent chain allows is refused. The agents above an agent choose its settings without the set, as
+when they start it. The result of the command reads "applied, continuing" once the process takes the
+change after the command's own tool call ends.
+
+When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`
+`{prompt_id, provider, account_profile, account_label, stopped_at_ms, resumes_at_ms?, refused?,
+state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms, sent}` or `declined`. The reset
+time is read from the provider's own words ("resets 4pm (UTC)", "resets Oct 28, 9pm (UTC)"); with
+none the kernel backs off. The user setting `agents.usage_limit_resume` is `ask` (default; the stop is
+`asking` and the kernel raises one decision, `usage-limit-<agent>-<stopped_at>-<refused>`, shown in the
+agent's pane (in the room agent's pane for a sub-agent) with `resume_when_back`, `not_now` and
+`continue_on:<profile>` choices, answered like any kernel decision and withdrawn when the stop moves on) or `automatic` (the stop is `armed` at
+the reset time). The kernel alone resumes: its one-second scheduler fires an armed stop at its time,
+one agent per 20 seconds, so nothing depends on an agent that may sit on the same exhausted account,
+and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
+task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
+failed last, so a resumed task that stops again is found again. `sent` is set once the resume turn was
+admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, unless the
+continuation was admitted: a turn of the agent runs, or the agent started a turn at or after the claim (the
+continuation already finished; the agent's own saved turn start is the receipt, not the history), and the stop is then marked sent, so finished work is not sent again; a
+resume the task could not take is kept armed for the next second. When the provider refuses
+again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 minutes when no reset time
+was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
+`{"action":"resume_when_back"}`, `{"action":"not_now"}`, `{"action":"cancel"}` (takes an armed resume
+back) or `{"action":"continue_on","account_profile":"..."}` (moves the turn to another account and goes
+on now). A sub-agent is in no room agent list, so its stop travels as `usage_limit_stop` on its `AgentTreeNode` of
+`ListDescendants` (omitted when none; withheld from a viewer who may not read the node's parameters).
+`child_finished` carries `resumes_at_ms` while a resume is armed. The room commands `agent
+resume <agent>` and `agent resume cancel <agent>` let an agent above take an armed resume back at any
+time and arm one only when the person chose automatic resume; nothing depends on them. The kernel
+reads no usage meters for this and paces nothing: it only reacts to a limit stop.
+
 ### Agent deadlines (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
@@ -877,7 +966,7 @@ with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
 hosted slice receipts require peer 181 or newer. The aggregate also includes main's
-local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
+local 491 / relay peer 101 (#974) kernel ownership, Room list and Room
 workflow contracts. Client feature floors are listed separately below; the
 merged 585/181 allocation identifies the integrated runtime contract; the landing's
 567/175 `fonts` op `absent` list is part of it.
@@ -965,6 +1054,15 @@ or lost supervision produces source loss; a persisted PID is not a live handle.
 Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
 
+A watched command that the provider's own sandbox does not cover asks one kernel
+interaction ("Run watched command outside the provider sandbox?") with the choices
+Allow once, Allow for this agent and Deny. Allow for this agent is the only grant: it covers every
+later watched command and job of that agent on this kernel until the agent's
+permissions change, its room ends or a parent revokes it. There is no per-command
+or per-watch grant, so an agent that polls with many watches raises one card, not
+one per watch. A command a leased worker runs for its home has no grant (Allow once
+and Deny only), because a grant would sit on the worker, out of the parent's reach.
+
 
 Local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
@@ -1019,8 +1117,11 @@ resolved card.
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
-or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations. `deadline_ms` is optional for ordinary and goal tasks:
+or mutation. A valid yield names admitted completion registrations; open work it
+does not name is never refused: it stays open and the result lists it as
+`open_work_not_waited_on`. `cancel` takes wake ids to cancel in the same call, and a
+turn that ends without a wait drops the timers it armed (waiting on a timer
+keeps it). `deadline_ms` is optional for ordinary and goal tasks:
 without it the kernel sets `wait.deadline_ms` to 30 minutes after the yield.
 A source may wake the task earlier; reaching the deadline closes the transcript
 wait row as timed out and wakes the retained task with `deadline_reached`.
@@ -1055,9 +1156,15 @@ then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Timer acknowledgements and repeated continuations do not limit
 automatic wakes. Fifteen minutes waiting without progress
-produces a notice. Unconfirmed provider delivery blocks within two minutes and
-requires reconciliation of the original receipt; uncertainty never permits
-blind replay. Damaged ledger/source rows are retained and quarantined.
+produces a notice. A delivery a kernel restart or a lost turn interrupted is settled
+by the kernel before each sweep, never by a person: when the receiving turn took the
+event (a queued or running prompt, or a task of its own) it is accepted; otherwise the
+same event and sequence return to pending with a fresh refusal budget (receipt state
+`recovered`) and the normal inbox path delivers it to a later turn at most once. A
+steer is always put back. Damaged ledger/source rows are retained and quarantined; a
+damaged interrupted row is skipped and logged without stopping the pass. A task whose
+only open work is finished sources with an unacknowledged outcome ends done after the
+one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
 window. Repeated refusals while idle have a separate bounded escalation clock;
 an active recipient turn clears that clock. Unsupported or refused steering
@@ -1066,7 +1173,10 @@ Steer rejections do not start the idle-refusal clock; idle refusals start it at
 receipt time. A damaged refusal clock is retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
-`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+`chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
+with the message id (`status` `queued`, or `steering` for an urgent one); delivery runs
+on the kernel's own account afterwards, so a busy receiver or a change to the sender
+never fails or duplicates it. Nonurgent
 messages wait behind active work; idle/yielded receivers wake. Urgent messages
 use the existing exact-turn steer path, with rejected/unsupported steering
 retained for a later wake and uncertainty pinned. Explicitly stopped receivers
@@ -1078,7 +1188,13 @@ A helper's decision goes first to its nearest eligible parent as an urgent
 `child_decision` inbox event. The holder answers with `agent answer <interaction>
 resume|cancel`, or hands the same decision up with `agent pass <interaction>`.
 A root task, or a decision no eligible ancestor can hold, keeps the person's
-card. Browser-access consent stays with the person. The correction and Resume
+card. Browser-access consent stays with the person. A block the agent raises
+itself with `chariox.events.blocked` is its question to the owner: the task gets
+`owner_action: "question"` and the decision is titled **Question**, a `choice`
+whose message is the agent's own words, with `custom_choice {id: "reply"}` and
+one `cancel` choice labelled **Dismiss**, never Resume. A reply resumes the task and
+reaches the agent as "The owner answered your question"; Dismiss cancels it. The
+correction and Resume
 instruction name every unresolved obligation, its source label when available,
 and the calls that settle it, using the actual registrations and receipt sequences.
 For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select
@@ -1253,7 +1369,7 @@ Current implementation notes:
 ### Same-machine browser carrier (local protocol 520, MP-08/MP-11)
 
 MP-08 / MP-11: at protocol 520, relay-addressed detached/native TUI launches
-and waiting-room kernel switches automatically use the shared authenticated
+and Room list kernel switches automatically use the shared authenticated
 terminal direct lease described below when fresh same-machine discovery exists.
 Older and alias-only targets retain their authenticated relay transport. Terminal clients
 keep their bound relay identity fresh only through the hosted terminal renewal
@@ -1424,17 +1540,17 @@ See [the terminal transport drill](drills/MP08_TRANSPORT_TERMINAL_BYTES.md).
     The same monotonic deadline applies when resolving after a queued session lock.
     Decisions are single-use and bounded to eight per owner and 32 per kernel.
     Terminal presentation remains outside App content and App-controlled input.
-- `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
-- `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
+- `room_list_changed` carries only `inventory_version` and requires clients to refetch the full Room list snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
+- `room_list_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full Room list snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
 - `slices_changed` carries `generated_at_ms` and the current slice list
 - `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
-- `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
+- `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, Room list, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
 
 Managed remote-kernel control uses local daemon protocol version 280. The kernel
 client surface includes:
 
-- Waiting Room inventory fields for provider accounts and safe Git credential
+- Room list inventory fields for provider accounts and safe Git credential
   summaries
 - managed-environment create, list, detail, lifecycle, keep-running, and transfer
   preparation requests
@@ -1603,7 +1719,7 @@ Current session-management semantics:
 - `session.create` accepts an optional alias
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
 - `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
-- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; waiting rooms should label these as saved provider conversations, not unattached live agents
+- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; Room lists should label these as saved provider conversations, not unattached live agents
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Current agent-management semantics:
@@ -1659,7 +1775,7 @@ Current slice-management surface:
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
 - Local daemon protocol v770 / relay peer v320 exposes `GetProviderUsageSnapshot {}` with opaque `account_id`, provider/profile id/label, `auth_state`, safe configured `services`, and provider-observed usage meters. Account identities group provider-reported email identities across kernels; profiles without such an identity group only when the machine and native credential scope match. Identity hashes never use credentials. Unobserved/unconfigured native defaults without usage are omitted; explicit profiles retain their status. Clients group by account identity, keep fixed order and select each meter's latest observation. No credential/profile locations leave the kernel. `GetAgentUsageSnapshot {session_id, agent_id}` still requires Room membership and returns observed context and execution route without remote admission credentials. Usage references require protocol 770; missing balances/windows are never estimated.
 
-- Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
+- Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Room list projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
 - Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
 - Relay peer protocol v18 carries the selected encrypted provider-account materialization before the first leased-agent spawn that needs it. The relay routes the opaque packet only. The worker validates lease ownership and installs a distinct profile root only when that profile is absent. Once installed, the worker kernel owns the profile and its provider-native state: later agent launches resolve the existing profile without exporting, retransmitting, refreshing, or replacing its files from the home kernel. A profile already installed manually on the worker is reused under the same rule. Credential replacement is an explicit target-kernel operation, not a side effect of agent launch.
@@ -2688,8 +2804,8 @@ Event    KernelResourceChanged {           // wire name kernel_resource_changed
 
 Rules:
 
-- The scope and sentinel session id follow `waiting_room_inventory`
-  (`WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
+- The scope and sentinel session id follow `room_list`
+  (`ROOM_LIST_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
   subscription's own.
 - Every newly watched key gets one answer right after `KernelResourcesWatched`, then
   one event per change, in order per key. `changes` is sent only when the kernel
@@ -2715,8 +2831,8 @@ Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
 `project_environment`. `provider_catalog` and `provider_commands` take the
 scope params `{ provider?, account_profiles?, execution_location? }` of
 `GetProviderCatalog`; the params are part of the watch key and of the revision; later `room_list`, which replaces the
-`waiting_room_inventory` scope and its `waiting_room_inventory_changed` /
-`waiting_room_rows_changed` events. The feed also replaces `client_catalog_changed`
+`room_list` scope and its `room_list_changed` /
+`room_list_rows_changed` events. The feed also replaces `client_catalog_changed`
 with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed`,
 `slices_changed` and the `SubscribeUserAppViews` long poll; each replaced event or
 request is removed in the change that moves its resource.
@@ -2955,7 +3071,7 @@ Workflow trigger and deployment direction:
   accept overrides. Clients that send a custom root require kernel protocol
   342; older callers that omit it retain the previous create request shape.
   Cloud validates and persists the selected root before the kernel projects it
-  back to the Waiting Room. The v342 protocol snapshot covers omitted and
+  back to the Room list. The v342 protocol snapshot covers omitted and
   custom create values plus default and custom summary projections; the focused
   managed API drill covers request serialization and authoritative projection.
 - protocol 343 and relay peer protocol 56 add the worker's originating home
@@ -3312,6 +3428,52 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- relay peer 449: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
+- relay peer 449: `ResolveHomeCredentialSecret.injection` accepts `{kind: "workspace", target}` (a Vault use target) so an agent that runs on a slice fills `chariox.vault.use_env` and `chariox.vault.write_file` from the home Vault; the local protocol is unchanged.
+- protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
+  {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
+  expected_revision}` give the owner a pause that outlives a deployment handover
+  (`AppInboxRouteSummary.paused`; an automation resumes with `ConfigureAppAutomation`). A manifest
+  with `capabilities.eventRouting {generator, incoming, maxRoutes}` (feature `event-routing`, world
+  1.1.0) lets the App create, pause and remove its own inbox routes and its agent and workflow
+  targets inside the one connection the owner granted with `GrantAppConnection`
+  (`AppConnectionSummary.event_routing {max_routes, routes, paused}`); revoking the grant removes
+  the App's routes. See `APPS_V2_CONTRACTS.md` §11.
+- protocol 1011 / relay peer 448: App accounts. `GrantAppAccount {installation_id, account,
+  credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
+  {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts
+  {installation_id, credentials: [{credential, origin, routes, safety}], accounts: [{account,
+  credential, vault_credential_id, allow, bound_at_ms}]}`. Only the owner can bind; the Vault
+  entry must be made for HTTP use at the destination's origin, and the value is never part of
+  any reply. `capabilities.network[].credential` and `routes` plus the required feature
+  `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+  and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
+  changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
+  kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
+  credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
+- protocol 1012 / relay peer 449: `AppConfirmationFrame.input`, the exact input
+  the kernel runs when the person confirms (sorted pretty JSON, cut with a "N more bytes" note
+  past 4096 bytes), written by the kernel and required in every `app_confirmation`.
+- protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
+  {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
+  {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
+  standing: [{standing_id, account, repo, class, created_at_ms, expires_at_ms?, uses, last_used_ms?}]}`; only the
+  owner can, the account must be bound and the installation must declare an action of that class
+  (`standing: {class, repo, account}` in `schemas/ui-actions.json`). `AppInstallationSummary.standing_permissions` counts
+  them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
+  rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
+  call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
+- protocol 1012: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+  answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
+  (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
+  types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
+  status never carry the value, and the login record masks it if the provider echoes it. The entry must be a
+  secret bound to the provider's own site (`provider_enrollment_vault_origin`, today `https://opencode.ai`), allowed
+  for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
+  refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
+  client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
+  Person and owner-agent callers only. Web requires 1012 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -4005,6 +4167,26 @@ Workflow trigger and deployment direction:
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
 
+  Protocol 1012: a grant holder answers the person's cards for them. `RespondToInteraction`
+  from a local grant holder, from the same agent forwarded through the person's gateway, or
+  from an agent driving a Room through reach settles any open card of the person, in any of
+  their Rooms and from any agent depth, except the cards the person keeps for every choice:
+  secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
+  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
+  Those are refused with
+  `kernel_access_human_only` and stay open; outside events carry them as pointers and every
+  other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
+  answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
+  `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
+  answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
+  CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
+  (both take `--kernel NAME`).
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term. These terms apply to
@@ -4292,7 +4474,7 @@ MP-08: Local daemon protocol v371 adds the kernel-owned, value-free Project envi
 
 MP-08 / MP-10 / MP-11: The Project environment feature stays at local protocol 371 and moves relay peer 64 to 65 for authenticated leased Project environment installation. Interactive slice/M28 start requests opt into the shared kernel-owned Ready-to-move RuntimeInteraction; API requests default to unattended decisions. Review projections contain names, use sites, sources and decisions only. Missing values use the existing secret reply path to Vault or remain named as skipped inputs. Exported Project values are sealed to the authenticated target/context; the target resolves launch bindings locally. Provider-neutral user rules travel in the kernel context, while provider home transfer carries credentials only.
 
-MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in waiting-room activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
+MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in Room list activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
 
 MP-08 / MP-10 / MP-11: Ordinary local prompt admission and leased-worker reuse resolve the exporting kernel's current Project bindings before reusing an idle provider process. Changed bindings retire the idle process before native conversation resume, releasing Codex's thread writer; active turns are never replaced for environment changes. Native TUI refresh reports that the TUI must restart when its selected inputs change. Account activation merges native credentials without dropping Project bindings. Secret-file length changes do not trigger metadata discovery; incremental discovery preserves kernel-owned unchanged selections, while unsupported names/locators remain rejected. Automatic queued-turn promotion and native-TUI refresh require further validation before acceptance.
 
@@ -4445,7 +4627,7 @@ These owner-bound messages use the shared current relay peer protocol version:
 `DeliverWorkflowNotification` over the existing E2EE channel. The original
 452/82 contract is included in the integrated 513/121 union; those introduction
 versions are not the current admission floor. Picker discovery reuses
-waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+Room list kernel inventory; Cloud stores no workflow directory or event data.
 ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
 TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
 with a diagnostic. Deletion/transfer leaves pending records to expire. See
@@ -4487,8 +4669,10 @@ action, done, or owner-cancelled. Cancellation is never successful completion.
 Obligation/registration, wait intent, event admission and delivery intent commit
 through the shared SQLite writer. Native provider settlement commits the wait;
 a result racing it remains in the inbox. Done requires public output and no
-unresolved obligation. One persisted correction is permitted; another invalid
-end blocks on one kernel-owned interaction. Provider failures also block.
+unresolved obligation, except open watched processes, jobs, terminal watches and
+delegates: the turn ends done and their end wakes the agent as an `after_turn`
+event. For any other unresolved obligation one persisted correction is permitted;
+another invalid end blocks on one kernel-owned interaction. Provider failures also block.
 The kernel sweeps every 30 seconds; 15 minutes without progress notifies
 attached/reconnecting clients; uncertain submission escalates after 2 minutes
 without replay.
@@ -5141,6 +5325,16 @@ renderer discards both dictionaries. This extends mirror's own unreleased
 number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
 
+MIRROR-P2: local 1011 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
+24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
+for its subscription across documents. A reset credit lists them and the kernel keeps the list until a credit lists
+another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
+`{key, resource_id, mime_type, data_base64: "", retained: true}`; the viewer binds its retained bytes to that key for the
+new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
+Images and every other resource keep their per-document delivery. The viewer keeps at most 64 fonts and 16 MiB, never
+evicts a listed entry before close and takes new fonts by ordinary delivery once full.
+`browser-mirror2-font-cache-1011.json` pins the request and the resource shape (`browser_mirror2_font_cache_1011_shape_is_pinned`).
+
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
 `mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
 `fallback:"navigation_preview"`, `snapshot_complete:false` notification before
@@ -5229,6 +5423,13 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
+Local 1012: every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
+`known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
+is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
+of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
+12.5 KB on every read. `browser-favicon-cache-1012.json` pins the shape (`mp08_mp10_browser_favicon_cache_1012_shape_and_hash`).
+
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
 is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
@@ -5313,7 +5514,7 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   distributing that stream locally to its Room consumers. Each view still retires its own attachment;
   the page releases the byte attachment when its last consumer leaves. The relay forwards the scope
   opaquely; its peer protocol does not change.
-- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
+- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`room_list`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
   Over the relay the field travels in `client_subscribe` and `daemon_subscribe`, next to
@@ -5420,15 +5621,16 @@ authority for its own sessions, agents, terminals and files.
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
-  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
   another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
   size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
-  `KernelDirectoryListed { path, entries: [{name, kind, size, modified_ms, revision, mode}], truncated }` (2000
-  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  `KernelDirectoryListed { path, entries: [{name, kind, target_kind?, size, modified_ms, revision, mode}], truncated }` (2000
+  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005;
+  a link has `kind: "symlink"`, which transfers skip, and local 1011 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -5647,8 +5849,7 @@ the official one-operation response before registering another interaction.
 They do not authorize responding to arbitrary RuntimeInteractions. Leased
 watched commands revalidate the current home window through the existing
 leased kernel-request path, including before execution. Startup workspace trust
-may reuse an approved exact-workspace launch without making a queued sudo task
-live for tools. Scope expansion, missing authentication values, identity choices,
+is never answered by a sudo window. Scope expansion, missing authentication values, identity choices,
 revocation, sandboxing, tenant/owner checks and once-only effects keep their
 normal fences. This is kernel policy on existing shapes; no protocol shape or
 version changes.
@@ -5672,7 +5873,7 @@ prompt-scoped live rows.
 
 MP-11: `SetRoomPinned { session_id, pinned }` returns `RoomPinned { session }`.
 It persists the Room's `pinned` flag on its session and publishes the normal
-session and waiting-room projections so all of the person's clients see it.
+session and Room list projections so all of the person's clients see it.
 Like Project stars, the Room owner controls the pin. Room stars do not change
 last-used ordering. Legacy session records default to unpinned.
 
@@ -5916,12 +6117,12 @@ as `input`. Rules every client follows:
   does not wait for the idle tick.
 
 
-### MP-08 / MP-10 / MP-11: bounded waiting-room sessions (provisional 569/177)
+### MP-08 / MP-10 / MP-11: bounded Room list sessions (provisional 569/177)
 
-The waiting-room inventory and public snapshot return the 100 most recently used
+The Room list inventory and public snapshot return the 100 most recently used
 sessions (fewer when the byte budget is reached), `sessions_total`, and an optional
 `sessions_next_cursor`. A client opens the full session list by sending
-`ListWaitingRoomSessions { cursor, limit }`; `WaitingRoomSessionsListed { page }`
+`ListRoomListSessions { cursor, limit }`; `RoomListSessionsListed { page }`
 returns `sessions`, `total`, and `next_cursor`. Limits default to 500 and clamp to
 1–500. Row updates also carry the current count and cursor, including metadata-only
 changes while the visible recent rows stay the same. Cursors order by last-used
@@ -5998,7 +6199,7 @@ unrecognised error are not). A reader decides to retry or stop from `kind` and
 provider failure, such as `The provider is at capacity.`; it is empty for
 `completed` and `cancelled`. Kernel-authored failures can retain specific recovery
 details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Chariox adds no retry, backoff or usage-limit policy; the
+in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
@@ -6232,7 +6433,7 @@ requests and responses, using its existing bounded framing and flow control.
   lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
   the gateway's own typed error and the launch stays queued. The kernel first makes
   a Room on the target in `directory` (default: the target kernel's own default Room
-  directory, read with `GetWaitingRoomPublicSnapshot` under command id
+  directory, read with `GetRoomListSnapshot` under command id
   `place:<exec_id>:target`; a target without one refuses with
   `exec_target_no_directory`; command id `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
   forwards stdin offsets, output cursors and cancellation to it. A request whose
@@ -6346,7 +6547,7 @@ MP-08 / MP-09 / MP-10 / MP-11: public snapshot schema 14 and persisted sessions 
 
 The focused local 780 / peer 330 drill is `node scripts/session-activity-drill.mjs <external-workspace> <linked-codex-profile-id>`, with `CHARIOX_HOME` and `CHARIOX_KERNEL_PORT` set for an isolated running kernel. It exercises schema 14, pin insertion timestamps, focus without activity, a real Codex turn, and activity invalidation of paged reads. It deletes its session and closes its attachment when finished.
 
-`ListWaitingRoomSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `waiting_room_inventory_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
+`ListRoomListSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `room_list_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
 
 Projects and sessions persist `pinned_at_ms` when their pin changes from off to on. Clients preserve pin insertion order with this field; pinning never changes semantic session activity.
 MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
@@ -6758,6 +6959,13 @@ instead of evicting a live anchor. Losing only registry state resolves unavailab
 than claiming an element disappeared. Geometry updates replace the view in place, preserving
 card order even when questions share a request timestamp.
 
+Local 1011 / relay peer 448 add the optional `done_text` (1 to 200 characters) to the request's
+`browser_region` and to the projected region. The card resolves `condition_met` when that text
+shows in the watched element. The host follows a same-document replacement of the element by its
+unique id, as it does for a verification card. If the element is lost before the text shows
+(removed, replaced without that id, document changed), the card resolves `status: "unavailable"`,
+never `condition_met`. `browser-done-text-1011.json` pins the shape.
+
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
 
@@ -6817,7 +7025,11 @@ a member's agent with this room's sources only. `AppInstallationSummary.events` 
 release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
-now optional on the request, a notification trigger refuses a value, and the trigger summary is
+now optional on the request (local 1012: a notification trigger takes `queue`, the default, or `steer` on create
+and update, and `NotificationSubscriptionRow.mode`, `NotificationSubscriptionChange::Mode` and
+`ReplacedListener.busy_policy` carry it; the prompt of an agent notification carries only a one-line notice
+with the title, the source and the inbox position, and the agent's inbox, kind `notification`, holds the
+occurrence payload, for every source), and the trigger summary is
 `{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
@@ -6892,6 +7104,17 @@ prompt names the label and the hosts; an existing one needs `overwrite` and the 
 or the origin of the enrolled Cloud; with neither the request fails with `secret_link_unavailable`. Other refusals:
 `vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
 Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.
+
+### A leased child held for its provider's background call
+
+A child on a worker whose turn ends while its provider call still runs in the background is not
+finished: the home keeps its task Working (the same hold a local child gets) and keeps draining
+the worker's run with no prompt active. The worker reports the end of the provider's own
+follow-up turn as a completion record whose `message_id` starts with `notification-complete:`
+and that names no home prompt; the home then settles the task, and the parent hears one
+`child_finished` with that turn's answer. The home ends the held task failed, with the reason,
+when the worker reports the run ended, no longer knows the agent or lease, or stays offline
+past the lost-worker grace. No serialized shape changes.
 
 ### Acknowledged leased projection drain — local 934 / relay peer 383
 
@@ -7068,12 +7291,14 @@ that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
 and foreign room or attachment ownership are refused. A completed task cannot
 be cancelled.
 
-`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
-retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
-the task and uses the normal source cancellation receipt to inform the agent.
-Other wake sources stop with their owning task. The shared shell exposes these
-controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
-`stop` keeps its active-turn or focused-task behavior.
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently ends one
+event a waiting task holds and returns `AgentTaskUpdated` for its owning task:
+a wake (a timer, a watched process, any driver source) or the follow of another
+agent, named by the id `liveness.waiting_events[].cancel_wake_id` carries. It
+preserves the task and uses the normal source cancellation receipt to inform the
+agent; a watched process settles on its physical exit. The shared shell exposes
+these controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`;
+bare `stop` keeps its active-turn or focused-task behavior.
 
 An unconditional, targetless `CancelActivePrompt` still stops an active turn;
 when no turn is active it resolves the focused agent's parked task. A request
@@ -7206,6 +7431,20 @@ Acquire, the kernel verifies that revision and writes every offer fact in the
 existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
 subject to the same Cloud admission and revision checks.
 
+### Machine options — local 1011
+
+`ControlPlane` capabilities may carry `machine_allocation.offers`: every machine the
+connected service offers the owner, each `{class_id, region, vcpu, ram_gb, disk_gb,
+rate_per_minute: {amount_micros, currency}, available, note?}`. The service decides the
+list, the rate in the account's currency, the stock and the optional display `note`; the kernel
+only passes them on and never adds, ranks or rates an option. `Acquire` takes an optional
+`class_id` and `region`: absent, the service's default offer is acquired as before; present,
+exactly that option is acquired, or the call fails with a plain reason (not offered, region needed,
+not available right now) and nothing is acquired in its place. The capability revision covers the
+list, so a change of stock or rate needs a fresh decision. Agents use the same list through
+`chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
+card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
+
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
 Local 994 / peer 433 also identifies kernel notification sources with
@@ -7298,6 +7537,22 @@ followed source of `GetEventSubscription` and as the `source_kind` of a `notific
 Following it uses the same outside grant, subscription, receipt and acknowledgement as the other
 kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
+
+### A watcher as a notification source — local 1012
+
+NC-14 / NC-15 / NC-21: `NotificationSourceKind` gains `watcher`. A watcher is a script this kernel runs
+for the owner; it has one source (`source_id` `watcher_<id>`, `workflow_id` the watcher id,
+`exit_node_id` `event`, `name` / `display_name` the watcher's name, `session_id` the Room it was made in),
+enabled while the watcher exists. `Watcher(WatcherRequest)` with `create {session_id, manifest, script}`,
+`update {watcher_id, manifest, script}` (back to draft), `dry_run`, `activate`, `pause {paused}`,
+`check_now`, `rename {watcher_id, name}` (keeps its dry run), `remove {watcher_id}` and `list {}` answers `Watcher {watcher}`, `WatcherDryRun {result}`,
+`WatcherRemoved {watcher_id}` or `Watchers {watchers, followers}`. `followers` are the owner's
+subscriptions to these watchers that this kernel holds, on any kernel and in any Room. A summary's `dry_run` is the last dry run of the
+current revision (null after a change); activation requires it. A run's events, cursor, reading and health commit in one write; occurrence ids are
+`<run>.<commit>:<n>`. Health is `ok | failing | gap | noisy` (30 events in 10 minutes, then one a minute);
+entering a non-ok state wakes the creating agent once with a `watcher_health` inbox event. Agent tools:
+`chariox.watcher.create|dry_run|activate|status|remove`. Focused check:
+`cargo test -p chariox-kernel --lib watcher`.
 
 ### A tool call's picture count in the outline preview — local 1000
 
@@ -7410,6 +7665,26 @@ the session and never stored, so a client names who asks in the card's first pai
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
+### Idle viewer traffic, ended subscriptions and Browser reply bytes (local 1011)
+
+A viewer's relay subscriptions on one lane (the session lane, or the kernel-wide inventory and resource lane) share one
+`heartbeat` per interval: the kernel sends the next one only when no other subscription of the same client key and lane sent
+one in the last half interval. A client treats any event of its lane as proof the lane is alive and watches the lane, not each
+subscription. Relay subscribers and their `heartbeat_interval_ms` are unchanged.
+
+A subscription that dies alone is no longer noticed by a missing heartbeat, so when the kernel's task for a relay
+subscription (a session, the waiting-room inventory or `kernel_resources`) ends while the connection stays up, the kernel
+sends that subscription one `subscription_ended` event (`session_id` as `heartbeat` names it). It is never replayed on a
+resume. A client resumes the lane the subscription travels on from its cursors; an unsubscribe ends no task this way, and
+the event follows `session_unavailable` when that is why the task ended.
+
+A `KernelBrowser` reply whose `result` holds a mirror packet (`packet_base64`, `resources[].data_base64`) or a screenshot's
+picture (`data_base64`) travels as `CXT1` like a Room terminal reply: the header keeps the JSON with each such base64 string
+replaced by `[offset, length]` into the raw bytes that follow, in the order body, resources, picture. A client restores the
+base64 text before it reads the reply, except that a web viewer hands the deflated body to its mirror as bytes. A resource
+slice that is not canonical base64 on its own stays text in the header. This removes the 33 % base64 expansion of every mirror
+packet (a GitHub first paint's reset: 123 KB to about 93 KB) and of the page picture the viewer's view cache takes.
+
 ### APP-CONFIRM-01: person-confirmed App actions — local 1008 / relay peer 447
 
 A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` with a
@@ -7418,12 +7693,18 @@ A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` 
 the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
 `choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
 
-- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
-  written by the kernel from the verified release (all six present, none other). A client frames the
-  preview with these words and never with text the App supplied.
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name, input}`,
+  written by the kernel from the verified release and the call (all seven present, none other). A client
+  frames the preview with the six words and never with text the App supplied. `input` is the exact input the
+  kernel runs on Confirm, formatted once by the kernel: sorted-key pretty JSON, secret-shaped values and
+  secret-named fields masked as `[redacted:<kind>]`, and cut at 4096 bytes with a final `… N more bytes` line.
+  A client shows it beside the App's preview and never rebuilds it.
+- `app_confirmation.preview`: for an App whose backend serves its view and so has no Tab, the rows its
+  backend answered (`[{label, value}]`, at most 12, plain text); the card then carries no `view`, and a client
+  that shows the rows offers Confirm.
 - `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
   App's Tab, shown through the existing protected card region. A client that cannot show it offers no
-  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+  Confirm; the card's `message` repeats `input` for clients that read text.
 
 Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
 in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
@@ -7487,6 +7768,15 @@ Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent
 `file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
+
+### Files: what a link points to — local 1011 / relay peer 448
+
+A listing entry for a link keeps `kind: "symlink"` (the transfer skips links by that kind) and adds `target_kind`
+(`file`, `directory` or `other`), what the name resolves to; a link to nothing has none, and any other entry omits
+it. A Files window opens a link as its `target_kind`. The same field travels in a remote folder listing between
+kernels of one owner (relay peer 448). The shape is pinned by `link_entry` in
+`protocol_shapes/machine_files.rs`; the behaviour by `a_link_lists_as_a_link_that_says_what_it_points_to` and
+`a_folder_arrives_as_the_same_tree_published_all_at_once` (a link to a folder is still not copied).
 
 ### Source availability of a notification trigger — local 1003
 
@@ -7598,7 +7888,7 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 
 `SuggestSessionAlias { workspace_id }` answers `SessionAliasSuggested { workspace_id, alias }`: the name `CreateSession` would give a new Room in that workspace now. It changes nothing and any connected client may ask.
 
-`WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
+`RoomListLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
 
@@ -7608,7 +7898,7 @@ like `CancelAgentTask`) stops what the wait is on (its timers, watched processes
 `AgentTaskUpdated`. The agent is not woken: nothing is delivered to its inbox, and on its next turn it simply is no longer
 registered for the wait. The wait's `provider_tool` row (which now also carries `task_id`) is rewritten in place as
 `"status":"completed"` with `woken_by {kind:"cancelled"}`. A goal's wait is refused (stop the goal), and so is a task that has
-other open work. `WaitingRoomPublicItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
+other open work. `RoomListItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
 an agent has armed waits or events (a task in a wait, or a scheduled, starting or running timer or source); the Room summary
 carries the count as `waiting_agent_count`. A `SessionHistoryOutlineTurn` the kernel started itself (an inbox wake of a
 waiting agent, or a schedule, HTTP or notification trigger) carries `system_prompt: true`; the outline now keeps the text of a
@@ -7896,3 +8186,136 @@ provider delivery path or acceptance claim. Runtime rollout removes the old
 skill-grant contracts without a compatibility decoder. Skills v2 clients gate
 these operations at 533/141; unrelated clients need no minimum bump solely for
 this feature.
+
+### What a waiting agent waits on, and questions to the owner — local 1011
+
+`agent_activity[agent].liveness.waiting_events` lists every event the agent's
+waiting task would wake on, oldest first: `{id, kind, label, since_ms, task_id,
+wait_started_at_ms, cancel_wake_id?}`. A live wake (timer, process, terminal) and
+each other live registration (a sub-agent's end, a workflow run, another task)
+is one entry; `label` is the kernel's plain words ("sub-agent sub-agent-1",
+"timer check the build"). `liveness.waiting_on` keeps naming only the oldest.
+The owner ends the whole wait with `CancelAgentWait{task_id, started_at_ms}`,
+taken from any entry; `cancel_wake_id` is present for a wake and for the follow
+of another agent, the events with an owner cancel of their own
+(`CancelAgentWake`). A sub-agent's end and a workflow run end on their own or
+with the whole wait.
+
+The kernel no longer judges a wait by how long it made no progress:
+`agent_tasks[].wait.long_wait_notified` is gone and no
+"Waiting for 15 minutes without progress." notice is written. A wait ends by its
+own sources and deadline, or by the owner.
+
+A block the agent raises itself with `chariox.events.blocked` sets the task's
+`owner_action` to `question` (see the blocked-task decision above).
+`agent-waiting-events-1011.json` and its SHA-256 test pin these shapes.
+
+### The Room list names — local 1011 / relay peer 448
+
+The Room list is the kernel's list of Projects and Rooms that every client shows first. Its wire names no longer
+say "waiting room": `GetRoomListSnapshot` answers `RoomListSnapshot`, `ListRoomListSessions` answers
+`RoomListSessionsListed`, the subscription scope is `room_list` (sentinel id `__room_list__`), and the events are
+`room_list_changed` and `room_list_rows_changed`; the terminal command catalog names the Room list surface `room_list`. The older full-inventory request `GetWaitingRoomInventory` and its
+`WaitingRoomInventory` response are removed: no client used them. The old names are gone, not aliased; a client
+speaking them is refused as an unknown request, and an unknown scope falls back to `session`.
+`room-list-1011.json` and its SHA-256 test pin the shape.
+
+### Who answers for a workflow — local 1011 / relay peer 448
+
+Every workflow has a `responsible`: `{kind:"person"}` or `{kind:"agent", kernel_id,
+room_id, agent_id, label}` (`label` is the agent's name when it took the workflow).
+An agent-created workflow starts as that agent (a sub-agent's workflow starts as the
+person); `responsible_notice` (`{kind:"agent_gone"|"machine_gone", label}`) is set when
+the responsible agent was deleted or its kernel left the owner's account, the person
+answers again, and the next choice clears it.
+
+A run has a monotonic `number` per workflow (the first run is 1), an `outcome` and an
+`attention` flag. `outcome` is `{kind:"failed", reason, detail}` for a failed run (the
+first failure kind and its message, at most 200 characters, redacted) or
+`{kind:"waiting", on, node_id}` while a node is held on `provider_profile_unavailable`,
+`provider_profile_unverified`, `provider_profile_unauthenticated`,
+`provider_profile_usage_exhausted` or `blocked_on_workspace_claim`. `attention` is true
+while the run needs someone and nobody cleared that need (`ClearWorkflowRunAttention`,
+or a newer run of the workflow starting); a terminal run stays in the Room's snapshot
+while its attention is open. `WorkflowFailureKind::StepNeedsHelp` (`step_needs_help`)
+ends a step whose agent could not go on: its task blocked, or it asked for a
+permission, an answer or the browser. A workflow run never raises a card or a Blocked
+row; the provider is refused at once and the run says why.
+
+`SetWorkflowResponsible{session_id, workflow_ref, responsible}` answers
+`WorkflowResponsibleSet{workflow, session}`; the person may always set, an agent may
+take a workflow for itself and hand one over only as the current responsible or the
+creator, the target is an ordinary top-level agent of the owner in a live Room, and a
+guest cannot set. `ClearWorkflowRunAttention{session_id, run_ref}` answers
+`WorkflowRunAttentionCleared{run, session}`.
+
+The workflow's "run finished" source now also fires when a run enters waiting on a
+named thing (once per run, node and thing), and its output carries `number`,
+`workflow_name` and the typed `outcome`. The responsible agent receives one ordinary
+prompt of its own Room, written by the kernel from those typed fields; no text a run
+produced enters it. The person gets the one `OwnerAction` alert when attention opens.
+
+Relay peer: `SetWorkflowResponsible{sender, room, workflow_ref, responsible?}` (an
+agent's kernel reads or changes a workflow of a Room on another kernel) and
+`ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
+workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
+subscribes through the existing notification path).
+
+### Every agent has the kernel browser — local 1012 / relay peer 449
+
+The kernel browser, the Computer and the owner's trusted Apps need no card: an
+agent's `chariox.load_kernel_browser` grants and loads at once, in any turn and
+at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
+`allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
+`UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
+`user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
+
+### The person's Inbox and subscriptions — local 1012 / relay peer 449
+
+`GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
+`{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
+interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
+`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
+run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
+delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,
+snoozes and wakes cards, and `SetInboxMute{origin:{session_id, agent_id}, muted}` mutes one agent's notices; needs-you cards cannot be muted.
+
+`ListNotificationSubscriptions` answers `NotificationSubscriptions{subscriptions, responsibilities}`: one row per
+subscription whose subscriber lives on this kernel (`subscription`, `source` or null when it is gone,
+`subscriber_name`, `prompt`, `options`, `once`, `paused`, `fired`, `last_fired_at_ms`, `loop_stopped_at_ms`,
+`responsible_for`, `health`), and one row per workflow whose runs that need the person come to the Inbox.
+`health` is `ok`, `paused`, `loop_stopped`, `options_changed`, `subscriber_gone` or `source_gone`.
+`UpdateNotificationSubscription{subscription_id, change}` pauses (`paused{paused}`) or moves the subscription to
+another agent of the same Room (`subscriber{agent_id}`), and `RemoveNotificationSubscription{subscription_id}`
+removes it; both answer the new list. `TestNotificationSubscription{subscription_id}` is a dry run of the
+source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
+sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
+`NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
+
+A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
+a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those
+values wake the subscriber. A pick the source does not declare is refused when subscribing; when the source later
+drops a picked option the subscription holds delivery with `options_changed`. `once` ends the subscription after
+its first delivery. On one kernel a subscription to the subscriber's own source, or one that closes a cycle, is
+refused; across kernels a delivery caused by the subscription itself is answered `LoopDropped` and flagged.
+Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
+`person-inbox-1012.json` and its SHA-256 test pin the shape.
+
+### Model names — local 1012
+
+A model of a provider catalog (`GetProviderCatalog`, the `provider_catalog_changed` event) may list
+`aliases`: the other names the provider's own tool accepts for it, as its catalog gives them (the Claude
+picker's `sonnet`, a Codex picker id). The field is absent when a model has none. An agent spawn (single
+or batch), a model change and a new Room's defaults take any of: the catalog id, the id behind a provider
+qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headless/…`, `codex/…`), an alias, or
+an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
+resolves to none is refused with the models to use. `provider-catalog-aliases-1012.json` and its SHA-256
+test pin the shape.

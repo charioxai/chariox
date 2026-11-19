@@ -28,6 +28,7 @@ impl KernelRuntimeState {
                     agent.provider(),
                     Some(agent.provider_account_profile()),
                     agent.model().map(str::to_string),
+                    super::agent_model_choice::Source::Kept,
                     agent.effort().map(str::to_string),
                 )
                 .await;

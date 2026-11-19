@@ -1,0 +1,52 @@
+{
+  "local": 1012,
+  "requests": [
+    { "GetPersonInbox": null },
+    { "SetInboxCardState": { "card_ids": ["notice_5_ab"], "change": { "read": { "read": true } } } },
+    { "SetInboxCardState": { "card_ids": ["permission-1", "notice_5_ab"], "change": { "snooze": { "until_ms": 9000 } } } },
+    { "SetInboxCardState": { "card_ids": ["permission-1"], "change": { "snooze": { "until_ms": null } } } },
+    { "SetInboxMute": { "origin": { "session_id": "room-1", "agent_id": "agent-1" }, "muted": true } },
+    { "ListNotificationSubscriptions": null },
+    { "UpdateNotificationSubscription": { "subscription_id": "sub-1", "change": { "paused": { "paused": true } } } },
+    { "UpdateNotificationSubscription": { "subscription_id": "sub-1", "change": { "subscriber": { "agent_id": "agent-2" } } } },
+    { "RemoveNotificationSubscription": { "subscription_id": "sub-1" } },
+    { "TestNotificationSubscription": { "subscription_id": "sub-1" } },
+    { "ReadNotificationTrace": { "subscription_id": "sub-1" } }
+  ],
+  "responses": [
+    { "PersonInbox": {
+      "cards": [
+        { "card_id": "notice_5_ab", "session_id": "room-1", "snoozed_until_ms": null, "body": { "notice": {
+          "agent_id": "agent-1", "agent_name": "Reviewer", "title": "PR review done", "body": "Two comments.",
+          "link": "https://github.com/charioxai/chariox/pull/976", "priority": "high", "created_at_ms": 5, "read": false } } },
+        { "card_id": "permission-1", "session_id": "room-1", "snoozed_until_ms": 9000, "body": { "needs_you": { "interaction": {
+          "id": "permission-1", "agent_id": "agent-1", "kind": "permission", "level": "info", "message": "Run the tests",
+          "choices": [{ "id": "yes", "label": "Allow once", "reply": "yes" }], "requested_at_ms": 2 } } } },
+        { "card_id": "run:run-7", "session_id": "room-1", "snoozed_until_ms": null, "body": { "workflow": {
+          "workflow_id": "wf-1", "workflow_name": "nightly_deploy", "run_id": "run-7", "run_number": 7,
+          "outcome": { "kind": "failed", "reason": "workflow_run_output_validation_failed", "detail": "ticket is missing" }, "at_ms": 11 } } },
+        { "card_id": "flag:sub-1", "session_id": "room-1", "snoozed_until_ms": null, "body": { "flag": {
+          "subscription_id": "sub-1", "subscriber_name": "Reviewer", "source_name": null, "health": "source_gone", "at_ms": null } } }
+      ],
+      "mutes": [{ "session_id": "room-1", "agent_id": "agent-2" }]
+    } },
+    { "NotificationSubscriptions": {
+      "subscriptions": [{
+        "subscription": { "subscription_id": "sub-1", "source_id": "app:pr-review", "owner_user_id": "user-1", "created_by_user_id": "user-1",
+          "target_kernel_id": "kernel-1", "target_kind": "agent", "session_id": "room-1", "workflow_id": "", "publication_id": "trigger-1",
+          "endpoint_id": "agent-1", "queue_id": "queue-1", "source_available": true, "source_kernel_id": "kernel-2", "agent_id": "agent-1", "trigger_id": "trigger-1" },
+        "source": { "kind": "app_event", "source_id": "app:pr-review", "kernel_id": "kernel-2", "session_id": "room-2", "workflow_id": "", "exit_node_id": "",
+          "exit_ordinal": 0, "name": "Review requested", "display_name": "GitHub · Review requested", "available": true,
+          "options": [{ "name": "pr", "label": "PR number", "type": "number", "field": "number" }] },
+        "subscriber_name": "Reviewer", "prompt": "Review the PR", "options": [{ "name": "pr", "value": 976 }], "once": true, "paused": false,
+        "fired": 1, "last_fired_at_ms": 12, "loop_stopped_at_ms": null, "responsible_for": null, "health": "ok"
+      }],
+      "responsibilities": [{ "session_id": "room-1", "workflow_id": "wf-1", "workflow_name": "nightly_deploy", "fired": 1, "last_fired_at_ms": 11 }]
+    } },
+    { "NotificationSubscriptionTested": { "result": "\"Review requested on PR #976\" would wake Reviewer. Nothing was sent." } },
+    { "NotificationTrace": { "subscription_id": "sub-1", "lines": [
+      { "occurrence_id": "occ-1", "at_ms": 10, "outcome": "filtered", "title": "Review requested on PR #12", "detail": "Not PR number 976", "turn": null },
+      { "occurrence_id": "occ-2", "at_ms": 12, "outcome": "delivered", "title": "Review requested on PR #976", "detail": null, "turn": { "agent_id": "agent-1", "prompt_id": "prompt-9" } }
+    ] } }
+  ]
+}

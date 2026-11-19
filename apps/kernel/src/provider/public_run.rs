@@ -291,7 +291,7 @@ mod tests {
         }
         let event = crate::transport::kernel_protocol::KernelEvent::ProviderRunChanged {
             session_id: "session-public".into(),
-            provider_run: Some(dto),
+            provider_run: Some(Box::new(dto)),
         };
         let value = serde_json::to_value(&event).unwrap();
         assert!(!serde_json::to_string(&value)

@@ -126,6 +126,9 @@ async fn configure_with_mode(
         clear_workspace_id: false,
         worktree_id: None,
         clear_worktree_id: false,
+        self_settings: None,
+        usage_limit: None,
+        reason: None,
     });
     let command = KernelCommand::from_local_request("max-context-config", None, None, &request);
     match runtime.dispatch_session_command(command, request).await? {
@@ -282,6 +285,7 @@ async fn switch_provider(
         model: None,
         effort: None,
         clear_effort: false,
+        reason: None,
     });
     let command = KernelCommand::from_local_request("max-context-switch", None, None, &request);
     match runtime.dispatch_session_command(command, request).await? {

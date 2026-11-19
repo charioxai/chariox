@@ -122,6 +122,11 @@ impl KernelRuntimeState {
                 self.cancel_peer_agent_turn(kernel, &request_id, &target)
                     .await
             }
+            request @ (RelayPeerRequest::SetWorkflowResponsible { .. }
+            | RelayPeerRequest::ApplyWorkflowResponsible { .. }) => {
+                self.receive_workflow_responsible_request(kernel, owner, request)
+                    .await
+            }
             request @ (RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }) => {
                 self.receive_peer_follow(kernel, owner, request)
@@ -351,21 +356,36 @@ impl KernelRuntimeState {
         urgent: bool,
         reply_requested: bool,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        if message.trim().is_empty() {
-            return Err(ledger::error("message is empty"));
-        }
         if request_id.trim().is_empty() || request_id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
         let room = target.session_id();
         let source = peer_message_source(kernel, &sender.agent_id);
         let occurrence = format!("{kernel}:{request_id}");
-        let duplicate = self.owned.durable_state_store.agent_inbox_has_occurrence(
-            room,
-            target.id(),
-            &source,
-            &occurrence,
-        )?;
+        let first = self
+            .owned
+            .durable_state_store
+            .agent_inbox_occurrence(room, target.id(), &occurrence)?
+            .into_iter()
+            .find(|first| first.source_id == source);
+        // The sender asks for the message it queued to be urgent: the same message, with no text of its own.
+        if let (true, Some(first)) = (urgent, first.as_ref()) {
+            self.answer_resent_agent_message(
+                first,
+                true,
+                target.alias().unwrap_or(target.agent_ref()),
+            )
+            .await?;
+            return Ok(RelayPeerResponse::PeerAgentAccepted {
+                protocol_version: VERSION,
+                duplicate: true,
+                target: self.peer_agent_stamp(target),
+            });
+        }
+        if message.trim().is_empty() {
+            return Err(ledger::error("message is empty"));
+        }
+        let duplicate = first.is_some();
         let mut event = ledger::occurrence(
             room,
             target.id(),
@@ -398,7 +418,10 @@ impl KernelRuntimeState {
                 ),
             );
         }
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(room, target.id())).await {
+        // Only an urgent message acts on its recipient's turn; any other waits for the next one.
+        if !urgent {
+            self.publish_task_change(room);
+        } else if let Err(error) = Box::pin(self.deliver_agent_inbox(room, target.id())).await {
             self.owned.record_notice_for_agent(
                 room,
                 None,

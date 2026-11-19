@@ -6,7 +6,7 @@ import { createRelayKeypair } from "./relay-crypto.js"
 
 // MP-08 / MP-10 / MP-11: public methods must apply repeat options on both transports.
 for (const relay of [false, true]) {
-  for (const scope of ["session", "waiting_room_inventory"] as const) {
+  for (const scope of ["session", "room_list"] as const) {
     test(`${relay ? "relay" : "direct"} ${scope} replaces heartbeat options`, async t => {
       const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
       await new Promise<void>(resolve => server.once("listening", resolve))
@@ -46,7 +46,7 @@ for (const relay of [false, true]) {
       })
       const subscribe = (heartbeatIntervalMs?: number) => scope === "session"
         ? client.subscribeToKernelEvents("room", "attachment", heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs })
-        : client.subscribeToWaitingRoomInventory(heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs })
+        : client.subscribeToRoomList(heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs })
       await subscribe()
       await subscribe(500)
       await subscribe(1_000)

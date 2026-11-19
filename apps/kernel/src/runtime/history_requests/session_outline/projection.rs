@@ -28,20 +28,10 @@ pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
 }
 
 fn event_provider_status_projects_as_outline_entry(event: &HistoryEvent) -> bool {
-    let Some(entry) = event.to_session_history_entry() else {
-        return false;
-    };
-    if !entry.is_external_provider_observed() {
-        return false;
-    }
-    if entry
-        .external_observation
-        .as_ref()
-        .is_some_and(|observation| observation.passive_telemetry)
-    {
-        return false;
-    }
-    true
+    event.is_external_provider_observed()
+        && !event
+            .session_history_external_observation()
+            .is_some_and(|observation| observation.passive_telemetry)
 }
 
 fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
@@ -68,7 +58,7 @@ fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
             .is_some_and(|merge_key| merge_key.starts_with(STEERING_PROMPT_MERGE_KEY_PREFIX))
 }
 
-fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
+fn outline_blob_from_event(event: &HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
     if event.is_internal_dispatch_diagnostic() {
         return None;
     }
@@ -79,7 +69,7 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
-        steering: is_steering_prompt_event(&event),
+        steering: is_steering_prompt_event(event),
         kind: entry.kind,
         title: blob_title(entry.kind),
         summary: blob_summary(entry.kind, &entry.text),
@@ -88,12 +78,12 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
         entry_count: 1,
         total_chars,
         timestamp_ms: event.timestamp_ms,
-        preview: outline_blob_preview(&[&event]),
+        preview: outline_blob_preview(&[event]),
     })
 }
 
 pub(super) fn outline_blobs_from_events(
-    events: &[HistoryEvent],
+    events: &[&HistoryEvent],
     prompt_sequence: u64,
     summary_sequences: &BTreeSet<u64>,
     forced_blob_sequences: &BTreeSet<u64>,
@@ -105,9 +95,8 @@ pub(super) fn outline_blobs_from_events(
                 || forced_blob_sequences.contains(&event.sequence))
             && (forced_blob_sequences.contains(&event.sequence)
                 || event_projects_as_outline_blob(event))
-            && event
-                .to_session_history_entry()
-                .is_some_and(|entry| !entry.is_external_provider_observed_state_signal())
+            && event.session_history_entry_kind().is_some()
+            && !event.is_external_provider_observed_state_signal()
     };
     let mut blobs = Vec::new();
     for group in outline_blob_event_groups(events, is_candidate) {
@@ -126,14 +115,14 @@ pub(super) fn outline_blobs_from_events(
 /// exception is a later snapshot of a tool call already seen (OpenCode stores
 /// "running" and "completed" as rows a sentence can fall between): it joins
 /// the call's blob, which keeps the call's first position.
-fn outline_blob_event_groups(
-    events: &[HistoryEvent],
+fn outline_blob_event_groups<'a>(
+    events: &[&'a HistoryEvent],
     is_candidate: impl Fn(&HistoryEvent) -> bool,
-) -> Vec<Vec<&HistoryEvent>> {
+) -> Vec<Vec<&'a HistoryEvent>> {
     let mut groups = Vec::<Vec<&HistoryEvent>>::new();
     let mut tool_call_groups = HashMap::<String, usize>::new();
     let mut open_group = false;
-    for event in events {
+    for &event in events {
         if !is_candidate(event) {
             if event_projects_as_outline_entry(event) || is_steering_prompt_event(event) {
                 open_group = false;
@@ -208,15 +197,15 @@ fn outline_blob_identity(
 fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHistoryOutlineBlob> {
     let first_event = events.first()?;
     if events.len() == 1 {
-        return outline_blob_from_event((*first_event).clone());
+        return outline_blob_from_event(first_event);
     }
     let first_entry = first_event.to_session_history_entry()?;
     let sequence_start = events.iter().map(|event| event.sequence).min()?;
     let sequence_end = events.iter().map(|event| event.sequence).max()?;
     let total_chars = events
         .iter()
-        .filter_map(|event| event.to_session_history_entry())
-        .map(|entry| entry.text.chars().count())
+        .filter_map(|event| event.session_history_entry_text())
+        .map(|text| text.chars().count())
         .sum();
     let timestamp_ms = events
         .iter()
@@ -426,12 +415,12 @@ fn grouped_blob_title(kind: SessionHistoryEntryKind, entry_count: usize) -> Stri
     }
 }
 
-pub(super) fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
+pub(super) fn page_entry_from_event(event: &HistoryEvent) -> Option<SessionHistoryPageEntry> {
     page_entry_from_event_with_inline_limit(event, None)
 }
 
 pub(super) fn outline_page_entry_from_event(
-    event: HistoryEvent,
+    event: &HistoryEvent,
 ) -> Option<SessionHistoryPageEntry> {
     page_entry_from_event_with_inline_limit(event, Some(MAX_OUTLINE_INLINE_CHARS))
 }
@@ -440,13 +429,12 @@ pub(super) fn outline_page_entry_from_event_group(
     events: &[&HistoryEvent],
 ) -> Option<SessionHistoryPageEntry> {
     let first = events.first()?;
-    let mut page_entry = outline_page_entry_from_event((*first).clone())?;
+    let mut page_entry = outline_page_entry_from_event(first)?;
     let mut ordered_events = events.to_vec();
     ordered_events.sort_by_key(|event| (event.timestamp_ms, event.sequence));
     let text = ordered_events
         .iter()
-        .filter_map(|event| event.to_session_history_entry())
-        .map(|entry| entry.text)
+        .filter_map(|event| event.session_history_entry_text())
         .collect::<String>();
     let total_chars = text.chars().count();
     // MP-08 / MP-10: complete inline groups need every original replay identity too.
@@ -454,7 +442,7 @@ pub(super) fn outline_page_entry_from_event_group(
         let rows = crate::session_history_page::coalesce_history_page_entries(
             ordered_events
                 .iter()
-                .filter_map(|event| page_entry_from_event((**event).clone()))
+                .filter_map(|event| page_entry_from_event(event))
                 .collect(),
         );
         if rows.len() == 1 && rows[0].sequence_end.is_some() {
@@ -470,7 +458,7 @@ pub(super) fn outline_page_entry_from_event_group(
 }
 
 fn page_entry_from_event_with_inline_limit(
-    event: HistoryEvent,
+    event: &HistoryEvent,
     max_inline_chars: Option<usize>,
 ) -> Option<SessionHistoryPageEntry> {
     if event.is_internal_dispatch_diagnostic() {
@@ -503,10 +491,10 @@ fn page_entry_from_event_with_inline_limit(
 }
 
 pub(super) fn event_needs_outline_blob(event: &HistoryEvent) -> bool {
-    event.to_session_history_entry().is_some_and(|entry| {
-        !entry.is_external_provider_observed_state_signal()
-            && entry.text.chars().count() > MAX_OUTLINE_INLINE_CHARS
-    })
+    event
+        .session_history_entry_text()
+        .is_some_and(|text| text.chars().count() > MAX_OUTLINE_INLINE_CHARS)
+        && !event.is_external_provider_observed_state_signal()
 }
 
 pub(super) fn has_content(event: &HistoryEvent) -> bool {
@@ -651,7 +639,7 @@ mod tests {
         );
         assert_eq!(blob.entry_count, 2);
         assert!(blob.summary.chars().count() <= 240);
-        let single = outline_blob_from_event(first).unwrap();
+        let single = outline_blob_from_event(&first).unwrap();
         assert!(single.summary.contains("Retry the prompt"));
     }
 
@@ -775,7 +763,7 @@ mod tests {
     // merged both calls into one row and moved the sentence below it.
     #[test]
     fn tool_blobs_are_one_per_call_and_never_span_inline_text() {
-        let events = vec![
+        let events = [
             command_event(1, "call-3", "running", "cat README.md"),
             command_event(2, "call-3", "completed", "cat README.md"),
             transcript_event(3, TerminalOutputKind::ProviderOutput, "msg-1", "Read it."),
@@ -783,7 +771,12 @@ mod tests {
             command_event(5, "call-4", "completed", "ls -la"),
         ];
 
-        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+        let blobs = outline_blobs_from_events(
+            &events.iter().collect::<Vec<_>>(),
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         assert_eq!(
             blobs
@@ -808,7 +801,7 @@ mod tests {
 
     #[test]
     fn an_imported_codex_call_preview_keeps_the_tool_name_of_the_call() {
-        let events = vec![
+        let events = [
             provider_tool_event_with_text(
                 1,
                 "function_call-call_1",
@@ -829,7 +822,12 @@ mod tests {
             ),
         ];
 
-        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+        let blobs = outline_blobs_from_events(
+            &events.iter().collect::<Vec<_>>(),
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         let preview: serde_json::Value =
             serde_json::from_str(blobs[0].preview.as_deref().expect("tool preview")).unwrap();
@@ -839,7 +837,7 @@ mod tests {
 
     #[test]
     fn a_tool_blob_preview_leaves_out_result_images() {
-        let events = vec![provider_tool_event_with_text(
+        let events = [provider_tool_event_with_text(
             1,
             "call-img",
             serde_json::json!({
@@ -852,7 +850,12 @@ mod tests {
             .to_string(),
         )];
 
-        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+        let blobs = outline_blobs_from_events(
+            &events.iter().collect::<Vec<_>>(),
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         let preview = blobs[0].preview.as_deref().expect("tool preview");
         assert!(!preview.contains("images") && !preview.contains("base64"));
@@ -860,7 +863,7 @@ mod tests {
 
     #[test]
     fn a_tool_blob_preview_counts_the_pictures_its_result_returned() {
-        let events = vec![
+        let events = [
             provider_tool_event_with_text(
                 1,
                 "call-chart",
@@ -892,7 +895,12 @@ mod tests {
             ),
         ];
 
-        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+        let blobs = outline_blobs_from_events(
+            &events.iter().collect::<Vec<_>>(),
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         let preview = blobs[0].preview.as_deref().expect("tool preview");
         assert!(!preview.contains("base64") && !preview.contains("\"images\""));
@@ -913,7 +921,7 @@ mod tests {
 
     #[test]
     fn reasoning_blobs_are_one_per_thought_with_its_first_line() {
-        let events = vec![
+        let events = [
             transcript_event(
                 1,
                 TerminalOutputKind::ProviderReasoning,
@@ -929,7 +937,12 @@ mod tests {
             ),
         ];
 
-        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+        let blobs = outline_blobs_from_events(
+            &events.iter().collect::<Vec<_>>(),
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
 
         assert_eq!(
             blobs

@@ -95,7 +95,7 @@ pub(super) async fn admit_frame(
                         runtime_state.acts_for_owner(session_id, &turn.owner_user_id, &owner)
                     })
                 && kernel_subscription_scope(subscription_scope.as_deref())
-                    != KernelSubscriptionScope::WaitingRoomInventory
+                    != KernelSubscriptionScope::RoomList
                 && router
                     .session_id_for_attachment_access(attachment_id)
                     .as_deref()
@@ -355,7 +355,7 @@ pub(super) async fn admit_frame(
                     subscription_scope,
                     ..
                 } => (kernel_subscription_scope(subscription_scope.as_deref())
-                    == KernelSubscriptionScope::WaitingRoomInventory
+                    == KernelSubscriptionScope::RoomList
                     || router
                         .session_id_for_attachment_access(attachment_id)
                         .as_deref()

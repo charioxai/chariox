@@ -5,7 +5,7 @@
 Refactor `chariox` and `chariox-cloud` together while preserving runtime compatibility.
 
 - `chariox`: kernel, relay, CLI/shell clients, provider adapters, shared protocol/client code.
-- `chariox-cloud`: hosted auth/control plane, relay token issuance, browser bootstrap, waiting room, browser terminal UI.
+- `chariox-cloud`: hosted auth/control plane, relay token issuance, browser bootstrap, Room list, browser terminal UI.
 - Excluded: iOS. It should follow the stabilized protocol and boundaries after this refactor.
 
 Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, agents, provider runs, workspaces, history, workflows, terminal events, and state transitions. The relay remains opaque transport.
@@ -20,7 +20,7 @@ Do not split large files by line range. A new module must own a named responsibi
 
 Allowed:
 
-- Move complete responsibilities such as command admission, session mutation, relay bootstrap, event replay, prompt lifecycle, browser session state, waiting-room projection, or external adapter I/O.
+- Move complete responsibilities such as command admission, session mutation, relay bootstrap, event replay, prompt lifecycle, browser session state, Room list projection, or external adapter I/O.
 - Extract pure state/projection/request policy with tests before moving side effects.
 - Keep compatibility barrels only to preserve imports during migration.
 
@@ -75,13 +75,13 @@ No protocol shape changes are intended. If `LocalDaemonRequest`, `LocalDaemonRes
 - Turn `apps/web/src/client.ts` into app bootstrap/coordinator only: route mount, dependency wiring, global event registration, and app start.
 - Continue extracting by responsibility:
   - terminal app/container wiring
-  - waiting-room controller and background refresh orchestration
+  - Room list controller and background refresh orchestration
   - terminal session lifecycle/connect/reattach
   - freeform agent config/dialog controllers
   - prompt/history/workspace/capabilities controllers
   - render/projection modules or React mounts for HTML/view ownership
 - Controllers should not build large HTML strings. Rendering belongs in render modules or React mount components.
-- Waiting-room refresh must not overwrite active transcript, focus, prompt draft, selected session, or local reconnect state.
+- Room list refresh must not overwrite active transcript, focus, prompt draft, selected session, or local reconnect state.
 
 ### Naming, Docs, Cleanup
 
@@ -93,8 +93,8 @@ No protocol shape changes are intended. If `LocalDaemonRequest`, `LocalDaemonRes
 
 ## Execution Order
 
-1. Maintain architecture guardrails and coarse coordinator checks for `client.ts`, `server.ts`, `waiting-room-kernel.ts`, and `runtime/router.rs`; do not split files only because they are near 1,000 lines.
-2. Finish Cloud web coordinator extraction around real responsibilities, starting with remaining terminal session/freeform/waiting-room orchestration.
+1. Maintain architecture guardrails and coarse coordinator checks for `client.ts`, `server.ts`, `Room list-kernel.ts`, and `runtime/router.rs`; do not split files only because they are near 1,000 lines.
+2. Finish Cloud web coordinator extraction around real responsibilities, starting with remaining terminal session/freeform/Room list orchestration.
 3. Continue OSS router extraction around runtime responsibilities, then introduce the kernel composition boundary.
 4. Split remaining CLI composition/state/controller code after shared protocol/runtime seams are stable.
 5. Remove stale compatibility barrels/helpers once imports have moved.
@@ -123,7 +123,7 @@ Architecture/drill gates:
 - managed relay smoke
 - local/remote freeform and workflow relay drills
 - reconnect/replay-gap/session snapshot recovery
-- waiting-room refresh preserves active terminal state
+- Room list refresh preserves active terminal state
 - staging retail strict smoke for deployment-sensitive changes
 
 ## Done Criteria
@@ -131,5 +131,5 @@ Architecture/drill gates:
 - Cloud has no runtime terminal proxy behavior and remains bootstrap/control plane only.
 - Relay remains opaque transport.
 - Kernel-owned runtime state is not forked in Cloud or clients.
-- `client.ts`, `server.ts`, `waiting-room-kernel.ts`, and `runtime/router.rs` are coordinators/composition files rather than domain owners.
+- `client.ts`, `server.ts`, `Room list-kernel.ts`, and `runtime/router.rs` are coordinators/composition files rather than domain owners.
 - Protocol shapes are unchanged, or the protocol rule has been followed.

@@ -9,8 +9,7 @@ spike (`spikes/wasm/DECISION.md`).
 How to read it: each section describes one part of the App, then ends with
 **Consequences** and **Open points for you**. §8 collects every decision.
 The [two-stage plan](APPS_V2_PLAN.md) records Miguel's later answers from
-10-22, 19:40–19:55 UTC. They supersede historical questions here: wrapped
-binaries are dropped, Excalidraw then Univer are fixed, MPL is allowed as a
+10-22, 19:40–19:55 UTC. They supersede historical questions here: Excalidraw then Univer are fixed, MPL is allowed as a
 dependency, and LaTeX comes later. Typst is not planned now.
 MP-08 / MP-10 / MP-11: design only; no parity or security acceptance closes.
 
@@ -603,19 +602,6 @@ top. Launch set: Rust, JS/TS, C. C++ follows in weeks, Python as a preview.
 
 ---
 
-## 7. Wrapped existing binaries — reversed on 2026-10-22
-
-**Dropped by Miguel**, superseding the earlier proposal and §8 decision 12:
-
-> the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.
-
-There is no wrapped-binary App kind, W1/W2 work, per-OS wrapper package or
-window-capture track in Apps v2. Existing programs remain accessible through
-Computer Use and the other tools being built. Existing web applications can
-still be opened in the kernel browser; that is already a product path.
-
----
-
 ## 7b. Adapting existing open-source projects
 
 Two filters: (a) is the UI already web? (b) does the backend compile to a
@@ -640,10 +626,10 @@ or licence page; releases from GitHub.
 | DuckDB (duckdb-wasm) | MIT | — | n/a | Emscripten only (exceptions, pthreads): runs in the **view's** Web Worker, not as a component (~30 MB) | v1.33 (12-2025) | In-view only |
 | Squoosh codecs | Apache-2.0 (codecs own BSD/MIT) | project dormant since 08-2024 | yes | Emscripten C++/Rust codecs; Rust ones trivial to rebuild for wasip2 | dormant | Possible (reuse codecs) |
 | MuPDF / mupdf.js | **AGPL-3.0** or commercial | **AGPL** covers the WASM binary; network-use copyleft | library | Emscripten; C core could rebuild with wasi-sdk | mupdf.js 0.3 (08-2024) | Avoid; PDF.js + pdf-lib cover it |
-| pandoc | **GPL-2.0+** (pandoc-wasm wrapper MIT) | **GPL**: bundling pandoc.wasm makes the App GPL | CLI | yes, GHC wasm backend builds a WASI p1 module (no Lua filters) | 3.12 (10-2026) | Not a first-party candidate under this rule; wrapped kind dropped |
-| LibreOffice WASM (ZetaJS) | MPL-2.0 (+LGPL parts); zetajs MIT | weak copyleft | **no**: Qt-for-WASM canvas | **no**: Emscripten + pthreads + SharedArrayBuffer (needs COOP/COEP), ~32 MB wasm + data, beta | zetajs 1.2 (06-2025) | No component fit; wrapped kind dropped (§7) |
-| Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No component fit; wrapped kind dropped |
-| OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No component fit; AGPL and wrapped kind dropped |
+| pandoc | **GPL-2.0+** (pandoc-wasm wrapper MIT) | **GPL**: bundling pandoc.wasm makes the App GPL | CLI | yes, GHC wasm backend builds a WASI p1 module (no Lua filters) | 3.12 (10-2026) | Not a first-party candidate under this rule |
+| LibreOffice WASM (ZetaJS) | MPL-2.0 (+LGPL parts); zetajs MIT | weak copyleft | **no**: Qt-for-WASM canvas | **no**: Emscripten + pthreads + SharedArrayBuffer (needs COOP/COEP), ~32 MB wasm + data, beta | zetajs 1.2 (06-2025) | No component fit |
+| Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No component fit |
+| OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No component fit; AGPL |
 
 ### 7b.1 Fixed reference Apps
 
@@ -682,8 +668,7 @@ linked GPL and CPL/LGPL code that fails the first-party licence rule.
 **Licence rule, decided.** First-party Apps use permissive code
 (MIT/BSD/Apache and equivalent terms), with **MPL allowed as a dependency**.
 MPL is weak copyleft; keep its file-level source and notice obligations.
-No GPL/AGPL code in a Chariox App we ship. The wrapped kind was dropped and
-is not an alternative licence route. Preserve the full pinned inventory.
+No GPL/AGPL code in a Chariox App we ship. Preserve the full pinned inventory.
 
 Univer's Pro-only features remain excluded; choose a permitted XLSX library
 with round-trip evidence before claiming that support. CSV/formulas and the
@@ -739,7 +724,7 @@ includes integration, examples, benchmarking and live acceptance: Stage 1
 | 9 | Benchmark target: SaaS + MCP (headline) and Computer Use | both | Accepted as recommended. |
 | 10 | C at launch with the state-machine SDK; C++ right after | yes | C at launch with the state-machine SDK; C++ right after. |
 | 11 | Python as a preview after launch; Go wait | yes | Accepted as recommended. |
-| 12 | Wrapped binaries | Reversed, 10-22 | **Dropped.** Miguel: “the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.” W1/W2 removed; §7 records the reversal. |
+| 12 | Wrapped binaries | Replaced, 2026-11-17 | Superseded by [the any-program plan](../../docs/APPS_ANY_PROGRAM_PLAN.md). |
 | 13 | Reference Apps and licences | Excalidraw first, Univer second | **Fixed, 10-22:** “univer and scalidraw for certain”; “let's leave any latex related app for later”. MPL allowed as a dependency. Typst not planned. [LaTeX result](tex/TEX_APP.md) retained with its licence blocker. |
 | 14 | Resume order: R-track and A-track in parallel, D1 first week | yes | Accepted as recommended. |
 

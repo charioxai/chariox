@@ -14,7 +14,8 @@ pub enum ExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
-    BrowserAccess,
+    /// The agent itself asked the owner something and waits for the answer.
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +43,15 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
+    /// settled obligation and a retained wait or wake prompt are only its record.
+    pub(crate) fn owns_unfinished_work(&self) -> bool {
+        self.goal.is_some()
+            || self
+                .obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+    }
     /// Who began stopping this turn, as recorded when the cancellation began. A path that only
     /// settles a cancellation consumes this; it never makes a new owner Stop.
     pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {
@@ -51,10 +61,18 @@ impl AgentTaskExecution {
             CancelInitiator::Owner
         }
     }
-    /// The owner stopped this turn; the agent stays stopped until prompted again.
+    /// The owner stopped this turn, or the work a finished turn retained; the agent stays stopped
+    /// until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
-        self.state == ExecutionState::Cancelled
+        matches!(self.state, ExecutionState::Cancelled | ExecutionState::Done)
             && self.reason == super::supervision::OWNER_CANCELLED_REASON
+    }
+    /// Someone stopped this task on purpose, the owner or an agent. A task a failure cancelled
+    /// carries the failure text as its reason, so it is not this.
+    pub(crate) fn cancelled_on_purpose(&self) -> bool {
+        self.state == ExecutionState::Cancelled
+            && (self.reason == super::supervision::OWNER_CANCELLED_REASON
+                || self.reason == super::supervision::AGENT_CANCELLED_REASON)
     }
 }
 /// Who stops a running turn.
@@ -99,10 +117,20 @@ impl AgentObligation {
         }
     }
 
-    /// Work still running: a wait has to name a live source for it. Once an obligation has an
-    /// outcome (reply arrived, cancelled, child deleted) that outcome reaches the agent by itself.
+    /// Work still running. Once an obligation has an outcome (reply arrived, cancelled, child
+    /// deleted) that outcome reaches the agent by itself.
     pub(crate) fn needs_live_source(&self) -> bool {
         self.status == "open"
+    }
+
+    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch
+    /// or a delegate stays supervised after the turn ends and wakes the agent when it ends.
+    pub(crate) fn outlives_turn(&self) -> bool {
+        self.status == "open"
+            && matches!(
+                self.kind.as_str(),
+                "process" | "job" | "terminal" | "delegate"
+            )
     }
 
     pub(crate) fn tracks_workflow_run(&self) -> bool {
@@ -121,7 +149,6 @@ pub struct AgentWait {
     pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
-    pub long_wait_notified: bool,
     #[serde(default)]
     pub last_checked_at_ms: u64,
 }
@@ -406,7 +433,8 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
-    BlockForBrowserAccess {
+    /// An agent's own question to the owner: the card carries a reply box, not Resume.
+    BlockForQuestion {
         task: String,
         prompt: String,
         reason: String,
@@ -511,6 +539,21 @@ pub(crate) enum Operation {
         sequence: u64,
         now: u64,
     },
+    /// The person sends a queued message now: it becomes urgent, so it starts its recipient's
+    /// turn or steers the running one.
+    ReleaseQueuedMessage {
+        room: String,
+        agent: String,
+        sequence: u64,
+    },
+    /// The person cancels a queued message: it is never delivered, and a sender that asked for a
+    /// reply is told the message was lost.
+    CancelQueuedMessage {
+        room: String,
+        agent: String,
+        sequence: u64,
+        now: u64,
+    },
     // Internal writer command, not a serialized client protocol shape.
     BindSubmission {
         room: String,
@@ -605,10 +648,12 @@ pub(crate) enum Operation {
         run: String,
         node: String,
     },
-    /// Private owner-turn admission; never cancels resources or delivery receipts.
+    /// A later turn of the agent (`later_prompt`) supersedes its interrupted task; never
+    /// cancels open work, resources or delivery receipts.
     RetireRestartFailure {
         task: String,
         revision: u64,
+        later_prompt: String,
         now: u64,
     },
     OwnerResponse {
@@ -673,9 +718,17 @@ pub(crate) enum Operation {
         tail: String,
         now: u64,
     },
-    /// The owner can cancel a retained timer without a running provider turn.
-    CancelOwnerTimer {
+    /// The owner ends one wake of a waiting task (a timer, a watched process, any driver source)
+    /// without a running provider turn. A process comes back `cancelling`: it settles on its exit.
+    CancelOwnerWake {
         id: String,
+        room: String,
+        owner: String,
+    },
+    /// The owner ends one follow of a peer agent that a task registered. The task is woken, as by
+    /// the agent's own unsubscribe, to learn the follow is gone.
+    EndOwnerFollow {
+        registration: String,
         room: String,
         owner: String,
     },

@@ -15,9 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod acquire_choices;
 mod agent_deletion_provenance;
 pub(crate) mod agent_lifecycle;
 pub(crate) mod agent_subtree_deletion;
+pub(crate) mod app_accounts;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
@@ -37,11 +39,13 @@ pub(crate) mod app_inbox;
 pub(crate) mod app_installation_operations;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_logs;
+pub(crate) mod app_owner_enrollment;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_snapshot_restore;
 pub(crate) mod app_snapshots;
+pub(crate) mod app_standing;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
@@ -55,7 +59,9 @@ mod apps_tests;
 pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
+mod person_inbox;
 pub(crate) use decision_holders::StoredDecisionHolder;
+pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
@@ -233,11 +239,14 @@ enum DurableWriterRequest {
     AppWake(Box<app_wakes::AppWakeRequest>),
     AppInbox(Box<app_inbox::AppInboxRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
+    AppOwnerEnrollment(Box<app_owner_enrollment::AppOwnerEnrollmentRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
     AppHostAction(Box<app_host_actions::HostActionRequest>),
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
+    AppAccount(Box<app_accounts::AccountRequest>),
+    AppStanding(Box<app_standing::StandingRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AgentLifecycle(Box<agent_lifecycle::Request>),
@@ -260,6 +269,7 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
@@ -468,6 +478,10 @@ impl DurableKernelStateStore {
             operation: "durable_state.decision_holders",
             message: error.to_string(),
         })?;
+        person_inbox::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.person_inbox",
+            message: error.to_string(),
+        })?;
         event_connection_imports::initialize(&connection).map_err(|error| {
             DaemonError::LocalTransport {
                 operation: "durable_state.event_connection_imports",
@@ -488,6 +502,8 @@ impl DurableKernelStateStore {
             .and_then(|()| app_file_exports::initialize(&connection))
             .and_then(|()| app_host_actions::initialize(&connection))
             .and_then(|()| app_connections::initialize(&connection))
+            .and_then(|()| app_accounts::initialize(&connection))
+            .and_then(|()| app_standing::initialize(&connection))
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.app_file_grants",
                 message: "App file grant schema could not be initialized".into(),
@@ -514,6 +530,10 @@ impl DurableKernelStateStore {
         })?;
         trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.trigger_firings",
+            message: error.to_string(),
+        })?;
+        acquire_choices::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.acquire_choices",
             message: error.to_string(),
         })?;
         let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
@@ -1743,6 +1763,10 @@ fn run_durable_writer_with(
                 app_logs::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppOwnerEnrollment(request) => {
+                app_owner_enrollment::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppValidation(request) => {
                 app_validations::execute(&mut connection, *request);
                 continue;
@@ -1757,6 +1781,14 @@ fn run_durable_writer_with(
             }
             DurableWriterRequest::AppFileExport(request) => {
                 app_file_exports::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppAccount(request) => {
+                app_accounts::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppStanding(request) => {
+                app_standing::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppConnectionGrant(request) => {
@@ -1937,6 +1969,9 @@ fn commit_durable_write_batch(
                 records,
                 sequence,
             } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            DurableWriteOperation::AcquireChoice(transition) => {
+                acquire_choices::apply(&transaction, transition)
+            }
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -1968,6 +2003,7 @@ fn commit_durable_write_batch(
                     created_resources::apply_event(&transaction, kind, payload_json)?;
                     event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
+                    person_inbox::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         let prompt_state =
                             crate::durable_prompt_state::DurablePromptStateEventPayload::decode(

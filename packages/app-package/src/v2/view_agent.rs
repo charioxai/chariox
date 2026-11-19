@@ -159,6 +159,7 @@ mod tests {
                 .then(|| "Deletes the list".into()),
             confirmation_view: (effect == UiActionEffect::PersonConfirmed)
                 .then(|| "review_payment".into()),
+            standing: None,
         }
     }
 

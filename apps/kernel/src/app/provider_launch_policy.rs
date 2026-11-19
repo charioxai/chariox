@@ -423,6 +423,7 @@ mod tests {
     fn workspace_live_sync_protected_roots_include_working_directory_and_local_links() {
         let mut session = crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "/repo/main",
@@ -490,6 +491,7 @@ mod tests {
         run_git_init(&sibling);
         let session = crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             selected_child.to_string_lossy().to_string(),

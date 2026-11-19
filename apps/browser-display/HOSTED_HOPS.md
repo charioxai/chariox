@@ -13,8 +13,9 @@ Each `runs` entry contains `path` (`V` or `S`), `repeat`, `site`, `identity`
 Optional `command` is an argv array, with `env` for the probe; no shell expansion.
 All paths are absolute. Record three back-to-back repeats of each path per cell.
 
-The r5 user-driven probes live in `hosted-hops/`: `probe-visible.mjs` and
-`probe-selkies.mjs` take an owned runtime ROOT and evidence directory. Their
+The r5 user-driven Selkies probe lives in `hosted-hops/probe-selkies.mjs`; it
+takes an owned runtime ROOT and evidence directory. The probe for the Chariox
+viewer (V) was removed with the classic web UI; V recordings still replay. Their
 supported roots are `/root/.chariox/dev/vidlat/r<N>/drills/<name>` or
 `/root/.chariox/dev/vidlat/owner-ab-r<N>-<name>`, with evidence under
 `/root/.codex/evidence/browser-resume-20260930/vidlat/r<N>/`. Validation

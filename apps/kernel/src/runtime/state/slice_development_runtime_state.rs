@@ -111,10 +111,10 @@ impl KernelRuntimeState {
                     worktree_id: None,
                 }),
         );
-        let selection = ManagedContextDevelopmentSelection::SourceProject {
-            project_id: project.id().to_string(),
+        let selection = ManagedContextDevelopmentSelection::source_project(
+            project.id().to_string(),
             repositories,
-        };
+        );
         self.validate_slice_development_selection(
             Some(&selection),
             &crate::slice::SliceBackendKind::LocalDocker,
@@ -136,10 +136,16 @@ impl KernelRuntimeState {
         if let Some(source_ref) = source_slice_ref {
             self.validate_source_slice_export(source_ref, development)?;
         }
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = development
+        if matches!(
+            development,
+            Some(ManagedContextDevelopmentSelection::SourceProjects { projects }) if projects.len() != 1
+        ) {
+            return Err(slice_development_error(
+                "a slice works on exactly one Project",
+            ));
+        }
+        let Some((project_id, repositories)) =
+            development.and_then(|development| development.single_source_project())
         else {
             return Ok(());
         };
@@ -197,17 +203,20 @@ impl KernelRuntimeState {
                 &publication_parent,
                 slice.development_publication.as_ref(),
             )?,
-            ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            } => materialize_slice_development_publication_with_access(
-                &publication_parent,
-                project_id,
-                repositories,
-                slice.development_publication.as_ref(),
-                update_managed_publication_access,
-                resolved,
-            )?,
+            development @ ManagedContextDevelopmentSelection::SourceProjects { .. } => {
+                let (project_id, repositories) =
+                    development.single_source_project().ok_or_else(|| {
+                        slice_development_error("a slice works on exactly one Project")
+                    })?;
+                materialize_slice_development_publication_with_access(
+                    &publication_parent,
+                    project_id,
+                    repositories,
+                    slice.development_publication.as_ref(),
+                    update_managed_publication_access,
+                    resolved,
+                )?
+            }
         };
         if slice
             .development_publication
@@ -241,10 +250,10 @@ impl KernelRuntimeState {
             }
             return empty_development::cleanup(&slice_development_storage_root(slice)?);
         }
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = slice.development.as_ref()
+        let Some((project_id, repositories)) = slice
+            .development
+            .as_ref()
+            .and_then(|development| development.single_source_project())
         else {
             return Ok(());
         };

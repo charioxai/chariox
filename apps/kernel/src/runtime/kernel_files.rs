@@ -29,25 +29,6 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
-/// Codes whose message this module writes itself, so the grant holder reads them in full.
-pub(crate) fn is_public_code(code: &str) -> bool {
-    matches!(
-        code,
-        "file_path_invalid"
-            | "file_not_found"
-            | "file_permission_denied"
-            | "file_not_a_file"
-            | "file_too_large"
-            | "file_chunk_too_large"
-            | "file_offset_mismatch"
-            | "file_hash_mismatch"
-            | "file_exists"
-            | "file_io_failed"
-            | "file_staging_untrusted"
-            | "file_state_protected"
-    )
-}
-
 fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -210,10 +191,16 @@ pub(crate) fn list(
             continue;
         };
         // A link shows what it points to, as a file manager does; a broken one stays a link.
-        let followed = std::fs::metadata(entry.path()).unwrap_or_else(|_| metadata.clone());
+        let followed = std::fs::metadata(entry.path());
+        let target_kind = match (&followed, metadata.file_type().is_symlink()) {
+            (Ok(followed), true) => Some(kind_of(followed.file_type())),
+            _ => None,
+        };
+        let followed = followed.unwrap_or_else(|_| metadata.clone());
         entries.push(KernelDirectoryEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
             kind: kind_of(metadata.file_type()),
+            target_kind,
             size: followed.len(),
             modified_ms: modified_ms(&followed),
             revision: crate::agent_file_copy::revision(&followed),
@@ -591,28 +578,6 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
-    // EA2-45: the refusal names the staging file and what to do, so the agent must read it.
-    #[test]
-    fn every_code_this_module_raises_with_its_own_message_is_public() {
-        for code in [
-            "file_path_invalid",
-            "file_not_found",
-            "file_permission_denied",
-            "file_not_a_file",
-            "file_too_large",
-            "file_chunk_too_large",
-            "file_offset_mismatch",
-            "file_hash_mismatch",
-            "file_exists",
-            "file_io_failed",
-            "file_staging_untrusted",
-            "file_state_protected",
-        ] {
-            assert!(is_public_code(code), "{code}");
-        }
-        assert!(!is_public_code("kernel_request_failed"));
-    }
-
     use super::*;
 
     // These tests run with nothing protected; the guard has its own tests.
@@ -629,10 +594,8 @@ mod tests {
         super::write(request, &StateGuard::default())
     }
 
-    fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kernel-files-{:08x}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch() -> crate::test_support::TestTempDir {
+        crate::test_support::TestTempDir::new("kernel-files")
     }
 
     fn chunk(
@@ -1031,5 +994,49 @@ mod tests {
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!((names, truncated), (vec!["a-dir", "b.txt"], false));
         assert_eq!(entries[0].kind, KernelFileKind::Directory);
+    }
+
+    // The window opens a link as what it points to; a transfer still sees the link (kind) and skips it.
+    #[test]
+    fn a_link_lists_as_a_link_that_says_what_it_points_to() {
+        let dir = scratch();
+        std::fs::write(dir.join("file.txt"), b"abc").unwrap();
+        std::fs::create_dir(dir.join("folder")).unwrap();
+        std::os::unix::fs::symlink(dir.join("folder"), dir.join("to-folder")).unwrap();
+        std::os::unix::fs::symlink(dir.join("file.txt"), dir.join("to-file")).unwrap();
+        std::os::unix::fs::symlink(dir.join("nothing"), dir.join("to-nothing")).unwrap();
+        let LocalDaemonResponse::KernelDirectoryListed { entries, .. } =
+            list(&ListKernelDirectoryRequest {
+                path: dir.display().to_string(),
+                offset: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let shown: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                let json = serde_json::to_value(entry).unwrap();
+                (
+                    entry.name.clone(),
+                    json["kind"].as_str().unwrap().to_owned(),
+                    json["target_kind"].as_str().map(str::to_owned),
+                )
+            })
+            .collect();
+        let row = |name: &str, kind: &str, target: Option<&str>| {
+            (name.to_owned(), kind.to_owned(), target.map(str::to_owned))
+        };
+        assert_eq!(
+            shown,
+            vec![
+                row("file.txt", "file", None),
+                row("folder", "directory", None),
+                row("to-file", "symlink", Some("file")),
+                row("to-folder", "symlink", Some("directory")),
+                row("to-nothing", "symlink", None),
+            ]
+        );
     }
 }

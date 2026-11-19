@@ -160,7 +160,7 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
         .owner_user_id()
         .to_string();
 
-    // The peer ends its first turn with a delegate it never released: it is corrected once.
+    // The peer ends its first turn with a reply it still owes: it is corrected once.
     store
         .agent_lifecycle(Operation::RegisterObligation {
             owner: "local".into(),
@@ -169,7 +169,7 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
             prompt: first.child_prompt.id().into(),
             run: Some(first.child_run.clone()),
             id: "late".into(),
-            kind: "delegate".into(),
+            kind: "message".into(),
             resource: Some("late-worker".into()),
             now: 2,
         })
@@ -206,11 +206,27 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
         panic!("the unfinished first turn is corrected")
     };
     store
-        .agent_lifecycle(Operation::ReleaseSpawn {
+        .agent_lifecycle(Operation::SourceOutcome {
             room: team.room.clone(),
             source: "late-worker".into(),
+            occurrence: "late-worker-answered".into(),
+            success: true,
+            public_answer: None,
+            now: 3,
         })
         .unwrap();
+    // The corrected turn handles the answer it was told of.
+    for event in store.agent_inbox(&team.room, &peer, 0).unwrap() {
+        store
+            .agent_lifecycle(Operation::Ack {
+                room: team.room.clone(),
+                agent: peer.clone(),
+                sequence: event.sequence,
+                handled: true,
+                now: 3,
+            })
+            .unwrap();
+    }
     let corrected = store
         .agent_task(&task_id)
         .unwrap()
@@ -530,7 +546,7 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .active_prompt_for_agent(&session, &follower)
         .expect("the wake starts one turn");
     assert!(
-        prompt.prompt().contains("3 peer event") && prompt.prompt().chars().count() <= 240,
+        prompt.prompt().contains("3 new events"),
         "{}",
         prompt.prompt()
     );
@@ -538,18 +554,13 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .agent_events_for_prompt(&team.room, &follower, prompt.id())
         .unwrap();
     assert_eq!(batch.len(), 3, "three events, one prompt id");
-    let read = team
-        .runtime
-        .read_agent_inbox(&team.room, &follower, &serde_json::json!({}))
-        .unwrap();
-    let sources: Vec<&str> = read["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|event| event["source"]["id"].as_str().unwrap())
-        .collect();
+    // The one wake carries every peer's event, so nothing is left to read.
     for peer in &peers {
-        assert!(sources.contains(&peer.as_str()), "{sources:?}");
+        assert!(
+            prompt.prompt().contains(peer.as_str()),
+            "{}",
+            prompt.prompt()
+        );
     }
 }
 

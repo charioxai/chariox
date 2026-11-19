@@ -485,13 +485,17 @@ impl InlineShellFixture {
                 context_id: "context".into(),
                 plan_digest: format!("sha256:{}", "1".repeat(64)),
                 kernel_context: ManagedContextKernelSelection::Empty,
-                development: ManagedContextDevelopmentSelection::SourceProject {
-                    project_id: "project".into(),
-                    repositories: vec![DevelopmentSourceRepositoryBinding {
-                        role: DevelopmentRepositoryRole::Primary,
-                        workspace_id: self.project.display().to_string(),
-                        worktree_id: None,
-                    }],
+                development: ManagedContextDevelopmentSelection::SourceProjects {
+                    projects: vec![
+                        crate::managed_context::package::ManagedContextSourceProject {
+                            project_id: "project".into(),
+                            repositories: vec![DevelopmentSourceRepositoryBinding {
+                                role: DevelopmentRepositoryRole::Primary,
+                                workspace_id: self.project.display().to_string(),
+                                worktree_id: None,
+                            }],
+                        },
+                    ],
                 },
                 provider_accounts: ManagedContextProviderAccountSelection::None,
                 git_credentials: ManagedContextGitCredentialSelection::None,
@@ -512,8 +516,12 @@ impl InlineShellFixture {
             target_kernel_id: binding.target_kernel_id.clone(),
             target_key_thumbprint: binding.target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: development.archive_path.clone(),
-                archive_sha256: development.archive_sha256.clone(),
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: development.archive_path.clone(),
+                        archive_sha256: development.archive_sha256.clone(),
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::Empty,
             provider_accounts: ManagedContextPackageProviderAccounts::None,

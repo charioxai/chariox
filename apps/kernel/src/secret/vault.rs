@@ -1807,6 +1807,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Whether `name` is a file the Vault named `vault_name` keeps beside itself:
+/// a transferred key envelope or a write in progress.
+pub(crate) fn is_vault_companion(vault_name: &str, name: &str) -> bool {
+    let envelope = name
+        .strip_prefix(vault_name)
+        .and_then(|rest| rest.strip_prefix(".managed-context-key-"))
+        .is_some_and(|rest| rest.ends_with(".json"));
+    let write = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_prefix(vault_name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|rest| rest.ends_with(".tmp"));
+    envelope || write
+}
+
 fn vault_temp_path(path: &Path) -> PathBuf {
     let mut suffix = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut suffix);
@@ -1962,7 +1977,7 @@ fn unlocked_vaults() -> &'static Mutex<BTreeMap<PathBuf, UnlockedVault>> {
     VAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn normalize_vault_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_vault_path(path: PathBuf) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -2155,17 +2170,17 @@ mod tests {
         }
     }
 
-    fn unlocked_test_vault(name: &str, lease: VaultUnlockLease) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-{name}-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+    fn unlocked_test_vault(
+        name: &str,
+        lease: VaultUnlockLease,
+    ) -> (crate::test_support::TestTempDir, PathBuf) {
+        let dir = crate::test_support::TestTempDir::new(name);
+        let path = dir.join("vault.json");
         create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
         unlock_existing_chariox_encrypted_vault(&path, "correct horse battery", lease)
             .unwrap()
             .expect("the passphrase opens the test Vault");
-        path
+        (dir, path)
     }
 
     // A hot reload keeps the Vault unlocked with the same lease: what the new
@@ -2173,7 +2188,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn handed_over_unlock_opens_the_vault_with_its_lease() {
-        let path = unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
         let store = CharioxEncryptedCredentialVaultStore::new(&path);
         store.set_secret("svc", "key", "value").unwrap();
         let before = chariox_encrypted_vault_status(&path).unwrap();
@@ -2194,8 +2210,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn handed_over_unlock_keeps_single_use_and_no_expiry() {
-        let single = unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
-        let shutdown = unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
+        let (_dir_single, single) =
+            unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
+        let (_dir_shutdown, shutdown) =
+            unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
         let body = hand_over_vault_unlocks().unwrap();
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
         adopt_vault_unlocks(&body).unwrap();
@@ -2210,8 +2228,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn status_says_when_the_unlock_is_just_this_once() {
-        let single = unlocked_test_vault("status-single", VaultUnlockLease::SingleUse);
-        let minutes = unlocked_test_vault("status-minutes", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_single, single) =
+            unlocked_test_vault("status-single", VaultUnlockLease::SingleUse);
+        let (_dir_minutes, minutes) =
+            unlocked_test_vault("status-minutes", VaultUnlockLease::TtlMinutes(30));
         let wire = |path: &PathBuf| {
             serde_json::to_value(chariox_encrypted_vault_status(path).unwrap()).unwrap()
         };
@@ -2230,7 +2250,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn expired_unlock_is_not_handed_over() {
-        let path = unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
         expire_chariox_encrypted_vault_for_test(&path);
         let body = hand_over_vault_unlocks().unwrap();
         lock_chariox_encrypted_vault(&path).unwrap();
@@ -2241,7 +2262,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn malformed_handed_over_unlocks_restore_nothing() {
-        let path = unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
+        let (_dir_path, path) =
+            unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
         let body = hand_over_vault_unlocks().unwrap();
         lock_chariox_encrypted_vault(&path).unwrap();
         let cut = &body[..body.len() - 1];
@@ -2638,7 +2660,7 @@ mod tests {
             rand::random::<u64>()
         ));
         let source_path = root.join("source-vault.json");
-        let target_path = root.join("target-vault.json");
+        let target_path = root.join("target").join("target-vault.json");
         let source_store = test_store(source_path.clone());
         unlock_chariox_encrypted_vault(
             &source_path,
@@ -2838,7 +2860,9 @@ mod tests {
         .to_string()
         .contains("source or context binding does not match"));
 
-        let forged_path = root.join("forged-on-disk-vault.json");
+        // The kernel accepts a Vault outside its home only in a folder of its own.
+        let forged_path = root.join("forged").join("forged-on-disk-vault.json");
+        fs::create_dir_all(forged_path.parent().unwrap()).expect("forged Vault folder");
         fs::write(
             &forged_path,
             decode_transferred_vault_bytes(&attacker_snapshot)

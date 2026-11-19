@@ -30,7 +30,7 @@ mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
-pub(crate) use provider_launch_request::handed_over_credentials;
+pub(crate) use provider_launch_request::{chosen_workspace, handed_over_credentials};
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_output_claude_native;
@@ -95,10 +95,11 @@ pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, Sta
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
-    claude_headless_prompt_queued_behind_running_turn, claude_native_pending_prompt_cancel_input,
-    claude_native_recent_terminal_failure, claude_permission_title,
-    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
-    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_headless_prompt_queued_behind_running_turn, claude_native_first_run_notice,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    claude_permission_title, claude_workspace_trust_declined, format_claude_permission_message,
+    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, NativePromptHandoffPolicy,
+    CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
     background_calls, ended_background_provider_tool_rows, ended_open_provider_tool_rows,
@@ -272,6 +273,7 @@ impl DaemonApp {
         let validate_started = Instant::now();
         config.validate()?;
         crate::runtime::process_resources::configure(config.user_config.kernel.resource_protection);
+        crate::provider::state_confinement::configure(&config)?;
         if config.user_config.credential_vault.backend
             == crate::config::CredentialVaultBackend::CharioxEncrypted
         {
@@ -890,15 +892,13 @@ mod tests {
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::provider::LaunchProviderRequest;
-    use crate::test_support::TestWorktree;
+    use crate::test_support::{TestTempDir, TestWorktree};
 
     #[test]
     fn durable_restore_keeps_sessions_bound_to_their_kernel_id() {
         let worktree = TestWorktree::new("shared-kernel-state");
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "shared-kernel-state-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("shared-kernel-state");
+        let state_path = state_dir.join("state.db");
         let mut config_a = DaemonConfig::for_tests();
         config_a.daemon_id = "kernel-a".to_string();
         config_a.user_config.state.path = Some(state_path.display().to_string());
@@ -920,16 +920,12 @@ mod tests {
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert!(app_a.sessions().get_session(&session_id).is_ok());
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn durable_restore_ignores_orphan_ephemeral_prompt_state() {
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "orphan-ephemeral-prompt-state-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("orphan-ephemeral-prompt-state");
+        let state_path = state_dir.join("state.db");
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(state_path.display().to_string());
         {
@@ -951,16 +947,12 @@ mod tests {
         let restored = DaemonApp::bootstrap(config)
             .expect("orphan ephemeral prompt state must not prevent restart");
         assert!(restored.sessions().list_sessions().is_empty());
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn durable_restore_keeps_slices_bound_to_their_owner_kernel_id() {
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "shared-slice-state-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("shared-slice-state");
+        let state_path = state_dir.join("state.db");
         let mut config_a = DaemonConfig::for_tests();
         config_a.daemon_id = "kernel-a".to_string();
         config_a.user_config.state.path = Some(state_path.display().to_string());
@@ -1017,17 +1009,13 @@ mod tests {
                 .id,
             slice_id
         );
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn daemon_restart_restores_sessions_after_shutdown_cleanup() {
         let worktree = TestWorktree::new("restart-preserves-sessions");
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "restart-preserves-sessions-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("restart-preserves-sessions");
+        let state_path = state_dir.join("state.db");
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(state_path.display().to_string());
 
@@ -1051,18 +1039,14 @@ mod tests {
             app.agents().get_session_agents(&session_id).len() == 1,
             "default agent should restore for preserved session"
         );
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn durable_restore_ignores_newer_snapshot_from_other_kernel_owner() {
         let first_worktree = TestWorktree::new("shared-kernel-snapshot-owner-a");
         let second_worktree = TestWorktree::new("shared-kernel-snapshot-owner-b");
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "shared-kernel-snapshot-owner-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("shared-kernel-snapshot-owner");
+        let state_path = state_dir.join("state.db");
         let mut config_a = DaemonConfig::for_tests();
         config_a.daemon_id = "kernel-a".to_string();
         config_a.user_config.state.path = Some(state_path.display().to_string());
@@ -1092,17 +1076,13 @@ mod tests {
             .get_session(&session_id)
             .expect("kernel a session should restore from event log");
         assert_eq!(restored.host_daemon_id(), "kernel-a");
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
         let worktree = TestWorktree::new("restart-agent-projection");
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "restart-agent-projection-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("restart-agent-projection");
+        let state_path = state_dir.join("state.db");
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(state_path.display().to_string());
 
@@ -1137,17 +1117,13 @@ mod tests {
 
         assert_eq!(projected_agent.provider(), "claude-code");
         assert_eq!(projected_agent.model(), Some("sonnet"));
-
-        let _ = std::fs::remove_file(state_path);
     }
 
     #[test]
     fn durable_restore_preserves_metaagent_event_inbox_state() {
         let worktree = TestWorktree::new("restart-metaagent-events");
-        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "restart-metaagent-events-{}.db",
-            crate::session::unix_epoch_ms()
-        ));
+        let state_dir = TestTempDir::new("restart-metaagent-events");
+        let state_path = state_dir.join("state.db");
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(state_path.display().to_string());
 
@@ -1261,8 +1237,6 @@ mod tests {
             subscription.subscription_id == subscription_id
                 && subscription.kind == "workflow.output.final"
         }));
-
-        let _ = std::fs::remove_file(state_path);
     }
 }
 

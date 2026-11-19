@@ -950,6 +950,7 @@ impl ClassAuditKernel {
         let app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let mut session = crate::session::RuntimeSession::new(
             format!("class-audit-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

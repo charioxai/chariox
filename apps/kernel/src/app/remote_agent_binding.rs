@@ -1030,6 +1030,8 @@ impl DaemonApp {
             );
             return Err(error);
         }
+        let (worker_model, worker_effort) =
+            (leased_agent.model.clone(), leased_agent.effort.clone());
         let leased_agent_id = leased_agent.id.clone();
         let lease_id = lease.id.clone();
         let remote_execution = RemoteAgentBinding {
@@ -1053,7 +1055,16 @@ impl DaemonApp {
         } else {
             self.agents
                 .bind_remote_execution(agent.id(), remote_execution)
-        };
+        }
+        .and_then(|bound| {
+            if (bound.model(), bound.effort())
+                == (worker_model.as_deref(), worker_effort.as_deref())
+            {
+                return Ok(bound);
+            }
+            self.agents
+                .set_worker_model_selection(bound.id(), worker_model, worker_effort)
+        });
         let bound = match bound_result {
             Ok(bound) => bound,
             Err(error) => {

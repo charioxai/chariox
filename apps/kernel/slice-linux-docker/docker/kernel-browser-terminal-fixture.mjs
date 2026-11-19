@@ -69,4 +69,8 @@ const host = new KernelBrowserHost(process.argv[3], {
     inputCapture: { hold: async () => async () => {}, run: async (_, __, operation) => operation() },
   }),
 });
+// MP-08/MP-10: every fixture Tab shows one icon, read through the host's own header path.
+const icon = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/SAcpIQAAAABJRU5ErkJggg==';
+const header = host.header.update.bind(host.header);
+host.header.update = (tabs, active, browser) => header(tabs, active, browser, { favicon: async () => icon });
 await new BrowserControllerStdioServer({ handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());

@@ -3,7 +3,9 @@ use super::*;
 mod assessment_sources;
 mod goal_waits;
 mod goal_yields;
+mod open_sources;
 mod owner_wait;
+mod unwaited_timers;
 mod wakeable_agents;
 struct Fixture {
     root: std::path::PathBuf,
@@ -392,17 +394,8 @@ fn a03_timer_is_an_obligation_that_needs_scheduler_proof_of_life() {
         .obligations
         .iter()
         .any(|o| o.id == "t1" && o.kind == "timer" && o.status == "open"));
-    // An armed timer keeps the task from completing until fired or cancelled.
-    f.apply(Operation::Settle {
-        room: "room".into(),
-        agent: "agent".into(),
-        prompt: "p".into(),
-        run: "run".into(),
-        has_answer: true,
-        cancelled: false,
-        now: 30,
-    });
-    assert_ne!(f.task().state, ExecutionState::Done);
+    // Waiting on the timer keeps it armed until it fires or is cancelled.
+    f.wait_on(&["t1"]);
     let verified = f.wakes(Operation::VerifyWakes { now: 40 });
     assert_eq!(verified.len(), 1);
     assert_eq!(f.wake("t1").verified_at_ms, Some(40));
@@ -507,6 +500,107 @@ fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
     assert_eq!(wake.last_delivery.as_deref(), Some("handled"));
     assert!(wake.last_acknowledged_at_ms.is_some());
     assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
+}
+
+/// A wake turn the kernel lost before it finished leaves the task blocked with its wait and the
+/// wake's prompt still retained. Once the wake is handled, nothing is left to wait for, so a later
+/// turn retires the attempt instead of leaving its owner card open.
+#[test]
+fn a03_a_later_turn_retires_an_interrupted_wake_turn_whose_wake_was_handled() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.wait_on(&["t1"]);
+    assert_eq!(f.wakes(Operation::FireWakes { now: 1_500 }).len(), 1);
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        prompt: "wake-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1_600,
+        work: None,
+        through: 0,
+    });
+    f.apply(Operation::EndFailedTurn {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Interrupted before it finished".into(),
+    });
+    let interrupted = f.task();
+    assert_eq!(interrupted.state, ExecutionState::Blocked);
+    assert!(interrupted.wait.is_some() && interrupted.pending_prompt_id.is_some());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        state: "accepted".into(),
+        now: 1_700,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        handled: true,
+        now: 1_800,
+    });
+    f.apply(Operation::RetireRestartFailure {
+        task: "p".into(),
+        revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
+        now: 2_000,
+    });
+    let retired = f.task();
+    assert_eq!(retired.state, ExecutionState::Cancelled);
+    assert!(retired.wait.is_none() && retired.pending_prompt_id.is_none());
+}
+
+/// The same interrupted turn keeps its owner action while another wake it waits on is still armed.
+#[test]
+fn a03_a_later_turn_keeps_an_interrupted_wake_turn_with_another_wake_still_armed() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.create("t2", "timer", Some(9_000_000), None);
+    f.wait_on(&["t1", "t2"]);
+    f.wakes(Operation::FireWakes { now: 1_500 });
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        prompt: "wake-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1_600,
+        work: None,
+        through: 0,
+    });
+    f.apply(Operation::EndFailedTurn {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Interrupted before it finished".into(),
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        state: "accepted".into(),
+        now: 1_700,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: f.inbox()[0].sequence,
+        handled: true,
+        now: 1_800,
+    });
+    let interrupted = f.task();
+    f.apply(Operation::RetireRestartFailure {
+        task: "p".into(),
+        revision: interrupted.blocked_revision,
+        later_prompt: "later".into(),
+        now: 2_000,
+    });
+    assert_eq!(f.task(), interrupted, "t2 is still armed for this task");
 }
 
 #[test]
@@ -1016,11 +1110,6 @@ fn a03_teardown_settles_inflight_uncertain_delivery_before_timeout() {
     teardown_settles_inflight_deliveries("uncertain");
 }
 
-#[test]
-fn a03_teardown_settles_inflight_blocked_delivery() {
-    teardown_settles_inflight_deliveries("blocked");
-}
-
 fn teardown_settles_inflight_deliveries(state: &str) {
     for agent in [Some("agent"), None] {
         let f = Fixture::new();
@@ -1046,13 +1135,6 @@ fn teardown_settles_inflight_deliveries(state: &str) {
                 sequence,
                 state: state.into(),
                 now: 1_002,
-            });
-        } else if state == "blocked" {
-            f.apply(Operation::Sweep {
-                now: 1_001 + DELIVERY_TIMEOUT_MS,
-                vault_wait_recipients: Vec::new(),
-                busy_recipients: vec![],
-                held_work: Vec::new(),
             });
         }
         assert_eq!(f.inbox()[0].state, state);
@@ -2007,17 +2089,8 @@ mod driver_sources {
             .obligations
             .iter()
             .any(|o| o.id == "t1" && o.kind == "timer" && o.status == "open"));
-        // An armed timer keeps the task from completing until fired or cancelled.
-        f.apply(Operation::Settle {
-            room: "room".into(),
-            agent: "agent".into(),
-            prompt: "p".into(),
-            run: "run".into(),
-            has_answer: true,
-            cancelled: false,
-            now: 30,
-        });
-        assert_ne!(f.task().state, ExecutionState::Done);
+        // Waiting on the timer keeps it armed until it fires or is cancelled.
+        f.wait_on(&["t1"]);
         let verified = f.wakes(Operation::VerifyWakes { now: 40 });
         assert_eq!(verified.len(), 1);
         assert_eq!(f.wake("t1").verified_at_ms, Some(40));
@@ -2488,11 +2561,6 @@ mod driver_sources {
         teardown_settles_inflight_deliveries("uncertain");
     }
 
-    #[test]
-    fn a03_teardown_settles_inflight_blocked_delivery() {
-        teardown_settles_inflight_deliveries("blocked");
-    }
-
     fn teardown_settles_inflight_deliveries(state: &str) {
         for agent in [Some("agent"), None] {
             let f = Fixture::new();
@@ -2518,13 +2586,6 @@ mod driver_sources {
                     sequence,
                     state: state.into(),
                     now: 1_002,
-                });
-            } else if state == "blocked" {
-                f.apply(Operation::Sweep {
-                    now: 1_001 + DELIVERY_TIMEOUT_MS,
-                    vault_wait_recipients: Vec::new(),
-                    busy_recipients: vec![],
-                    held_work: Vec::new(),
                 });
             }
             assert_eq!(f.inbox()[0].state, state);
@@ -3066,36 +3127,6 @@ fn blocked_question_admission_preserves_turn_and_work_boundaries() {
         revision: f.task().revision,
     });
     assert!(arm("interaction", "p").is_err(), "closed tasks cannot ask");
-}
-
-#[test]
-fn kwait_yield_refusal_names_the_uncovered_timer_label_and_cancel_call() {
-    let f = Fixture::new();
-    f.create("wait-a", "timer", Some(1_000), None);
-    f.create("wait-b", "timer", Some(2_000), None);
-    let refusal = f
-        .store
-        .agent_lifecycle(Operation::Yield {
-            task: "p".into(),
-            prompt: "p".into(),
-            registrations: vec!["completion-wait-a".into()],
-            cursor: 0,
-            deadline: Some(5_000),
-            reason: "wait for timers".into(),
-            now: 20,
-        })
-        .unwrap_err()
-        .to_string();
-    for expected in [
-        "wait-b",
-        "timer wait-b",
-        "completion-wait-b",
-        "chariox.events.cancel_wake",
-        "wake_id",
-        "origin_prompt_id",
-    ] {
-        assert!(refusal.contains(expected), "missing {expected}: {refusal}");
-    }
 }
 
 #[test]

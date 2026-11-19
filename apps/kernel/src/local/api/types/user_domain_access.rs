@@ -23,9 +23,6 @@ pub struct UserDomainGrant {
     pub idle_since_ms: Option<u64>,
     pub idle_timeout_seconds: u64,
     pub expiry_rule: String,
-    /// Owner prompt that caused this grant (protocol 462).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_id: Option<String>,
     /// Parent agent that transferred this resource subset (protocol 462).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_by_agent_id: Option<String>,

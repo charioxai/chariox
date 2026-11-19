@@ -8,7 +8,7 @@ fn reads_opencode_observed_json_turns() {
     fs::create_dir_all(&session_dir).unwrap();
     fs::write(
             session_dir.join("session-1.json"),
-            r#"{"id":"open-1","messages":[{"id":"u1","role":"user","content":"Draft the OpenCode import drill.","createdAt":"2026-03-01T00:00:01.000Z"},{"id":"a1","role":"assistant","content":"Capture the waiting-room evidence.","createdAt":"2026-03-01T00:00:02.000Z"}]}"#,
+            r#"{"id":"open-1","messages":[{"id":"u1","role":"user","content":"Draft the OpenCode import drill.","createdAt":"2026-03-01T00:00:01.000Z"},{"id":"a1","role":"assistant","content":"Capture the room-list evidence.","createdAt":"2026-03-01T00:00:02.000Z"}]}"#,
         )
         .unwrap();
 
@@ -17,7 +17,7 @@ fn reads_opencode_observed_json_turns() {
     assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
     assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u1"));
     assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
-    assert_eq!(turns[1].text, "Capture the waiting-room evidence.");
+    assert_eq!(turns[1].text, "Capture the room-list evidence.");
 }
 
 #[test]
@@ -31,7 +31,7 @@ fn reads_changed_opencode_jsonl_turns_incrementally_after_warmup() {
             &transcript,
             concat!(
                 "{\"sessionID\":\"open-jsonl-1\",\"id\":\"u1\",\"role\":\"user\",\"content\":\"Draft the OpenCode JSONL import drill.\",\"createdAt\":\"2026-03-01T00:00:01.000Z\"}\n",
-                "{\"sessionID\":\"open-jsonl-1\",\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"Capture the first waiting-room evidence.\",\"createdAt\":\"2026-03-01T00:00:02.000Z\"}\n",
+                "{\"sessionID\":\"open-jsonl-1\",\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"Capture the first room-list evidence.\",\"createdAt\":\"2026-03-01T00:00:02.000Z\"}\n",
             ),
         )
         .unwrap();

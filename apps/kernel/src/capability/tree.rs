@@ -174,7 +174,8 @@ mod tests {
 
     #[test]
     fn reads_directory_tree_with_depth_limit() {
-        let root = std::env::temp_dir().join("chariox-tree-capability-test");
+        let _tmp = crate::test_support::TestTempDir::new("tree-capability-test");
+        let root = _tmp.join("chariox-tree-capability-test");
         let nested = root.join("src/nested");
         fs::create_dir_all(&nested).expect("nested dirs should exist");
         fs::write(root.join("README.md"), "hello").expect("file should exist");
@@ -211,10 +212,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn does_not_follow_symlinked_directory_outside_worktree() {
-        let root = std::env::temp_dir().join("chariox-tree-capability-symlink-test");
-        let outside = std::env::temp_dir().join("chariox-tree-capability-outside");
-        let _ = fs::remove_dir_all(&root);
-        let _ = fs::remove_dir_all(&outside);
+        let _tmp = crate::test_support::TestTempDir::new("tree-capability-symlink-test");
+        let root = _tmp.join("chariox-tree-capability-symlink-test");
+        let _tmp = crate::test_support::TestTempDir::new("tree-capability-outside");
+        let outside = _tmp.join("chariox-tree-capability-outside");
         fs::create_dir_all(&root).expect("root should exist");
         fs::create_dir_all(&outside).expect("outside should exist");
         fs::write(outside.join("secret.txt"), "secret").expect("secret file should exist");

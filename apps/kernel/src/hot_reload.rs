@@ -23,7 +23,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 13;
+pub const HANDOVER_FORMAT: u32 = 14;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -36,6 +36,9 @@ struct Handover {
     // Jobs that workloads which ended left running stay their owners' (agent or
     // Room terminal): the next program watches them again.
     released_jobs: Vec<crate::runtime::process_resources::ReleasedJobs>,
+    // Processes agents watch keep their wakes: the next program supervises the
+    // same processes again, from the pipes handed over with them.
+    watched: Vec<crate::runtime::state::WatchedHandover>,
     // Commands whose admission stopped them for room stay stopped, listed and
     // startable: the next program's admission is told which they are.
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
@@ -61,6 +64,7 @@ impl Handover {
             providers: Vec::new(),
             attachments: Vec::new(),
             released_jobs: Vec::new(),
+            watched: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
             revoked_reach_runs: Vec::new(),
@@ -76,6 +80,11 @@ impl Handover {
             .iter()
             .map(TerminalHandover::master_fd)
             .chain(self.providers.iter().flat_map(ProviderHandover::fds))
+            .chain(
+                self.watched
+                    .iter()
+                    .flat_map(|watched| watched.fds().iter().copied()),
+            )
             .chain(self.credentials_fd)
             .chain(self.vault_fd)
             .chain(self.listeners.values().copied())
@@ -167,6 +176,8 @@ static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldComm
     Mutex::new(Vec::new());
 static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
     Mutex::new(Vec::new());
+static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
+    Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -236,6 +247,11 @@ pub fn receive() {
             set_close_on_exec(fd, true);
         }
     }
+    for watched in &handover.watched {
+        for fd in watched.fds() {
+            set_close_on_exec(*fd, true);
+        }
+    }
     let mut handover = handover;
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
@@ -251,6 +267,7 @@ pub fn receive() {
     // Activate these only after startup finishes consuming the environment.
     *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
+    *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -274,6 +291,11 @@ pub fn adopt_received_processes() {
     // Admission must precede the first watch sample.
     crate::runtime::process_resources::adopt_admission(held);
     crate::runtime::process_resources::adopt_released(jobs);
+}
+
+/// The watched processes the previous program handed over, once.
+pub(crate) fn take_watched() -> Vec<crate::runtime::state::WatchedHandover> {
+    std::mem::take(&mut *lock(&RECEIVED_WATCHED))
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -697,6 +719,19 @@ pub(crate) fn hand_over_claude(
     }
 }
 
+/// Keeps the processes agents watch for the next program, with the output
+/// pipes it reads them from.
+pub(crate) fn hand_over_watched(
+    watched: Vec<(crate::runtime::state::WatchedHandover, Vec<OwnedFd>)>,
+) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        for (process, pipes) in watched {
+            prepared.handover.watched.push(process);
+            prepared.masters.extend(pipes);
+        }
+    }
+}
+
 /// Keeps the users' focus and grants for the next program.
 pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
@@ -941,6 +976,13 @@ fn replace_program() -> Option<String> {
                 .iter()
                 .flat_map(crate::runtime::process_resources::ReleasedJobs::pids),
         )
+        .chain(
+            prepared
+                .handover
+                .watched
+                .iter()
+                .map(crate::runtime::state::WatchedHandover::pid),
+        )
         .collect();
     end_children_except(&kept);
     let mut command = Command::new(&start.program);
@@ -1083,12 +1125,9 @@ mod tests {
         assert!(lock(&LISTENERS).get("test_exact").is_none());
     }
 
-    fn unlocked_vault() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-hot-reload-vault-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+    fn unlocked_vault() -> (crate::test_support::TestTempDir, PathBuf) {
+        let owner = crate::test_support::TestTempDir::new("hot-reload-vault");
+        let path = owner.join("vault");
         create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
         unlock_existing_chariox_encrypted_vault(
             &path,
@@ -1097,7 +1136,7 @@ mod tests {
         )
         .unwrap()
         .expect("the passphrase opens the test Vault");
-        path
+        (owner, path)
     }
 
     fn is_open(fd: i32) -> bool {
@@ -1107,7 +1146,7 @@ mod tests {
     #[test]
     fn unlocked_vault_survives_the_swap_and_its_descriptor_is_read_once() {
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
-        let path = unlocked_vault();
+        let (_owner, path) = unlocked_vault();
         let before = chariox_encrypted_vault_status(&path).unwrap();
         let fd = send_vault_unlocks()
             .unwrap()
@@ -1130,7 +1169,7 @@ mod tests {
 
     #[test]
     fn restart_without_a_handover_starts_locked() {
-        let path = unlocked_vault();
+        let (_owner, path) = unlocked_vault();
         clear_all_chariox_encrypted_vault_unlocks().unwrap();
         std::env::remove_var(HANDOVER_ENV);
         receive();

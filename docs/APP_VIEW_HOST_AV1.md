@@ -233,6 +233,51 @@ file grants, exports, host clipboard service admission or Vault filling. Those
 need the declared, gesture-bound host/broker paths. AV6 must add trusted field
 identities/masking before any model capture claim; this round implements none.
 
+## View lease and backend-served views (AV3-AV6 slice 2)
+
+A view a client renders itself (`OpenUserAppView` without `kernel_browser`) is leased to
+that client for 60 s. Any owner `CallUserAppView` renews it; the built-in method
+`chariox.lease` renews it and answers `{lease_ms}`, which Web calls every quarter of the
+lease while the window lives. A closed or crashed tab never closes its view, so the
+kernel ends it when nothing renews it (`UserAppViews::lease/renew`, one watcher task per
+view); a client whose renewal is refused opens a new view, which is also how a reload
+re-attaches. Kernel-browser views have no lease: their Tab owns their lifetime.
+
+An App whose backend serves its view declares its actions once, in the signed `ui-actions`
+document, and hands that document to the Rust SDK's `view::View` (`View::declare(..)`;
+`register()` in `Guest::register`, `serve(..)` in `call_tool`). The SDK registers and answers the
+tools the kernel reads the view through (`view_actions`: the registered actions in the shape of the
+signed declarations; `view_state`: the state the App builds when asked; `view_changes` when the App
+offers the feed), so the App never names them; the packer lists them in the manifest beside the
+declared actions. `app_view_catalog/invoke/state/batch` for an installation the agent holds then run
+with no page, Tab or browser: the declared name and input schema and the approval effect are
+checked from the signed declarations, the backend's `view_actions` answer must equal the signed
+declaration of that action on every call (`view_mismatch` / `action_not_registered`), and the
+action runs as the backend tool of the same name under the agent's own App grant.
+
+`app_view_changes` reads the backend's feed (AV3-AV6 slice 3). The App commits each change with
+`view::transact_with_change(tx, delta)`, in the same transaction as its own writes: the SDK keeps
+the head revision and the last 128 changes (8 KiB each, so the feed stays within 1 MiB) in the
+App's durable state. `view_changes {since}` answers `{latest, dropped, changes: [{seq, delta}]}`
+like a page's feed (`dropped` when the reader missed evicted changes: read the state again). The
+kernel hands a reader at most 128 changes in at most 1 MiB, in revision order and not past the
+head, whatever a backend answers (`view_error` otherwise); `wait_ms` makes it ask again every
+250 ms until a change exists or the wait ends. An App that offers no `view_changes` tool answers
+`changes_unavailable`.
+
+Excalidraw is such an App (AV3-AV6 slice 4): its backend runs every declared action on the
+saved scene (`add_elements`, `connect_elements` and `update_elements` repeat the library's
+converter, text layout and arrow binding in Rust, and are tested against 78 requests that the
+real library answered in Chrome), serves `view_state` as the scene summary and writes the feed
+in the same transaction as every save, its own and the window's. The page has no action
+registrations any more: with the window open it asks the feed once a second and merges the saved
+scene into its canvas with Excalidraw's reconciliation, so the agent's edits show live and the
+person's edits and the agent's both survive. A deleted element stays in the saved scene,
+marked, for an hour so that a window which has not yet seen the deletion removes it. An agent
+exports JSON; PNG and SVG need the window's renderer. Univer's actions and the kernel's own
+page-registration path (`controller_call`, `browser_controller_app_view`, the Room and User
+page branches) remain until Univer's backend serves its view.
+
 ## CSP frozen as one layer of containment
 
 Both documents use:

@@ -11,8 +11,10 @@ use wasmparser::{
 use wit_parser::{Resolve, WorldId};
 
 pub const APP_WORLD: &str = "chariox:app/app@1.0.0";
+/// The additive minor: 1.0.0 plus `event-routing` and `workspace`.
+pub const APP_WORLD_1_1: &str = "chariox:app/app@1.1.0";
 pub const MIGRATION_WORLD: &str = "chariox:app/migration@1.0.0";
-pub const SUPPORTED_WORLDS: &[&str] = &[APP_WORLD, MIGRATION_WORLD];
+pub const SUPPORTED_WORLDS: &[&str] = &[APP_WORLD, APP_WORLD_1_1, MIGRATION_WORLD];
 pub const MAX_COMPONENT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,21 +63,47 @@ pub fn check_component(bytes: &[u8], world: &str) -> Result<()> {
     if world == gate::WORLD {
         return gate::check(bytes);
     }
-    let admission = match world {
-        APP_WORLD => "app-admission",
-        MIGRATION_WORLD => "app-migrations-admission",
+    let (resolve, package) = contract::resolve();
+    let (package, admission) = match world {
+        APP_WORLD => (package, "app-admission"),
+        APP_WORLD_1_1 => (contract::minor_1_1(&resolve), "app-admission"),
+        MIGRATION_WORLD => (package, "app-migrations-admission"),
         _ => {
             return Err(ComponentError::UnsupportedWorld {
                 world: world.into(),
             })
         }
     };
-    let (resolve, package) = contract::resolve();
     let world = resolve
         .select_world(&[package], Some(admission))
         .expect("embedded admission world");
     check_against(bytes, &resolve, world)
 }
+
+/// The App world a built component targets: 1.1.0 when it imports
+/// `event-routing` or `workspace`, otherwise 1.0.0. Build tools use it to pick the admission
+/// world; the manifest must still name the same one.
+pub fn app_world_of(bytes: &[u8]) -> &'static str {
+    let mut routed = false;
+    for payload in Parser::new(0).parse_all(bytes).flatten() {
+        if let Payload::ComponentImportSection(section) = payload {
+            routed |= section
+                .into_iter()
+                .flatten()
+                .any(|import| MINOR_1_1_IMPORTS.contains(&import.name.name));
+        }
+    }
+    if routed {
+        APP_WORLD_1_1
+    } else {
+        APP_WORLD
+    }
+}
+
+const MINOR_1_1_IMPORTS: [&str; 2] = [
+    "chariox:app/event-routing@1.1.0",
+    "chariox:app/workspace@1.1.0",
+];
 
 fn invalid(reason: impl fmt::Display) -> ComponentError {
     ComponentError::InvalidComponent {

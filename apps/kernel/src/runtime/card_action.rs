@@ -29,6 +29,24 @@ pub(crate) fn parse_card_action(
     Ok(request)
 }
 
+/// The Room a request only reads, when it is a read of one Room. The asking agent's own Room
+/// already shows it that data, so the read asks nothing of the person. A read that reaches
+/// further (every Room, a name lookup across Rooms, the daemon, another Room) names no Room or
+/// another one: like a write, it waits for the person's passkey card.
+pub(crate) fn room_read(request: &LocalDaemonRequest) -> Option<&str> {
+    match request {
+        LocalDaemonRequest::GetSessionState(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListSessionMembers(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListAgents(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListDescendants(r) => Some(&r.session_id),
+        LocalDaemonRequest::GetAgentDeadline(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListWorkflows(r) => Some(&r.session_id),
+        LocalDaemonRequest::ListWorkflowRuns(r) => Some(&r.session_id),
+        LocalDaemonRequest::GetWorkflowRun(r) => Some(&r.session_id),
+        _ => None,
+    }
+}
+
 fn shorten(text: &str, limit: usize) -> String {
     let mut shown: String = text.chars().take(limit).collect();
     if text.chars().count() > limit {

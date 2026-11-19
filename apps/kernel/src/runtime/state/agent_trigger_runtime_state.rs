@@ -296,6 +296,7 @@ impl KernelRuntimeState {
             agent_id: delivery.agent_id().to_string(),
             prompt: delivery.prompt().to_string(),
             busy_policy: delivery.busy_policy(),
+            responsible: false,
         };
         self.deliver_agent_trigger_prompt(
             &dispatch,
@@ -390,6 +391,14 @@ impl KernelRuntimeState {
                 ),
             });
         };
+        // The kernel keeps the trigger of a workflow's responsible agent; the workflow's
+        // responsible is what changes.
+        if trigger.responsible_for().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: "this trigger follows a workflow's responsible agent; change who is responsible for the workflow instead".into(),
+            });
+        }
         match self
             .owned
             .ensure_agent_prompt_access(trigger.agent_id(), caller_user_id, operation)
@@ -595,6 +604,15 @@ impl KernelRuntimeState {
         };
         let prompt_text = match &dispatch.payload {
             None => dispatch.prompt.clone(),
+            // The responsible's prompt is the kernel's own sentence from the occurrence's
+            // typed fields; nothing a run produced is quoted into it.
+            Some(payload) if dispatch.responsible => {
+                super::workflow_responsible_prompt::responsible_prompt(&dispatch.prompt, payload)
+            }
+            // A notification's occurrence is in the agent's inbox; the prompt names it in one line.
+            Some(_) if dispatch.input_kind == crate::session::TriggerInputKind::Notification => {
+                dispatch.prompt.clone()
+            }
             Some(payload) => {
                 // JSON escaping prevents external text from closing the data block.
                 let payload = payload
@@ -1288,9 +1306,9 @@ pub(super) mod tests {
     ) -> crate::config::DaemonConfig {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(
-            std::env::temp_dir()
-                .join("chariox-tests")
-                .join(format!("{tag}-{}.db", crate::session::unix_epoch_ms()))
+            config
+                .test_state_dir()
+                .join(format!("{tag}.db"))
                 .display()
                 .to_string(),
         );
@@ -2379,11 +2397,11 @@ pub(super) mod tests {
             // Copy the committed SQLite state (including its checkpoint) to
             // simulate a restart without the original fixture's live lease.
             let mut restart_config = config.clone();
-            let restart_path = durable_state_config("resend-snapshot-copy")
-                .user_config
-                .state
-                .path
-                .unwrap();
+            let restart_path = config
+                .test_state_dir()
+                .join("resend-snapshot-copy.db")
+                .display()
+                .to_string();
             rusqlite::Connection::open(runtime.owned.durable_state_store.path())
                 .unwrap()
                 .execute("VACUUM INTO ?1", rusqlite::params![restart_path])

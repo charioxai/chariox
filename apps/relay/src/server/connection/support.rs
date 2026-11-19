@@ -1512,6 +1512,19 @@ pub(super) fn validate_daemon_registration_identity(
     Ok(())
 }
 
+pub(super) fn verify_registration_proof(
+    challenge: Option<String>,
+    dialed_address: Option<&str>,
+    registration: &DaemonRegistration,
+    proof: &str,
+) -> Result<(), &'static str> {
+    let challenge =
+        challenge.ok_or("relay connection already registered; reconnect to register again")?;
+    let dialed_address =
+        dialed_address.ok_or("relay connection named no host; dial the relay by its URL")?;
+    crate::registration_proof::verify(dialed_address, registration, &challenge, proof)
+}
+
 pub(super) fn relay_log(level: &str, event: &str, fields: Value) {
     eprintln!(
         "{}",

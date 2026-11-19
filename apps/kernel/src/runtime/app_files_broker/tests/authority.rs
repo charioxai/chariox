@@ -104,7 +104,9 @@ fn backend_broker_rejects_another_real_worker_installation_before_channel_use() 
         crate::runtime::app_http::HttpContext {
             limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
             runtime: fixture.runtime.handle().clone(),
+            vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
         },
+        Default::default(),
         Default::default(),
     );
     assert!(matches!(result, Err(AppWorkerError::Identity)));

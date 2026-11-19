@@ -65,7 +65,16 @@ pub(super) async fn handle_subscribe(
         &relay_subscription_id,
     );
     let (inbox, updates) = watch_inbox();
-    let task = tokio::spawn({
+    let end_notice = super::subscriptions::SubscriptionEndNotice {
+        router: Arc::clone(router),
+        outgoing_tx: outgoing_tx.clone(),
+        subscription_id: relay_subscription_id.clone(),
+        client_public_key: client_public_key.clone(),
+        event_runtime: Arc::clone(event_runtime),
+        event_stream_id: KERNEL_RESOURCES_SUBSCRIPTION_SCOPE.to_string(),
+        session_id: KERNEL_RESOURCES_SENTINEL_ID.to_string(),
+    };
+    let task = tokio::spawn(end_notice.announce_end_of({
         let router = Arc::clone(router);
         let outgoing_tx = outgoing_tx.clone();
         let event_runtime = Arc::clone(event_runtime);
@@ -84,6 +93,15 @@ pub(super) async fn handle_subscribe(
                     let subscription_id = subscription_id.clone();
                     let client_public_key = client_public_key.clone();
                     async move {
+                        if matches!(event, KernelEvent::Heartbeat { .. })
+                            && !event_runtime.claim_heartbeat(
+                                &client_public_key,
+                                super::events::HeartbeatLane::Inventory,
+                                heartbeat_interval,
+                            )
+                        {
+                            return true;
+                        }
                         super::events::emit_relay_event(
                             &router,
                             &outgoing_tx,
@@ -100,7 +118,7 @@ pub(super) async fn handle_subscribe(
             )
             .await;
         }
-    });
+    }));
     // A re-subscribe with the same id starts over: the client sends its watch set again.
     if let Some(existing) = subscription_tasks.lock().await.insert(
         task_key,

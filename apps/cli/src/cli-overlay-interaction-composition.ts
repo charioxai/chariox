@@ -68,7 +68,7 @@ export type CliOverlayInteractionCompositionDeps = {
   setSessionBrowserOpen: AnyFn
   managedMachineDialogOpen: AnyFn
   setManagedMachineDialogOpen: AnyFn
-  waitingRoomState: AnyFn
+  startState: AnyFn
   reconcileWaitingRoom: AnyFn
   waitingRoomRemoteState: AnyFn
   providerCatalogState: AnyFn
@@ -86,7 +86,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     selectedIndex: deps.sessionBrowserIndex,
     setSelectedIndex: deps.setSessionBrowserIndex,
     selectedProject: () => {
-      const state = deps.waitingRoomState()
+      const state = deps.startState()
       return state.focus === "project-entry"
         ? waitingRoomProjectsForNavigation(deps.waitingRoomProjects())[state.projectIndex ?? 0] ?? null
         : null
@@ -154,7 +154,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     setManagedMachineOpen: deps.setManagedMachineDialogOpen,
     onManagedMachineClosed: () => {
       deps.reconcileWaitingRoom({
-        ...deps.waitingRoomState(),
+        ...deps.startState(),
         focus: "launch-machine",
       })
     },
@@ -162,7 +162,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     setTerminalPairingQrLines: deps.setTerminalPairingQrLines,
     loadSessions: deps.loadSessions,
     getSessionCount: () => sessionBrowserSessions().length,
-    getWaitingRoomSessionIndex: () => deps.waitingRoomState().sessionIndex,
+    getWaitingRoomSessionIndex: () => deps.startState().sessionIndex,
     setSessionBrowserIndex: deps.setSessionBrowserIndex,
     clampSessionBrowserIndex,
     renderOverlay: (mode, onDismiss, overlayBox) => {
@@ -184,7 +184,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         hotkeySections: hotkeySections(),
         managedMachineRows: mode === "managed-machine"
           ? waitingRoomMachineOfferRows(
-              deps.waitingRoomState(),
+              deps.startState(),
               deps.waitingRoomRemoteState(),
             )
           : [],
@@ -213,7 +213,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     selectedProject: sessionBrowserProjectionController.selectedProject,
     normalizeSelectedIndex: normalizeSessionBrowserIndex,
     setSelectedIndex: (updater) => deps.setSessionBrowserIndex((index: number) => updater(index)),
-    waitingRoomState: deps.waitingRoomState,
+    startState: deps.startState,
     providerCatalog: deps.providerCatalogState,
     currentProvider: () => deps.options.provider ?? "opencode",
     currentModel: () => deps.options.model,
@@ -227,7 +227,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const managedMachineDialogController = createWaitingRoomMachineOfferController({
     isOpen: deps.managedMachineDialogOpen,
-    state: deps.waitingRoomState,
+    state: deps.startState,
     remote: deps.waitingRoomRemoteState,
     openOverlay: dialogOverlayController.openManagedMachine,
     closeOverlay: dialogOverlayController.closeManagedMachine,

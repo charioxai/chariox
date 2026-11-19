@@ -1,7 +1,7 @@
 import type { KernelTransportControlRequest } from "./kernel-transport-requests.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 
-export type KernelSubscriptionScope = "session" | "waiting_room_inventory"
+export type KernelSubscriptionScope = "session" | "room_list"
 
 export type KernelSubscriptionState = {
   sessionId: string
@@ -20,7 +20,7 @@ export type KernelSubscriptionStart = {
   readonly resetLastReceivedEventId: boolean
 }
 
-const WAITING_ROOM_INVENTORY_SUBSCRIPTION_ID = "__waiting_room_inventory__"
+const ROOM_LIST_SUBSCRIPTION_ID = "__room_list__"
 
 export function createKernelSessionSubscriptionStart(input: {
   readonly previous: KernelSubscriptionState | null
@@ -51,19 +51,19 @@ export function createKernelSessionSubscriptionStart(input: {
   }
 }
 
-export function createWaitingRoomInventorySubscriptionStart(input: {
+export function createRoomListSubscriptionStart(input: {
   readonly previous: KernelSubscriptionState | null
   readonly lastReceivedEventId: number | null
   readonly relaySubscriptionId: string | null
   readonly heartbeatIntervalMs?: number | undefined
 }): KernelSubscriptionStart {
   const resumeFromEventId =
-    input.previous?.scope === "waiting_room_inventory" ? input.lastReceivedEventId : null
+    input.previous?.scope === "room_list" ? input.lastReceivedEventId : null
   return {
     subscription: {
-      sessionId: WAITING_ROOM_INVENTORY_SUBSCRIPTION_ID,
-      attachmentId: WAITING_ROOM_INVENTORY_SUBSCRIPTION_ID,
-      scope: "waiting_room_inventory",
+      sessionId: ROOM_LIST_SUBSCRIPTION_ID,
+      attachmentId: ROOM_LIST_SUBSCRIPTION_ID,
+      scope: "room_list",
       relaySubscriptionId: input.relaySubscriptionId,
       relayPublicKey: null,
       relayDecryptEvent: null,
@@ -79,7 +79,7 @@ function heartbeatField(heartbeatIntervalMs: number | undefined): { heartbeatInt
 }
 
 export function kernelSubscriptionScopeValue(subscription: KernelSubscriptionState): string | undefined {
-  return subscription.scope === "waiting_room_inventory" ? "waiting_room_inventory" : undefined
+  return subscription.scope === "room_list" ? "room_list" : undefined
 }
 
 export function buildKernelSubscriptionTransportRequest(

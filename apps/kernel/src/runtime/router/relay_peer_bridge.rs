@@ -80,6 +80,16 @@ impl CommandRouter {
         self.runtime_state.same_owner_peer_user_id(identity)
     }
 
+    pub(crate) fn machine_file_peer_user_id(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+        sender: &str,
+        requester_public_key: &str,
+    ) -> Option<String> {
+        self.runtime_state
+            .machine_file_peer_user_id(identity, sender, requester_public_key)
+    }
+
     pub(crate) fn environment_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,

@@ -142,7 +142,8 @@ mod tests {
 
     #[test]
     fn reads_and_edits_file_inside_worktree() {
-        let root = std::env::temp_dir().join("chariox-file-capability-test");
+        let _tmp = crate::test_support::TestTempDir::new("file-capability-test");
+        let root = _tmp.join("chariox-file-capability-test");
         fs::create_dir_all(&root).expect("root should exist");
         let file = root.join("notes.txt");
         fs::write(&file, "before").expect("file should exist");
@@ -180,8 +181,8 @@ mod tests {
 
     #[test]
     fn reports_existing_binary_file_as_not_created() {
-        let root = std::env::temp_dir().join("chariox-file-capability-binary-test");
-        let _ = fs::remove_dir_all(&root);
+        let _tmp = crate::test_support::TestTempDir::new("file-capability-binary-test");
+        let root = _tmp.join("chariox-file-capability-binary-test");
         fs::create_dir_all(&root).expect("root should exist");
         let file = root.join("binary.bin");
         fs::write(&file, [0xff_u8, 0xfe_u8, 0xfd_u8]).expect("binary file should exist");

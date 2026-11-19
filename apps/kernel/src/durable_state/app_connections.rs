@@ -211,6 +211,15 @@ fn apply(connection: &mut Connection, command: ConnectionGrantCommand) -> Result
             if removed == 0 {
                 return Err("NOT_FOUND");
             }
+            // The routes the App made for itself through this grant end with
+            // it; routes the owner added by hand are theirs and stay.
+            transaction
+                .execute(
+                    "DELETE FROM app_inbox_routes WHERE owner_id=?1 AND installation_id=?2
+                       AND connection_id=?3 AND app_managed=1",
+                    params![owner, installation, connection_id],
+                )
+                .map_err(storage)?;
         }
     }
     transaction.commit().map_err(storage)

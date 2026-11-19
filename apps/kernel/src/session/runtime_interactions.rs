@@ -321,6 +321,9 @@ pub struct RuntimeInteractionBrowserRegion {
     pub verification: Option<RuntimeInteractionBrowserVerification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_result: Option<RuntimeInteractionBrowserVerificationResult>,
+    /// Text the page shows once the person's step is done; the card then closes by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_text: Option<String>,
 }
 
 /// A positive HTTP result for this card's exact document and challenge.
@@ -434,6 +437,14 @@ impl RuntimeInteraction {
     pub fn related_agent_id(&self) -> Option<&str> {
         self.related_agent_id.as_deref()
     }
+    /// An agent's question to the owner: a choice with a reply box instead of a permission.
+    pub(crate) fn with_question_reply(mut self, reply: RuntimeInteractionCustomChoice) -> Self {
+        self.kind = RuntimeInteractionKind::Choice;
+        self.level = RuntimeInteractionLevel::Info;
+        self.custom_choice = Some(reply);
+        self
+    }
+
     pub(crate) fn with_related_agent_id(mut self, agent: String) -> Self {
         self.related_agent_id = Some(agent);
         self

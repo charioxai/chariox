@@ -8,7 +8,7 @@ No identity-provider dashboard, real owner account or shared provider login is
 used. The fixture identity is disposable, and needs no cookie/token transfer.
 
 **Exact owner sign-in step:** open
-https://pr972-vidlatab.val.51-255-87-178.sslip.io/waiting-room .
+https://pr972-vidlatab.val.51-255-87-178.sslip.io/terminal .
 Existing stack dev auth automatically selects its fixture account. The owner
 never handles a kernel device code; the coordinator completes that enrollment
 before handing over the two links in OWNER_AB_TEST.md.

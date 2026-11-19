@@ -93,16 +93,16 @@ import type {
   QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
   QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
   ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
-  WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
-  WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
-  WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
-  WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
-  WaitingRoomPublicSnapshot as KernelWaitingRoomPublicSnapshot,
-  WaitingRoomPublicWorkflowEdgeSummary as KernelWaitingRoomPublicWorkflowEdgeSummary,
-  WaitingRoomPublicWorkflowEndpointSummary as KernelWaitingRoomPublicWorkflowEndpointSummary,
-  WaitingRoomPublicWorkflowNodeSummary as KernelWaitingRoomPublicWorkflowNodeSummary,
-  WaitingRoomPublicWorkflowSummary as KernelWaitingRoomPublicWorkflowSummary,
-  WaitingRoomSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
+  RoomListAgentSummary as KernelWaitingRoomPublicAgentSummary,
+  RoomListGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
+  RoomListItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
+  RoomListSessionSummary as KernelWaitingRoomPublicSessionSummary,
+  RoomListSnapshot as KernelWaitingRoomPublicSnapshot,
+  RoomListWorkflowEdgeSummary as KernelWaitingRoomPublicWorkflowEdgeSummary,
+  RoomListWorkflowEndpointSummary as KernelWaitingRoomPublicWorkflowEndpointSummary,
+  RoomListWorkflowNodeSummary as KernelWaitingRoomPublicWorkflowNodeSummary,
+  RoomListWorkflowSummary as KernelWaitingRoomPublicWorkflowSummary,
+  RoomListSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
   WorkflowConsole as KernelWorkflowConsole,
   WorkflowConsoleEntry as KernelWorkflowConsoleEntry,
   WorkflowDefinition as KernelWorkflowDefinition,
@@ -193,21 +193,21 @@ export type CollaborationLevel = KernelCollaborationLevel
 
 export type SessionAgentDefaults = KernelSessionAgentDefaults
 
-export type WaitingRoomPublicSessionSummary = KernelWaitingRoomPublicSessionSummary
+export type RoomListSessionSummary = KernelWaitingRoomPublicSessionSummary
 
-export type WaitingRoomSessionActivitySummary = KernelWaitingRoomSessionActivitySummary
+export type RoomListSessionActivitySummary = KernelWaitingRoomSessionActivitySummary
 
-export type WaitingRoomPublicItemActivitySummary = KernelWaitingRoomPublicItemActivitySummary
+export type RoomListItemActivitySummary = KernelWaitingRoomPublicItemActivitySummary
 
-export type WaitingRoomPublicAgentSummary = KernelWaitingRoomPublicAgentSummary
+export type RoomListAgentSummary = KernelWaitingRoomPublicAgentSummary
 
-export type WaitingRoomPublicWorkflowSummary = KernelWaitingRoomPublicWorkflowSummary
+export type RoomListWorkflowSummary = KernelWaitingRoomPublicWorkflowSummary
 
-export type WaitingRoomPublicWorkflowNodeSummary = KernelWaitingRoomPublicWorkflowNodeSummary
+export type RoomListWorkflowNodeSummary = KernelWaitingRoomPublicWorkflowNodeSummary
 
-export type WaitingRoomPublicWorkflowEdgeSummary = KernelWaitingRoomPublicWorkflowEdgeSummary
+export type RoomListWorkflowEdgeSummary = KernelWaitingRoomPublicWorkflowEdgeSummary
 
-export type WaitingRoomPublicWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEndpointSummary
+export type RoomListWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEndpointSummary
 
 export type WaitingRoomRelayStatusView = KernelRelayStatus
 
@@ -217,9 +217,9 @@ export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 
 export type WaitingRoomTerminalView = KernelTerminalRecord
 
-export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
+export type RoomListSnapshot = KernelWaitingRoomPublicSnapshot
 
-export type WaitingRoomGitCredentialSummary = KernelWaitingRoomGitCredentialSummary
+export type RoomListGitCredentialSummary = KernelWaitingRoomGitCredentialSummary
 
 export type WorkspaceLinkAttachment = KernelWorkspaceLinkAttachment
 

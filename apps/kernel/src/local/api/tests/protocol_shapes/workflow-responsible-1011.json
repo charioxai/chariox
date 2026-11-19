@@ -1,0 +1,87 @@
+{
+  "local": 1012,
+  "peer": 449,
+  "workflow": {
+    "responsible": {
+      "kind": "agent",
+      "kernel_id": "kernel-a",
+      "room_id": "room-a",
+      "agent_id": "agent-a",
+      "label": "orch12"
+    },
+    "responsible_notice": {
+      "kind": "agent_gone",
+      "label": "orch12"
+    }
+  },
+  "failed_outcome": {
+    "kind": "failed",
+    "reason": "step_needs_help",
+    "detail": "resend the diff"
+  },
+  "waiting_outcome": {
+    "kind": "waiting",
+    "on": "provider_profile_usage_exhausted",
+    "node_id": "node-1"
+  },
+  "set_request": {
+    "SetWorkflowResponsible": {
+      "session_id": "room-a",
+      "workflow_ref": "release-pipeline",
+      "responsible": {
+        "kind": "agent",
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      }
+    }
+  },
+  "clear_request": {
+    "ClearWorkflowRunAttention": {
+      "session_id": "room-a",
+      "run_ref": "run-3"
+    }
+  },
+  "peer_set_request": {
+    "kind": "set_workflow_responsible",
+    "protocol_version": 448,
+    "sender": {
+      "kernel_id": "kernel-b",
+      "room_id": "room-b",
+      "agent_id": "agent-b"
+    },
+    "room": "room-a",
+    "workflow_ref": "release-pipeline",
+    "responsible": {
+      "kind": "person"
+    }
+  },
+  "peer_apply_request": {
+    "kind": "apply_workflow_responsible",
+    "protocol_version": 448,
+    "action": "attach",
+    "workflow": {
+      "kernel_id": "kernel-a",
+      "room_id": "room-a",
+      "workflow_id": "workflow-1"
+    },
+    "agent": {
+      "room": "room-b",
+      "agent": "agent-b"
+    },
+    "source": {
+      "kind": "workflow_run",
+      "source_id": "run_finished_abc",
+      "owner_user_id": "owner-1",
+      "kernel_id": "kernel-a",
+      "session_id": "room-a",
+      "workflow_id": "workflow-1",
+      "exit_node_id": "run_finished",
+      "enabled": true,
+      "available": true,
+      "name": "release-pipeline",
+      "exit_ordinal": 0,
+      "display_name": "release-pipeline-run"
+    }
+  }
+}

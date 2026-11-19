@@ -101,9 +101,13 @@ must still work (MP-08/MP-10/MP-11).
 
 `working` → `waiting` (a yield with live registrations and a deadline) →
 `working` (woken) → `done`. `blocked` means the owner must act and always has
-one owner interaction; `cancelled` is a stop. A task with an open obligation
-that ends its turn without a valid wait or answer gets one correction turn,
-then blocks.
+one owner interaction; `cancelled` is a stop. An agent may always end its turn.
+A turn that ends with a watched process, a job, a terminal watch or a delegate
+still open is `done` and is never corrected: the open work stays supervised, its
+end reaches the agent as a new event (`after_turn`) and wakes it, and `chariox.events.wakes`
+lists it as work the agent waits on. Timers are dropped with the turn. Any other
+open obligation (a workflow run, a reply owed) that the turn neither waits on nor
+answers gets one correction turn, then blocks.
 
 ## The driver interface
 

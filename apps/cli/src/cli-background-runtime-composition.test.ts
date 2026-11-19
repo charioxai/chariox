@@ -17,7 +17,7 @@ for (const recovery of ["resync", "session-unavailable"] as const) {
     const subscription = createKernelEventSubscriptionController({
       kernelConnected: () => true, supportsKernelEventStream: () => true,
       getAttachment: () => ({ id: "attachment-1" }), getSessionId: () => state.id,
-      subscribeToWaitingRoomInventory: async () => {},
+      subscribeToRoomList: async () => {},
       subscribeToKernelEvents: async () => { repairInFlight = true; throw new Error("subscription rejected") },
       onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
       onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},

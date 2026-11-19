@@ -288,6 +288,7 @@ mod tests {
     fn prompt_responses_with_session_snapshots_project_updated_session() {
         let session = RuntimeSession::new(
             "session-prompt",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

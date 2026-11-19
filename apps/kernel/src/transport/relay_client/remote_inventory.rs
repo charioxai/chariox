@@ -21,7 +21,7 @@ enum RemoteInventoryRefreshResult {
 }
 
 /// The periodic refresh is slow on purpose; a failed one (Cloud unreachable
-/// after an outage) retries on the next heartbeat so the waiting room's
+/// after an outage) retries on the next heartbeat so the Room list's
 /// machine list recovers within seconds.
 pub(super) fn remote_inventory_refresh_due(
     heartbeat_tick: u64,
@@ -33,7 +33,19 @@ pub(super) fn remote_inventory_refresh_due(
         None => true,
     };
     *task = None;
-    !last_refreshed || heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
+    !last_refreshed || heartbeat_tick.is_multiple_of(RELAY_ROOM_LIST_INTERVAL_TICKS)
+}
+
+/// The machine list is kept warm for the clients that subscribed to it; with none attached, a
+/// request for it refreshes it on demand, so an idle kernel does not ask Cloud and the relay for it
+/// every 500 s. The first client to subscribe finds the refresh already started.
+pub(super) fn inventory_refresh_wanted(
+    attached: bool,
+    was_attached: bool,
+    due: bool,
+    no_refresh_running: bool,
+) -> bool {
+    attached && (due || (!was_attached && no_refresh_running))
 }
 
 pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<bool>>) {
@@ -127,7 +139,11 @@ pub(crate) async fn refresh_remote_inventory_projection(
     let visible_kernel_ids = if let Some(profile) =
         crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
     {
-        relay_discovery::authorization::visible_targets(profile).await?
+        let directory = relay_discovery::authorization::visible_directory(profile).await?;
+        if let Some(directory) = &directory {
+            projection.record_directory_read(directory.linked.clone());
+        }
+        directory.map(|directory| directory.online)
     } else {
         None
     };
@@ -242,6 +258,18 @@ fn requires_peer_probe(is_known: bool, config: &crate::config::DaemonConfig) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unattended_kernel_does_not_refresh_the_machine_list_on_a_timer() {
+        // No client: neither the 500 s tick nor the retry after a failure asks for it.
+        assert!(!inventory_refresh_wanted(false, false, true, true));
+        assert!(!inventory_refresh_wanted(false, true, true, true));
+        // The first subscriber starts it at once; later ones follow the timer.
+        assert!(inventory_refresh_wanted(true, false, false, true));
+        assert!(!inventory_refresh_wanted(true, false, false, false));
+        assert!(!inventory_refresh_wanted(true, true, false, true));
+        assert!(inventory_refresh_wanted(true, true, true, true));
+    }
 
     // MP-08 / MP-11: the home's own machine is "local" in every client; without another kernel on
     // it, it must not also appear as a remote machine with no kernels, whether or not Cloud is used.

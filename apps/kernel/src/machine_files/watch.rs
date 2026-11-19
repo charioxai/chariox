@@ -83,15 +83,15 @@ impl FileWatch {
     }
 
     /// Resolves every requested path again and watches the directories that can change what
-    /// it reads: its target, the nearest existing parent of the path and of the target, and the
-    /// directory holding each link on the way. The parents stay watched when an editor replaces
-    /// a file, a link is repointed or a directory is removed and recreated.
+    /// it reads: its target, every existing ancestor of the path and of the target, and the
+    /// directory holding each link on the way. The ancestors stay watched when an editor
+    /// replaces a file, a link is repointed or a directory is removed, renamed or recreated.
     fn rearm(&mut self) -> Result<(), String> {
         let mut interests = self.requested.clone();
         let mut directories = BTreeSet::new();
         for path in &self.requested {
             self.guard.check(path)?;
-            directories.extend(nearest_parent_directory(path));
+            directories.extend(existing_ancestors(path));
             // The links themselves are interests too: repointing one raises its event in the
             // directory that holds it, and that event must rearm the watch.
             for link in traversed_links(path) {
@@ -104,7 +104,7 @@ impl FileWatch {
                 if target.is_dir() {
                     directories.insert(target.clone());
                 }
-                directories.extend(nearest_parent_directory(&target));
+                directories.extend(existing_ancestors(&target));
                 interests.insert(target);
             }
         }
@@ -199,10 +199,12 @@ fn traversed_links(path: &std::path::Path) -> BTreeSet<PathBuf> {
     links
 }
 
-fn nearest_parent_directory(path: &std::path::Path) -> Option<PathBuf> {
+/// Renaming a directory is reported only in the directory that holds it, so every ancestor
+/// is watched, not just the nearest: that is how a moved tree and its recreation are noticed.
+fn existing_ancestors(path: &std::path::Path) -> impl Iterator<Item = PathBuf> + '_ {
     path.ancestors()
         .skip(1)
-        .find(|parent| parent.is_dir())
+        .filter(|parent| parent.is_dir())
         .map(std::path::Path::to_path_buf)
 }
 
@@ -381,6 +383,52 @@ mod tests {
                 .await
                 .is_err(),
             "the previous target is no longer watched"
+        );
+        drop(watch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_watch_follows_an_ancestor_directory_renamed_and_recreated() {
+        let root = std::env::temp_dir().join(format!("files-watch-{}", rand::random::<u64>()));
+        let (app, old) = (root.join("projects/app"), root.join("projects/app.old"));
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(app.join("src/note"), "before").unwrap();
+        let mut watch = FileWatch::new(
+            &[app.join("src/note").display().to_string()],
+            StateGuard::default(),
+        )
+        .unwrap();
+        std::fs::rename(&app, &old).unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("renaming an ancestor invalidates the file")
+            .unwrap();
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(app.join("src/note"), "recreated").unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("recreating the tree invalidates the file")
+            .unwrap();
+        while tokio::time::timeout(Duration::from_millis(60), watch.changed())
+            .await
+            .is_ok()
+        {}
+        std::fs::write(app.join("src/note"), "after").unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("an edit of the recreated file invalidates it")
+            .unwrap();
+        while tokio::time::timeout(Duration::from_millis(60), watch.changed())
+            .await
+            .is_ok()
+        {}
+        std::fs::write(old.join("src/note"), "ignored").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), watch.changed())
+                .await
+                .is_err(),
+            "the moved tree is no longer watched"
         );
         drop(watch);
         std::fs::remove_dir_all(root).unwrap();

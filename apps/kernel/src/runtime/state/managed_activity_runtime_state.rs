@@ -169,6 +169,7 @@ impl KernelRuntimeState {
             .session_store
             .restore_session(crate::session::RuntimeSession::new(
                 room,
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -532,6 +533,7 @@ mod tests {
     fn session() -> RuntimeSession {
         RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

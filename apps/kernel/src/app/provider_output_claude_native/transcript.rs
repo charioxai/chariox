@@ -70,6 +70,9 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) enqueued_prompts: Vec<String>,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
+    /// The person answered "No" in Claude's own dialog: Claude records the
+    /// refusal as an interrupted tool use and runs no hook for it.
+    pub(super) user_denied_tool_use: bool,
 }
 
 fn claude_transcript_cursor_path(context_file: &str) -> Option<PathBuf> {
@@ -197,6 +200,9 @@ pub(super) fn drain_claude_transcript_raw_since(
         if claude_transcript_is_internal_resume_entry(&value) {
             continue;
         }
+        if claude_transcript_is_tool_use_denial(&value) {
+            drain.user_denied_tool_use = true;
+        }
         if let Some(model) = claude_transcript_model(&value) {
             drain.model = Some(model);
         }
@@ -243,6 +249,25 @@ fn claude_transcript_assistant_turn_is_terminal(value: &Value) -> bool {
             .and_then(Value::as_str),
         Some("end_turn" | "stop_sequence" | "max_tokens" | "refusal")
     )
+}
+
+const CLAUDE_TOOL_USE_DENIAL_TEXT: &str = "[Request interrupted by user for tool use]";
+
+fn claude_transcript_is_tool_use_denial(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match value
+        .get("message")
+        .and_then(|message| message.get("content"))
+    {
+        Some(Value::String(text)) => text.trim() == CLAUDE_TOOL_USE_DENIAL_TEXT,
+        Some(Value::Array(blocks)) => blocks.iter().any(|block| {
+            block.get("text").and_then(Value::as_str).map(str::trim)
+                == Some(CLAUDE_TOOL_USE_DENIAL_TEXT)
+        }),
+        _ => false,
+    }
 }
 
 fn claude_transcript_is_internal_resume_entry(value: &Value) -> bool {

@@ -92,18 +92,15 @@ async fn renewal_drill(reduce_permissions: bool) {
             .unwrap()
     });
     let url = format!("ws://{address}");
-    let (mut daemon_socket, _) = connect_async_with_retry(&url).await.unwrap();
+    let (mut daemon_socket, daemon_socket_handshake) =
+        connect_async_with_retry(&url).await.unwrap();
     send(
         &mut daemon_socket,
-        RelayEnvelope::DaemonRegister {
-            registration: test_registration_with_token(
-                "daemon-1",
-                "machine-a",
-                "Linux",
-                10,
-                "daemon",
-            ),
-        },
+        signed_register(
+            &url,
+            &daemon_socket_handshake,
+            test_registration_with_token("daemon-1", "machine-a", "Linux", 10, "daemon"),
+        ),
     )
     .await;
     sleep(Duration::from_millis(25)).await;

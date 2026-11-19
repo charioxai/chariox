@@ -2990,8 +2990,7 @@ async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
 
 // MP-08 / MP-09 / MP-10 / MP-11 A01-S01 (accam r6): an inbox delivery queued as
 // a workflow prompt never reached a provider when the run is cancelled. It
-// returns to the inbox instead of staying `submitting` until the sweep turns it
-// into an "Unconfirmed delivery" owner task.
+// returns to the inbox instead of staying `submitting` until the sweep settles it.
 #[tokio::test]
 async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
     use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};

@@ -174,6 +174,104 @@ async fn offload_job_return_applies_a_mode_only_change_and_checks_it_for_conflic
     );
 }
 
+#[tokio::test]
+async fn offload_job_return_brings_back_files_below_nested_ignored_folders_of_a_recursive_output() {
+    let source = crate::test_support::TestWorktree::new("offload-nested-source");
+    let home = crate::test_support::TestWorktree::new("offload-nested-home");
+    let finished = finish_on_worker(
+        source.path(),
+        worker_kernel(home.path()),
+        "mkdir -p target/release/deps; printf app > target/release/app; printf lib > target/release/deps/lib.rlib",
+        &["target/**"],
+    )
+    .await;
+    let (mut files, conflicts) = finished
+        .remote
+        .return_files(
+            &finished.root,
+            &finished.record,
+            &finished.base,
+            &finished.upload,
+        )
+        .await
+        .unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        ["target/release/app", "target/release/deps/lib.rlib"]
+    );
+    assert!(conflicts.is_empty());
+    assert_eq!(
+        std::fs::read(source.path().join("target/release/app")).unwrap(),
+        b"app"
+    );
+}
+
+fn mode(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[tokio::test]
+async fn offload_job_return_keeps_the_home_copys_read_and_write_bits() {
+    let source = crate::test_support::TestWorktree::new("offload-bits-source");
+    let home = crate::test_support::TestWorktree::new("offload-bits-home");
+    let scripts = source.path().join("scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    for (name, home_mode, body) in [
+        ("note.txt", 0o644, "n"),
+        ("build.sh", 0o644, "#!/bin/sh\n"),
+        ("shared.sh", 0o664, "#!/bin/sh\n"),
+        ("run.sh", 0o755, "#!/bin/sh\n"),
+        ("both.sh", 0o640, "a"),
+    ] {
+        std::fs::write(scripts.join(name), body).unwrap();
+        std::fs::set_permissions(
+            scripts.join(name),
+            std::fs::Permissions::from_mode(home_mode),
+        )
+        .unwrap();
+    }
+    let finished = finish_on_worker(
+        source.path(),
+        worker_kernel(home.path()),
+        "printf m > scripts/note.txt; chmod +x scripts/build.sh scripts/shared.sh; chmod -x scripts/run.sh; chmod +x scripts/both.sh; printf b > scripts/both.sh",
+        &[],
+    )
+    .await;
+    let (mut files, conflicts) = finished
+        .remote
+        .return_files(
+            &finished.root,
+            &finished.record,
+            &finished.base,
+            &finished.upload,
+        )
+        .await
+        .unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "scripts/both.sh",
+            "scripts/build.sh",
+            "scripts/note.txt",
+            "scripts/run.sh",
+            "scripts/shared.sh"
+        ]
+    );
+    assert!(conflicts.is_empty());
+    assert_eq!(std::fs::read(scripts.join("note.txt")).unwrap(), b"m");
+    for (name, expected) in [
+        ("note.txt", 0o644),
+        ("build.sh", 0o755),
+        ("shared.sh", 0o775),
+        ("run.sh", 0o644),
+        ("both.sh", 0o750),
+    ] {
+        assert_eq!(mode(&scripts.join(name)), expected, "{name}");
+    }
+}
+
 /// Fails one artifact read as a relay outage would, until it is disarmed.
 pub(super) struct Outage {
     worker: Arc<Worker>,
@@ -378,15 +476,18 @@ pub(super) async fn release_service(state: &KernelRuntimeState) -> tokio::task::
 
 impl HeldWorker {
     pub(super) async fn job_tool(&self, name: &str) -> serde_json::Value {
-        self.state
-            .dispatch_job_tool(
+        tokio::time::timeout(
+            super::cleanup_tests::SCRIPTED_REQUEST_DEADLINE,
+            self.state.dispatch_job_tool(
                 Some(&self.run),
                 name,
                 &serde_json::json!({"job_id":self.job_id}),
                 &self.task,
-            )
-            .await
-            .unwrap()
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{name} never answered"))
+        .unwrap()
     }
 }
 

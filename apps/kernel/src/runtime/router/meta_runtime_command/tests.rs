@@ -5,6 +5,7 @@ use super::*;
 fn test_session() -> crate::session::RuntimeSession {
     crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "/repo",

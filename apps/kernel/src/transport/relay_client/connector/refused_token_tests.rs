@@ -165,7 +165,9 @@ async fn connection_the_relay_drops_after_registration_backs_off() {
             counter.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 use futures_util::StreamExt;
-                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                if let Ok(mut socket) =
+                    crate::transport::relay_socket_connect::accept_as_relay(stream).await
+                {
                     let _ = socket.next().await;
                     let _ = socket.close(None).await;
                 }
@@ -196,7 +198,9 @@ async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
             let registered = registered_tx.clone();
             peers.spawn(async move {
                 use futures_util::StreamExt;
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
                 let _ = socket.next().await;
                 let _ = registered.send(());
                 // Retain both halves without reading or replying, like a half-open link.

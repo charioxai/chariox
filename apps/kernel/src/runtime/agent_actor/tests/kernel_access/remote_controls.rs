@@ -6,7 +6,7 @@ use crate::transport::{
 };
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn kernel_access_committed_remote_cancellation_survives_revocation_at_app_wait() {
@@ -280,14 +280,14 @@ impl WorkerSpy {
                     tokio::select! {
                         _ = &mut stopped => break,
                         _ = async {
-                    let mut socket = accept_async(stream).await.unwrap();
+                    let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream).await.unwrap();
                     let first = receive(&mut socket).await;
                     match first {
                         RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
                             let presence = serde_json::from_value(serde_json::json!({"kernel_id":"worker", "machine_id":"fixture-machine", "public_key":worker.relay_public_key})).unwrap();
                             send(&mut socket, RelayEnvelope::ClientMetadataResponse { request_id, machines: None, kernels: None, kernel: Some(presence), error: None }).await;
                         }
-                        RelayEnvelope::DaemonRegister { registration } => {
+                        RelayEnvelope::DaemonRegister { registration, .. } => {
                             let RelayEnvelope::DaemonPeerRequest { request_id, encrypted_request, .. } = receive(&mut socket).await else { panic!("expected peer request") };
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
                             let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();

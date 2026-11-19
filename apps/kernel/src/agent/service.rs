@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
-    RemoteAgentBinding,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
+    AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
+    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -177,7 +177,7 @@ impl AgentService {
         Ok(created_agents)
     }
 
-    /// A child above its parent's current limit, or beyond the fan-out caps, is refused where
+    /// A child above its parent's current limit, or beyond the depth and team caps, is refused where
     /// it is created, so nothing can change between the check and the effect.
     fn check_authority_limit(
         &self,
@@ -192,20 +192,7 @@ impl AgentService {
         let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
             return Ok(());
         };
-        let unfinished_work = self
-            .durable_state
-            .as_ref()
-            .map(|state| state.agents_with_unfinished_work(&request.session_id))
-            .transpose()?
-            .unwrap_or_default();
-        super::authority_limit::check_spawn(
-            request,
-            parent,
-            &agents,
-            earlier_in_batch,
-            session,
-            &unfinished_work,
-        )
+        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
     }
 
     pub(crate) fn create_agent_for_session(
@@ -1062,6 +1049,43 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    /// Moves the agent's stop on when `next` accepts the stop it holds now (`None` when it holds
+    /// none): `Some(stop)` writes it, `Some(None)` ends the stop, `None` leaves it as it is. The
+    /// check and the write happen under one lock, so two events that read the same stop cannot
+    /// both win. `None` comes back when nothing was written.
+    pub fn change_usage_limit_stop(
+        &mut self,
+        agent_id: &str,
+        next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        let Some(changed) = next(agent.usage_limit_stop()) else {
+            return Ok(None);
+        };
+        agent.set_usage_limit_stop(changed);
+        Ok(Some(agent.clone()))
+    }
+
+    pub fn set_agent_self_settings(
+        &mut self,
+        agent_id: &str,
+        self_settings: AgentSelfSettings,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_self_settings(self_settings);
+        Ok(agent.clone())
+    }
+
     pub fn set_agent_substitution_timeout(
         &mut self,
         agent_id: &str,
@@ -1074,6 +1098,25 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_substitution_timeout_ms(timeout_ms);
+        Ok(agent.clone())
+    }
+
+    /// The model and variant the worker chose for a remote agent: the worker runs it, so its
+    /// choice is the agent's.
+    pub fn set_worker_model_selection(
+        &mut self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_model(model);
+        agent.set_effort(effort);
         Ok(agent.clone())
     }
 

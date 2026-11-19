@@ -1,5 +1,5 @@
-//! MP-08/MP-10/MP-11 A05: App bindings follow the user's request and direct
-//! lineage on the room surface. Trusted-installation checks are unchanged.
+//! MP-08/MP-10/MP-11 A05: every agent binds the owner's trusted Apps with no
+//! card; transfers follow direct lineage on the room surface.
 use super::*;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::extension::{ExtensionGrant, ExtensionKind};
@@ -140,31 +140,12 @@ async fn room_command(room: &Room, token: &str, command: String) -> bool {
         .is_ok_and(|result| result.ok)
 }
 
+/// Every agent binds the owner's trusted App, in any turn, with no card.
 #[tokio::test]
-async fn capability_owner_prompt_alone_cannot_mint_an_app_binding() {
+async fn an_agent_binds_a_trusted_app_in_any_turn_without_a_card() {
     let room = room();
     let (agent, token) = room.agents[2].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let attempt = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        request_app(&room, &token, "installed"),
-    )
-    .await;
-    assert!(
-        attempt.is_err(),
-        "MP-11: acquisition needs explicit resource approval, even in YOLO mode"
-    );
-    assert!(
-        !bound(&room, &agent).await,
-        "MP-11: human prompt alone grants no installation"
-    );
-}
-
-#[tokio::test]
-async fn capability_app_self_binding_requires_the_users_request() {
-    let room = room();
-    let (agent, token) = room.agents[2].clone();
-    // A turn caused by another agent's message, even in YOLO mode.
+    // A turn caused by another agent's message.
     running_prompt(
         &room,
         &agent,
@@ -173,20 +154,18 @@ async fn capability_app_self_binding_requires_the_users_request() {
     )
     .await;
     assert!(
-        !request_app(&room, &token, "installed").await,
-        "MP-08: unrequested App acquisition"
-    );
-    assert!(!bound(&room, &agent).await);
-
-    let room = self::room();
-    let (agent, token) = room.agents[2].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    assert!(
         !request_app(&room, &token, "not-installed").await,
         "MP-11: untrusted or absent installations are never bound"
     );
-    assert!(approved_app(&room, &token, "installed").await);
+    assert!(request_app(&room, &token, "installed").await);
     assert!(bound(&room, &agent).await);
+    let session = room
+        .router
+        .runtime_state
+        .session_snapshot(&room.session)
+        .await
+        .unwrap();
+    assert!(session.active_interactions().is_empty());
 }
 
 #[tokio::test]
@@ -203,7 +182,7 @@ async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades(
         .await,
         "MP-08: a parent cannot hand over an App it does not hold"
     );
-    assert!(approved_app(&room, &parent_token, "installed").await);
+    assert!(request_app(&room, &parent_token, "installed").await);
     assert!(
         !room_command(
             &room,
@@ -245,7 +224,7 @@ async fn capability_room_app_transfer_refreshes_the_target_catalog() {
     let room = room();
     let [(parent, parent_token), (child, _), _] = room.agents.clone();
     running_prompt(&room, &parent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    assert!(approved_app(&room, &parent_token, "installed").await);
+    assert!(request_app(&room, &parent_token, "installed").await);
     // The App is dormant: its tools are listable, so a new binding is due a refresh.
     let control = room.router.runtime_state.app_control();
     crate::runtime::app_lifecycle::tests::stage(&room.app.lock().await.durable_state_store());
@@ -409,90 +388,6 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
     );
 }
 
-// MP-08/MP-10/MP-11 D1: real leases persist the raw worker delivery id.
-#[tokio::test]
-async fn capability_leased_acquisition_uses_delivered_worker_run_and_owner_approval() {
-    let room = room();
-    let agent = room.agents[0].0.clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let prompt_id = {
-        let app = room.app.lock().await;
-        let session = app.sessions().get_session(&room.session).unwrap();
-        let prompts = app.prompt_state_owner();
-        let active = prompts
-            .active_prompt_for_agent_snapshot(&session, &agent)
-            .unwrap();
-        let mut delivered = active.clone();
-        delivered.set_durable_delivery(
-            crate::session::DurablePromptDeliveryPhase::Delivered,
-            Some("worker-run".into()),
-            None,
-        );
-        assert!(prompts.replace_active_prompt_if_matches(&session, &agent, &active, delivered));
-        app.agents()
-            .bind_remote_execution(
-                &agent,
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: "worker".into(),
-                    worker_machine_id: "worker-machine".into(),
-                    execution_lease_id: "lease".into(),
-                    leased_agent_id: "worker-agent".into(),
-                    active_worker_provider_run_id: Some("worker-run".into()),
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                    worker_worktree_id: None,
-                },
-            )
-            .unwrap();
-        active.id().to_string()
-    };
-    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
-        home_kernel_id: room.app.lock().await.config().daemon_id.clone(),
-        home_session_id: room.session.clone(),
-        home_agent_id: agent.clone(),
-        home_prompt_id: Some(prompt_id),
-        leased_agent_id: "worker-agent".into(),
-        worker_kernel_id: "worker".into(),
-        worker_machine_id: "worker-machine".into(),
-        worker_provider_run_id: "worker-run".into(),
-        worker_worktree_path: room._scratch.0.to_string_lossy().into(),
-        worker_workspace_identity: crate::io::WorkspaceIdentity::local(
-            room._scratch.0.to_string_lossy(),
-        ),
-    };
-    let home = room.router.runtime_state.with_relay_peer_authority(
-        crate::runtime::relay_peer_authority::test_peer_authority("worker"),
-    );
-    let (result, ()) = tokio::join!(
-        async {
-            home.dispatch_forwarded_capability_runtime_tool_call(
-                context.clone(),
-                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
-                serde_json::json!({"kind":"app","name":"installed"}),
-            )
-            .await
-            .expect("MP-08 D1: delivered leased turn reaches home owner approval")
-        },
-        answer_app_decision(&room, "allow")
-    );
-    assert!(result.0.ok);
-    assert!(bound(&room, &agent).await);
-    let mut stale = context;
-    stale.worker_provider_run_id = "replacement".into();
-    assert!(home
-        .dispatch_forwarded_capability_runtime_tool_call(
-            stale,
-            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
-            serde_json::json!({"kind":"app","name":"installed"})
-        )
-        .await
-        .is_err());
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
 #[tokio::test]
 async fn capability_deleting_an_app_grant_source_revokes_its_child() {
     let room = room();
@@ -530,63 +425,6 @@ async fn capability_deleting_an_app_grant_source_revokes_its_child() {
 }
 
 #[tokio::test]
-async fn capability_pending_owner_decision_wakes_when_its_turn_ends() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let (attempt, ()) = tokio::join!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            request_app(&room, &token, "installed")
-        ),
-        async {
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                loop {
-                    let session = room
-                        .router
-                        .runtime_state
-                        .session_snapshot(&room.session)
-                        .await
-                        .unwrap();
-                    if session
-                        .active_interactions()
-                        .iter()
-                        .any(|item| item.title() == Some("Chariox resource access"))
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let app = room.app.lock().await;
-            let prompts = app.prompt_state_owner();
-            let session = app.sessions().get_session(&room.session).unwrap();
-            let active = prompts
-                .active_prompt_for_agent_snapshot(&session, &agent)
-                .unwrap();
-            let mut cancelled = active.clone();
-            cancelled.set_status(crate::session::PromptStatus::Cancelled);
-            assert!(prompts.replace_active_prompt_if_matches(&session, &agent, &active, cancelled));
-        }
-    );
-    assert!(!attempt.expect("MP-11: turn loss must wake acquisition without an owner reply"));
-    assert!(!bound(&room, &agent).await);
-    assert!(
-        room.router
-            .runtime_state
-            .session_snapshot(&room.session)
-            .await
-            .unwrap()
-            .active_interactions()
-            .iter()
-            .all(|item| item.title() != Some("Chariox resource access")),
-        "MP-11: the stale owner popup is withdrawn"
-    );
-}
-
-#[tokio::test]
 async fn capability_agent_origin_cannot_use_an_owner_only_app_binding_helper() {
     let room = room();
     let (agent, _) = room.agents[0].clone();
@@ -609,163 +447,6 @@ async fn capability_agent_origin_cannot_use_an_owner_only_app_binding_helper() {
         "MP-11: indirect agent acquisition cannot impersonate an owner grant"
     );
     assert!(!bound(&room, &agent).await);
-}
-
-async fn approved_app(room: &Room, token: &str, name: &str) -> bool {
-    let (result, ()) = tokio::join!(
-        request_app(room, token, name),
-        answer_app_decision(room, "allow")
-    );
-    result
-}
-
-/// MP-08/MP-11 (#922 round 3): App and Browser Deny share the typed refusal.
-#[tokio::test]
-async fn capability_review_round3_app_deny_is_typed_not_requested() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let (result, ()) = tokio::join!(
-        room.router
-            .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
-                serde_json::json!({"kind":"app","name":"installed"}),
-            ),
-        answer_app_decision(&room, "deny")
-    );
-    assert!(
-        matches!(
-            result,
-            Err(DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::NotRequested
-            })
-        ),
-        "MP-11: owner Deny must return user_domain_not_requested: {result:?}"
-    );
-    assert!(!bound(&room, &agent).await);
-    assert!(room
-        .router
-        .runtime_state
-        .session_snapshot(&room.session)
-        .await
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .all(|item| item.title() != Some("Chariox resource access")));
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
-/// MP-08/MP-11 (#922 round 4): command routing preserves the shared Deny code.
-#[tokio::test]
-async fn capability_review_round4_room_app_deny_is_typed_not_requested() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let (result, ()) = tokio::join!(
-        room.router.dispatch_authenticated_runtime_tool_call(
-            &token,
-            "chariox.room.run_command",
-            serde_json::json!({"command": format!("extension grant app {agent} installed")}),
-        ),
-        answer_app_decision(&room, "deny")
-    );
-    assert!(
-        matches!(
-            result,
-            Err(DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::NotRequested
-            })
-        ),
-        "MP-11: command routing must retain user_domain_not_requested: {result:?}"
-    );
-    let events = room
-        .app
-        .lock()
-        .await
-        .durable_state_store()
-        .load_events_after(0)
-        .unwrap();
-    assert!(
-        events.iter().any(|event| {
-            event.kind == "metaagent.command.executed"
-                && event.payload["metaagent_id"] == agent
-                && event.payload["command"] == format!("extension grant app {agent} installed")
-                && event.payload["status"] == "failed"
-        }),
-        "MP-11: typed refusals must still audit the failed command"
-    );
-    assert!(!bound(&room, &agent).await);
-    assert!(room
-        .router
-        .runtime_state
-        .session_snapshot(&room.session)
-        .await
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .all(|item| item.title() != Some("Chariox resource access")));
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
-async fn answer_app_decision(room: &Room, choice: &str) {
-    let interaction = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let session = room
-                .router
-                .runtime_state
-                .session_snapshot(&room.session)
-                .await
-                .unwrap();
-            if let Some(interaction) = session
-                .active_interactions()
-                .iter()
-                .find(|interaction| interaction.title() == Some("Chariox resource access"))
-            {
-                break interaction.id().to_string();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("resource-specific owner interaction");
-    assert!(
-        room.router
-            .runtime_state
-            .answer_terminal_runtime_interaction(
-                &room.session,
-                &interaction,
-                "allow",
-                None,
-                Some("alice"),
-                None,
-                None,
-                Some(crate::local::KernelConnectionClass::KernelAgent),
-            )
-            .await
-            .is_err(),
-        "MP-11: an agent cannot answer its resource approval"
-    );
-    assert!(
-        room.router
-            .runtime_state
-            .resolve_runtime_interaction(&room.session, &interaction, "allow", None,)
-            .await
-            .is_err(),
-        "MP-11: ownerless agent replies cannot mint authority"
-    );
-    room.router
-        .runtime_state
-        .resolve_terminal_runtime_interaction(
-            &room.session,
-            &interaction,
-            choice,
-            None,
-            Some("alice"),
-        )
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -791,279 +472,4 @@ async fn capability_agents_cannot_supply_app_authority_or_safety_overrides() {
         );
     }
     assert!(!bound(&room, &agent).await);
-}
-
-// MP-08/MP-11 SB-03: retain the same owner prompt while replacing its provider.
-async fn replace_calling_run(room: &Room, agent: &str) {
-    let app = room.app.lock().await;
-    let run = app
-        .providers()
-        .get_run_for_agent(&room.session, agent)
-        .unwrap();
-    app.providers_mut()
-        .mark_run_ended_provider_only(&room.session, run.id())
-        .unwrap();
-    app.providers_mut()
-        .launch_run_detached(
-            LaunchProviderRequest::new(
-                &room.session,
-                "dev-stub",
-                "dev-stub",
-                "default",
-                "native-tui-idle",
-            )
-            .with_agent_id(agent)
-            .with_owner_user_id("alice"),
-        )
-        .unwrap();
-}
-
-async fn pending_app_decision(room: &Room) -> String {
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let session = room
-                .router
-                .runtime_state
-                .session_snapshot(&room.session)
-                .await
-                .unwrap();
-            if let Some(item) = session
-                .active_interactions()
-                .iter()
-                .find(|item| item.title() == Some("Chariox resource access"))
-            {
-                break item.id().to_string();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn security_sb03_direct_app_decision_withdraws_on_provider_replacement() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let (attempt, ()) = tokio::join!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            request_app(&room, &token, "installed")
-        ),
-        async {
-            pending_app_decision(&room).await;
-            replace_calling_run(&room, &agent).await;
-        }
-    );
-    assert!(!attempt.expect("MP-11 SB-03: stale direct caller withdraws without owner reply"));
-    assert!(!bound(&room, &agent).await);
-    assert!(room
-        .router
-        .runtime_state
-        .session_snapshot(&room.session)
-        .await
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .all(|item| item.title() != Some("Chariox resource access")));
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
-async fn stale_app_writer(room_route: bool) {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    let admission = room.router.runtime_state.app_control().admission();
-    let initial_slots = admission.available_permits();
-    let (attempt, ()) = tokio::join!(
-        async {
-            if room_route {
-                room_command(
-                    &room,
-                    &token,
-                    format!("extension grant app {agent} installed"),
-                )
-                .await
-            } else {
-                request_app(&room, &token, "installed").await
-            }
-        },
-        async {
-            let decision = pending_app_decision(&room).await;
-            let store = room.app.lock().await.durable_state_store();
-            room.router
-                .runtime_state
-                .resolve_terminal_runtime_interaction(
-                    &room.session,
-                    &decision,
-                    "allow",
-                    None,
-                    Some("alice"),
-                )
-                .await
-                .unwrap();
-            // Resolution persists session activity before waking acquisition.
-            // Do not yield between that commit and blocking the grant writer.
-            let mut blocker = rusqlite::Connection::open(store.path()).unwrap();
-            let held = blocker
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while admission.available_permits() == initial_slots {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .expect("MP-11 SB-03: grant reached blocking writer check");
-            replace_calling_run(&room, &agent).await;
-            held.rollback().unwrap();
-        }
-    );
-    assert!(
-        !bound(&room, &agent).await,
-        "MP-11 SB-03: stale writer completion cannot persist a binding"
-    );
-    assert!(!attempt, "MP-11 SB-03: stale acquisition is refused");
-    assert!(!room
-        .router
-        .runtime_state
-        .pending_provider_reload_for_test(&agent));
-    let events = room
-        .app
-        .lock()
-        .await
-        .durable_state_store()
-        .load_events_after(0)
-        .unwrap();
-    assert!(events
-        .iter()
-        .all(|event| event.kind != "agent.extension_granted"));
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn security_sb03_direct_app_writer_cannot_bind_after_provider_replacement() {
-    stale_app_writer(false).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn security_sb03_room_app_writer_cannot_bind_after_provider_replacement() {
-    stale_app_writer(true).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn security_sb03_wrong_prompt_delivery_cannot_acquire() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
-    {
-        let app = room.app.lock().await;
-        let session = app.sessions().get_session(&room.session).unwrap();
-        let prompts = app.prompt_state_owner();
-        let active = prompts
-            .active_prompt_for_agent_snapshot(&session, &agent)
-            .unwrap();
-        let mut wrong_run = active.clone();
-        wrong_run.set_durable_delivery(
-            crate::session::DurablePromptDeliveryPhase::Delivered,
-            Some("replaced-run".into()),
-            None,
-        );
-        assert!(prompts.replace_active_prompt_if_matches(&session, &agent, &active, wrong_run));
-    }
-    let attempt = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        request_app(&room, &token, "installed"),
-    )
-    .await;
-    assert!(!attempt.expect("MP-11 SB-03: another run's delivery cannot acquire App authority"));
-    assert!(!bound(&room, &agent).await);
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
-}
-
-// MP-08/MP-10/MP-11 R1: promoted externally edited human work cannot request Apps.
-#[tokio::test]
-async fn capability_review_r1_external_queue_edit_cannot_acquire_app() {
-    let room = room();
-    let (agent, token) = room.agents[0].clone();
-    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "human").await;
-    let (automation, queued) = {
-        let mut app = room.app.lock().await;
-        let human = app
-            .attachments()
-            .list_client_attachments("human")
-            .into_iter()
-            .next()
-            .unwrap();
-        let automation = crate::app::KernelSessionService::new(&mut app)
-            .attach(AttachRequest::for_user(
-                &room.session,
-                "external",
-                ClientCapabilityLevel::AutomationOnly,
-                "alice",
-            ))
-            .unwrap();
-        app.submit_prompt(
-            &room.session,
-            human.id(),
-            Some(&agent),
-            "Human queued request",
-            Vec::new(),
-        )
-        .unwrap();
-        let session = app.sessions().get_session(&room.session).unwrap();
-        let (_, queued) = app.prompt_state_owner().state_parts(&session, &agent);
-        (automation, queued.back().unwrap().clone())
-    };
-    assert!(queued.owner_request());
-    let request = LocalDaemonRequest::UpdateQueuedPrompt(crate::local::UpdateQueuedPromptRequest {
-        session_id: room.session.clone(),
-        attachment_id: automation.id().into(),
-        target_agent_id: agent.clone(),
-        prompt_id: queued.id().into(),
-        prompt: "Automation requests my App".into(),
-    });
-    let mut command = KernelCommand::from_local_request("MP-11-R1-app-edit", None, None, &request);
-    command.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
-    command.caller.user_id = Some("alice".into());
-    command.caller.caller_id = room
-        .router
-        .runtime_state
-        .insert_access_grant_for_test(&room.session);
-    room.router.dispatch(command, request).await.unwrap();
-    {
-        let app = room.app.lock().await;
-        let session = app.sessions().get_session(&room.session).unwrap();
-        let prompts = app.prompt_state_owner();
-        prompts
-            .complete_active_prompt_only(&session, &agent)
-            .unwrap();
-        let promoted = prompts
-            .activate_next_queued_prompt(&session, &agent, Some(queued.id()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(promoted.prompt(), "Automation requests my App");
-        assert!(
-            !promoted.owner_request(),
-            "MP-11 R1: edited automation cannot retain owner provenance"
-        );
-    }
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        request_app(&room, &token, "installed"),
-    )
-    .await;
-    assert!(!result.expect("MP-11 R1: automated acquisition returns without an owner popup"));
-    assert!(!bound(&room, &agent).await);
-    assert!(room
-        .router
-        .runtime_state
-        .session_snapshot(&room.session)
-        .await
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .all(|i| i.title() != Some("Chariox resource access")));
-    room.router.runtime_state.shutdown_cleanup().await.unwrap();
 }

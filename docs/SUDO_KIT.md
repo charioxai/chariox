@@ -62,7 +62,7 @@ without popup input or requester text. It is an additional owner protocol
 observer, not a substitute for visible UI. Type `exit` to close it.
 
 Connect owner local TUI **A**, owner Web **B**, owner remote TUI **C**, and an
-owner terminal **D** in the waiting room/unattached to this session. If native
+owner terminal **D** in the Room list/unattached to this session. If native
 clients advertise sudo support, include them; otherwise record explicit N/A.
 For shared-session checks add a real invited guest terminal **G**. Record
 which terminals are attached and which are waiting. Keep harmless providers

@@ -256,6 +256,9 @@ pub struct InitialDisplayResumeRegistration {
 pub enum RelayEnvelope {
     DaemonRegister {
         registration: DaemonRegistration,
+        /// The kernel identity key's signature over this connection's challenge
+        /// (`registration_proof`).
+        proof: String,
     },
     DaemonHeartbeat {
         daemon_id: String,
@@ -489,9 +492,11 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 1,
             },
+            proof: "proof".to_string(),
         };
         let json = serde_json::to_string(&envelope).expect("envelope should serialize");
         assert!(json.contains("\"kind\":\"daemon_register\""));
+        assert!(json.contains("\"proof\":\"proof\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
     }

@@ -2,7 +2,7 @@
 
 The kit runs the frozen Chariox OpenH264 kernel/browser and qualified Selkies
 wheel baseline on one quiet Ubuntu26.04 CCX43. The web app uses the private
-validation stack's disposable fixture account. Opening its waiting-room link
+validation stack's disposable fixture account. Opening its Rooms link
 is the entire owner sign-in step; the coordinator enrolls the kernel through
 normal product device approval beforehand. See OWNER_AB_TEST.md and OPERATOR.md.
 

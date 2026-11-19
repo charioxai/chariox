@@ -95,7 +95,7 @@ test("waiting room activation creates and attaches sessions with launch defaults
     controlDecision: { action: "none" },
     activationDecision: { action: "create", launch },
     accountProfile: "work",
-    waitingRoomState: {
+    startState: {
       executionMode: "plan",
       permissionLevel: "required",
     },
@@ -287,7 +287,7 @@ test("waiting room activation sends the selected multi-repository Project to a n
         sliceCreate: { displayMode: "headless" },
       },
     },
-    waitingRoomState: {
+    startState: {
       projectSelectionId: "existing:project-1",
       managedDevelopmentMode: "current_project",
     },
@@ -312,12 +312,10 @@ test("waiting room activation sends the selected multi-repository Project to a n
   })
   await harness.controller.activate()
   assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
-    kind: "source_project",
-    projectId: "project-1",
-    repositories: [
+    kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
       { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
       { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-    ],
+    ] }],
   })
 })
 
@@ -333,7 +331,7 @@ test("waiting room activation keeps a new slice development setup empty", async 
         sliceCreate: { displayMode: "headless" },
       },
     },
-    waitingRoomState: {
+    startState: {
       sliceSelectionId: "new",
       projectSelectionId: "existing:project-1",
       managedDevelopmentMode: "empty",
@@ -374,7 +372,7 @@ test("waiting room activation refuses unresolved Current Project slice creation"
         sliceCreate: { displayMode: "headless" },
       },
     },
-    waitingRoomState: {
+    startState: {
       sliceSelectionId: "new",
       projectSelectionId: "new",
       managedDevelopmentMode: "current_project",
@@ -406,7 +404,7 @@ test("waiting room activation sends an exact repository subset to a new slice", 
         sliceCreate: { displayMode: "headless" },
       },
     },
-    waitingRoomState: {
+    startState: {
       sliceSelectionId: "new",
       projectSelectionId: "existing:project-1",
       managedDevelopmentMode: "current_project",
@@ -438,11 +436,9 @@ test("waiting room activation sends an exact repository subset to a new slice", 
 
   await harness.controller.activate()
   assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
-    kind: "source_project",
-    projectId: "project-1",
-    repositories: [
+    kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
       { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
-    ],
+    ] }],
   })
 })
 
@@ -636,7 +632,7 @@ function createHarness(options: {
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   deleteSlice?: (sliceRef: string) => Promise<void>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
-  waitingRoomState?: Partial<WaitingRoomState>
+  startState?: Partial<WaitingRoomState>
   remoteState?: WaitingRoomRemoteState
 }) {
   const calls: string[] = []
@@ -670,7 +666,7 @@ function createHarness(options: {
     connectKernel: async () => {
       calls.push("connectKernel")
     },
-    getWaitingRoomState: () => (options.waitingRoomState ?? {}) as WaitingRoomState,
+    getWaitingRoomState: () => (options.startState ?? {}) as WaitingRoomState,
     getRemoteState: () => options.remoteState ?? ({} as WaitingRoomRemoteState),
     getWorkspaceTarget: () => workspaceTarget,
     getWorktreeTarget: () => worktreeTarget,

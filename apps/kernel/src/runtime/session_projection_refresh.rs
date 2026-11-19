@@ -273,6 +273,8 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowCodeRun { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowResponsibleSet { session, .. }
+        | LocalDaemonResponse::WorkflowRunAttentionCleared { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
@@ -365,6 +367,7 @@ mod tests {
         use crate::agent::{AgentInstance, GridPosition};
         let mut session = RuntimeSession::new(
             "private-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "tree",
@@ -576,6 +579,14 @@ mod tests {
     }
 
     fn runtime_session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "kernel")
+        RuntimeSession::new(
+            id,
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        )
     }
 }

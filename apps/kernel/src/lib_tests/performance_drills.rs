@@ -18,6 +18,7 @@ async fn performance_drill_session_history_outline() {
         crate::history::OperationalHistoryStore::open(history_path).expect("history should open");
     let session = crate::session::RuntimeSession::new(
         "session-history-baseline",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -198,6 +199,7 @@ fn performance_drill_noisy_prompt_queue_is_bounded_per_agent() {
     let owner = crate::runtime::prompt_state::PromptStateOwner::default();
     let session = crate::session::RuntimeSession::new(
         "session-perf-queue",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",

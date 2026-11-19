@@ -178,6 +178,13 @@ impl KernelRuntimeState {
         ) {
             return Ok(None);
         }
+        // A slice reaches no discovery of its own: its provisioned home is the one kernel it names.
+        if let Some(home) = self
+            .slice_home()
+            .filter(|home| home.kernel_id == kernel_ref)
+        {
+            return Ok(Some(home.kernel_id));
+        }
         #[cfg(test)]
         match peer_agent_link_for_tests::resolve(kernel_ref).as_slice() {
             [] => {}
@@ -624,6 +631,17 @@ impl KernelRuntimeState {
                 permission_level: authority.permission_level,
             },
         })
+    }
+
+    /// The owner and the stamp `sender` is known by on `kernel`, for a request that is not a
+    /// message to an agent; a guest reaches no other kernel.
+    pub(super) fn peer_caller_of_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+    ) -> Result<(String, PeerAgentStamp), DaemonError> {
+        self.peer_agent_caller(sender, kernel)
+            .map(|caller| (caller.owner, caller.stamp))
     }
 
     /// The Cloud owner whose kernels `sender` reaches, under the rules of its peer agent calls.

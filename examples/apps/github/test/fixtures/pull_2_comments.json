@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/issues/2/comments?per_page=50&page=1",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"47c4ff6c20f774fd71f92af23ad8f602fa917d3ba0016d036754375456546601\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4892",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"html_url\": \"https://github.com/charioxai/chariox-github-app-drill/pull/2#issuecomment-6889682311\",\n  \"id\": 6889682311,\n  \"user\": {\n   \"login\": \"mgutierrez09\",\n   \"id\": 33031955,\n   \"avatar_url\": \"https://avatars.githubusercontent.com/u/33031955?v=4\",\n   \"html_url\": \"https://github.com/mgutierrez09\",\n   \"type\": \"User\",\n   \"user_view_type\": \"public\",\n   \"site_admin\": false\n  },\n  \"created_at\": \"2026-11-15T05:20:29Z\",\n  \"updated_at\": \"2026-11-15T05:20:29Z\",\n  \"body\": \"Looks good so far. Can you add a test?\",\n  \"author_association\": \"MEMBER\",\n  \"reactions\": {\n   \"total_count\": 0,\n   \"+1\": 0,\n   \"-1\": 0,\n   \"laugh\": 0,\n   \"hooray\": 0,\n   \"confused\": 0,\n   \"heart\": 0,\n   \"rocket\": 0,\n   \"eyes\": 0\n  },\n  \"performed_via_github_app\": null,\n  \"minimized\": null\n }\n]"
+}

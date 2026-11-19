@@ -24,7 +24,9 @@ import { createRemoteAttachmentRecovery, type RemoteAttachmentRef } from "./remo
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
+import { formatNativeReopenHint } from "./exit-hint.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
   defaultKernelEndpoint,
@@ -261,7 +263,7 @@ async function runClaudeRemoteRendered(
         effort: options.effort,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attached = await attachNativeSession(client, session.id, options.clientId)
     // RR-07: hold the attachment id in a mutable ref so the pump, stdin and the event
@@ -288,7 +290,7 @@ async function runClaudeRemoteRendered(
       },
     })
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
@@ -314,6 +316,7 @@ async function runClaudeRemoteRendered(
       run,
       grantedMcps: options.grantMcps,
       providerLines: ["  tui:            target-kernel-pty"],
+      promptPolicy: NATIVE_PROMPT_POLICY.observed,
     })
     process.stderr.write(banner)
     if (process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE) {
@@ -360,6 +363,7 @@ async function runClaudeRemoteRendered(
       })
     }
     await exited
+    process.stderr.write(formatNativeReopenHint("claude", session.id))
   } finally {
     exitController.abort()
     restoreResize?.()

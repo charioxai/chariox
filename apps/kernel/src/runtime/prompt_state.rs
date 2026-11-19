@@ -123,6 +123,11 @@ impl PromptStateKey {
     }
 }
 
+/// What a submission that refuses to queue says when the agent already has a turn: the caller
+/// keeps its work and starts it at the next possible point. Nobody shows it to a sender.
+pub(crate) const TARGET_BUSY_MESSAGE: &str =
+    "target agent is busy; retry when its provider is ready";
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
@@ -531,7 +536,7 @@ impl PromptStateOwner {
             if !allow_queue {
                 return Err(DaemonError::LocalTransport {
                     operation: "send agent message",
-                    message: "target agent is busy; retry when its provider is ready".to_string(),
+                    message: TARGET_BUSY_MESSAGE.to_string(),
                 });
             }
             let pending_prompt_id = if prompt.durable_operation_id().is_some() {
@@ -1826,6 +1831,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-direct-message",
+            crate::session::ProjectId::test(),
             None,
             "workspace-direct-message",
             "worktree-direct-message",
@@ -1871,6 +1877,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1913,6 +1920,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -1963,6 +1971,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-durable",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2024,6 +2033,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-delivery",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2104,6 +2114,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2192,6 +2203,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-cancel-before-dispatch",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2250,6 +2262,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-cancel-during-dispatch",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2313,6 +2326,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2381,6 +2395,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2450,6 +2465,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-remote-steer-reservation",
+            crate::session::ProjectId::test(),
             None,
             "workspace-remote-steer-reservation",
             "worktree-remote-steer-reservation",
@@ -2572,6 +2588,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-stale-completion",
+            crate::session::ProjectId::test(),
             None,
             "workspace-stale-completion",
             "worktree-stale-completion",
@@ -2633,6 +2650,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2703,6 +2721,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2736,6 +2755,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2765,6 +2785,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2818,6 +2839,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2894,6 +2916,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2944,6 +2967,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut restored_with_prompt = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2968,6 +2992,7 @@ mod tests {
 
         let mut restored_without_prompt = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3002,6 +3027,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3059,6 +3085,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3086,6 +3113,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",

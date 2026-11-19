@@ -35,6 +35,12 @@ impl CommandRouter {
         if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
             return Ok(Some(listed));
         }
+        if let Some(placed) = self
+            .dispatch_workflow_responsible_placed(session, caller, command, tokens)
+            .await
+        {
+            return Ok(Some(placed));
+        }
         if tokens.first().map(String::as_str) != Some("agent") {
             return Ok(None);
         }
@@ -102,6 +108,16 @@ impl CommandRouter {
                     args,
                 )
                 .await?,
+            ),
+            Some("promote") => Some(
+                self.dispatch_meta_agent_promote_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    args,
+                )
+                .await,
             ),
             Some(verb @ ("steer" | "message")) => Some(
                 self.dispatch_meta_agent_message_command(
@@ -441,6 +457,15 @@ impl CommandRouter {
                 )
             }
         };
+        // The caller's session comes from the store without its agents, tasks and wakes; the
+        // activity that names what an agent waits on is read from the full snapshot.
+        let activity = match self
+            .runtime_state
+            .session_agent_snapshot(session.id(), caller.id())
+        {
+            Ok((snapshot, _)) => self.runtime_state.agent_activity_for_session(&snapshot),
+            Err(error) => return meta_command_failure_result(command, error),
+        };
         let mut listed = Vec::new();
         let mut frontier = vec![(root.id().to_string(), 1_u32)];
         while let Some((parent_id, depth)) = frontier.pop() {
@@ -466,9 +491,10 @@ impl CommandRouter {
                     "alias": agent.alias(),
                     "parent": parent_id,
                     "depth": depth,
-                    "state": format!("{:?}", agent.state()),
+                    "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
                     "is_processing": agent.is_processing(),
                     "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
+                    "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
                     "deadline": deadline,
                     "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
                         vec![WATCHED_PROCESS_GRANT]

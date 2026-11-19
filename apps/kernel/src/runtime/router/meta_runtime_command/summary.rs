@@ -33,6 +33,8 @@ pub(super) fn summarize_meta_workflow(
         "id": workflow.id(),
         "created_by_agent_id": workflow.created_by_agent_id(),
         "alias": workflow.alias(),
+        "responsible": workflow.responsible(),
+        "responsible_notice": workflow.responsible_notice(),
         "revision": workflow.revision(),
         "nodes": workflow
             .nodes()
@@ -113,6 +115,9 @@ pub(super) fn summarize_meta_workflow_run(run: &crate::session::WorkflowRun) -> 
         .map(summarize_meta_workflow_intermediate_output);
     serde_json::json!({
         "id": run.id(),
+        "number": run.number(),
+        "outcome": run.outcome(),
+        "attention": run.attention(),
         "created_by_agent_id": run.created_by_agent_id(),
         "workflow_id": run.workflow_id(),
         "endpoint_id": run.endpoint_id(),

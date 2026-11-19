@@ -9,6 +9,11 @@ pub enum ControlPlaneRequest {
     Acquire {
         capability_revision: String,
         request_id: String,
+        /// The option to acquire, from the capability's `offers`; absent acquires the service's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        class_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
     },
     AcquireJob {
         capability_revision: String,
@@ -101,10 +106,29 @@ pub struct MachineAllocationCapability {
     pub revision: String,
     pub actions: Vec<String>,
     pub offer: Option<MachineAcquisitionOffer>,
+    /// Every machine the owner may acquire, as the connected service lists it; the kernel never adds, ranks or rates them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<MachineOption>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub job_offers: Vec<JobMachineOffer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_default_class_id: Option<String>,
+}
+
+/// One machine the connected service offers: its size, rate in the account's currency, region and stock now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineOption {
+    pub class_id: String,
+    pub region: String,
+    pub vcpu: u32,
+    pub ram_gb: f64,
+    pub disk_gb: u32,
+    pub rate_per_minute: JobMachineRate,
+    pub available: bool,
+    /// A display note from the service, shown beside the option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Display facts supplied by the connected service for this capability revision.

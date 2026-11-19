@@ -143,6 +143,13 @@ impl KernelRuntimeOwnedState {
                         return Err(error);
                     }
                 };
+                // The person's phone alert for a run that needs them rides the Room's
+                // "needs your action" source, which must exist when the run is recorded.
+                if session.workflow_runs().iter().any(|run| run.attention()) {
+                    if let Err(error) = self.ensure_owner_action_notification_source(&session) {
+                        tracing::warn!(%error, "owner action source was not registered for a run that needs the person");
+                    }
+                }
                 let persisted = match prompt_agent_id {
                     Some(agent_id) => self
                         .durable_state_store
@@ -703,6 +710,7 @@ mod lock_order_tests {
             .session_store
             .restore_session(RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",

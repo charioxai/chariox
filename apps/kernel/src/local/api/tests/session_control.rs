@@ -426,6 +426,9 @@ fn session_attach_clears_a_missing_active_provider_run() {
             },
         ))
         .expect("initial attachment should succeed");
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["kimi-k2.6"])
+    });
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             max_context_tokens: None,
@@ -855,6 +858,9 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["openai/gpt-5.4"])
+    });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             max_context_tokens: None,
@@ -998,6 +1004,9 @@ fn local_request_api_spawns_and_focuses_agents() {
         );
     });
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "codex", &["gpt-5.4"])
+    });
     let profiled = match harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -1008,11 +1017,12 @@ fn local_request_api_spawns_and_focuses_agents() {
                 model: Some("gpt-5.4".to_string()),
                 effort: Some("low".to_string()),
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect("agent profile update should succeed")
     {
-        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session, .. } => {
             let entry = session
                 .agents()
                 .iter()
@@ -1040,11 +1050,12 @@ fn local_request_api_spawns_and_focuses_agents() {
                 model: None,
                 effort: None,
                 clear_effort: true,
+                reason: None,
             },
         ))
         .expect("agent profile clear should succeed")
     {
-        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session, .. } => {
             let entry = session
                 .agents()
                 .iter()
@@ -1075,11 +1086,14 @@ fn local_request_api_spawns_and_focuses_agents() {
                 clear_workspace_id: false,
                 worktree_id: Some("/repo/feature-wt".to_string()),
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect("agent workspace update should succeed")
     {
-        LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
+        LocalDaemonResponse::AgentConfigUpdated { agent, session, .. } => {
             let entry = session
                 .agents()
                 .iter()
@@ -1202,6 +1216,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 model: Some(model),
                 effort: None,
                 clear_effort: false,
+                reason: None,
             },
         ))
         .expect("same profile update should succeed")
@@ -1370,11 +1385,11 @@ fn envp01_project_environment_follows_the_project_owner_and_is_removed_with_the_
     let snapshot = |owner: &str| match harness
         .dispatch_as_user(
             owner,
-            LocalDaemonRequest::GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
+            LocalDaemonRequest::GetRoomListSnapshot(GetRoomListSnapshotRequest),
         )
         .unwrap()
     {
-        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        LocalDaemonResponse::RoomListSnapshot { snapshot } => snapshot,
         other => panic!("unexpected response: {other:?}"),
     };
     assert!(snapshot("local")
@@ -1567,6 +1582,7 @@ fn seed_codex_catalog(harness: &LocalRouterTestHarness) {
             id: "gpt-6.1-sol".to_string(),
             name: "GPT-6.1 Sol".to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: ["low", "high"]
                 .iter()

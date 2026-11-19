@@ -376,6 +376,53 @@ async fn the_notification_turn_is_part_of_the_one_finish() {
     assert_eq!(child_finished(&team).len(), 1);
 }
 
+// On a worker the held task is its home's: the provider's turn about the ended call is reported
+// to the home as a completion record that names no prompt, and the worker releases nothing.
+#[tokio::test]
+async fn a_worker_reports_the_end_of_the_notification_turn_to_its_home() {
+    let team = child_with_a_call_running("background-hold-worker-report").await;
+    team.runtime
+        .owned
+        .provider_run_projection
+        .mark_leased_provider_run(&team.child_run);
+    let recipients = team
+        .runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&team.room);
+    apply(
+        &team,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    let reported = recipients
+        .iter()
+        .flat_map(|attachment| {
+            team.runtime
+                .owned
+                .terminal_stream
+                .drain_completion_records(&team.room, attachment)
+        })
+        .filter(|record| record.provider_run_id == team.child_run)
+        .any(|record| {
+            record
+                .message_id
+                .starts_with(crate::transport::relay_peer::LEASED_NOTIFICATION_COMPLETION_PREFIX)
+        });
+    assert!(reported, "the home never hears the turn ended");
+    assert!(
+        child_finished(&team).is_empty(),
+        "a worker finishes no task"
+    );
+}
+
 #[tokio::test]
 async fn a_call_that_is_still_running_does_not_end_the_hold_at_a_completed_turn() {
     let team = child_with_a_call_running("background-hold-other-turn").await;
@@ -673,6 +720,8 @@ async fn status_message(team: &Team, reply: bool) -> String {
         serde_json::json!({"message": "Report status; keep the original job running"}),
     );
     event.reply_requested = reply;
+    // Only an urgent message starts its idle recipient.
+    event.urgent = true;
     team.runtime
         .owned
         .durable_state_store

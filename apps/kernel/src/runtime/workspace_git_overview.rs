@@ -7,7 +7,7 @@ use crate::local::{
 };
 use crate::runtime::workspace_git_changes::workspace_git_file_changes;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, find_repo_root, git_command_output, git_reference_resolves,
+    detect_git_branch, find_repo_root, git_command_output, git_query, git_reference_resolves,
     workspace_default_compare_ref, workspace_display_label,
 };
 
@@ -44,7 +44,7 @@ pub(crate) fn inspect_workspace_git_overview(
             &["symbolic-ref", "--quiet", "--short", "HEAD"],
         )
     });
-    let compare_refs = workspace_git_compare_refs(&repo_root_string, branch.as_deref());
+    let compare_refs = workspace_git_compare_refs(&repo_root_string, branch.as_deref())?;
     let compare_ref = requested_compare_ref
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -95,7 +95,7 @@ fn workspace_git_change_totals(files: &[WorkspaceGitFileChange]) -> WorkspaceGit
 fn workspace_git_compare_refs(
     repo_root: &str,
     branch: Option<&str>,
-) -> Vec<WorkspaceGitCompareRef> {
+) -> Result<Vec<WorkspaceGitCompareRef>, DaemonError> {
     let mut refs = Vec::new();
     let mut seen = HashSet::new();
     let default_ref = workspace_default_compare_ref(repo_root, branch);
@@ -110,7 +110,7 @@ fn workspace_git_compare_refs(
         }
         push_workspace_git_compare_ref(&mut refs, &mut seen, name, detail, &default_ref);
     }
-    for name in git_command_output(
+    let listed = git_query(
         repo_root,
         &[
             "for-each-ref",
@@ -118,12 +118,13 @@ fn workspace_git_compare_refs(
             "refs/heads",
             "refs/remotes",
         ],
-    )
-    .unwrap_or_default()
-    .lines()
-    .map(str::trim)
-    .filter(|value| !value.is_empty())
-    .take(80)
+        "workspace git refs",
+    )?;
+    for name in String::from_utf8_lossy(&listed)
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .take(80)
     {
         let detail = if name.starts_with("origin/") {
             Some("remote".to_string())
@@ -138,7 +139,7 @@ fn workspace_git_compare_refs(
             &default_ref,
         );
     }
-    refs
+    Ok(refs)
 }
 
 fn push_workspace_git_compare_ref(
@@ -206,7 +207,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let error = crate::runtime::workspace_worktrees::create_waiting_room_worktree(
+        let error = crate::runtime::workspace_worktrees::create_workspace_worktree(
             path, None, None, None, None, None,
         )
         .unwrap_err();

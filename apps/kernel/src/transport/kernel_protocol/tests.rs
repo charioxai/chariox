@@ -187,15 +187,15 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
 }
 
 #[test]
-fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
-    let previous = waiting_room_snapshot(
+fn room_list_rows_changed_event_sends_only_changed_and_removed_rows() {
+    let previous = room_list_snapshot(
         "inventory-a",
         vec![
             session_summary("session-a", 1),
             session_summary("session-b", 1),
         ],
     );
-    let current = waiting_room_snapshot(
+    let current = room_list_snapshot(
         "inventory-b",
         vec![
             session_summary("session-a", 2),
@@ -203,11 +203,11 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
         ],
     );
 
-    let event = waiting_room_rows_changed_event(current, Some(&previous))
+    let event = room_list_rows_changed_event(current, Some(&previous))
         .expect("inventory version change should produce event");
 
     match event {
-        KernelEvent::WaitingRoomRowsChanged {
+        KernelEvent::RoomListRowsChanged {
             inventory_version,
             schema_version,
             sessions,
@@ -230,31 +230,31 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
 }
 
 #[test]
-fn waiting_room_inventory_changed_event_refreshes_for_provider_accounts() {
-    let previous = waiting_room_snapshot("inventory-a", Vec::new());
+fn room_list_changed_event_refreshes_for_provider_accounts() {
+    let previous = room_list_snapshot("inventory-a", Vec::new());
     let mut current = previous.clone();
     current.inventory_version = "inventory-b".to_string();
     current.provider_accounts.push(provider_account_profile());
 
     assert!(matches!(
-        waiting_room_inventory_changed_event(&current, Some(&previous)),
-        Some(KernelEvent::WaitingRoomInventoryChanged { inventory_version })
+        room_list_changed_event(&current, Some(&previous)),
+        Some(KernelEvent::RoomListChanged { inventory_version })
             if inventory_version == "inventory-b"
     ));
 }
 
 #[test]
-fn waiting_room_inventory_event_projection_tracks_full_and_row_refreshes_once() {
-    let mut projection = WaitingRoomInventoryEventProjection::default();
-    let initial = waiting_room_snapshot("inventory-a", Vec::new());
+fn room_list_event_projection_tracks_full_and_row_refreshes_once() {
+    let mut projection = RoomListEventProjection::default();
+    let initial = room_list_snapshot("inventory-a", Vec::new());
 
     let initial_events = projection.project(initial.clone());
     assert_eq!(initial_events.len(), 2);
     assert!(matches!(
         initial_events.as_slice(),
         [
-            KernelEvent::WaitingRoomRowsChanged { .. },
-            KernelEvent::WaitingRoomInventoryChanged { .. }
+            KernelEvent::RoomListRowsChanged { .. },
+            KernelEvent::RoomListChanged { .. }
         ]
     ));
 
@@ -266,48 +266,47 @@ fn waiting_room_inventory_event_projection_tracks_full_and_row_refreshes_once() 
     let account_events = projection.project(account_changed.clone());
     assert!(matches!(
         account_events.as_slice(),
-        [KernelEvent::WaitingRoomInventoryChanged { inventory_version }]
+        [KernelEvent::RoomListChanged { inventory_version }]
             if inventory_version == "inventory-b"
     ));
     assert!(projection.project(account_changed).is_empty());
 
-    let mut row_changed =
-        waiting_room_snapshot("inventory-c", vec![session_summary("session-a", 1)]);
+    let mut row_changed = room_list_snapshot("inventory-c", vec![session_summary("session-a", 1)]);
     row_changed
         .provider_accounts
         .push(provider_account_profile());
     assert!(matches!(
         projection.project(row_changed).as_slice(),
-        [KernelEvent::WaitingRoomRowsChanged { inventory_version, .. }]
+        [KernelEvent::RoomListRowsChanged { inventory_version, .. }]
             if inventory_version == "inventory-c"
     ));
 }
 
 #[test]
-fn waiting_room_inventory_changed_event_skips_row_only_changes() {
-    let previous = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
-    let current = waiting_room_snapshot("inventory-b", vec![session_summary("session-a", 2)]);
+fn room_list_changed_event_skips_row_only_changes() {
+    let previous = room_list_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let current = room_list_snapshot("inventory-b", vec![session_summary("session-a", 2)]);
 
-    assert!(waiting_room_inventory_changed_event(&current, Some(&previous)).is_none());
+    assert!(room_list_changed_event(&current, Some(&previous)).is_none());
 }
 
 #[test]
-fn waiting_room_rows_changed_event_sends_project_upserts_and_removals() {
-    let mut previous = waiting_room_snapshot("inventory-a", Vec::new());
+fn room_list_rows_changed_event_sends_project_upserts_and_removals() {
+    let mut previous = room_list_snapshot("inventory-a", Vec::new());
     previous.projects = vec![
         project_summary("project-a", "A"),
         project_summary("project-b", "B"),
     ];
-    let mut current = waiting_room_snapshot("inventory-b", Vec::new());
+    let mut current = room_list_snapshot("inventory-b", Vec::new());
     current.projects = vec![
         project_summary("project-a", "A renamed"),
         project_summary("project-c", "C"),
     ];
 
-    let event = waiting_room_rows_changed_event(current, Some(&previous))
+    let event = room_list_rows_changed_event(current, Some(&previous))
         .expect("project changes should produce a row event");
     match event {
-        KernelEvent::WaitingRoomRowsChanged {
+        KernelEvent::RoomListRowsChanged {
             projects,
             removed_project_ids,
             ..
@@ -326,9 +325,8 @@ fn waiting_room_rows_changed_event_sends_project_upserts_and_removals() {
 }
 
 #[test]
-fn waiting_room_rows_changed_event_keeps_archived_ended_session_and_restores_it() {
-    let mut active =
-        waiting_room_snapshot("inventory-active", vec![session_summary("session-a", 1)]);
+fn room_list_rows_changed_event_keeps_archived_ended_session_and_restores_it() {
+    let mut active = room_list_snapshot("inventory-active", vec![session_summary("session-a", 1)]);
     active.projects = vec![project_summary("project-a", "A")];
 
     let mut ended = session_summary("session-a", 1);
@@ -336,13 +334,13 @@ fn waiting_room_rows_changed_event_keeps_archived_ended_session_and_restores_it(
     let mut archived_project = project_summary("project-a", "A");
     archived_project.status = crate::session::RuntimeProjectStatus::Archived;
     archived_project.archived_at_ms = Some(2);
-    let mut archived = waiting_room_snapshot("inventory-archived", vec![ended]);
+    let mut archived = room_list_snapshot("inventory-archived", vec![ended]);
     archived.projects = vec![archived_project];
 
-    let archived_event = waiting_room_rows_changed_event(archived.clone(), Some(&active))
+    let archived_event = room_list_rows_changed_event(archived.clone(), Some(&active))
         .expect("archiving should upsert the ended drill-down row");
     match archived_event {
-        KernelEvent::WaitingRoomRowsChanged {
+        KernelEvent::RoomListRowsChanged {
             sessions,
             removed_session_ids,
             projects,
@@ -362,12 +360,12 @@ fn waiting_room_rows_changed_event_keeps_archived_ended_session_and_restores_it(
 
     let mut parked = session_summary("session-a", 1);
     parked.status = crate::session::SessionStatus::Parked;
-    let mut restored = waiting_room_snapshot("inventory-restored", vec![parked]);
+    let mut restored = room_list_snapshot("inventory-restored", vec![parked]);
     restored.projects = vec![project_summary("project-a", "A")];
-    let restored_event = waiting_room_rows_changed_event(restored, Some(&archived))
+    let restored_event = room_list_rows_changed_event(restored, Some(&archived))
         .expect("restoring should upsert the parked drill-down row");
     match restored_event {
-        KernelEvent::WaitingRoomRowsChanged {
+        KernelEvent::RoomListRowsChanged {
             sessions,
             removed_session_ids,
             projects,
@@ -386,11 +384,11 @@ fn waiting_room_rows_changed_event_keeps_archived_ended_session_and_restores_it(
 }
 
 #[test]
-fn waiting_room_rows_changed_event_skips_unchanged_rows() {
-    let previous = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
-    let current = waiting_room_snapshot("inventory-b", vec![session_summary("session-a", 1)]);
+fn room_list_rows_changed_event_skips_unchanged_rows() {
+    let previous = room_list_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let current = room_list_snapshot("inventory-b", vec![session_summary("session-a", 1)]);
 
-    assert!(waiting_room_rows_changed_event(current, Some(&previous)).is_none());
+    assert!(room_list_rows_changed_event(current, Some(&previous)).is_none());
 }
 
 #[test]
@@ -678,6 +676,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
 fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -731,6 +730,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
 fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -765,11 +765,11 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     }
 }
 
-fn waiting_room_snapshot(
+fn room_list_snapshot(
     inventory_version: &str,
-    sessions: Vec<WaitingRoomPublicSessionSummary>,
-) -> WaitingRoomPublicSnapshot {
-    WaitingRoomPublicSnapshot {
+    sessions: Vec<RoomListSessionSummary>,
+) -> RoomListSnapshot {
+    RoomListSnapshot {
         provider_accounts: Vec::new(),
         git_credentials: Vec::new(),
         schema_version: 11,
@@ -830,8 +830,8 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
     }
 }
 
-fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
-    WaitingRoomPublicSessionSummary {
+fn session_summary(id: &str, last_used_at_ms: u64) -> RoomListSessionSummary {
+    RoomListSessionSummary {
         pinned: false,
         pinned_at_ms: None,
         repository_state: None,
@@ -852,14 +852,14 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
         connected_cli_count: 0,
         joined_collaborator_count: 0,
         pending_collaboration_invite_count: 0,
-        activity: crate::local::WaitingRoomSessionActivitySummary::default(),
+        activity: crate::local::RoomListSessionActivitySummary::default(),
         agents: Vec::new(),
         workflows: Vec::new(),
     }
 }
 
-fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
-    crate::local::WaitingRoomPublicProjectSummary {
+fn project_summary(id: &str, name: &str) -> crate::local::RoomListProjectSummary {
+    crate::local::RoomListProjectSummary {
         pinned: false,
         pinned_at_ms: None,
         id: id.to_string(),
@@ -1197,8 +1197,8 @@ fn dictation_command_errors_keep_the_speech_service_code() {
 
 // MP-08 / MP-10 / MP-11: paging metadata changes without a visible-row change.
 #[test]
-fn waiting_room_row_updates_keep_the_full_catalog_count_and_cursor_current() {
-    let initial = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+fn room_list_row_updates_keep_the_full_catalog_count_and_cursor_current() {
+    let initial = room_list_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
     let mut wire = serde_json::to_value(initial).unwrap();
     wire["sessions_total"] = serde_json::json!(10_100);
     wire["sessions_next_cursor"] = serde_json::json!("page-a");
@@ -1207,7 +1207,7 @@ fn waiting_room_row_updates_keep_the_full_catalog_count_and_cursor_current() {
     wire["sessions_total"] = serde_json::json!(10_101);
     wire["sessions_next_cursor"] = serde_json::json!("page-b");
     let current = serde_json::from_value(wire).unwrap();
-    let event = waiting_room_rows_changed_event(current, Some(&previous))
+    let event = room_list_rows_changed_event(current, Some(&previous))
         .expect("catalog metadata must be pushed even when the recent rows stay the same");
     let wire = serde_json::to_value(event).unwrap();
     assert_eq!(wire["sessions_total"], 10_101);
@@ -1515,4 +1515,15 @@ fn touched_queue_announces_activity_before_its_complete_snapshot() {
         );
         assert!(events.iter().any(|event| matches!(event, KernelEvent::SessionSnapshot { session, .. } if session.queued_prompts().len() == 1)), "queue text must still reach every client");
     }
+}
+
+#[test]
+fn a_cloud_refusal_is_retryable_only_when_cloud_calls_it_transient() {
+    let refused = |code: &str| DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message: format!("cloud relay request failed with 429: cloud_api_code={code}: refused"),
+    };
+    assert!(!map_kernel_error(&refused("budget_exceeded")).retryable);
+    assert!(!map_kernel_error(&refused("invalid_request")).retryable);
+    assert!(map_kernel_error(&refused("capacity_exceeded")).retryable);
 }

@@ -26,7 +26,8 @@ export type Mirror2Op =
   /** Unreleased539: native loaded-font descriptors for this document; null while pending. */
   | { op: 'fonts'; id: string; required: string[] | null; absent?: string[] }
 // A slice carries `offset`/`total` (base64 characters); slices of a key arrive in order.
-export type Mirror2Resource = { key: string; resource_id: string; mime_type: string; data_base64: string; offset?: number; total?: number }
+// `retained`: a font this subscription already holds (named by resource_id, no bytes).
+export type Mirror2Resource = { key: string; resource_id: string; mime_type: string; data_base64: string; offset?: number; total?: number; retained?: true }
 export type Mirror2Tile = { node_id: string; x: number; y: number; width: number; height: number; data_base64: string }
 export type Mirror2Selection = { anchor_id: string; anchor_offset: number; focus_id: string; focus_offset: number }
 export type Mirror2Packet = {
@@ -42,8 +43,8 @@ export type Mirror2Packet = {
 }
 // Protocol 489 wire form: a delta omits the binding, its base (sequence - 1),
 // header fields equal to the base's and empty lists; a body may travel deflated
-// in the subscription's context (`packet_base64`, fresh context per reset).
-export type Mirror2WirePacket = Partial<Mirror2Packet> & { wire: 2; sequence: number; encoding?: 'deflate'; packet_base64?: string; packet_bytes?: number }
+// in the subscription's context (`packet_base64`, or `packet` when its bytes arrived raw; fresh context per reset).
+export type Mirror2WirePacket = Partial<Mirror2Packet> & { wire: 2; sequence: number; encoding?: 'deflate'; packet_base64?: string; packet?: Uint8Array; packet_bytes?: number }
 export type Mirror2Action =
   | { kind: 'click'; node_id: string; x: number; y: number }
   | { kind: 'scroll'; node_id: string; x: number; y: number; delta_x: number; delta_y: number }

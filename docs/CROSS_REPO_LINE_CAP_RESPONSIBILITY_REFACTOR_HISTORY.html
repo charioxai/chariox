@@ -568,7 +568,7 @@
             <tr>
               <td><code>chariox</code></td>
               <td><code>830106df6</code> <span class="muted">Extract session lifecycle test support</span></td>
-              <td>Session lifecycle behavior tests now stay focused on attach/no-session scenarios, while shared CLI options, waiting-room state, transition fixtures, and dependency spies live in a sibling test-support module.</td>
+              <td>Session lifecycle behavior tests now stay focused on attach/no-session scenarios, while shared CLI options, Room list state, transition fixtures, and dependency spies live in a sibling test-support module.</td>
               <td><code>pnpm --filter @chariox/cli run build</code>, <code>node --test apps/cli/dist/session-lifecycle.test.js</code>. Local <code>node scripts/check-line-cap.mjs</code> was blocked by unrelated dirty kernel files.</td>
             </tr>
             <tr>
@@ -592,7 +592,7 @@
             <tr>
               <td><code>chariox-cloud</code></td>
               <td><code>ca0bd46b</code> <span class="muted">Split browser drill script</span></td>
-              <td>The browser drill entrypoint now owns process setup, branch selection, and the remaining default publication/waiting-room orchestration, while CDP/runtime helpers, mobile flows, freeform flows, attachments, side panels, workflow canvas interaction, and product-terminal assertions live in bounded helper modules.</td>
+              <td>The browser drill entrypoint now owns process setup, branch selection, and the remaining default publication/Room list orchestration, while CDP/runtime helpers, mobile flows, freeform flows, attachments, side panels, workflow canvas interaction, and product-terminal assertions live in bounded helper modules.</td>
               <td><code>node --check</code> for the entrypoint and extracted helper modules, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>. A cheap import smoke reached Chrome launch and then failed on the intentionally invalid <code>CHROME_PATH</code>, confirming module loading without running the full browser drill.</td>
             </tr>
             <tr>

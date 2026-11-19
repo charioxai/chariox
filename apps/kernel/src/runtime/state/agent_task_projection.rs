@@ -17,6 +17,9 @@ pub(super) fn artifact_progress_task(
             && !ledger::goals::is_check(t, prompt)
     })
 }
+/// The excerpt of a task's answer an inbox event carries.
+const EVENT_ANSWER_CHARS: usize = 1_024;
+
 impl KernelRuntimeOwnedState {
     pub(super) fn record_agent_artifact_progress(
         &self,
@@ -72,6 +75,16 @@ impl KernelRuntimeOwnedState {
         task: &AgentTaskExecution,
         failure: Option<&crate::provider::TurnOutcome>,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
+        self.public_agent_task_answer_within(task, failure, EVENT_ANSWER_CHARS)
+    }
+
+    /// The same answer with the caller's own bound on the excerpt.
+    pub(super) fn public_agent_task_answer_within(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
+        excerpt_chars: usize,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
         if task.state == ExecutionState::Cancelled {
             return self.failed_task_answer(task, failure);
         }
@@ -99,7 +112,7 @@ impl KernelRuntimeOwnedState {
             task_answer_history_run(task.provider_run_id.as_deref()),
         )
         .concat();
-        let excerpt = answer_tail(output.trim(), 1_024);
+        let excerpt = answer_tail(output.trim(), excerpt_chars);
         let answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         let mut answer = self.answer_with_running_background_note(task, Some(answer))?;
         if let Some(answer) = answer.as_mut() {
