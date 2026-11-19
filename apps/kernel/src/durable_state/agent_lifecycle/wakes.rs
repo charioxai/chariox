@@ -116,6 +116,7 @@ impl DurableKernelStateStore {
             "room_id=?1"
         };
         let time = if agent.is_some() { "?3" } else { "?2" };
+        let now = sql_integer(now)?;
         let mut values: Vec<&dyn rusqlite::ToSql> = vec![&room];
         if agent.is_some() {
             values.push(&agent);
