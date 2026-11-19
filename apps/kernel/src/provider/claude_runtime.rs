@@ -11,11 +11,12 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::claude::{
-    claude_args_with_execution_config, materialize_runtime_claude_mcp_config, CLAUDE_START_BUDGET,
+    CLAUDE_START_BUDGET, claude_args_with_execution_config, materialize_runtime_claude_mcp_config,
 };
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
-    AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
+    AgentExecutionMode, AgentPermissionLevel, ProviderOwnTurnSignal, ProviderPromptSignalBatch,
+    RuntimeProviderRun,
 };
 
 const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
@@ -32,11 +33,11 @@ mod runtime_tool_wait;
 mod session_restart;
 mod state;
 mod task_notification;
-pub(crate) use task_notification::{finished_background_task, BackgroundTaskEnd};
+pub(crate) use task_notification::{BackgroundTaskEnd, finished_background_task};
 mod tool_transcript;
 pub(crate) use tool_transcript::{
-    bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
-    launched_task_id, launches_background_task, RESULT_IMAGE_FILE_BYTES,
+    RESULT_IMAGE_FILE_BYTES, bounded_result, bounded_result_images, ended_task_of_result,
+    ends_background_commands, launched_task_id, launches_background_task,
 };
 pub(crate) mod usage;
 mod watchdog;
@@ -45,9 +46,9 @@ use events::apply_claude_message;
 pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
-use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
+use process::{ClaudeRuntimeMessage, spawn_claude_child, stop_child, write_json_line};
 pub(crate) use runtime_tool_wait::{
-    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
+    ClaudeRuntimeToolWait, begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending,
 };
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
@@ -167,6 +168,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
+            own_turn: false,
             turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
             runtime_tools_unavailable: None,
@@ -279,11 +281,14 @@ pub(crate) fn submit_claude_prompt(
     state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
+    // A write does not end the notification turn Claude is still producing, or reset its stream.
     state.turn_watchdog.begin(Instant::now());
-    state.active_stream_message_id = None;
-    state.emitted_text_by_block.clear();
-    state.tool_transcript.clear();
-    state.completed_text_blocks.clear();
+    if !state.own_turn {
+        state.active_stream_message_id = None;
+        state.emitted_text_by_block.clear();
+        state.tool_transcript.clear();
+        state.completed_text_blocks.clear();
+    }
     Ok(())
 }
 
@@ -321,7 +326,15 @@ pub(crate) fn drain_claude_events(
                 state.turn_watchdog.record_runtime_message(Instant::now());
                 handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
-                if end_turn_without_runtime_tools(state, &mut batch) {
+                // One batch holds at most one turn's end, and nothing of the turn after it, so
+                // the kernel settles each turn before it sees the next one start.
+                if end_turn_without_runtime_tools(state, &mut batch)
+                    || batch.prompt_completed
+                    || matches!(
+                        batch.provider_own_turn,
+                        ProviderOwnTurnSignal::Ended | ProviderOwnTurnSignal::StartedAndEnded
+                    )
+                {
                     break;
                 }
             }
@@ -408,6 +421,12 @@ pub(crate) fn drain_claude_events(
     } else {
         apply_claude_turn_stall_policy(run, state, &mut batch)?;
     }
+    if state.own_turn && state.active_turn_id.is_some() {
+        batch.provider_own_turn = ProviderOwnTurnSignal::Running;
+    } else if batch.provider_own_turn == ProviderOwnTurnSignal::Running {
+        // The turn that began in this batch was cut off (process exit, cancel) before its result.
+        batch.provider_own_turn = ProviderOwnTurnSignal::StartedAndEnded;
+    }
 
     Ok(batch)
 }
@@ -481,8 +500,11 @@ fn apply_claude_turn_stall_policy(
         .action(Instant::now(), claude_turn_stall_timeout())
     {
         ClaudeTurnStallAction::Wait => Ok(()),
-        ClaudeTurnStallAction::Restart => retry_stalled_claude_turn(run, state, batch),
-        ClaudeTurnStallAction::Fail => {
+        // A turn Claude started on its own has no prompt to send again.
+        ClaudeTurnStallAction::Restart if state.active_prompt_message.is_some() => {
+            retry_stalled_claude_turn(run, state, batch)
+        }
+        ClaudeTurnStallAction::Restart | ClaudeTurnStallAction::Fail => {
             stop_child(&mut state.child);
             clear_active_claude_turn(state);
             batch.terminal_failure = Some(
@@ -546,6 +568,7 @@ fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
     state.tool_transcript.clear();
     state.active_turn_id = None;
     state.active_prompt_message = None;
+    state.own_turn = false;
     state.turn_watchdog.settle();
 }
 
@@ -741,6 +764,7 @@ fn restart_claude_runtime(
     state.active_stream_message_id = None;
     state.active_turn_id = None;
     state.active_prompt_message = None;
+    state.own_turn = false;
     state.turn_watchdog.settle();
     state.emitted_text_by_block.clear();
     state.completed_text_blocks.clear();
@@ -851,10 +875,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
-        handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
-        new_claude_session_id, restart_claude_runtime, submit_claude_prompt,
-        write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
+        ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch, apply_claude_stderr,
+        claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
+        initialize_claude_runtime, input::claude_user_content, new_claude_session_id,
+        restart_claude_runtime, submit_claude_prompt, write_claude_hidden_context,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -903,6 +927,7 @@ mod tests {
                 active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
+                own_turn: false,
                 turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
                 runtime_tools_unavailable: None,
@@ -1341,11 +1366,13 @@ cat >/dev/null
         restart_claude_runtime(&yolo_run, &mut binding.state, "test required restart")
             .expect("Required selection should restart the provider child");
         let trace_contents = wait_for_trace_lines(&trace, 4);
-        assert!(trace_contents
-            .lines()
-            .last()
-            .unwrap()
-            .ends_with("\tmarker:"));
+        assert!(
+            trace_contents
+                .lines()
+                .last()
+                .unwrap()
+                .ends_with("\tmarker:")
+        );
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
@@ -1643,11 +1670,13 @@ done
             .to_path_buf();
 
         assert!(config_path.is_file());
-        assert!(binding
-            .state
-            .args
-            .iter()
-            .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers")));
+        assert!(
+            binding
+                .state
+                .args
+                .iter()
+                .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers"))
+        );
         #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&config_path)
@@ -1657,9 +1686,11 @@ done
                 & 0o777,
             0o600
         );
-        assert!(std::fs::read_to_string(&config_path)
-            .expect("config should be readable by the kernel")
-            .contains("Bearer runtime-bearer-token"));
+        assert!(
+            std::fs::read_to_string(&config_path)
+                .expect("config should be readable by the kernel")
+                .contains("Bearer runtime-bearer-token")
+        );
 
         restart_claude_runtime(&run, &mut binding.state, "test_claude_restart")
             .expect("Claude runtime should restart");
@@ -2744,10 +2775,12 @@ done
         let content = claude_user_content("read this", &[attachment]);
 
         assert_eq!(content[0]["text"], "read this");
-        assert!(content[1]["text"]
-            .as_str()
-            .expect("attachment should render as text")
-            .contains("attached marker"));
+        assert!(
+            content[1]["text"]
+                .as_str()
+                .expect("attachment should render as text")
+                .contains("attached marker")
+        );
     }
 
     #[test]
@@ -2762,10 +2795,12 @@ done
         let content = claude_user_content("", &[attachment]);
 
         assert_eq!(content.len(), 1);
-        assert!(content[0]["text"]
-            .as_str()
-            .expect("opaque attachment should render as reference")
-            .contains("archive.bin"));
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .expect("opaque attachment should render as reference")
+                .contains("archive.bin")
+        );
     }
 }
 

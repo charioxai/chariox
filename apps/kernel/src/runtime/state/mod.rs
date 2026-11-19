@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -113,8 +113,8 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 pub(in crate::runtime) mod kernel_access;
-pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
+pub(crate) use kernel_access::reach;
 mod outside_events;
 use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
@@ -150,10 +150,10 @@ pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
-pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
+pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]
-pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
+pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::{
     is_sudo_control, is_sudo_prompt, sudo_request_forbidden, sudo_window_minutes,
 };
@@ -672,15 +672,15 @@ pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
 mod provider_liveness_runtime;
 pub(in crate::runtime) use claude_setup_token_capture::{
-    SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,
+    CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS, SetupTokenScan,
 };
 mod claude_setup_token_vault;
 pub(in crate::runtime) use claude_setup_token_vault::ClaudeSetupTokenStoreOutcome;
 mod provider_login_state;
 pub(in crate::runtime) use provider_login_state::{
-    ClaudeSetupTokenLogin, ClaudeSetupTokenVaultPrompt, ProviderAuthProcessOperation,
-    ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
-    PROVIDER_LOGIN_TIMEOUT_MS,
+    ClaudeSetupTokenLogin, ClaudeSetupTokenVaultPrompt, PROVIDER_LOGIN_TIMEOUT_MS,
+    ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
+    ProviderLoginProcessStore,
 };
 mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
@@ -765,7 +765,7 @@ mod kernel_browser_upload;
 mod kernel_browser_vault_capture;
 mod kernel_browser_wait;
 mod owner_handoff_runtime;
-pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
+pub(crate) use owner_handoff_runtime::{HANDOFF_OBLIGATION_KIND, is_handoff_interaction_id};
 mod declined_workspace_trust_runtime;
 mod dictation_runtime;
 #[cfg(test)]
@@ -783,6 +783,7 @@ mod leased_mid_turn_settings_tests;
 #[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
+mod provider_turn_adoption;
 mod skills_catalog_runtime;
 pub(crate) use skills_catalog_runtime::control_capabilities;
 mod skills_dispatch;

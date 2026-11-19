@@ -193,7 +193,8 @@ pub(crate) use prompt_signals::{
     provider_turn_failure_reason, text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch,
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{

@@ -4,7 +4,10 @@
 use super::background_tool_settlement::{lifecycle, tool_chunk};
 use super::child_finished::{child_finished, team_with, Team};
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
-use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
+use crate::provider::{
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch,
+};
 use crate::terminal::TerminalOutputKind;
 
 const MINUTE_MS: u64 = 60_000;
@@ -850,4 +853,615 @@ async fn a_messages_own_background_command_holds_only_its_own_task() {
     apply(&team, vec![tool_chunk(&ended)]).await;
     sweep(&team).await;
     assert_eq!(message_task().state, ExecutionState::Done);
+}
+
+// Review 5968870730 P2-2: two held tasks on one run. The call of the one that is not first ends,
+// and Claude's notification turn for it starts in the same batch: that turn runs under the task
+// whose call ended, and its tools act for that task.
+#[tokio::test]
+async fn a_notification_turn_runs_under_the_held_task_whose_call_ended_in_its_batch() {
+    let team = child_with_a_call_running("background-hold-two-held").await;
+    let message_prompt = status_message(&team, false).await;
+    let mut launched = lifecycle("claude_background_launched");
+    launched["id"] = "message-job".into();
+    apply(&team, vec![tool_chunk(&launched)]).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let message_task = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &message_prompt)
+        .unwrap()
+        .unwrap();
+    assert_eq!(message_task.state, ExecutionState::Working);
+    assert!(working(&team));
+    assert!(
+        message_task.task_id < team.task.task_id,
+        "the fixture needs the original task to be the second one held"
+    );
+
+    // The original task's call ends and Claude's turn about it starts, in one batch.
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                chunks: vec![
+                    ended_at(crate::session::unix_epoch_ms()),
+                    text_chunk("the server exited with code 0"),
+                ],
+                provider_own_turn: ProviderOwnTurnSignal::Running,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    let running = team
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .expect("the notification turn runs");
+    assert_eq!(running.id(), team.child_prompt.id());
+    let token = team
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&team.child_run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    team.runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.inbox",
+            serde_json::json!({"task_id": team.task.task_id, "origin_prompt_id": team.child_prompt.id()}),
+        )
+        .await
+        .expect("the turn acts for the task whose call ended");
+}
+
+/// One batch of Claude's output that reports its own turn as `signal`; `result` reads a turn's
+/// end.
+async fn apply_own_turn(
+    team: &Team,
+    signal: ProviderOwnTurnSignal,
+    result: bool,
+    chunks: Vec<ProviderPromptChunk>,
+) {
+    let completions = if result {
+        vec![ProviderAssistantCompletion {
+            message_id: format!(
+                "claude:{}:{}",
+                team.child_run,
+                crate::session::unix_epoch_ms()
+            ),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+        }]
+    } else {
+        Vec::new()
+    };
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            ProviderPromptSignalBatch {
+                chunks,
+                completions,
+                prompt_completed: result,
+                provider_own_turn: signal,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+}
+
+fn running_prompt(team: &Team) -> Option<String> {
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    team.runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .map(|prompt| prompt.id().to_string())
+}
+
+fn finishes_of_task(team: &Team) -> Vec<String> {
+    child_finished(team)
+        .iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+        .map(|event| {
+            event.payload["public_answer"]["excerpt"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+// Transition T2 + H1 (review 5969266242-1): two held tasks on one run; the status message's turn
+// has ended but not settled when the original task's call ends and Claude's turn about it
+// starts. The turn waits for that settlement, and is then adopted under the binding chosen from
+// its first batch: the original task, not the first one held.
+#[tokio::test]
+async fn a_held_binding_chosen_while_the_prompt_before_settles_is_kept_through_the_settle() {
+    let team = child_with_a_call_running("background-hold-binding-through-settle").await;
+    let message_prompt = status_message(&team, false).await;
+    let mut launched = lifecycle("claude_background_launched");
+    launched["id"] = "message-job".into();
+    apply(&team, vec![tool_chunk(&launched)]).await;
+    apply_own_turn(&team, ProviderOwnTurnSignal::None, true, Vec::new()).await;
+    assert_eq!(
+        running_prompt(&team).as_deref(),
+        Some(message_prompt.as_str())
+    );
+
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    let message_task = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &message_prompt)
+        .unwrap()
+        .unwrap();
+    assert!(
+        message_task.task_id < team.task.task_id,
+        "the fixture needs the original task to be the second one held"
+    );
+    assert_eq!(
+        message_task.state,
+        ExecutionState::Working,
+        "the message's own command still runs"
+    );
+    assert_eq!(
+        running_prompt(&team).as_deref(),
+        Some(team.child_prompt.id()),
+        "the notification turn runs for the task whose call ended"
+    );
+}
+
+/// The child's own task is held, a status message's turn runs, and the original call ends:
+/// Claude's notification turn waits for adoption behind the message's prompt.
+async fn held_turn_pending_behind_a_message(label: &str) -> (Team, String) {
+    let team = child_with_a_call_running(label).await;
+    let message_prompt = status_message(&team, false).await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        running_prompt(&team).as_deref(),
+        Some(message_prompt.as_str())
+    );
+    assert!(working(&team));
+    (team, message_prompt)
+}
+
+/// What history records as the message prompt's answer so far.
+fn message_answer(team: &Team, message_prompt: &str) -> String {
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.child))
+        .unwrap();
+    crate::runtime::state::agent_task_projection::task_public_outputs(
+        &entries,
+        message_prompt,
+        Some(&team.child_run),
+    )
+    .join("\n")
+}
+
+// A prompt write cannot end the notification turn it joins (review 5972527077).
+// The held task keeps every batch through the result; the prompt reads from its fold boundary.
+async fn folded_turn_finishes_at_result(signal: ProviderOwnTurnSignal) {
+    let (team, message_prompt) = held_turn_pending_behind_a_message("background-hold-folded").await;
+    team.runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &team.room,
+            &team.child,
+            &message_prompt,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(team.child_run.clone()),
+            None,
+        )
+        .unwrap();
+    apply_own_turn(&team, signal, false, vec![text_chunk("more notification")]).await;
+    assert!(
+        working(&team),
+        "a prompt write does not finish the notification turn"
+    );
+    assert!(finishes_of_task(&team).is_empty());
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk(
+            "the log shows a clean shutdown; status: the server is done",
+        )],
+    )
+    .await;
+    assert!(!working(&team), "the held task finished at the result");
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    for text in [
+        "started the server",
+        "the server exited with code 0",
+        "more notification",
+        "the log shows a clean shutdown",
+    ] {
+        assert!(finishes[0].contains(text), "missing {text}: {finishes:?}");
+    }
+    let answer = message_answer(&team, &message_prompt);
+    assert!(answer.contains("status: the server is done"), "{answer}");
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
+    sweep(&team).await;
+    assert_eq!(finishes_of_task(&team).len(), 1);
+}
+
+#[tokio::test]
+async fn a_prompt_written_into_a_pending_held_turn_finishes_only_after_its_result() {
+    folded_turn_finishes_at_result(ProviderOwnTurnSignal::None).await;
+}
+
+#[tokio::test]
+async fn a_delivered_prompt_folds_inside_the_held_notification_until_its_result() {
+    folded_turn_finishes_at_result(ProviderOwnTurnSignal::Running).await;
+}
+
+// Review 5975524512: the adapter ends the notification before the queued prompt's result.
+#[tokio::test]
+async fn a_folded_held_answer_excludes_the_separate_queued_prompt_reply_and_calls() {
+    let team = child_with_a_call_running("background-hold-separate-queued-reply").await;
+    // The output pump holds the run's lane while the next prompt waits for its actual write.
+    let lane = team
+        .runtime
+        .provider_runtime_lanes
+        .acquire(&team.child_run)
+        .await;
+    let message_prompt = status_message(&team, false).await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("notification began"),
+        ],
+    )
+    .await;
+    drop(lane);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = team
+                .runtime
+                .owned
+                .session_store
+                .get_session(&team.room)
+                .unwrap();
+            if team
+                .runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &team.child)
+                .is_some_and(|prompt| {
+                    prompt.id() == message_prompt
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the queued prompt must pass through the provider write and receipt");
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![text_chunk("notification continued after the queued write")],
+    )
+    .await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        false,
+        vec![text_chunk("notification ended before the queued reply")],
+    )
+    .await;
+    assert!(!working(&team));
+    assert_eq!(finishes_of_task(&team).len(), 1);
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::None,
+        true,
+        vec![
+            text_chunk("SEPARATE_QUEUED_REPLY"),
+            tool_chunk(&serde_json::json!({
+                "id": "queued-only-kernel-call",
+                "tool": "chariox_kernel_request",
+                "status": "completed",
+                "input": {"request": {"GetSessionState": {"session_id": team.room}}},
+            })),
+        ],
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            apply_own_turn(&team, ProviderOwnTurnSignal::None, false, Vec::new()).await;
+            if team
+                .runtime
+                .owned
+                .durable_state_store
+                .agent_turn_task(&team.room, &team.child, &message_prompt)
+                .unwrap()
+                .unwrap()
+                .state
+                == ExecutionState::Done
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the separate queued reply must settle after its output becomes quiet");
+    assert_eq!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_turn_task(&team.room, &team.child, &message_prompt)
+            .unwrap()
+            .unwrap()
+            .state,
+        ExecutionState::Done,
+        "the separate queued reply must finish normally",
+    );
+    let held_answer = message_answer(&team, team.child_prompt.id());
+    let queued_answer = message_answer(&team, &message_prompt);
+    assert!(
+        held_answer.contains("notification ended before the queued reply"),
+        "{held_answer}"
+    );
+    assert!(
+        queued_answer.contains("SEPARATE_QUEUED_REPLY"),
+        "{queued_answer}"
+    );
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.child))
+        .unwrap();
+    let held_entries =
+        super::super::agent_task_projection::prompt_turn_entries(&entries, team.child_prompt.id());
+    let queued_entries =
+        super::super::agent_task_projection::prompt_turn_entries(&entries, &message_prompt);
+    assert!(queued_entries
+        .iter()
+        .any(|entry| entry.text.contains("queued-only-kernel-call")));
+    let held_has_queued_call = held_entries
+        .iter()
+        .any(|entry| entry.text.contains("queued-only-kernel-call"));
+    assert!(
+        !held_answer.contains("SEPARATE_QUEUED_REPLY")
+            && !held_has_queued_call,
+        "the held task's answer and completed-call evidence must close before the separate reply: {held_answer}; queued_call={held_has_queued_call}",
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
+}
+
+// Transition T6 (review 5971171601): the notification turn ends before it was adopted. The held
+// task finishes at that end, after the ending batch is in history: its one finish carries the
+// output of every batch of the turn, and the message's answer carries none of it.
+#[tokio::test]
+async fn a_pending_held_turn_that_ends_finishes_the_held_task() {
+    let (team, message_prompt) =
+        held_turn_pending_behind_a_message("background-hold-pending-ended").await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk("the log shows a clean shutdown")],
+    )
+    .await;
+    assert!(!working(&team), "the held task finished");
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0")
+            && finishes[0].contains("the log shows a clean shutdown"),
+        "the finish carries the whole notification turn: {finishes:?}"
+    );
+    let answer = message_answer(&team, &message_prompt);
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
+}
+
+// Transition T9 still pending (review 5971171601): the notification turn starts and ends within
+// one batch while the message's prompt runs. The held task's finish carries that batch's text.
+#[tokio::test]
+async fn a_held_turn_that_starts_and_ends_behind_a_message_finishes_with_its_output() {
+    let team = child_with_a_call_running("background-hold-pending-one-batch").await;
+    let message_prompt = status_message(&team, false).await;
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::StartedAndEnded,
+        true,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    assert!(!working(&team), "the held task finished");
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0"),
+        "{finishes:?}"
+    );
+    let answer = message_answer(&team, &message_prompt);
+    assert!(
+        !answer.contains("the server exited with code 0"),
+        "{answer}"
+    );
+}
+
+// P8 (review 5971171601): the hold's grace runs out while the notification turn still streams,
+// pending behind the message. The sweep leaves the held task to the turn's end.
+#[tokio::test]
+async fn the_sweep_leaves_a_held_task_whose_notification_turn_waits_for_adoption() {
+    let (team, _) = held_turn_pending_behind_a_message("background-hold-pending-sweep").await;
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
+        .await
+        .unwrap();
+    assert!(
+        working(&team),
+        "the sweep released a held task whose turn still runs"
+    );
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Ended,
+        true,
+        vec![text_chunk("the log shows a clean shutdown")],
+    )
+    .await;
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(
+        finishes[0].contains("the log shows a clean shutdown"),
+        "{finishes:?}"
+    );
+}
+
+// Transitions T7 + H2 + H3 (review 5969266242-2): a status message's turn comes between the
+// held task's turn and its notification turn. The held task's one finish reads both of its
+// segments (the launch turn and the resumed notification turn) and not the message's reply.
+#[tokio::test]
+async fn a_held_tasks_finish_reads_its_resumed_turn_past_a_message_in_between() {
+    let team = child_with_a_call_running("background-hold-resumed-segment").await;
+    status_message(&team, false).await;
+    apply(&team, vec![text_chunk("status: the server still runs")]).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    assert_eq!(running_prompt(&team), None);
+
+    apply_own_turn(
+        &team,
+        ProviderOwnTurnSignal::Running,
+        false,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the server exited with code 0"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        running_prompt(&team).as_deref(),
+        Some(team.child_prompt.id())
+    );
+    apply_own_turn(&team, ProviderOwnTurnSignal::Ended, true, Vec::new()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, false, false, false)
+        .await
+        .unwrap();
+    assert!(!working(&team));
+    let finishes = finishes_of_task(&team);
+    assert_eq!(finishes.len(), 1, "{finishes:?}");
+    assert!(finishes[0].contains("started the server"), "{finishes:?}");
+    assert!(
+        finishes[0].contains("the server exited with code 0"),
+        "the finish carries the resumed notification turn: {finishes:?}"
+    );
+    assert!(
+        !finishes[0].contains("status: the server still runs"),
+        "the message's reply is not the held task's answer: {finishes:?}"
+    );
+}
+
+// A cancelled/failed provider reports a completed batch with no own-turn signal. That explicit
+// end must clear a pending binding too; an empty poll with None cannot end it.
+#[tokio::test]
+async fn a_pending_held_turn_is_released_when_the_provider_ends_without_its_own_result() {
+    let (team, _) = held_turn_pending_behind_a_message("background-hold-pending-cancelled").await;
+    apply_own_turn(&team, ProviderOwnTurnSignal::None, true, Vec::new()).await;
+    assert!(
+        !working(&team),
+        "the ended provider cannot retain a pending held turn"
+    );
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    assert!(
+        !team.runtime.owned.prompt_state_owner.provider_turn_pending(
+            &session,
+            &team.child,
+            &team.child_run,
+        ),
+        "an ended own turn cannot be adopted after the prompt settles"
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
+    sweep(&team).await;
+    assert!(
+        !team
+            .runtime
+            .owned
+            .prompt_state_owner
+            .provider_turn_running(&session, &team.child,),
+        "the sweep cannot adopt the ended notification turn"
+    );
+    assert_eq!(finishes_of_task(&team).len(), 1);
 }

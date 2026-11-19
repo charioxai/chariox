@@ -283,19 +283,52 @@ pub(super) fn task_public_outputs<'a>(
         .collect()
 }
 
+/// The history of `prompt`'s turns, boundaries excluded: from its own boundary (or, for a prompt
+/// steered into another turn, from where it was steered in), and from each boundary where a
+/// provider's own turn resumed it, up to the next prompt's boundary. Steering stays inside the
+/// turn it steered. Empty when the prompt has no boundary.
+pub(super) fn prompt_turn_entries<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+) -> Vec<&'a crate::history::SessionHistoryEntry> {
+    use crate::history::SessionHistoryEntryKind as Kind;
+    let own = format!("prompt:{prompt}");
+    let steered = crate::history::steering_prompt_merge_key(prompt);
+    let resumed = crate::history::resumed_prompt_merge_key(prompt);
+    let mut started = false;
+    let mut inside = false;
+    let mut turn = Vec::new();
+    for entry in entries {
+        if entry.kind == Kind::UserPrompt {
+            let key = entry.merge_key.as_deref();
+            if key == Some(own.as_str())
+                || key == Some(steered.as_str())
+                || (started && key == Some(resumed.as_str()))
+            {
+                started = true;
+                inside = true;
+                continue;
+            }
+            if !key.is_some_and(|key| {
+                key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
+            }) {
+                inside = false;
+                continue;
+            }
+        }
+        if inside {
+            turn.push(entry);
+        }
+    }
+    turn
+}
+
 pub(super) fn task_public_output_entries<'a>(
     entries: &'a [crate::history::SessionHistoryEntry],
     prompt: &str,
     run: Option<&str>,
 ) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
-    let key = format!("prompt:{prompt}");
-    let Some(start) = entries
-        .iter()
-        .position(|e| e.kind == Kind::UserPrompt && e.merge_key.as_deref() == Some(&key))
-    else {
-        return vec![];
-    };
     // MP-08 / MP-09 / MP-10 / MP-11 A12: an official-provider history
     // import can replay a previous item under the current reused run. Prefer
     // its managed stream receipt, wherever its original prompt boundary was.
@@ -305,15 +338,8 @@ pub(super) fn task_public_output_entries<'a>(
         .filter(|e| e.kind == Kind::ProviderOutput && !e.is_external_provider_observed())
         .filter_map(|e| e.merge_key.as_deref())
         .collect::<std::collections::HashSet<_>>();
-    entries
-        .iter()
-        .skip(start + 1)
-        .take_while(|e| {
-            e.kind != Kind::UserPrompt
-                || e.merge_key.as_deref().is_some_and(|key| {
-                    key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
-                })
-        })
+    prompt_turn_entries(entries, prompt)
+        .into_iter()
         .filter(|e| {
             e.kind == Kind::ProviderOutput
                 && run.is_some()

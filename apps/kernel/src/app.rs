@@ -103,8 +103,9 @@ pub(crate) use provider_output_claude_native::{
     ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
-    background_calls, ended_background_provider_tool_rows, ended_open_provider_tool_rows,
-    is_work_of_a_turn, BackgroundCalls, EndedProviderToolRow, ProviderToolEnding,
+    background_calls, ended_background_call_ids, ended_background_provider_tool_rows,
+    ended_open_provider_tool_rows, is_work_of_a_turn, BackgroundCalls, EndedProviderToolRow,
+    ProviderToolEnding,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,

@@ -379,6 +379,12 @@ impl KernelRuntimeOwnedState {
                     );
             }
         }
+        if phase == crate::session::DurablePromptDeliveryPhase::Delivered {
+            if let Some(run) = prompt.durable_delivery_provider_run_id() {
+                self.prompt_state_owner
+                    .fold_pending_held_turn(&session, agent_id, run, &prompt);
+            }
+        }
         Ok(prompt)
     }
 

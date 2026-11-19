@@ -4,8 +4,9 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::provider::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderUtilityExecutionPolicy,
+    RuntimeProviderRun,
 };
 
 use super::super::{
@@ -484,6 +485,7 @@ pub(super) fn execute_output_poll_command(
             })
             .collect();
         return Ok(Some(ProviderPromptSignalBatch {
+            provider_own_turn: ProviderOwnTurnSignal::None,
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             turn_outcome: None,
@@ -587,6 +589,7 @@ pub(super) fn execute_output_poll_command(
         })
         .collect();
     Ok(Some(ProviderPromptSignalBatch {
+        provider_own_turn: ProviderOwnTurnSignal::None,
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         turn_outcome: None,

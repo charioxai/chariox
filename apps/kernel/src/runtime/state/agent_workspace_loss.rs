@@ -64,6 +64,18 @@ impl KernelRuntimeState {
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(run.id().to_string());
             } else if self.workspace_of_run_is_lost(&run) {
+                crate::logging::info_with_fields(
+                    "runtime.agent_lifecycle",
+                    "the workspace of a running turn was removed; the turn ends failed",
+                    serde_json::json!({
+                        "room_id": agent.session_id(), "agent_id": agent.id(),
+                        "provider_run_id": run.id(), "directory": directory.display().to_string(),
+                        "turn": self
+                            .owned
+                            .prompt_state_owner
+                            .turn_authority_snapshot(agent.session_id(), agent.id()),
+                    }),
+                );
                 lost.push((
                     agent.session_id().to_string(),
                     run.id().to_string(),

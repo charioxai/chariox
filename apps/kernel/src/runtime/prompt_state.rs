@@ -52,8 +52,81 @@ struct OwnedAgentPromptState {
     // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
     // kernel-correlated prompts may start; others stay queued (causal fence).
     sudo_work: Option<SudoWorkHold>,
+    // Ephemeral: the provider's own turn ends with the provider process.
+    provider_turn: ProviderOwnTurn,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
+}
+
+/// A turn the provider runs on its own, such as Claude reporting a finished background command.
+/// Each change is one step under the owner's lock that carries every field the next state needs
+/// (see `provider_turn_adoption.rs`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum ProviderOwnTurn {
+    #[default]
+    None,
+    /// It began while an earlier prompt was still settling; it becomes the agent's turn when that
+    /// prompt leaves, under the binding chosen when it was first reported.
+    Pending(PendingOwnTurn),
+    /// It is the agent's running turn, under this prompt.
+    Adopted {
+        provider_run_id: String,
+        prompt_id: String,
+    },
+}
+
+/// A provider's own turn waiting for adoption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingOwnTurn {
+    pub(crate) provider_run_id: String,
+    pub(crate) binding: OwnTurnBinding,
+    pub(crate) output: PendingTurnOutput,
+}
+
+/// Where history records the output of a pending own turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingTurnOutput {
+    /// After the boundary of the prompt it waits behind.
+    BehindPrompt,
+    /// After its held prompt's resumed boundary.
+    HeldSegment,
+    /// A delivered prompt joined the held segment; its steering boundary stays inside that turn.
+    Folded {
+        into: Box<PromptQueueItem>,
+        output: FoldedTurnOutput,
+    },
+}
+
+/// Boundaries of a held turn whose delivered prompt joined it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FoldedTurnOutput {
+    BeforeHeldSegment,
+    BeforeSteeringBoundary,
+    SteeringBoundary,
+}
+
+/// Which task a provider's own turn runs for, chosen once, from the batch that first reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnTurnBinding {
+    /// A turn of its own, with its own task and answer boundary.
+    Fresh,
+    /// The notification turn of a task held for its background calls: it runs under that task's
+    /// prompt.
+    Held { prompt_id: String },
+}
+
+/// Where a turn the provider started on its own stands after one adoption attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderTurnAdoption {
+    /// The turn runs under `prompt`, for `binding`.
+    Adopted {
+        prompt: Box<PromptQueueItem>,
+        binding: OwnTurnBinding,
+        /// The held prompt's resumed boundary was appended while the turn was pending.
+        segment_open: bool,
+    },
+    /// Another prompt is active or queued; `newly` is false when it was already waiting.
+    Pending { newly: bool },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,6 +192,7 @@ impl OwnedAgentPromptState {
                 sudo_entry_id: None,
                 sudo_process_cutoff: None,
                 sudo_work: None,
+                provider_turn: ProviderOwnTurn::None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
@@ -376,6 +450,36 @@ impl PromptStateOwner {
             .ensure_agent_state(session, agent_id)
             .active_prompt
             .clone()
+    }
+
+    /// What the agent's turn authority holds, for a log line that explains a refused tool call:
+    /// the active prompt, how many wait behind it, and the provider's own turn.
+    pub(crate) fn turn_authority_snapshot(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> serde_json::Value {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(state) = owner.states.get(&PromptStateKey::new(session_id, agent_id)) else {
+            return serde_json::json!({"active_prompt_id": null, "queued": 0, "own_turn": "none"});
+        };
+        let own_turn = match &state.provider_turn {
+            ProviderOwnTurn::None => "none".to_string(),
+            ProviderOwnTurn::Pending(pending) => format!(
+                "pending on {} ({:?}, {:?})",
+                pending.provider_run_id, pending.binding, pending.output
+            ),
+            ProviderOwnTurn::Adopted { prompt_id, .. } => format!("adopted as {prompt_id}"),
+        };
+        serde_json::json!({
+            "active_prompt_id": state.active_prompt.as_ref().map(PromptQueueItem::id),
+            "active_prompt_status": state.active_prompt.as_ref().map(|p| format!("{:?}", p.status())),
+            "queued": state.queued_prompts.len(),
+            "own_turn": own_turn,
+        })
     }
 
     pub(crate) fn active_prompt_for_agent_snapshot(
@@ -1371,6 +1475,268 @@ impl PromptStateOwner {
         state.set_active_prompt(Some(active.clone()));
         state.bind_sudo_work();
         Ok(Some(active))
+    }
+
+    /// Makes `prompt`, the provider's own turn on `provider_run_id`, the agent's running turn
+    /// only while the agent has no prompt at all, active or queued: it never displaces or
+    /// overtakes a kernel prompt. Otherwise the turn is recorded as pending, and adopted once the
+    /// agent's prompts have left (see `provider_turn_pending`).
+    ///
+    /// `binding` applies only to a turn reported for the first time: a pending turn keeps the
+    /// binding it was recorded with. A held binding runs the turn under the held task's prompt id;
+    /// a fresh one under `fresh_prompt`.
+    pub(crate) fn adopt_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        fresh_prompt: PromptQueueItem,
+        provider_run_id: &str,
+        binding: OwnTurnBinding,
+    ) -> ProviderTurnAdoption {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, fresh_prompt.target_agent_id());
+        let (newly, binding, output) = match &state.provider_turn {
+            ProviderOwnTurn::Pending(pending) if pending.provider_run_id == provider_run_id => {
+                (false, pending.binding.clone(), pending.output.clone())
+            }
+            _ => (true, binding, PendingTurnOutput::BehindPrompt),
+        };
+        if state.active_prompt.is_some()
+            || !state.queued_prompts.is_empty()
+            || matches!(output, PendingTurnOutput::Folded { .. })
+        {
+            state.provider_turn = ProviderOwnTurn::Pending(PendingOwnTurn {
+                provider_run_id: provider_run_id.to_string(),
+                binding,
+                output,
+            });
+            return ProviderTurnAdoption::Pending { newly };
+        }
+        let mut prompt = match &binding {
+            OwnTurnBinding::Held { prompt_id } => fresh_prompt.with_id(prompt_id.clone()),
+            OwnTurnBinding::Fresh => fresh_prompt,
+        };
+        prompt.set_status(PromptStatus::Running);
+        state.provider_turn = ProviderOwnTurn::Adopted {
+            provider_run_id: provider_run_id.to_string(),
+            prompt_id: prompt.id().to_string(),
+        };
+        state.set_active_prompt(Some(prompt.clone()));
+        ProviderTurnAdoption::Adopted {
+            prompt: Box::new(prompt),
+            binding,
+            segment_open: matches!(output, PendingTurnOutput::HeldSegment),
+        }
+    }
+
+    /// One step: a pending turn bound to a held task on `provider_run_id` whose output still
+    /// follows the prompt it waits behind now records it under the held prompt. Returns that
+    /// prompt, whose resumed boundary the caller appends before the output; `None` when the
+    /// turn is not pending, not held, or its segment is already open.
+    pub(crate) fn open_pending_held_segment(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<String> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return None;
+        };
+        let OwnTurnBinding::Held { prompt_id } = &pending.binding else {
+            return None;
+        };
+        if pending.provider_run_id != provider_run_id {
+            return None;
+        }
+        match &mut pending.output {
+            PendingTurnOutput::BehindPrompt => pending.output = PendingTurnOutput::HeldSegment,
+            PendingTurnOutput::Folded { output, .. }
+                if *output == FoldedTurnOutput::BeforeHeldSegment =>
+            {
+                *output = FoldedTurnOutput::BeforeSteeringBoundary;
+            }
+            _ => return None,
+        }
+        Some(prompt_id.clone())
+    }
+
+    /// The delivery receipt records a fold once; only output processing writes its boundaries.
+    pub(crate) fn fold_pending_held_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt: &PromptQueueItem,
+    ) {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let Some(state) = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))
+        else {
+            return;
+        };
+        if !state
+            .active_prompt
+            .as_ref()
+            .is_some_and(|p| p.id() == prompt.id())
+        {
+            return;
+        }
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return;
+        };
+        if pending.provider_run_id != provider_run_id
+            || !matches!(pending.binding, OwnTurnBinding::Held { .. })
+        {
+            return;
+        }
+        let output = match pending.output {
+            PendingTurnOutput::BehindPrompt => FoldedTurnOutput::BeforeHeldSegment,
+            PendingTurnOutput::HeldSegment => FoldedTurnOutput::BeforeSteeringBoundary,
+            PendingTurnOutput::Folded { .. } => return,
+        };
+        pending.output = PendingTurnOutput::Folded {
+            into: Box::new(prompt.clone()),
+            output,
+        };
+    }
+
+    /// Take the boundary once, after the held segment is open and before that batch's chunks.
+    pub(crate) fn take_folded_held_boundary(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<(String, Box<PromptQueueItem>)> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return None;
+        };
+        if pending.provider_run_id != provider_run_id {
+            return None;
+        }
+        let OwnTurnBinding::Held { prompt_id } = &pending.binding else {
+            return None;
+        };
+        let PendingTurnOutput::Folded { into, output } = &mut pending.output else {
+            return None;
+        };
+        if *output != FoldedTurnOutput::BeforeSteeringBoundary {
+            return None;
+        }
+        *output = FoldedTurnOutput::SteeringBoundary;
+        Some((prompt_id.clone(), into.clone()))
+    }
+
+    /// Whether a turn on `provider_run_id` bound to the held `prompt_id` waits for adoption.
+    pub(crate) fn provider_turn_pending_for_held(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session_id, agent_id))
+            .is_some_and(|state| match &state.provider_turn {
+                ProviderOwnTurn::Pending(pending) => {
+                    pending.provider_run_id == provider_run_id
+                        && matches!(&pending.binding, OwnTurnBinding::Held { prompt_id: held } if held == prompt_id)
+                }
+                _ => false,
+            })
+    }
+
+    /// Whether the provider's own turn is the agent's running turn.
+    pub(crate) fn provider_turn_running(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| match &state.provider_turn {
+                ProviderOwnTurn::Adopted { prompt_id, .. } => state
+                    .active_prompt
+                    .as_ref()
+                    .is_some_and(|active| active.id() == prompt_id),
+                _ => false,
+            })
+    }
+
+    /// Whether a turn the provider started on `provider_run_id` waits for adoption.
+    pub(crate) fn provider_turn_pending(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| {
+                matches!(&state.provider_turn, ProviderOwnTurn::Pending(pending) if pending.provider_run_id == provider_run_id)
+            })
+    }
+
+    /// The provider is no longer running a turn of its own. Returns a turn that ended while it
+    /// still waited for adoption.
+    pub(crate) fn end_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<PendingOwnTurn> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let same_run = match &state.provider_turn {
+            ProviderOwnTurn::Pending(pending) => pending.provider_run_id == provider_run_id,
+            ProviderOwnTurn::Adopted {
+                provider_run_id: run,
+                ..
+            } => run == provider_run_id,
+            ProviderOwnTurn::None => false,
+        };
+        if !same_run {
+            return None;
+        }
+        match std::mem::take(&mut state.provider_turn) {
+            ProviderOwnTurn::Pending(pending) => Some(pending),
+            ProviderOwnTurn::None | ProviderOwnTurn::Adopted { .. } => None,
+        }
     }
 
     #[cfg(test)]
@@ -3135,6 +3501,7 @@ mod tests {
                     sudo_entry_id: None,
                     sudo_process_cutoff: None,
                     sudo_work: None,
+                    provider_turn: ProviderOwnTurn::None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),
                 },

@@ -80,6 +80,38 @@ impl KernelRuntimeState {
             format!("origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}")
         })
     }
+    /// A tool call refused for want of a running turn names, in the kernel log, what the turn
+    /// authority held at that moment, so the turn that lost its authority can be found.
+    pub(crate) fn log_refused_turn_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        actor: &str,
+        run: Option<&crate::provider::RuntimeProviderRun>,
+        tool: &str,
+        args: &serde_json::Value,
+        refusal: &str,
+    ) {
+        let task = args["task_id"].as_str().and_then(|task| {
+            self.owned
+                .durable_state_store
+                .agent_task(task)
+                .ok()
+                .flatten()
+        });
+        crate::logging::info_with_fields(
+            "runtime.agent_events",
+            "a turn tool was refused",
+            serde_json::json!({
+                "refusal": refusal, "tool": tool, "room_id": session.id(), "agent_id": actor,
+                "provider_run_id": run.map(|run| run.id()),
+                "origin_prompt_id": args["origin_prompt_id"].as_str(),
+                "task_id": args["task_id"].as_str(),
+                "task_state": task.as_ref().map(|task| &task.state),
+                "task_prompt_id": task.as_ref().map(|task| &task.prompt_id),
+                "turn": self.owned.prompt_state_owner.turn_authority_snapshot(session.id(), actor),
+            }),
+        );
+    }
     async fn dispatch_agent_event_tool_for(
         &self,
         room: &str,
@@ -103,11 +135,19 @@ impl KernelRuntimeState {
         let prompt = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, actor)
-            .ok_or_else(|| ledger::error("no running turn"))?;
-        if prompt.status() != crate::session::PromptStatus::Running {
-            return Err(ledger::error("stale turn authority"));
-        }
+            .active_prompt_for_agent(&session, actor);
+        let prompt = match prompt {
+            Some(prompt) if prompt.status() == crate::session::PromptStatus::Running => prompt,
+            other => {
+                let refusal = if other.is_none() {
+                    "no running turn"
+                } else {
+                    "stale turn authority"
+                };
+                self.log_refused_turn_tool(&session, actor, run, name, &args, refusal);
+                return Err(ledger::error(refusal));
+            }
+        };
         if args["origin_prompt_id"].as_str() != Some(prompt.id()) {
             return Err(ledger::error(self.earlier_turn_origin_refusal(
                 room,

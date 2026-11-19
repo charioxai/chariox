@@ -70,6 +70,7 @@ mod subscriptions;
 mod supervision;
 #[cfg(test)]
 mod tests;
+mod transition_log;
 mod transitions;
 mod types;
 pub(crate) use types::{DelegateGoneReason, ReplyOutcome};
@@ -166,7 +167,12 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
-        self.enqueue_agent_lifecycle(operation)?.wait()
+        let step = transition_log::followed_step(&operation);
+        let outcome = self.enqueue_agent_lifecycle(operation)?.wait()?;
+        if let Some(step) = step {
+            transition_log::log_step(step, &outcome);
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn enqueue_agent_lifecycle(

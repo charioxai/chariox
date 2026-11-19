@@ -60,6 +60,8 @@ pub struct ClaudeRuntimeState {
     pub(super) active_stream_message_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
     pub(super) active_prompt_message: Option<Value>,
+    /// The active turn is one Claude started on its own: no prompt was written for it.
+    pub(super) own_turn: bool,
     pub(super) turn_watchdog: ClaudeTurnWatchdog,
     pub(super) cancelled_turn_pending_settlement: bool,
     /// Set when Claude's `init` reports that the Chariox MCP server did not
