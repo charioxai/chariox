@@ -10,7 +10,6 @@ pub(super) fn followed_step(operation: &Operation) -> Option<&'static str> {
         Operation::Settle { .. } => "settle",
         Operation::EndFailedTurn { .. } => "end failed turn",
         Operation::Block { .. } => "block",
-        Operation::BlockForBrowserAccess { .. } => "block for browser access",
         Operation::BlockForQuestion { .. } => "block for question",
         Operation::Sweep { .. } => "sweep",
         Operation::RetireRestartFailure { .. } => "retire restart failure",
