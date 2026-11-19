@@ -293,7 +293,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<(), DaemonError> {
-        self.mark_turns_waiting_on_a_question(session_id)?;
+        self.mark_turns_waiting_on_native_decisions(session_id)?;
         self.withdraw_agent_interactions_for(
             session_id,
             None,
@@ -301,32 +301,48 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    /// The card is withdrawn with the process, so the turn that waited on it keeps a durable
-    /// mark: restart recovery must not resume it into an answer nobody gave. Runs before the
-    /// withdrawal, which holds the interaction store.
-    fn mark_turns_waiting_on_a_question(&self, session_id: &str) -> Result<(), DaemonError> {
+    /// A turn keeps a durable mark when its question or startup permission loses its responder.
+    /// Record it before withdrawing the card so restart recovery can settle the interrupted turn.
+    fn mark_turns_waiting_on_native_decisions(&self, session_id: &str) -> Result<(), DaemonError> {
+        use crate::session::{NativeInteractionOrigin, RuntimeInteractionKind};
+
         let session = self.session_store.get_session(session_id)?;
         let waiting = session
             .active_interactions()
             .iter()
-            .filter(|interaction| {
-                interaction.kind() == crate::session::RuntimeInteractionKind::Choice
-            })
             .filter(|interaction| {
                 self.pending_interactions
                     .write()
                     .get(interaction.id())
                     .is_some_and(|pending| pending.async_task_id.is_none())
             })
-            .filter_map(
-                |interaction| match (interaction.agent_id(), interaction.native_origin()) {
+            .filter_map(|interaction| {
+                let agent_id = interaction.agent_id()?;
+                let prompt_id = match (interaction.kind(), interaction.native_origin()?) {
                     (
-                        Some(agent_id),
-                        Some(crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. }),
-                    ) => Some((agent_id.to_string(), prompt_id.clone())),
-                    _ => None,
-                },
-            )
+                        RuntimeInteractionKind::Choice,
+                        NativeInteractionOrigin::Prompt { prompt_id, .. },
+                    ) => prompt_id.clone(),
+                    (
+                        RuntimeInteractionKind::Permission,
+                        NativeInteractionOrigin::ProviderStartup { provider_run_id },
+                    ) => {
+                        // Startup permissions belong to the run. Only a prompt waiting
+                        // for delivery on that run was interrupted by this card.
+                        self.prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                            .filter(|prompt| {
+                                prompt.delivery_pending()
+                                    && prompt.durable_delivery_provider_run_id()
+                                        == Some(provider_run_id.as_str())
+                            })?
+                            .id()
+                            .to_string()
+                    }
+                    _ => return None,
+                };
+                Some((agent_id.to_string(), prompt_id))
+            })
             .collect::<Vec<_>>();
         for (agent_id, prompt_id) in waiting {
             if !self
