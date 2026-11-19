@@ -482,7 +482,8 @@ async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_se
     starting.await.unwrap().unwrap();
     for (key, value) in [
         ("providers.default", "codex"),
-        ("providers.model", "gpt-test"),
+        // A model of the offline Codex catalog: an unknown model is refused when the Room starts.
+        ("providers.model", "gpt-5.5"),
         ("providers.effort", "high"),
     ] {
         f.state
