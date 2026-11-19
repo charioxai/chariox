@@ -566,5 +566,8 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1063 adds the owner's limits for machines agents acquire without asking, the user config keys
+/// `agents.offload_classes`, `agents.offload_max_machines` and `agents.offload_daily_cap_micros`
+/// (docs/PROTOCOL.md, "Machines without asking").
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1063;
