@@ -63,9 +63,9 @@ use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
 
-pub(crate) const KERNEL_ROUTING_ACCESS_REQUIRED: &str = "Run `chariox access request --no-wait` on your local kernel, then retry after the owner approves.";
+const KERNEL_ROUTING_ACCESS_REQUIRED: &str = "Run `chariox access request --no-wait` on your local kernel, then retry after the owner approves.";
 
-const WATCH_INTERVAL_MS: u64 = 100;
+pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const ROOM_LIST_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
 /// At most half the process shutdown budget: the subsystem cleanup after it withdraws cards and
