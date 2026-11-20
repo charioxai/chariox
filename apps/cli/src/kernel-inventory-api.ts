@@ -1,6 +1,6 @@
 import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import { listProviderAccountCopyOffers } from "./provider-api.js"
-import type { ProviderAccountCopyOffer, RemoteMachineRecord, RelayKernelPresence, RoomListProjectSummary } from "@chariox/kernel-client"
+import type { ProviderAccountCopyOffer, RelayKernelPresence, RoomListProjectSummary } from "@chariox/kernel-client"
 import { externalProviderSessionPage } from "@chariox/kernel-client/external-provider-sessions"
 import type {
   SliceRecord,
@@ -17,7 +17,7 @@ import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { remoteMachineView } from "./remote-machine-api.js"
 import { listSlices } from "./slice-api.js"
 
-export type RemoteMachineView = RemoteMachineRecord & { displayFreshness?: "cached/refreshing" | "reconnecting" }
+export type RemoteMachineView = ReturnType<typeof remoteMachineView> & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
 export type RemoteKernelView = RelayKernelPresence & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
