@@ -1123,7 +1123,7 @@ function session(id: string): SessionListEntry {
     worktree_id: "/workspace/tree",
     status: "Created",
     created_at_ms: 1,
-    attachment_ids: [],
+    connected_cli_count: 0,
   }
 }
 

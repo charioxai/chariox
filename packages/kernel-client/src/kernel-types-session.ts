@@ -63,7 +63,7 @@ export type RuntimeSession = {
   status: string
   agent_defaults?: SessionAgentDefaults
   active_provider_run_id: string | null
-  attachment_ids: string[]
+  connected_cli_count: number
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>

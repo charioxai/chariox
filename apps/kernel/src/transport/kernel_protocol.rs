@@ -153,7 +153,6 @@ pub(crate) enum KernelEvent {
     SessionProcessesChanged {
         session_id: String,
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
-        disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },
     SessionSnapshot {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
@@ -806,14 +805,11 @@ pub(crate) fn session_projection_changed_events(
             !crate::runtime::process_resources::same_to_clients(
                 &previous.processes,
                 &snapshot.processes,
-            ) || previous.disk_usage != snapshot.disk_usage
-        }) && (previous.is_some()
-            || !snapshot.processes.is_empty()
-            || !snapshot.disk_usage.is_empty()))
+            )
+        }) && (previous.is_some() || !snapshot.processes.is_empty()))
         .then(|| KernelEvent::SessionProcessesChanged {
             session_id: snapshot.session.id().to_string(),
             processes: snapshot.processes.clone(),
-            disk_usage: snapshot.disk_usage.clone(),
         }),
         previous
             .is_none_or(|p| p.jobs != snapshot.jobs)

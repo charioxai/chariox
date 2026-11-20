@@ -24,7 +24,7 @@ export type SessionLifecycleListEntry = {
   last_used_at_ms?: number | null
   last_activity_at_ms?: number | null
   last_prompt_sent_at_ms?: number | null
-  attachment_ids?: string[]
+  connected_cli_count?: number
 }
 
 export type SessionLifecycleListSession = {
@@ -43,7 +43,7 @@ export type SessionLifecycleListSession = {
   last_used_at_ms?: number | null
   last_activity_at_ms?: number | null
   last_prompt_sent_at_ms?: number | null
-  attachment_ids?: string[]
+  connected_cli_count?: number
 }
 
 export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
@@ -123,8 +123,8 @@ export function sessionListEntryFromSession(
   if (Object.prototype.hasOwnProperty.call(session, "created_at_ms")) {
     if (session.created_at_ms !== undefined) entry.created_at_ms = session.created_at_ms
   }
-  if (Object.prototype.hasOwnProperty.call(session, "attachment_ids")) {
-    if (session.attachment_ids !== undefined) entry.attachment_ids = session.attachment_ids
+  if (Object.prototype.hasOwnProperty.call(session, "connected_cli_count")) {
+    if (session.connected_cli_count !== undefined) entry.connected_cli_count = session.connected_cli_count
   }
   if (Object.prototype.hasOwnProperty.call(session, "workspace_live_sync_mode")) {
     entry.workspace_live_sync_mode = session.workspace_live_sync_mode ?? null
@@ -164,7 +164,7 @@ export function isCompleteSessionSnapshot(
     && typeof session.worktree_id === "string"
     && typeof session.created_at_ms === "number"
     && typeof session.status === "string"
-    && Array.isArray(session.attachment_ids)
+    && typeof session.connected_cli_count === "number"
     && Array.isArray(session.agents)
     && Array.isArray(session.workflows)
     && Array.isArray(session.workflow_runs)

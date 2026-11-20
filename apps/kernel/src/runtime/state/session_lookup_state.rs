@@ -155,7 +155,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         // The label is read before the session, so a state is never older than its revision.
         let agent_activity_revision = self.owned.session_projection.change_sequence();
-        let (session, processes, disk_usage) = self.session_with_resources(&request.session_id)?;
+        let session = self.session_for_state_read(&request.session_id)?;
         Ok(LocalDaemonResponse::SessionState {
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
@@ -164,28 +164,26 @@ impl KernelRuntimeState {
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision,
             jobs: self.session_jobs(session.id()),
-            processes,
-            disk_usage,
+            processes: self.room_agent_processes(&session),
             session,
         })
     }
 
-    /// The Room with its processes and disk use; a caller-scoped read projects its own activity.
-    pub(crate) fn session_with_resources(
+    pub(crate) fn session_for_state_read(
         &self,
         session_id: &str,
-    ) -> Result<
-        (
-            crate::session::RuntimeSession,
-            Vec<crate::runtime::process_resources::SessionProcess>,
-            Vec<crate::runtime::disk_usage::DiskUsageEntry>,
-        ),
-        DaemonError,
-    > {
-        let session = self.owned.session_snapshot(session_id)?;
-        let processes = self.session_processes(session.id());
-        let disk_usage = self.session_disk_usage(session.id());
-        Ok((session, processes, disk_usage))
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.owned.session_snapshot(session_id)
+    }
+
+    pub(crate) fn room_agent_processes(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Vec<crate::runtime::process_resources::SessionProcess> {
+        self.session_processes(session.id())
+            .into_iter()
+            .filter(|process| process.belongs_to_room_agent(session))
+            .collect()
     }
 
     pub(crate) fn list_agents_response(

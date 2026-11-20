@@ -113,7 +113,7 @@ export function createCliRuntimeProjectionComposition(
     getEntries: () => deps.entries(),
   })
   const visibleTranscriptEntries = transcriptEntryProjectionController.visibleEntries
-  const connectedClientCount = () => deps.sessionState().attachment_ids.length
+  const connectedClientCount = () => deps.sessionState().connected_cli_count
   const activePrompt = () => agentRuntimeProjectionController.focusedActivePrompt()
   const focusedStatusBadge = () => sessionFocusedStatusBadge({
     attached: isAttached(),

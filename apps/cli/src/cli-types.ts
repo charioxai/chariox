@@ -522,6 +522,14 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
   ) as unknown as RuntimeSession)
 }
 
+export function normalizeRoomState(payload: Parameters<typeof normalizeRuntimeSessionWithAgentActivity>[0]): RuntimeSession {
+  const session = normalizeRuntimeSessionWithAgentActivity(payload)
+  // Preserve omission so a lean Room update cannot clear separately loaded editor data.
+  if (payload.session.workflows === undefined) delete session.workflows
+  if (payload.session.workflow_runs === undefined) delete session.workflow_runs
+  return session
+}
+
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
   return sessions.map(normalizeRuntimeSession)
 }

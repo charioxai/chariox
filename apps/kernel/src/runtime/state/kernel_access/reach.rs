@@ -78,6 +78,7 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::ListFinishedRoomTasks(_)
             | LocalDaemonRequest::CreateSession(_)
             | LocalDaemonRequest::ListAgents(_)
             | LocalDaemonRequest::QueryRecall(_)

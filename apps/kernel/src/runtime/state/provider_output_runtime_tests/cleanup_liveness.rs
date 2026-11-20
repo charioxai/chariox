@@ -1779,7 +1779,6 @@ fn mixed_authoritative_state(
             agent_activity,
             agent_activity_revision,
             processes: _,
-            disk_usage: _,
             jobs: _,
         } => MixedAuthoritativeState {
             room_workflows,

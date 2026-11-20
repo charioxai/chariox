@@ -1,9 +1,54 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, PromptQueueItem, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { normalizeRuntimeSession, normalizeRuntimeSessions, normalizeRuntimeSessionWithAgentActivity } from "./cli-types.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
+import { getSessionState } from "./session-api.js"
+import { deriveWorkflowSelectionState } from "./workflow-selection-sync.js"
+
+test("a lean Room read keeps the loaded workflow, active run details and selection", async () => {
+  const workflow: WorkflowDefinition = { id: "workflow-1", alias: "Review", revision: 3, nodes: [{ id: "review", agent_id: "agent-a" }] }
+  const run: WorkflowRun = {
+    id: "run-1", workflow_id: workflow.id, endpoint_id: "entry", entry_node_id: "review", status: "Running",
+    invocation_prompt: "Review the work", active_node_run_id: "node-run-1", node_runs: [], messages: [],
+    created_at_ms: 1, started_at_ms: 2, completed_at_ms: null,
+  }
+  const harness = createHarness({ session: session({ workflows: [workflow], workflow_runs: [run] }) })
+  const { workflows, workflow_runs, ...leanSession } = session({ alias: "Updated Room" })
+  const client = {
+    send: async () => ({ SessionState: {
+      session: leanSession,
+      processes: [],
+      room_workflows: { session_id: leanSession.id, home_kernel_id: "home", revision: "inventory", workflow_count: 1, workflows: [{
+        workflow_id: workflow.id, workflow_revision: 3, label: "Review", state: "running", running_count: 1,
+        paused_count: 0, queued_count: 0, endpoints: [], runs: [{ run_id: run.id, endpoint_id: "entry", status: "Running", can_pause: true, can_resume: false, can_stop: true }],
+      }] },
+    } }),
+  } as unknown as Parameters<typeof getSessionState>[0]
+
+  harness.controller.apply(await getSessionState(client, leanSession.id))
+  const applied = harness.state.session
+  const selected = deriveWorkflowSelectionState(applied.workflows ?? [], workflow.id, "review")
+  assert.deepEqual({ alias: applied.alias, workflow: selected.workflow, nodeId: selected.nodeId, run: applied.workflow_runs?.[0] }, {
+    alias: "Updated Room", workflow, nodeId: "review", run,
+  })
+
+  const inventory = applied.room_workflows!
+  const cleared = harness.controller.apply({ ...leanSession, room_workflows: { ...inventory, workflow_count: 0, workflows: [] } })
+  assert.deepEqual(cleared.workflows, [])
+  assert.deepEqual(cleared.workflow_runs, [])
+
+  harness.controller.apply(applied)
+  const explicit = harness.controller.apply({ ...applied, workflows: [], workflow_runs: [] })
+  assert.deepEqual(explicit.workflows, [])
+  assert.deepEqual(explicit.workflow_runs, [])
+
+  harness.controller.apply(applied)
+  const other = harness.controller.apply({ ...leanSession, id: "other", room_workflows: { ...inventory, session_id: "other" } })
+  assert.deepEqual(other.workflows, [])
+  assert.deepEqual(other.workflow_runs, [])
+})
 
 test("session state apply controller applies runtime transition and refreshes split focus", () => {
   const current = session({
@@ -400,7 +445,7 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
       permission_level: "yolo",
     },
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",

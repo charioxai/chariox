@@ -18,7 +18,6 @@ pub struct SessionSnapshotProjection {
     pub processes: Vec<crate::runtime::process_resources::SessionProcess>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<crate::local::JobView>,
-    pub disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
@@ -139,6 +138,8 @@ impl SessionSnapshotProjection {
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;
+        self.processes
+            .retain(|process| process.belongs_to_room_agent(&self.session));
         self.agent_activity =
             crate::runtime::session_projection_refresh::redact_agent_activity_for_session(
                 self.agent_activity,
@@ -226,7 +227,6 @@ impl SessionSnapshotProjection {
         annotate_deadline_ends(&mut agent_activity, &app.durable_state_store(), session_id)?;
         Ok(Self {
             jobs: Vec::new(),
-            disk_usage: Vec::new(),
             processes,
             room_workflows: super::RoomWorkflowInventory::project(
                 &session,

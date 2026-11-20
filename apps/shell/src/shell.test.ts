@@ -220,7 +220,7 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     created_at_ms: 0,
     status: "Running",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",

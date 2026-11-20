@@ -3886,6 +3886,56 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
 }
 
+#[test]
+fn finished_room_tasks_continue_before_the_last_visible_task() {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let insert = |id: &str, room: &str, agent: &str, state: &str| {
+        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":agent,"prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
+        db.execute(
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?1,?4)",
+            params![id, room, agent, payload.to_string()],
+        )
+        .unwrap();
+    };
+    for index in 0..70 {
+        insert(
+            &format!("t{index}"),
+            "room",
+            "a",
+            if index % 2 == 0 { "done" } else { "cancelled" },
+        );
+        insert(&format!("private{index}"), "room", "b", "done");
+    }
+    insert("working", "room", "a", "working");
+    insert("another-room", "other", "a", "done");
+    let (first, next) = f.store.finished_room_tasks("room", &["a"], None).unwrap();
+    assert_eq!(first.len(), 32);
+    insert("new-task", "room", "a", "done");
+    let (second, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(second.len(), 32);
+    let (last, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        first
+            .into_iter()
+            .chain(second)
+            .chain(last)
+            .map(|task| task.task_id)
+            .collect::<Vec<_>>(),
+        (0..70)
+            .rev()
+            .map(|index| format!("t{index}"))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Virtual machine steps one snapshot read takes in a room with `done` finished tasks and one waiting.
 fn visible_read_steps(done: usize) -> i32 {
     let f = Fixture::new();

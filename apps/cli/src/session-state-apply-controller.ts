@@ -64,8 +64,18 @@ export function createSessionStateApplyController(
   deps: SessionStateApplyControllerDeps,
 ) {
   const apply = (incomingSession: RuntimeSession) => {
-    const nextSession = normalizeRuntimeSession(incomingSession)
     const currentSession = deps.getSession()
+    const nextSession = normalizeRuntimeSession(incomingSession)
+    if (incomingSession.room_workflows && currentSession.id === nextSession.id) {
+      // Room reads carry workflow membership. Definitions and run details arrive through editor reads and workflow events.
+      const ids = new Set(incomingSession.room_workflows.workflows.map(workflow => workflow.workflow_id))
+      if (incomingSession.workflows === undefined) {
+        nextSession.workflows = currentSession.workflows?.filter(workflow => ids.has(workflow.id)) ?? []
+      }
+      if (incomingSession.workflow_runs === undefined) {
+        nextSession.workflow_runs = currentSession.workflow_runs?.filter(run => ids.has(run.workflow_id)) ?? []
+      }
+    }
     const previousFocusedAgentId = deps.getFocusedAgentId()
     const previousLayout = deps.getCurrentResponseLayout()
     const transition = sessionRuntimeTransitionState({

@@ -6728,6 +6728,26 @@ Metrics contain no request payloads, identifiers, paths or credentials. The heal
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
 
+### Room state, finished tasks and machine resources
+
+`GetSessionState`, the state inside `AttachSessionView`, and `session_snapshot` publish
+the Room's current read model. Workflow labels, endpoints and controls come from
+`room_workflows`. Read full definitions with `ListWorkflows` or `ResolveWorkflow` when
+opening the workflow editor and read run history with `ListWorkflowRuns`. A Room
+reports `connected_cli_count`. Attachments are created with `AttachToSession` or
+`AttachSessionView`, and the creating client receives its own attachment ID.
+
+`ListFinishedRoomTasks {session_id, before}` reads finished tasks visible to the
+caller, 32 at a time from newest to oldest. Omit `before` for the first page. Use
+`FinishedRoomTasks.next_before` unchanged for the next page, or stop when it is
+null. The cursor identifies a position in that Room's durable task order and
+survives a kernel reload. New tasks can arrive above a page already displayed.
+
+Room process rows belong to its visible agents. Machines reads `GetMachineRoomResources
+{session_id}` on demand for process and disk samples grouped by Room. The
+`machine_room_resources` kernel resource uses the same request and parameters.
+The resource sends updates while a client watches it.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: process rows in `SessionState` — local 913 / relay peer 364
 
 The `SessionState` response (`GetSessionState`, and the `state` of
@@ -7320,8 +7340,8 @@ and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|runaway
 
 ### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
 
-`SessionState` and `session_processes_changed` carry `disk_usage` beside the
-existing CPU, memory and cumulative I/O process samples. Each allocation has
+The Machines resource carries `disk_usage` beside CPU, memory and cumulative
+I/O process samples. Each allocation has
 `id`, nullable `path`, nullable `used_bytes`, `sampled_at_ms`, nullable `owner`
 and nullable `process_id`. Directory entries describe the Room worktree and
 each agent's worktree, scratch and configured provider state directories.
@@ -8088,9 +8108,8 @@ to their caller. Other Room Terminal result variants remain ordinary JSON.
 The same 1006 subscription contract distinguishes view interests:
 `session_terminal` carries terminal data without session projection samples;
 `session_metadata` carries Room state and admission-wait changes without terminal
-bytes or periodic process samples; `session_metadata_processes` additionally keeps
-the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
-their full feed. Private provider-run changes do not repeat an unchanged public
+bytes or periodic process samples. Machines follows the `machine_room_resources`
+kernel resource. Private provider-run changes do not repeat an unchanged public
 projection. Activity timestamps accompany the next state or usage update instead
 of resending the whole run on their own. Ordinary metadata sends only admission
 waits, including on its initial projection; full process and disk samples stay on

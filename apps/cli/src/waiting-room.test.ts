@@ -203,7 +203,7 @@ test("waiting room renders indented sections and only previews the last two acti
     status: index % 2 === 0 ? "Active" : "Parked",
     created_at_ms: baseCreatedAt + index * 60_000,
     last_used_at_ms: baseCreatedAt + index * 60_000 + 3_600_000,
-    attachment_ids: [],
+    connected_cli_count: 0,
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
@@ -270,7 +270,7 @@ test("waiting room renders session rows with alias text", () => {
     status: "Active",
     created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
     last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
-    attachment_ids: [],
+    connected_cli_count: 0,
   }]
 
   const state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
@@ -290,7 +290,7 @@ test("waiting room marks sessions with public activity as working", () => {
     status: "Active",
     created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
     last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
-    attachment_ids: [],
+    connected_cli_count: 0,
     activity: {
       agent_count: 2,
       working_agent_count: 1,
@@ -487,7 +487,7 @@ test("waiting room keeps session metadata column widths stable across scroll win
     status: index === 11 ? "Disconnected" : "Active",
     created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
     last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
-    attachment_ids: [],
+    connected_cli_count: 0,
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")

@@ -622,4 +622,6 @@ pub use workspace::*;
 /// kernel holds its Vault unlock for the export that follows.
 /// 1013 allows a remote-job policy request to name the Room project with `project: true`.
 /// Provider account profiles carry recovery errors and Inbox notices can offer sign-in on the target kernel.
+/// 1077 moves finished Room tasks to pages and machine samples to a Machine resource. Room views
+/// publish the connection count and workflow inventory alongside current activity.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
