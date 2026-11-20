@@ -1,15 +1,13 @@
 use super::*;
 
 #[test]
-fn promptless_pty_output_is_projected_for_failures_and_transient_native_terminals() {
-    assert!(!should_project_pty_output(false, None, false));
-    assert!(should_project_pty_output(true, None, false));
-    assert!(should_project_pty_output(
-        false,
-        Some("provider credits exhausted"),
-        false,
-    ));
-    assert!(should_project_pty_output(false, None, true));
+fn pty_failure_batches_are_only_projected_to_transient_native_terminals() {
+    assert!(!should_project_pty_output(false, false, false));
+    assert!(should_project_pty_output(true, false, false));
+    assert!(!should_project_pty_output(false, true, false));
+    assert!(!should_project_pty_output(true, true, false));
+    assert!(should_project_pty_output(false, false, true));
+    assert!(should_project_pty_output(true, true, true));
 }
 
 fn structured_provider_test_app() -> (
