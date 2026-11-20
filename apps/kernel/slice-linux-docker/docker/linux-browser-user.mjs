@@ -2,13 +2,28 @@
 // their own files and an unprivileged identity. Never open the kernel's home.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { constants } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { mkdir, open, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { browserUserMessages } from './kernel-browser-error-label.mjs';
 const execute = promisify(execFile);
 export const browserAccount = 'chariox-browser';
-export const browserUserFailure = () => Object.assign(new Error('MP-08: cannot use the unprivileged browser account; install useradd/getent/setpriv/unshare and allow root to create chariox-browser and private mount namespaces, then retry'), {code:'browser_user_unavailable'});
+export const browserUserFailure = (reason='account') => Object.assign(new Error(browserUserMessages[reason]), {code:'browser_user_unavailable'});
+
+function readProcessAttribute(path) {
+  try { return readFileSync(path,'utf8'); } catch { return ''; }
+}
+
+export function browserConfinementFailure(capability) {
+  const profile = readProcessAttribute('/proc/self/attr/current').trim().split(/\s+/)[0];
+  if (process.env.CHARIOX_KERNEL_STATE_CONFINED === '1' || profile.split('//&').some(part=>part==='bwrap'||part==='unpriv_bwrap')) return browserUserFailure('nested');
+  const effective = /^CapEff:\s*([0-9a-f]+)$/im.exec(readProcessAttribute('/proc/self/status'))?.[1];
+  const bit = capability === 'namespaceCapability' ? 21n : 0n;
+  if (capability && effective && (BigInt(`0x${effective}`) & (1n << bit)) === 0n) return browserUserFailure(capability);
+  return browserUserFailure('host');
+}
+
 let account;
 export async function ensureBrowserAccount(run = execute) {
   const lookup = async () => {
@@ -48,7 +63,10 @@ export class LinuxBrowserUser {
       await ownedBrowserDirectory(this.root,0,0,0o711);
       this.home=await this.directory('home');
       return this;
-    } catch { throw browserUserFailure(); }
+    } catch (error) {
+      if (error.code==='EPERM' || error.code==='EACCES') throw browserConfinementFailure(error.syscall==='fchown'?'ownershipCapability':undefined);
+      throw browserUserFailure();
+    }
   }
   directory(name, {uid=this.uid,gid=this.gid,mode=0o700}={}) {
     if(!/^[a-z][a-z-]*$/.test(name))throw browserUserFailure();

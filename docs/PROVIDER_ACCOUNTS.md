@@ -126,7 +126,8 @@ The provider-to-site map is one function, `provider_enrollment_vault_origin` (Op
 An agent shell already runs inside Bubblewrap. A drill kernel started in that
 shell inherits the Linux confinement even if its environment is cleared. If
 Bubblewrap cannot create a nested mount namespace, provider startup stops at
-the confinement check.
+the confinement check. The browser may also fail to prepare its dedicated
+account or private mount namespace for the same reason.
 
 Use an authorized host operator session or a dedicated lab machine to start the
 drill. On a systemd host, the operator can run the drill command as a dedicated,
