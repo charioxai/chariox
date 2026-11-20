@@ -78,7 +78,9 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
                         accepting_remote_leases: true,
                         leased_agent_count: 1,
                         local_session_count: 0,
-                        local_protocol: None,
+                        local_protocol: Some(
+                            chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL,
+                        ),
                     },
                     &worker_private_key,
                 )

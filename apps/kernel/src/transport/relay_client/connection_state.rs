@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::time::timeout;
 
+use crate::local::RelayRegistrationRefusal;
 use crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT;
 use crate::runtime::router::CommandRouter;
 #[cfg(test)]
@@ -34,6 +35,7 @@ pub struct RelayClientState {
     pub(super) connected: bool,
     /// Wakes whoever publishes `connected` elsewhere as soon as it changes.
     connection_changes: watch::Sender<bool>,
+    registration_refused: Option<(String, RelayRegistrationRefusal)>,
     pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
@@ -134,6 +136,23 @@ impl RelayClientState {
 
     pub fn connected(&self) -> bool {
         self.connected
+    }
+
+    pub(crate) fn registration_refusal(
+        &self,
+        relay_url: Option<&str>,
+    ) -> Option<RelayRegistrationRefusal> {
+        self.registration_refused
+            .as_ref()
+            .and_then(|(url, refusal)| (Some(url.as_str()) == relay_url).then(|| refusal.clone()))
+    }
+
+    pub(super) fn set_registration_refusal(
+        &mut self,
+        relay_url: &str,
+        refusal: RelayRegistrationRefusal,
+    ) {
+        self.registration_refused = Some((relay_url.into(), refusal));
     }
 
     pub(crate) fn connection_changes(&self) -> watch::Receiver<bool> {
@@ -629,6 +648,7 @@ pub(super) async fn set_connected(
 ) -> Result<usize, String> {
     let registrations = {
         let mut guard = state.write().await;
+        guard.registration_refused = None;
         guard.set_connection(true);
         guard.connected_relay_url = Some(relay_url);
         guard.outgoing_tx = Some(outgoing_tx.clone());
