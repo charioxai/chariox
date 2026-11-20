@@ -30,7 +30,16 @@ test('MP-08/MP-11 a target retired while refreshing geometry cannot resize its r
  await assert.rejects(resizeBrowserPage(host,tab,command),/target retired/);
  assert(!calls.some(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'));
 });
-for(const bad of [{width:0},{width:900.5},{height:NaN},{width:1921},{height:1081}])test('MP-08/MP-11 malformed or oversized resize fails before native mutation '+JSON.stringify(bad),async()=>{
+// BH (Miguel 11-20: a big screen's page stopped at 1080): a headed browser lays out the asked page when it fits its video
+// bound (2560 per side, 2560x1600 in area), else the largest page of the asked shape inside it, and answers that size.
+for(const [asked,applied] of [[[1700,2100],[1700,2100]],[[1620,1654],[1620,1654]],[[2560,1600],[2560,1600]],[[2900,1900],[2500,1638]],[[3840,2400],[2560,1600]]])test(`BH headed resize ${asked.join('x')} lays out ${applied.join('x')}`,async()=>{
+ const {host,tab,calls}=fixture();assert.deepEqual(await resizeBrowserPage(host,tab,{...command,width:asked[0],height:asked[1]}),{width:applied[0],height:applied[1]});
+ assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='layout'),['layout','resize',{width:applied[0],height:applied[1]}]);
+});
+test('BH a headless browser lays out a 2900x1900 or 3840x2400 page as asked',async()=>{
+ for(const [width,height] of [[2900,1900],[3840,2400]]){const {host,tab}=fixture();delete host.chromium.desktop;assert.deepEqual(await resizeBrowserPage(host,tab,{...command,width,height}),{width,height});}
+});
+for(const bad of [{width:0},{width:900.5},{height:NaN},{width:3842},{height:3842},{width:3840,height:2402}])test('MP-08/MP-11 malformed or oversized resize fails before native mutation '+JSON.stringify(bad),async()=>{
  const {host,tab,calls}=fixture();await assert.rejects(resizeBrowserPage(host,tab,{...command,...bad}),/viewport between/);assert.deepEqual(calls,[]);
 });
 test('MP-08/MP-11 cancellation and retired target cannot move a replacement window',async()=>{

@@ -1,4 +1,4 @@
-import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, pageBound, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -125,7 +125,7 @@ export class HostChromium {
     // A resized browser window must remain inside its owned screen. Its page
     // renders at native density; screenshot DPR does not enlarge this desktop.
     this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment,
-      size:{width:pageLimit.width,height:pageLimit.height+chromeBandHeight} }) : null;
+      size:{width:pageBound.headed.side,height:pageBound.headed.side+chromeBandHeight} }) : null;
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
