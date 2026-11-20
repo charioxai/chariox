@@ -171,8 +171,10 @@ impl OperationalHistoryStore {
                     operation: "lock model usage store",
                     message: error.to_string(),
                 })?;
+        // Reserve the writer before reading the cumulative usage receipt and baseline.
+        // A deferred read cannot upgrade after another WAL writer commits.
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| operational_history_error("begin model usage write", error))?;
         let count = |value| {
             token_count_for_storage(value)
@@ -334,4 +336,73 @@ fn model_cost(provider: &str, model: &str, tokens: ModelTokenCounts) -> Option<u
             + u128::from(tokens.cached_input_tokens) * u128::from(rate.cached_input)
             + write_cost,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn claude_model_usage_waits_for_a_concurrent_history_writer() {
+        let scratch = crate::test_support::TestTempDir::new("claude-model-usage-writer");
+        let path = scratch.join("history.sqlite");
+        let store = OperationalHistoryStore::open(path.clone()).unwrap();
+        let mut writer = Connection::open(path).unwrap();
+        let transaction = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO history_claude_model_totals VALUES (?1,?2,?3,?4,20,2,0,0)",
+                params!["room", "agent", "native-session", "model"],
+            )
+            .unwrap();
+
+        let usage = [ModelTurnUsage {
+            model: "model".into(),
+            tokens: ModelTokenCounts {
+                input_tokens: 30,
+                output_tokens: 3,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+            },
+        }];
+        std::thread::scope(|scope| {
+            let (ready, started) = mpsc::channel();
+            let (result, saved) = mpsc::channel();
+            let store = &store;
+            let usage = &usage;
+            scope.spawn(move || {
+                ready.send(()).unwrap();
+                result
+                    .send(store.save_claude_model_usage(
+                        "room",
+                        "agent",
+                        "prompt",
+                        "run",
+                        "native-session",
+                        usage,
+                    ))
+                    .unwrap();
+            });
+            started.recv().unwrap();
+            // The deferred upgrade fails immediately while the holder is active. An
+            // immediate transaction waits for the writer, then reads its new total.
+            let finished = saved.recv_timeout(Duration::from_millis(500));
+            transaction.commit().unwrap();
+            match finished {
+                Ok(outcome) => outcome,
+                Err(mpsc::RecvTimeoutError::Timeout) => saved.recv().unwrap(),
+                Err(error) => panic!("usage writer stopped: {error}"),
+            }
+            .unwrap();
+        });
+        let usage = store
+            .turn_model_usage("room", "agent", "prompt", "run")
+            .unwrap();
+        assert_eq!(usage[0].tokens.input_tokens, 10);
+        assert_eq!(usage[0].tokens.output_tokens, 1);
+    }
 }
