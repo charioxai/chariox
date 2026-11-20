@@ -63,8 +63,8 @@ async function stop(child) {
 async function kernel() {
   const dir = join(root, "k"), ports = []
   for (let i = 0; i < 4; i++) ports.push(await freePort())
-  for (const sub of ["chariox", "home", "tmp", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
-  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n`)
+  for (const sub of ["chariox", "vault", "home", "tmp", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
+  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/vault/vault.json"\nunlock_policy = "kernel_init"\n`)
   const localEnv = { ...env, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
     CHARIOX_DAEMON_SOCKET: join(socketRoot, "k.sock"), CHARIOX_DAEMON_ALIAS: "pages-drill", CHARIOX_MACHINE_ALIAS: "pages-drill-machine",
