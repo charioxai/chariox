@@ -110,7 +110,8 @@ export function sessionProjectedPromptActivityForAgent(
   }
   const projection = projectAgentRuntimeActivity(activity)
   if (
-    !projection.activeTurnPromptId
+    projection.status !== "ended_deadline"
+    && !projection.activeTurnPromptId
     && !projection.busy
     && !projection.error
     && !projection.unreadIdleOutput
