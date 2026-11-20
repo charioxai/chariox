@@ -5,8 +5,9 @@ import {displayGeometry,pageLimit,pageBound,boundedPage} from './kernel-browser-
 export async function resizeBrowserPage(host,tab,command,signal){
  if(!Number.isSafeInteger(command.width)||!Number.isSafeInteger(command.height)||command.width<320||command.height<200||command.width>pageLimit.side||command.height>pageLimit.side||command.width*command.height>pageLimit.area)throw Error('browser resize needs a viewport between 320x200 and 3840 per side (3840x2400 in area); adjust the browser area');
  if(command.width%2||command.height%2)throw Error('browser resize needs even width and height for video; round down to an even viewport size');
- // BH: a headed browser (an owned Linux display) lays out at most its video bound; the answer names the page applied.
- const {width,height}=boundedPage(command.width,command.height,host.chromium?.desktop||host.chromium?.display?pageBound.headed:pageBound.headless);
+ // BH: a headed browser (a live owned Linux desktop or display; every Linux host has a desktop object, bound or not) lays
+ // out at most its video bound; the answer names the page applied.
+ const {width,height}=boundedPage(command.width,command.height,host.chromium?.desktop?.binding?.()||host.chromium?.display?pageBound.headed:pageBound.headless);
  assertNotCancelled(signal);
  if(host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');
  const previous=host.pageSize(tab.tab_id);

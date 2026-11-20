@@ -36,8 +36,8 @@ for(const [asked,applied] of [[[1700,2100],[1700,2100]],[[1620,1654],[1620,1654]
  const {host,tab,calls}=fixture();assert.deepEqual(await resizeBrowserPage(host,tab,{...command,width:asked[0],height:asked[1]}),{width:applied[0],height:applied[1]});
  assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='layout'),['layout','resize',{width:applied[0],height:applied[1]}]);
 });
-test('BH a headless browser lays out a 2900x1900 or 3840x2400 page as asked',async()=>{
- for(const [width,height] of [[2900,1900],[3840,2400]]){const {host,tab}=fixture();delete host.chromium.desktop;assert.deepEqual(await resizeBrowserPage(host,tab,{...command,width,height}),{width,height});}
+test('BH a headless browser (a Linux desktop object that is not bound) lays out a 2900x1900 or 3840x2400 page as asked',async()=>{
+ for(const [width,height] of [[2900,1900],[3840,2400]]){const {host,tab}=fixture();host.chromium.desktop={binding:()=>null};assert.deepEqual(await resizeBrowserPage(host,tab,{...command,width,height}),{width,height});}
 });
 for(const bad of [{width:0},{width:900.5},{height:NaN},{width:3842},{height:3842},{width:3840,height:2402}])test('MP-08/MP-11 malformed or oversized resize fails before native mutation '+JSON.stringify(bad),async()=>{
  const {host,tab,calls}=fixture();await assert.rejects(resizeBrowserPage(host,tab,{...command,...bad}),/viewport between/);assert.deepEqual(calls,[]);
