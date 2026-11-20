@@ -207,6 +207,8 @@ export type AppConfirmationFrame = {
   publisher_id: string
   publisher_name: string
   action_name: string
+  /** The exact input the kernel runs on Confirm, formatted by the kernel (pretty JSON as the agent supplied it, cut with a byte count). */
+  input: string
   /** The App's own rows for this exact input, when no App Tab shows the preview. Plain text. */
   preview?: { label: string; value: string }[]
 }
