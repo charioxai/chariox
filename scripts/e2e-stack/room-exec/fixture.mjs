@@ -79,7 +79,7 @@ export class Fixture {
       const root = path.join(this.home, name)
       for (const directory of ['home', 'chariox', 'tmp', 'work', 'logs']) await mkdir(path.join(root, directory), { recursive: true, mode: 0o700 })
       const home = path.join(root, 'chariox')
-      await writeFile(path.join(home, 'config.toml'), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${path.join(home, 'vault.json')}"\nunlock_policy = "kernel_init"\n`, { mode: 0o600 })
+      await writeFile(path.join(home, 'config.toml'), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${path.join(home, 'chariox-secret', 'vault.json')}"\nunlock_policy = "kernel_init"\n`, { mode: 0o600 })
       this.ports[name] = await port()
       this.envs[name] = {
         PATH: process.env.PATH, HOME: path.join(root, 'home'), SHELL: '/bin/bash',
