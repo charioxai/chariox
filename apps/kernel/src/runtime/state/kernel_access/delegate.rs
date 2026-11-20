@@ -1,6 +1,6 @@
 //! An external agent answers the person's cards on their behalf under the access the person
-//! already gave it. Secret entry, Vault unlock, passkeys and payments stay the person's own
-//! (`PendingInteraction::person_only`).
+//! already gave it. Secret entry, Vault unlock, passkeys and external payments such as
+//! payment cards in a browser stay the person's own (`PendingInteraction::person_only`).
 use super::*;
 use crate::runtime::command::KernelCaller;
 use crate::runtime::state::PendingInteraction;

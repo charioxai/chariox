@@ -104,7 +104,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
     };
     assert!(
         !state.interaction_person_only(&answer),
-        "an external agent approves a rental for the person"
+        "authorized parent agents may answer existing offload approvals"
     );
     let owner = state
         .owned
@@ -135,8 +135,8 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .await
         .unwrap();
     let error = gate.await.unwrap().unwrap_err().to_string();
-    assert!(error.contains("denied"));
-    assert!(error.contains("it was not sent to the service"));
+    assert!(error.contains("Denied by"));
+    assert!(error.contains("The request was not sent to the service"));
 }
 
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("denied"));
+        .contains("Denied by"));
 }
 
 #[test]
@@ -224,6 +224,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap(),
     );
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "manual".into(),
         class_id: None,
@@ -267,7 +268,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("it was not sent to the service"));
+        .contains("The request was not sent to the service"));
 }
 
 pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
@@ -303,12 +304,16 @@ fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
         .iter()
         .find(|spec| spec.name == "chariox.machines.acquire")
         .unwrap();
-    for field in ["request_id", "class_id", "region"] {
+    for field in ["request_id", "class_id", "region", "reason"] {
         assert!(
             acquire.input_schema["properties"][field].is_object(),
             "{field}"
         );
     }
+    assert_eq!(
+        acquire.input_schema["required"],
+        serde_json::json!(["reason"])
+    );
     assert_eq!(
         acquire.input_schema["additionalProperties"],
         serde_json::json!(false)
@@ -320,6 +325,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     let (state, command, _, mut caps, _workspace) = fixture(false);
     caps.offers = vec![option("agent-vm-s", "auto", true)];
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "chosen".into(),
         class_id: Some("agent-vm-s".into()),
@@ -353,6 +359,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     // A retry of an accepted request must reach the service whatever the list says now.
     let (state, command, _, caps, _workspace) = fixture(false);
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "retry".into(),
         class_id: Some("gone".into()),

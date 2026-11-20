@@ -85,9 +85,12 @@ pub(crate) async fn execute(
                 "The connected service did not return its machine offer",
             ));
         };
-        state
+        if let Some(waiting) = state
             .approve_machine_acquisition(command, request, machine_allocation.as_ref())
-            .await?;
+            .await?
+        {
+            return Ok(LocalDaemonResponse::ControlPlane { result: waiting });
+        }
         if let Some(grant) = &grant {
             state.authorize_external_request(grant, &request_shape)?;
         } else if let Some(reach) = command.reach_caller_id() {
@@ -110,23 +113,31 @@ pub(crate) async fn execute(
             }
         }
     }
-    let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
-        profile.api_url.clone(),
-        "/control-plane",
-        cloud_request_body(&profile.account_id, credential, request),
-    )
-    .await
-    .map_err(
-        |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
-            Some(
-                "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",
-            ) => unavailable(
-                "control_plane_authorization_denied",
-                "Check this kernel's owner enrollment and refresh machine capabilities",
-            ),
-            _ => error,
-        },
-    )?;
+    let service_response =
+        crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+            profile.api_url.clone(),
+            "/control-plane",
+            cloud_request_body(&profile.account_id, credential, request),
+        )
+        .await;
+    if let Err(error) = state.machine_approval_sent(command, request) {
+        tracing::warn!(%error, "could not close the machine approval receipt");
+    }
+    let mut result =
+        service_response.map_err(
+            |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+                Some(
+                    "authorization_denied"
+                    | "session_invalid"
+                    | "client_revoked"
+                    | "identity_revoked",
+                ) => unavailable(
+                    "control_plane_authorization_denied",
+                    "Check this kernel's owner enrollment and refresh machine capabilities",
+                ),
+                _ => error,
+            },
+        )?;
     let response_matches = matches!(
         (&result, request),
         (
@@ -286,6 +297,7 @@ mod tests {
             }
         ));
         let acquire = ControlPlaneRequest::Acquire {
+            reason: None,
             capability_revision: "forged".into(),
             request_id: "one".into(),
             class_id: None,
@@ -308,6 +320,7 @@ mod tests {
     #[test]
     fn the_acquire_request_matches_the_shared_contract() {
         let request = ControlPlaneRequest::Acquire {
+            reason: None,
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
             class_id: None,

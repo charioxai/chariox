@@ -14,6 +14,7 @@ export type ControlPlaneRequest =
   | { action: "start_saved_state" | "delete_saved_state"; allocation_ref: string; saved_state_ref: string; capability_revision: string; request_id: string; expected_revision: number }
 
 export type ControlPlaneResponse =
+  | { kind: "acquisition_waiting"; registration_id: string; expires_at_ms: number }
   | { kind: "job_cancelled"; job_ref: string }
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
