@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod credentials;
 mod payment_card;
+pub(crate) mod state_check;
 pub(crate) use payment_card::PaymentCard;
 pub use payment_card::{PaymentCardField, PaymentCardSummary};
 pub(crate) mod vault_kind;

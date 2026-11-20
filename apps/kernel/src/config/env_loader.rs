@@ -31,15 +31,10 @@ impl DaemonConfig {
     ) -> Self {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
-        let kernel_websocket_host =
-            env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let (kernel_websocket_host, kernel_websocket_port) = kernel_websocket_endpoint();
         let runtime_mcp_port = env::var("CHARIOX_MCP_PORT")
             .ok()
             .and_then(|value| value.parse::<u16>().ok());
-        let kernel_websocket_port = env::var("CHARIOX_KERNEL_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(43118);
         let runtime_identity = load_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
         let persisted_cloud_relay = persisted_config
@@ -55,14 +50,7 @@ impl DaemonConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
-        let daemon_id = if protected_slice_identity_required() {
-            protected_slice_daemon_id(&runtime_identity.daemon_id)
-        } else {
-            env::var("CHARIOX_DAEMON_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| runtime_identity.daemon_id.clone())
-        };
+        let daemon_id = daemon_id_override().unwrap_or_else(|| runtime_identity.daemon_id.clone());
         let event_delivery_environment_id = env::var("CHARIOX_EVENT_ENVIRONMENT_ID")
             .ok()
             .map(|value| value.trim().to_string())
@@ -316,14 +304,23 @@ fn parse_event_generator_management_targets(
 /// and the home discovers and routes to the worker by that exact ref. Accept
 /// only that form, for the provisioned owner Machine; any other value keeps
 /// the retained kernel id.
-fn protected_slice_daemon_id(retained_kernel_id: &str) -> String {
-    let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
-    env::var("CHARIOX_DAEMON_ID")
+pub(super) fn daemon_id_override() -> Option<String> {
+    let daemon_id = env::var("CHARIOX_DAEMON_ID").ok()?;
+    if protected_slice_identity_required() {
+        let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
+        return crate::slice::machine_scoped_slice_worker_ref(&daemon_id, owner_machine_id.trim())
+            .then_some(daemon_id);
+    }
+    (!daemon_id.trim().is_empty()).then_some(daemon_id)
+}
+
+pub(super) fn kernel_websocket_endpoint() -> (String, u16) {
+    let host = env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("CHARIOX_KERNEL_PORT")
         .ok()
-        .filter(|worker_ref| {
-            crate::slice::machine_scoped_slice_worker_ref(worker_ref, owner_machine_id.trim())
-        })
-        .unwrap_or_else(|| retained_kernel_id.to_string())
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(43118);
+    (host, port)
 }
 
 fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
