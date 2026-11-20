@@ -49,6 +49,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             id.clone(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,

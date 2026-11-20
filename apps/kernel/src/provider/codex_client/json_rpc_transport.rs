@@ -214,6 +214,9 @@ impl CodexClient {
     ) -> Result<Option<CodexNotification>, DaemonError> {
         let deadline = Instant::now() + timeout;
         loop {
+            if self.has_workspace_approval_for_successor() {
+                return Ok(None);
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(None);

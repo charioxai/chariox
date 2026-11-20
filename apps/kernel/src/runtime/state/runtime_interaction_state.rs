@@ -198,6 +198,27 @@ impl KernelRuntimeState {
         interaction: crate::session::RuntimeInteraction,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        self.create_agent_interaction(session_id, interaction, forwarding, None)
+            .await
+    }
+
+    pub(in crate::runtime) async fn create_codex_workspace_approval(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        request: &crate::runtime::native_interaction_bridge::CodexApprovalRequest,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        self.create_agent_interaction(session_id, interaction, None, Some(request))
+            .await
+    }
+
+    async fn create_agent_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
+        codex_approval: Option<&crate::runtime::native_interaction_bridge::CodexApprovalRequest>,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
         let agent_id = interaction
             .agent_id()
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -213,14 +234,19 @@ impl KernelRuntimeState {
         }
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
-        self.owned.register_runtime_interaction(
-            session_id,
-            interaction,
-            tx,
-            None,
-            forwarding,
-            None,
-        )?;
+        if let Some(request) = codex_approval {
+            self.owned
+                .register_codex_workspace_approval(session_id, interaction, tx, request)?;
+        } else {
+            self.owned.register_runtime_interaction(
+                session_id,
+                interaction,
+                tx,
+                None,
+                forwarding,
+                None,
+            )?;
+        }
         self.announce_child_decision(session_id, event_interaction.id())
             .await?;
         // Login challenges and PTY output are human-only ephemeral state.

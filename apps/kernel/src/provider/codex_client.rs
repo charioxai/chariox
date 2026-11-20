@@ -26,6 +26,8 @@ mod socket_io;
 mod thread_runtime;
 mod workspace_sandbox;
 pub(in crate::provider) use workspace_sandbox::UnavailableWorkspaceSandbox;
+#[cfg(unix)]
+pub(in crate::provider) use workspace_sandbox::WorkspaceApprovalState;
 
 mod mcp_config;
 

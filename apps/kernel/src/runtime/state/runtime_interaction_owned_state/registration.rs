@@ -1,4 +1,11 @@
 use super::*;
+use crate::runtime::native_interaction_bridge::CodexApprovalRequest;
+
+enum InteractionSource<'a> {
+    Local,
+    CodexWorkspaceApproval(&'a CodexApprovalRequest),
+    Forwarded(&'a crate::transport::relay_peer::RemoteNativeInteractionContext),
+}
 
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn register_runtime_interaction(
@@ -10,6 +17,47 @@ impl KernelRuntimeOwnedState {
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.register_interaction(
+            session_id,
+            interaction,
+            responder,
+            kernel_operation_owner,
+            terminal_credential_owner,
+            forwarding.map_or(InteractionSource::Local, InteractionSource::Forwarded),
+        )
+    }
+
+    pub(in crate::runtime::state) fn register_codex_workspace_approval(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
+        request: &CodexApprovalRequest,
+    ) -> Result<(), DaemonError> {
+        self.register_interaction(
+            session_id,
+            interaction,
+            responder,
+            None,
+            None,
+            InteractionSource::CodexWorkspaceApproval(request),
+        )
+    }
+
+    fn register_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
+        kernel_operation_owner: Option<&str>,
+        terminal_credential_owner: Option<&str>,
+        source: InteractionSource<'_>,
+    ) -> Result<(), DaemonError> {
+        let (forwarding, codex_approval) = match source {
+            InteractionSource::Forwarded(context) => (Some(context), None),
+            InteractionSource::CodexWorkspaceApproval(request) => (None, Some(request)),
+            InteractionSource::Local => (None, None),
+        };
         let _admission = self.begin_managed_activity_admission()?;
         self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
@@ -403,6 +451,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let mut pending = super::super::PendingInteraction {
             checking_answer: Default::default(),
+            codex_approval_transfer: codex_approval.map(|request| request.transfer.clone()),
             goal_approval: None,
             async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
@@ -423,13 +472,26 @@ impl KernelRuntimeOwnedState {
             holder_tenure: 0,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
-        pending.holder = self.decision_holder_at_raise(&sessions, &pending, &interaction);
-        // Registered again after a restart, a question keeps the holder it was handed to.
-        if let Some((holder, tenure)) =
-            self.restored_decision_holder(&sessions, &pending, &interaction)?
-        {
-            pending.holder = holder;
-            pending.holder_tenure = tenure;
+        let adopted = codex_approval.and_then(|request| request.adopted.as_ref());
+        if let Some(adopted) = adopted {
+            pending.holder = adopted
+                .holder_agent_id
+                .as_deref()
+                .filter(|holder| self.holder_may_answer(&sessions, &pending, &interaction, holder))
+                .map_or(super::super::DecisionHolder::User, |holder| {
+                    super::super::DecisionHolder::Agent(holder.to_string())
+                });
+            // The previous holder's delivery was closed at shutdown.
+            pending.holder_tenure = adopted.holder_tenure.saturating_add(1);
+        } else {
+            pending.holder = self.decision_holder_at_raise(&sessions, &pending, &interaction);
+            // Registered again after a restart, a question keeps the holder it was handed to.
+            if let Some((holder, tenure)) =
+                self.restored_decision_holder(&sessions, &pending, &interaction)?
+            {
+                pending.holder = holder;
+                pending.holder_tenure = tenure;
+            }
         }
         // The user sees a sub-agent's decision in its top parent's panel from the start, also while
         // a parent agent holds it: the first answer, the holder's or the user's, wins.
@@ -453,7 +515,11 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         }
-        if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
+        if let Some(adopted) = adopted {
+            pending.goal_approval = adopted.goal.clone();
+        } else if pending.terminal_credential_owner.is_none()
+            && pending.kernel_operation_owner.is_none()
+        {
             pending.goal_approval = self.begin_goal_native_approval(
                 session_id,
                 &interaction,

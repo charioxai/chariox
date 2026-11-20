@@ -394,7 +394,10 @@ impl KernelRuntimeOwnedState {
             .map(|(id, pending)| (id.clone(), pending.clone()))
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
-            self.withdraw_agent_interaction_locked(&id, &pending)?;
+            let handing_over = matches!(reason, InteractionWithdrawal::KernelShutdown)
+                && pending.codex_approval_transfer.is_some()
+                && crate::hot_reload::handing_over();
+            self.withdraw_agent_interaction(&id, &pending, handing_over)?;
         }
         Ok(())
     }
@@ -404,6 +407,15 @@ impl KernelRuntimeOwnedState {
         &self,
         id: &str,
         pending: &super::super::PendingInteraction,
+    ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interaction(id, pending, false)
+    }
+
+    fn withdraw_agent_interaction(
+        &self,
+        id: &str,
+        pending: &super::super::PendingInteraction,
+        handing_over: bool,
     ) -> Result<(), DaemonError> {
         if pending.async_task_id.is_some() {
             self.durable_state_store.agent_lifecycle(
@@ -444,6 +456,24 @@ impl KernelRuntimeOwnedState {
             .expect("pending interaction responder mutex poisoned")
             .take()
         {
+            if let Some(transfer) = pending
+                .codex_approval_transfer
+                .as_ref()
+                .filter(|_| handing_over)
+            {
+                let holder_agent_id = match &pending.holder {
+                    super::super::DecisionHolder::User => None,
+                    super::super::DecisionHolder::Agent(holder) => Some(holder.clone()),
+                };
+                *transfer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(crate::provider::CodexApprovalHandover {
+                        holder_agent_id,
+                        holder_tenure: pending.holder_tenure,
+                        goal: pending.goal_approval.clone(),
+                    });
+            }
             let _ = sender.send(super::super::PendingInteractionResolution {
                 status: "timed_out",
                 choice_id: None,
@@ -453,13 +483,15 @@ impl KernelRuntimeOwnedState {
         self.terminal_stream
             .notify_terminal_projection_change(&pending.session_id);
         if self.session_store.get_session(&pending.session_id).is_ok() {
-            self.record_notice_for_agent(
-                &pending.session_id,
-                None,
-                pending.agent_lifetime.as_ref().map(|l| l.agent_id.as_str()),
-                self.attachment_store.list_session_attachment_ids(&pending.session_id),
-                format!("Approval `{id}` withdrawn because its turn or agent ended, or its caller closed. Late answers are refused."),
-            );
+            if !handing_over {
+                self.record_notice_for_agent(
+                    &pending.session_id,
+                    None,
+                    pending.agent_lifetime.as_ref().map(|l| l.agent_id.as_str()),
+                    self.attachment_store.list_session_attachment_ids(&pending.session_id),
+                    format!("Approval `{id}` withdrawn because its turn or agent ended, or its caller closed. Late answers are refused."),
+                );
+            }
             self.session_snapshot(&pending.session_id)?;
         }
         Ok(())

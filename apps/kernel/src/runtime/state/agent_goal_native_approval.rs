@@ -3,6 +3,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
+use crate::provider::NativeApprovalGoal;
 
 impl KernelRuntimeOwnedState {
     pub(super) fn begin_goal_native_approval(
@@ -10,7 +11,7 @@ impl KernelRuntimeOwnedState {
         session: &str,
         interaction: &crate::session::RuntimeInteraction,
         lifetime: Option<&PendingAgentInteractionLifetime>,
-    ) -> Result<Option<PendingGoalApproval>, DaemonError> {
+    ) -> Result<Option<NativeApprovalGoal>, DaemonError> {
         if !self.config_projection.snapshot().room_agent_tools
             || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
         {
@@ -45,7 +46,7 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
-        Ok(Some(PendingGoalApproval {
+        Ok(Some(NativeApprovalGoal {
             task_id: blocked.task_id,
             prompt_id: prompt,
             blocked_revision: blocked.blocked_revision,
@@ -54,7 +55,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn answer_goal_native_approval(
         &self,
-        approval: Option<&PendingGoalApproval>,
+        approval: Option<&NativeApprovalGoal>,
     ) -> Result<(), DaemonError> {
         if let Some(approval) = approval {
             self.durable_state_store
