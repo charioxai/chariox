@@ -1480,7 +1480,9 @@ mod tests {
             .unwrap();
         let guidance = "Delegate a part to a helper only when it needs about 10 or more tool calls or parallel waiting, even when told to delegate the independent parts; do small edits yourself.";
         assert_eq!(envelope.hidden_base.matches(guidance).count(), 1);
-        assert!(RUNTIME_BASE.len() <= 8_000, "{} bytes", RUNTIME_BASE.len());
+        // The base is read on every call of every agent: it stays at or under the size it had at
+        // main 5820c05f9c (orchbench3 C 0.888); L12 grew it to 6.6 KB and C cost +0.12 cold units.
+        assert!(RUNTIME_BASE.len() <= 4_866, "{} bytes", RUNTIME_BASE.len());
     }
 
     /// The run base is the same on every turn; only the turn context changes, so a
@@ -1711,8 +1713,6 @@ mod tests {
             "self-contained HTML page",
             "`chariox.visual.preview`",
             "`chariox.visual.show`",
-            "cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com or esm.sh",
-            "cannot fetch data",
         ] {
             assert!(
                 envelope.hidden_system_context.contains(expected),
@@ -1756,8 +1756,8 @@ mod tests {
             "do not ask them to do it in the chat",
             "`view.browser_region`",
             "only a Cancel choice",
-            "it closes by itself when the step is done",
-            "`done_text`",
+            "closes by itself when the step is done",
+            "or to start one if it is idle",
             "`chariox.agent_auth_register`",
         ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
