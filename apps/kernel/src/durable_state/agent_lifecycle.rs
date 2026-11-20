@@ -1198,8 +1198,16 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
         .map_err(sql)?
         .map(|s| decode::<AgentTaskExecution>(&s))
         .transpose()?;
+    write_task(tx, task, previous.as_ref())
+}
+
+fn write_task(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    previous: Option<&AgentTaskExecution>,
+) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
-    outside::publish_task(tx, task, previous.as_ref())?;
+    outside::publish_task(tx, task, previous)?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         // A follow of a peer belongs to the agent that made it: the turn that made it may end.
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload) AND COALESCE(json_extract(payload,'$.peer'),0)=0", [&task.task_id]).map_err(sql)?;
@@ -1389,7 +1397,14 @@ fn tasks_where(
             Err(_) => {
                 quarantine::retain(tx, "task", &id, &payload)?;
                 let t = quarantine::task(id, room, agent, prompt);
-                save(tx, &t)?;
+                // The original bytes are already retained. Decoding them again
+                // would roll back quarantine and fail the unrelated operation.
+                write_task(tx, &t, None)?;
+                crate::logging::warn_with_fields(
+                    "daemon.agent_task",
+                    "quarantined unreadable task row",
+                    serde_json::json!({"table": "agent_tasks", "task_id": t.task_id}),
+                );
                 result.push(t);
             }
         }
