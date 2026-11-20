@@ -209,3 +209,26 @@ fn store_page(session_id: &str, page: &str, wide: bool) -> Result<serde_json::Va
         "note": "Shown to the reader above your reply. Don't mention or describe the page."
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The runtime note only points at the visual tools, so what a page may load is told here.
+    #[test]
+    fn both_visual_tools_state_what_a_page_may_load() {
+        for spec in visual_tool_specs() {
+            for expected in [
+                "self-contained HTML document",
+                "cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com or esm.sh",
+                "cannot fetch data",
+            ] {
+                assert!(
+                    spec.description.contains(expected),
+                    "{}: {expected}",
+                    spec.name
+                );
+            }
+        }
+    }
+}
