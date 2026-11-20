@@ -58,9 +58,9 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
     assert_eq!(
         created
             .payload
-            .pointer("/WorkflowCodeArtifactCreated/artifact/definition/workflow/alias")
+            .pointer("/WorkflowCodeArtifactCreated/artifact/metadata/name")
             .and_then(serde_json::Value::as_str),
-        Some("pattern-routing")
+        Some("routing-pattern")
     );
 
     let applied = router
@@ -277,13 +277,18 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
     );
     assert!(run
         .payload
-        .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
+        .pointer("/WorkflowCodeRun/result/invocation/endpoint_id")
         .and_then(serde_json::Value::as_str)
         .is_some());
+    let workflow_id = run.payload["WorkflowCodeRun"]["result"]["workflow_id"]
+        .as_str()
+        .expect("run receipt must identify the applied workflow");
+    let app = router.app.lock().await;
     assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
-            .and_then(serde_json::Value::as_str),
+        app.sessions()
+            .resolve_workflow_ref(session.id(), workflow_id)
+            .unwrap()
+            .controlled_by_metaagent_id(),
         Some(metaagent.id())
     );
 }
@@ -711,26 +716,22 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
     assert_eq!(
         owned_run
             .payload
-            .pointer("/WorkflowCodeRun/result/apply/apply/agent_ids/worker")
-            .and_then(serde_json::Value::as_str),
-        Some(owned_worker.id())
-    );
-    assert_eq!(
-        owned_run
-            .payload
             .pointer("/WorkflowCodeRun/result/invocation/kind")
             .and_then(serde_json::Value::as_str),
         Some("started")
     );
-    assert_eq!(
-        owned_run
-            .payload
-            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
-            .and_then(serde_json::Value::as_str),
-        Some(metaagent.id())
-    );
+    let workflow_id = owned_run.payload["WorkflowCodeRun"]["result"]["workflow_id"]
+        .as_str()
+        .expect("run receipt must identify the applied workflow");
     {
         let app = router.app.lock().await;
+        assert_eq!(
+            app.sessions()
+                .resolve_workflow_ref(session.id(), workflow_id)
+                .unwrap()
+                .controlled_by_metaagent_id(),
+            Some(metaagent.id())
+        );
         assert_eq!(
             app.agents().get_session_agents(session.id()).len(),
             agent_count_before_apply,
