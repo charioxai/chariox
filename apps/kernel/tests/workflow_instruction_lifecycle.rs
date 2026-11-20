@@ -15,7 +15,12 @@ use real_kernel::{connect, create_session, request, Socket};
 
 const DAEMON: &str = "instruction-lifecycle";
 
-async fn invoke(socket: &mut Socket, scratch: &Path, model: &str) -> (String, String, String) {
+async fn invoke(
+    socket: &mut Socket,
+    scratch: &Path,
+    model: &str,
+    output_schema: Option<&Path>,
+) -> (String, String, String) {
     let session = create_session(socket, scratch).await;
     let agent = request(
         socket,
@@ -34,6 +39,15 @@ async fn invoke(socket: &mut Socket, scratch: &Path, model: &str) -> (String, St
     let workflow = workflow["WorkflowCreated"]["workflow"]["id"]
         .as_str()
         .unwrap();
+    if let Some(schema) = output_schema {
+        request(
+            socket,
+            json!({"SetWorkflowRunOutputSchema": {"session_id": session, "workflow_ref": workflow,
+                "run_output_schema_ref": schema}}),
+        )
+        .await
+        .unwrap();
+    }
     let node = request(
         socket,
         json!({"AddWorkflowNode": {"session_id": session, "workflow_ref": workflow,
@@ -123,7 +137,7 @@ async fn wait_for_status(socket: &mut Socket, session: &str, run: &str, expected
 }
 
 #[tokio::test]
-async fn cancelled_and_completed_workflow_runs_remove_their_instructions() {
+async fn terminal_workflow_runs_remove_their_instructions() {
     let scratch = test_temp_dir::TestTempDir::new("workflow-instruction-lifecycle");
     let kernel = real_kernel::start(
         &scratch,
@@ -135,11 +149,22 @@ async fn cancelled_and_completed_workflow_runs_remove_their_instructions() {
     );
     let mut socket = connect(&kernel).await;
     let home = scratch.join("home/.chariox");
-    for (model, expected) in [
-        ("workflow-test-idle", "Stopped"),
-        ("workflow-delayed-output", "Completed"),
+    let rejected_output = scratch.join("project/rejected-output.json");
+    std::fs::write(
+        &rejected_output,
+        r#"{"type":"object","required":["different_field"]}"#,
+    )
+    .unwrap();
+    for (model, expected, schema) in [
+        ("workflow-test-idle", "Stopped", None),
+        ("workflow-delayed-output", "Completed", None),
+        (
+            "workflow-delayed-output",
+            "Failed",
+            Some(rejected_output.as_path()),
+        ),
     ] {
-        let (session, run, node) = invoke(&mut socket, &scratch, model).await;
+        let (session, run, node) = invoke(&mut socket, &scratch, model, schema).await;
         let file = instruction_file(&home, &session, &run, &node);
         wait_for_file(&file).await;
         assert_eq!(
@@ -176,7 +201,7 @@ async fn cold_start_removes_instructions_left_after_a_terminal_commit() {
     let first = scratch.join("first");
     let kernel = real_kernel::start(&first, &environment, None);
     let mut socket = connect(&kernel).await;
-    let (session, run, node) = invoke(&mut socket, &first, "workflow-test-idle").await;
+    let (session, run, node) = invoke(&mut socket, &first, "workflow-test-idle", None).await;
     let file = instruction_file(&home, &session, &run, &node);
     wait_for_file(&file).await;
     wait_for_status(&mut socket, &session, &run, "Running").await;
