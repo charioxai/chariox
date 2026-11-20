@@ -1165,6 +1165,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
             kind: crate::provider::TurnOutcomeKind::ProviderCrashed,
             retryable: true,
             reason: "provider process exited with status 17".to_string(),
+            answered_in_turn: None,
         }),
         duration_ms: Some(234),
         changed_paths: vec!["src/lib.rs".to_string()],

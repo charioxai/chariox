@@ -171,11 +171,16 @@ impl KernelRuntimeOwnedState {
     ) -> TurnOutcome {
         if task.state == ExecutionState::Done {
             failure
-                .filter(|outcome| outcome.is_error()
-                    || outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn)
+                .filter(|outcome| {
+                    outcome.is_error()
+                        || outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                })
                 .cloned()
-                .or_else(|| self.recorded_turn_outcome(task).filter(|outcome|
-                    outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn))
+                .or_else(|| {
+                    self.recorded_turn_outcome(task).filter(|outcome| {
+                        outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                    })
+                })
                 .unwrap_or_else(TurnOutcome::completed)
         } else {
             // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
