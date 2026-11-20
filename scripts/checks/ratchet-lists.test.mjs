@@ -97,7 +97,7 @@ test('the runner fetches missing origin/main and uses its merge base with the to
   }
 
   assert.throws(() => git('rev-parse', '--verify', 'refs/remotes/origin/main'))
-  const explicit = run('refs/heads/main')
+  const explicit = run(upstream.base)
   assert.equal(explicit.status, 1, explicit.text)
   assert.ok(explicit.text.includes(`lint:rules: baseline ${upstream.base} (CHARIOX_BOUNDARY_BASE)`))
   assert.match(explicit.text, /run\/c\.log is not in the list at the merge base/)

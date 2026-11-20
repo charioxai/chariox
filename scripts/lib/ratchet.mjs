@@ -8,6 +8,36 @@ import { resolve } from 'node:path'
 
 export const gitOut = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).trim()
 
+export function isMainReference(base) {
+  return ['main', 'origin/main', 'refs/heads/main', 'refs/remotes/origin/main'].includes(base)
+}
+
+export function requireCurrentOriginMain(root, base = 'origin/main') {
+  const fix = 'Run git fetch origin main and use origin/main as the baseline.'
+  let localCommit
+  try {
+    localCommit = gitOut(root, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`)
+  } catch {
+    throw new Error(`Cannot resolve local baseline ${base}. ${fix}`)
+  }
+  let remoteCommit
+  try {
+    remoteCommit = execFileSync('git', ['ls-remote', '--exit-code', '--refs', 'origin', 'refs/heads/main'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15_000,
+    }).split('\t')[0]
+  } catch {
+    throw new Error(`Cannot verify the baseline against main on remote origin. ${fix}`)
+  }
+  if (localCommit !== remoteCommit) {
+    throw new Error(`${base} is stale: local ${localCommit.slice(0, 12)}, remote main ${remoteCommit.slice(0, 12)}. ${fix}`)
+  }
+  return localCommit
+}
+
 export function trackedFiles(root) {
   return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 }).split('\u0000').filter(Boolean)
 }
@@ -30,9 +60,11 @@ export const problem = (file, kind, text, line = 0) => ({ file, line, kind, text
 // origin/main. `reason` says why there is none. An explicit base that is not a commit throws.
 function baselineCommit(root, env) {
   try { gitOut(root, 'rev-parse', '--git-dir') } catch { return { reason: 'not a git repository' } }
-  if (env.CHARIOX_BOUNDARY_BASE) {
-    try { return { base: gitOut(root, 'rev-parse', '--verify', '--end-of-options', `${env.CHARIOX_BOUNDARY_BASE}^{commit}`) } } catch {
-      throw new Error(`CHARIOX_BOUNDARY_BASE=${env.CHARIOX_BOUNDARY_BASE} is not a commit in ${root}: unset it or name the commit the change branches from`)
+  const explicitBase = env.CHARIOX_BOUNDARY_BASE
+  if (explicitBase) {
+    if (isMainReference(explicitBase)) return { base: requireCurrentOriginMain(root, explicitBase) }
+    try { return { base: gitOut(root, 'rev-parse', '--verify', '--end-of-options', `${explicitBase}^{commit}`) } } catch {
+      throw new Error(`CHARIOX_BOUNDARY_BASE=${explicitBase} is not a commit in ${root}: unset it or name the commit the change branches from`)
     }
   }
   const main = 'refs/remotes/origin/main'
@@ -41,7 +73,8 @@ function baselineCommit(root, env) {
       return { reason: 'could not fetch origin/main (check remote origin or set CHARIOX_BOUNDARY_BASE to the commit the change branches from)' }
     }
   }
-  try { return { base: gitOut(root, 'merge-base', 'HEAD', main) } } catch {
+  const mainCommit = gitOut(root, 'remote').split('\n').includes('origin') ? requireCurrentOriginMain(root) : gitOut(root, 'rev-parse', '--verify', main)
+  try { return { base: gitOut(root, 'merge-base', 'HEAD', mainCommit) } } catch {
     return { reason: 'HEAD has no merge base with origin/main (fetch the branch history or set CHARIOX_BOUNDARY_BASE)' }
   }
 }
