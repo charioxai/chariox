@@ -58,16 +58,17 @@ pub(super) fn activate(
 ) -> Result<(start::Started, ActiveStartAdmission)> {
     let _preparation = preparation;
     let _operation = operation;
-    let budget = context.control.budget();
+    context.control.enter(Step::Prepare);
+    let prepare = context.budget();
     let registered = start::register(
         context,
         admission.binding(),
         admission.trust(),
-        &budget,
+        &prepare,
         || {
             context
                 .store
-                .verify_first_app_install(admission.clone(), budget.fork(|| false))
+                .verify_first_app_install(admission.clone(), prepare.fork(|| false))
                 .map_err(Into::into)
         },
     )?;
@@ -75,12 +76,17 @@ pub(super) fn activate(
         .registered
         .check_local_health_blocking()
         .map_err(|_| LifecycleError::Health)?;
-    budget.check()?;
+    // Compiling, spawning and readiness have their own bounds. A first compile
+    // of a large App can outlast the whole budget, which must still cover the
+    // commit that follows a healthy worker.
+    context.control.enter(Step::Commit);
+    let commit = context.budget();
+    commit.check()?;
     let report = healthy.take_health().map_err(|_| LifecycleError::Health)?;
     let committed =
         context
             .store
-            .commit_first_app_install(admission, report, budget.fork(|| false))?;
+            .commit_first_app_install(admission, report, commit.fork(|| false))?;
     #[cfg(test)]
     if context
         .fixture
