@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { acceptedEntries, baselineCommit, countedProblems, gitOut, readList, readText, requiredBaseline, trackedFiles } from '../lib/ratchet.mjs'
+import { acceptedEntries, countedProblems, gitOut, readList, readText, requiredBaseline, trackedFiles } from '../lib/ratchet.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
@@ -17,10 +17,9 @@ const flag = name => args.includes(`--${name}`)
 const option = name => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : undefined)
 
 // What a check may look at: tracked files, their text, a line search, and the diff against the merge base.
-function context(root, env) {
+function context(root, baseline) {
   const files = trackedFiles(root)
   const cache = new Map()
-  const baseline = baselineCommit(root, env)
   return {
     root,
     files,
@@ -92,13 +91,14 @@ async function main() {
   const env = process.env
   const ratcheted = checks.filter(check => check.ratchet !== 'diff')
   let accepted
+  let baseline
   try {
-    requiredBaseline(root, env)
-    accepted = acceptedEntries(root, ratcheted.map(listOf), env)
+    baseline = requiredBaseline(root, env)
+    accepted = acceptedEntries(root, ratcheted.map(listOf), baseline)
   } catch (error) { console.error(`lint:rules: ${error.message}`); process.exit(1) }
   const unchecked = [...accepted].filter(([, { note }]) => note)
   if (unchecked.length) console.error(`lint:rules: WARNING ${unchecked.map(([list]) => list.label).join(', ')}: ${unchecked[0][1].note.replace(/^.*?: /, '')}`)
-  const ctx = context(root, env)
+  const ctx = context(root, baseline)
   const lines = []
   const timings = []
   for (const check of checks) {
