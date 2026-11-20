@@ -433,7 +433,7 @@ async fn command_id() {
 }
 
 #[test]
-fn a_spawn_deadline_is_armed_and_never_later_than_the_parents() {
+fn a_spawn_deadline_is_armed_and_not_capped_by_the_parents() {
     run_large_stack_async_test("subtree-spawn-deadline", spawn_deadline);
 }
 
@@ -453,7 +453,7 @@ async fn spawn_deadline() {
         .unwrap();
     let in_half_an_hour = crate::session::unix_epoch_ms() + 30 * 60_000;
     assert!(deadline.abs_diff(in_half_an_hour) < 60_000, "{deadline}");
-    // The parent itself ends in ten minutes: a two-hour child ends with it.
+    // The parent itself ends in ten minutes: its two-hour child keeps its own limit.
     world
         .router
         .runtime_state
@@ -480,7 +480,7 @@ async fn spawn_deadline() {
         .as_u64()
         .unwrap();
     assert!(
-        child <= crate::session::unix_epoch_ms() + 10 * 60_000 + 1_000,
+        child >= crate::session::unix_epoch_ms() + 2 * 60 * 60_000 - 60_000,
         "{child}"
     );
 }
