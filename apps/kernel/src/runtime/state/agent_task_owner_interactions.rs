@@ -4,7 +4,41 @@ use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 
 pub(super) use crate::session::{is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX};
 
+fn task_owner_decision_key(id: &str) -> Option<(&str, u64)> {
+    let (task, revision) = id
+        .strip_prefix(BLOCKED_TASK_DECISION_PREFIX)?
+        .rsplit_once('-')?;
+    Some((task, revision.parse().ok()?))
+}
+
 impl KernelRuntimeOwnedState {
+    pub(super) fn record_task_question_answer(
+        &self,
+        room: &str,
+        interaction: &crate::session::RuntimeInteraction,
+        choice: &str,
+        reply: &str,
+    ) -> Result<(), DaemonError> {
+        if interaction.kind() != crate::session::RuntimeInteractionKind::Choice
+            || !is_blocked_task_decision(interaction.id())
+        {
+            return Ok(());
+        }
+        let (task, revision) = task_owner_decision_key(interaction.id()).ok_or_else(|| {
+            crate::durable_state::agent_lifecycle::error("invalid task question binding")
+        })?;
+        self.durable_state_store.agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::AnswerTaskQuestion {
+                room: room.into(),
+                task: task.into(),
+                revision,
+                reply: (choice == "reply").then(|| reply.into()),
+                now: crate::session::unix_epoch_ms(),
+            },
+        )?;
+        Ok(())
+    }
+
     /// A task-owner card needs a current blocker the owner can act on.
     fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> Result<bool, DaemonError> {
         if task.state != ExecutionState::Blocked
@@ -71,13 +105,10 @@ impl KernelRuntimeOwnedState {
         // Each decision names its task; only those are read, not the Room's finished turns.
         let mut stale = Vec::new();
         for id in session.active_interactions().iter().map(|i| i.id()) {
-            let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
+            if !is_blocked_task_decision(id) {
                 continue;
             };
-            let current = match rest
-                .rsplit_once('-')
-                .and_then(|(task, revision)| Some((task, revision.parse::<u64>().ok()?)))
-            {
+            let current = match task_owner_decision_key(id) {
                 Some((task, revision)) => match self.durable_state_store.agent_task(task)? {
                     Some(task) if task.room_id == room && revision == task.blocked_revision => {
                         self.task_needs_owner_interaction(&task)?
@@ -279,10 +310,13 @@ impl KernelRuntimeState {
                 if answer.status == "timed_out" {
                     return;
                 }
+                if question {
+                    state.schedule_agent_lifecycle_sweep();
+                    return;
+                }
                 use super::agent_task_owner_resolution::OwnerTaskAction;
                 let action = match answer.choice_id.as_deref() {
                     Some("resume") => OwnerTaskAction::Resume,
-                    Some("reply") => OwnerTaskAction::Reply(answer.reply.unwrap_or_default()),
                     _ => OwnerTaskAction::Cancel,
                 };
                 state.resolve_agent_task_owner_action(&task, action).await;

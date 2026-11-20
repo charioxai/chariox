@@ -692,6 +692,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        self.record_task_question_answer(session_id, &interaction, choice_id, &resolved_reply)?;
         self.record_async_question_resolution(
             &interaction,
             &super::PendingInteractionResolution {
