@@ -10,13 +10,15 @@ const AGENTS: usize = 90;
 /// `a`, `b`, `d`, `s` and `peer`, besides the lanes.
 const FIXED_AGENTS: usize = 5;
 
+/// A room agent's team holds at most 64 sub-agents, so the lanes come from two room agents.
 async fn crowded_world(label: &str) -> World {
     let mut world = world(label).await;
     for index in 0..AGENTS {
         let alias: &'static str = Box::leak(format!("lane{index}").into_boxed_str());
+        let parent = if index < AGENTS / 2 { "a" } else { "peer" };
         let spawned = room_command(
             &world,
-            "a",
+            parent,
             &format!("agent spawn {alias} --provider dev-stub"),
         )
         .await;
@@ -98,6 +100,8 @@ async fn list_pages() {
     );
     let lane = listed.iter().find(|row| row["alias"] == "lane7").unwrap();
     assert_eq!(lane["parent"], "a", "the parent reads as its alias: {lane}");
+    let other = listed.iter().find(|row| row["alias"] == "lane60").unwrap();
+    assert_eq!(other["parent"], "peer", "{other}");
 
     // An alias filter finds the agents by name, in any letter case.
     let found = call(
