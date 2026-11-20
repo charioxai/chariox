@@ -90,6 +90,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         }
         DaemonError::LocalTransport { operation, .. }
             if *operation
+                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
                 == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
         {
             relay_error(
@@ -307,6 +317,18 @@ mod cloud_refusal_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_without_the_account_answers_with_its_own_code() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+            message: "the selected codex account is unavailable on the worker".into(),
+        });
+        assert_eq!(
+            mapped.code,
+            crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
+        );
+    }
 
     #[test]
     fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
