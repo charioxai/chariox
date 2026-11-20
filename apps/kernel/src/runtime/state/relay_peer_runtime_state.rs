@@ -904,7 +904,19 @@ impl KernelRuntimeState {
             })
             .await
         {
-            if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+            // A worker that lost the account leaves the prompt open: the home hands
+            // the account over again and submits the same prompt, which a rejection
+            // receipt would fence.
+            let account_missing = matches!(
+                &error,
+                DaemonError::LocalTransport { operation, .. }
+                    if *operation
+                        == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION
+            );
+            if let Some(home_prompt_id) = home_prompt_id
+                .as_deref()
+                .filter(|_| new_receipt && !account_missing)
+            {
                 self.update_relay_leased_prompt_admission_receipt(
                     &leased_agent_id,
                     home_prompt_id,
