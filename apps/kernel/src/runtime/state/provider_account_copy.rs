@@ -13,7 +13,7 @@ fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
         && !crate::secret::chariox_encrypted_vault_status(expand_vault_path(
             &config.user_config.credential_vault.path,
         ))
-        .map_err(|_| failure("provider_account_copy_vault_locked"))?
+        .map_err(|_| failure("provider_account_copy_vault_unreadable"))?
         .unlocked
     {
         return Err(failure("provider_account_copy_vault_locked"));
@@ -154,7 +154,7 @@ impl KernelRuntimeState {
                 &binding.provider,
                 &binding.source_profile_id,
             )
-            .map_err(|_| failure("provider_account_copy_vault_locked"))?;
+            .map_err(|error| crate::provider_account_copy::credential_read_failure(&error))?;
             let value = selected
                 .iter()
                 .find(|(name, _)| *name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
@@ -180,6 +180,16 @@ impl KernelRuntimeState {
                     // The target answered, so the Vault that is closed is the receiving one.
                     "provider_account_copy_vault_locked" => {
                         "provider_account_copy_target_vault_locked"
+                    }
+                    "provider_account_copy_vault_unreadable" => {
+                        "provider_account_copy_target_vault_unreadable"
+                    }
+                    "provider_account_copy_credential_unreadable" => {
+                        "provider_account_copy_target_credential_unreadable"
+                    }
+                    "provider_account_copy_cli_missing" => "provider_account_copy_cli_missing",
+                    "provider_account_copy_replace_differs" => {
+                        "provider_account_copy_replace_differs"
                     }
                     "provider_account_copy_conflict" => "provider_account_copy_conflict",
                     "provider_account_copy_rejected" => "provider_account_copy_rejected",

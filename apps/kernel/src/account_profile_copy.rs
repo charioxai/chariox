@@ -75,7 +75,12 @@ impl ProviderAccountProfileRegistry {
         if let Some(index) = operation {
             let recorded = &guard.account_copies[index];
             if recorded.binding != *binding || recorded.credential_sha256 != digest {
-                return Err(failure("provider_account_copy_conflict"));
+                return Err(recorded_operation_conflict(
+                    &recorded.binding,
+                    binding,
+                    &recorded.credential_sha256,
+                    &digest,
+                ));
             }
             if recorded.phase == AccountCopyPhase::Installed {
                 if let Some(bytes) = &native_bytes {
@@ -315,6 +320,36 @@ fn installed_native_receipt(
     Ok(ProviderAccountCopyReceipt::installed(binding))
 }
 
+/// The recorded operation differs from the retry; name the one difference an
+/// owner can act on instead of the generic conflict.
+fn recorded_operation_conflict(
+    recorded: &ProviderAccountCopyBinding,
+    retry: &ProviderAccountCopyBinding,
+    recorded_digest: &str,
+    retry_digest: &str,
+) -> DaemonError {
+    let mut same_but_replace = recorded.clone();
+    same_but_replace.replace = retry.replace;
+    if same_but_replace == *retry
+        && recorded.replace != retry.replace
+        && recorded_digest == retry_digest
+    {
+        failure("provider_account_copy_replace_differs")
+    } else {
+        failure("provider_account_copy_conflict")
+    }
+}
+
+/// A receiver without the Claude CLI cannot verify the login; say so rather
+/// than "verification did not complete".
+fn claude_executable_failure(error: &DaemonError) -> DaemonError {
+    if matches!(error, DaemonError::ProviderExecutableNotFound { .. }) {
+        failure("provider_account_copy_cli_missing")
+    } else {
+        failure("provider_account_copy_verification_failed")
+    }
+}
+
 fn verify_claude_copy(
     locator: &ProviderAccountLocator,
     credential: &ProviderAccountCopyCredential,
@@ -325,7 +360,7 @@ fn verify_claude_copy(
         credential.value().into(),
     );
     let checked = crate::provider::resolve_claude_executable()
-        .map_err(|_| failure("provider_account_copy_verification_failed"))
+        .map_err(|error| claude_executable_failure(&error))
         .and_then(|executable| {
             crate::provider::verify_claude_setup_token(&executable, &environment).map_err(|error| {
                 match error {
@@ -360,7 +395,7 @@ fn installed_receipt(
         &binding.provider,
         &binding.target_profile_id(),
     )
-    .map_err(|_| failure("provider_account_copy_vault_locked"))?;
+    .map_err(|error| crate::provider_account_copy::credential_read_failure(&error))?;
     if !selected.iter().any(|(name, value)| {
         name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV && value == credential.value()
     }) {
@@ -372,6 +407,101 @@ fn installed_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_binding(operation: &str) -> ProviderAccountCopyBinding {
+        ProviderAccountCopyBinding {
+            operation_id: operation.into(),
+            provider: "codex".into(),
+            source_profile_id: "profile-1".into(),
+            source_kernel_id: "source".into(),
+            source_key_thumbprint: "a".repeat(64),
+            target_kernel_id: "target".into(),
+            target_key_thumbprint: "b".repeat(64),
+            replace: false,
+        }
+    }
+
+    fn native_credential() -> ProviderAccountCopyCredential {
+        ProviderAccountCopyCredential::new(
+            base64::engine::general_purpose::STANDARD
+                .encode(br#"{"fixture":{"type":"api","key":"fixture-native-login"}}"#),
+        )
+    }
+
+    fn code_of(error: DaemonError) -> &'static str {
+        match error {
+            DaemonError::ProviderAccountCopy { code, .. } => code,
+            other => panic!("expected an account copy refusal, got {other}"),
+        }
+    }
+
+    #[test]
+    fn retrying_an_operation_with_only_replace_changed_names_that_difference() {
+        let root = crate::test_support::TestWorktree::new("account-copy-replace-differs");
+        let registry =
+            ProviderAccountProfileRegistry::open(root.path().join("registry.json")).unwrap();
+        let config = crate::config::DaemonConfig::for_tests();
+        let credential = native_credential();
+        let mut binding = native_binding("copy-replace");
+        registry
+            .install_account_copy(&config, "owner", &binding, &credential)
+            .unwrap();
+        binding.replace = true;
+        let error = registry
+            .install_account_copy(&config, "owner", &binding, &credential)
+            .unwrap_err();
+        assert_eq!(code_of(error), "provider_account_copy_replace_differs");
+        // Another difference stays the generic conflict.
+        binding.source_profile_id = "profile-2".into();
+        let error = registry
+            .install_account_copy(&config, "owner", &binding, &credential)
+            .unwrap_err();
+        assert_eq!(code_of(error), "provider_account_copy_conflict");
+    }
+
+    #[test]
+    fn a_receiver_without_the_claude_cli_says_so() {
+        let missing = DaemonError::ProviderExecutableNotFound {
+            adapter_key: "claude".into(),
+            executable: "claude".into(),
+        };
+        assert_eq!(
+            code_of(claude_executable_failure(&missing)),
+            "provider_account_copy_cli_missing"
+        );
+        let other = DaemonError::LocalTransport {
+            operation: "resolve Claude",
+            message: "unreadable".into(),
+        };
+        assert_eq!(
+            code_of(claude_executable_failure(&other)),
+            "provider_account_copy_verification_failed"
+        );
+    }
+
+    #[test]
+    fn only_a_locked_vault_is_reported_as_locked() {
+        let locked = DaemonError::LocalTransport {
+            operation: "credential_vault_locked",
+            message: "locked".into(),
+        };
+        assert_eq!(
+            code_of(crate::provider_account_copy::credential_read_failure(
+                &locked
+            )),
+            "provider_account_copy_vault_locked"
+        );
+        let other = DaemonError::LocalTransport {
+            operation: "read credential",
+            message: "record missing".into(),
+        };
+        assert_eq!(
+            code_of(crate::provider_account_copy::credential_read_failure(
+                &other
+            )),
+            "provider_account_copy_credential_unreadable"
+        );
+    }
 
     #[test]
     fn native_account_copy_installs_retries_and_protects_the_receiving_profile() {
