@@ -139,7 +139,7 @@ impl KernelRuntimeState {
             .write()
             .get(interaction_id)
             .cloned()
-            .ok_or_else(|| error(format!("interaction {interaction_id} is not pending")))?;
+            .ok_or_else(crate::runtime::state::passkey_prompts::interaction_closed)?;
         let interaction = owner
             .and_then(|owner| self.owner_card(owner, interaction_id, &pending))
             .ok_or_else(|| error("this card is not the person's you act for"))?;

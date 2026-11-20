@@ -1,7 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: task-owned questions use the ordinary wake ledger.
 use super::wake_driver::{Cancel, Liveness, Recovery, WakeDriver};
 use super::*;
-use crate::durable_state::agent_lifecycle::{self as ledger, AgentWake, Operation, WakeEnd};
+use crate::durable_state::agent_lifecycle::{
+    self as ledger, AgentTaskExecution, AgentWake, Operation, WakeEnd,
+};
 use crate::session::RuntimeInteraction;
 
 pub(super) const KIND: &str = "interaction";
@@ -150,6 +152,15 @@ impl KernelRuntimeState {
         agent: &str,
         interaction: RuntimeInteraction,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let task = self.asking_task_for_turn(room, agent)?;
+        self.arm_interaction_wake_for_task(&task, interaction)
+    }
+
+    pub(super) fn asking_task_for_turn(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<AgentTaskExecution, DaemonError> {
         if !self.room_agent_tools_enabled() {
             return Err(ledger::error("async questions require Room event tools"));
         }
@@ -160,13 +171,17 @@ impl KernelRuntimeState {
             .active_prompt_for_agent(&session, agent)
             .filter(|p| p.status() == crate::session::PromptStatus::Running)
             .ok_or_else(|| ledger::error("async question requires a running turn"))?;
-        let task = self
-            .owned
+        self.owned
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| t.prompt_id == prompt.id())
-            .ok_or_else(|| ledger::error("asking task unavailable in this turn"))?;
+            .agent_turn_task(room, agent, prompt.id())?
+            .ok_or_else(|| ledger::error("asking task unavailable in this turn"))
+    }
+
+    pub(super) fn arm_interaction_wake_for_task(
+        &self,
+        task: &AgentTaskExecution,
+        interaction: RuntimeInteraction,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if task.wait.is_some() {
             return Err(ledger::error(
                 "Wait already accepted. End this provider turn without more tools",
@@ -174,7 +189,7 @@ impl KernelRuntimeState {
         }
         let interaction = interaction.with_asking_task_id(task.task_id.clone());
         let mut wake = super::tool_dispatch::agent_wakes::new_wake(
-            &task,
+            task,
             KIND,
             "Question awaiting an answer".into(),
             crate::session::unix_epoch_ms(),
@@ -189,14 +204,14 @@ impl KernelRuntimeState {
         });
         wake.detail = serde_json::to_value(interaction)
             .map_err(|_| ledger::error("question encoding failed"))?;
-        self.arm_wake_source(&task, &wake)?;
+        self.arm_wake_source(task, &wake)?;
         // The source can finish after popup validation but before registration.
         // Once the question exists, its condition is the current durable source.
         if let Err(error) = self.reconcile_question_condition(&wake) {
             tracing::warn!(wake_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
                 "person card condition retained for scheduler reconciliation");
         }
-        self.refresh_wake_projection(room);
+        self.refresh_wake_projection(&task.room_id);
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

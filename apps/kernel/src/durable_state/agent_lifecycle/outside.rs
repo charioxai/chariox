@@ -570,10 +570,12 @@ pub(crate) fn append_notification(
     occurrence: &str,
     mut event: OutsideEvent,
 ) -> Result<u64, DaemonError> {
-    let (kernel, machine) =
-        identity(tx)?.ok_or_else(|| error("outside source identity is missing"))?;
-    event.kernel = kernel;
-    event.machine = machine;
+    if event.kernel.is_empty() {
+        let (kernel, machine) =
+            identity(tx)?.ok_or_else(|| error("outside source identity is missing"))?;
+        event.kernel = kernel;
+        event.machine = machine;
+    }
     let mut part = require(tx, grant)?;
     if part.ended.is_some() {
         return Err(refused("subscription ended; request a new access grant"));
