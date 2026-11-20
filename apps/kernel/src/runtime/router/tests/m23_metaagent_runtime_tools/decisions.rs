@@ -48,7 +48,11 @@ async fn commands() {
     let mut answer = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, asked)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            asked,
+        )
         .await
         .unwrap();
     let refused = room_command(&world, "a", "agent answer perm-cmd allow").await;
@@ -116,7 +120,11 @@ async fn child_and_parent_cards() {
     let mut parents = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, permission_card("perm-parent", &world.ids["b"]))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            permission_card("perm-parent", &world.ids["b"]),
+        )
         .await
         .unwrap();
     for command in ["agent pass perm-parent", "agent answer perm-parent allow"] {
@@ -141,7 +149,11 @@ async fn child_and_parent_cards() {
     let mut childs = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, permission_card("perm-child", &d))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            permission_card("perm-child", &d),
+        )
         .await
         .unwrap();
     let passed = room_command(&world, "b", "agent pass perm-child").await;
@@ -198,7 +210,11 @@ async fn peer_flags_and_unknown_ids() {
     let mut answer = world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, asked)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            asked,
+        )
         .await
         .unwrap();
     for command in [

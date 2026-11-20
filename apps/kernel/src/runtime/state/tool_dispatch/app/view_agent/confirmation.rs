@@ -263,7 +263,11 @@ impl KernelRuntimeState {
             None => interaction,
         };
         let receiver = self
-            .create_runtime_interaction(session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::App,
+                session_id,
+                interaction,
+            )
             .await
             .map_err(unavailable)?;
         // An abandoned call withdraws its card instead of leaving a dead one.

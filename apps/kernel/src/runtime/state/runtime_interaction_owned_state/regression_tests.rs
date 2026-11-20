@@ -126,8 +126,11 @@ impl Fixture {
             ],
         );
         self.state.owned.register_runtime_interaction(
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                interaction,
+            ),
             &self.session,
-            interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
             None,
@@ -709,7 +712,7 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
     {
         let mut sessions = fixture.state.owned.session_store.write();
         let mut session = sessions.get_session(&fixture.session).unwrap().clone();
-        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+        session.add_interaction_fixture(RuntimeInteraction::for_kernel_operation(
             &orphan,
             &orphan,
             "Install App?",
@@ -732,7 +735,7 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
         .into_iter()
         .enumerate()
         {
-            session.add_active_interaction(RuntimeInteraction::new(
+            session.add_interaction_fixture(RuntimeInteraction::new(
                 id,
                 format!("agent-{}", agent + 1),
                 crate::session::RuntimeInteractionKind::Choice,
@@ -1462,7 +1465,11 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     let original = read_task();
     let id = format!("native-goal-approval-{session}");
     let mut receiver = state
-        .create_runtime_interaction(&session, permission(&id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            permission(&id),
+        )
         .await
         .unwrap();
     let blocked = read_task();
@@ -1522,7 +1529,11 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     // A later lifecycle change must win over an answer to this approval.
     let second_id = format!("native-goal-second-{session}");
     let _second = state
-        .create_runtime_interaction(&session, permission(&second_id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            permission(&second_id),
+        )
         .await
         .unwrap();
     store
@@ -1565,7 +1576,11 @@ async fn a_hidden_agent_that_raises_a_decision_comes_back() {
     assert!(hidden(&agent));
     let id = format!("hidden-agent-decision-{session}");
     let _receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &id),
+        )
         .await
         .unwrap();
     assert!(
@@ -1594,7 +1609,11 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     let original = read_task();
     let id = format!("native-goal-timeout-{session}");
     let mut receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &id))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &id),
+        )
         .await
         .unwrap();
     assert_eq!(read_task().state, ExecutionState::Blocked);
@@ -1616,7 +1635,11 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     // A later owner pause wins over the expiring approval.
     let second = format!("native-goal-timeout-second-{session}");
     let _receiver = state
-        .create_runtime_interaction(&session, native_goal_permission(&agent, &second))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            native_goal_permission(&agent, &second),
+        )
         .await
         .unwrap();
     store
@@ -1678,7 +1701,7 @@ async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself(
         let mut sessions = f.state.owned.session_store.write();
         let mut room = sessions.get_session(&f.session).unwrap();
         let open = room.remove_active_interaction(&card).unwrap();
-        room.add_active_interaction(open.with_message("An older wording".to_string()));
+        room.add_interaction_fixture(open.with_message("An older wording".to_string()));
         sessions.restore_session(room);
     }
     let state = f.state.clone();

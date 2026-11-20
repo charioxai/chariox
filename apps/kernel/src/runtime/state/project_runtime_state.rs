@@ -631,7 +631,7 @@ mod tests {
         assert!(!project_session_is_idle(&session));
 
         session.mirror_agent_prompt_state("agent-1", None, VecDeque::new());
-        session.add_active_interaction(RuntimeInteraction::new(
+        session.add_interaction_fixture(RuntimeInteraction::new(
             "interaction-1",
             "agent-1",
             RuntimeInteractionKind::Permission,

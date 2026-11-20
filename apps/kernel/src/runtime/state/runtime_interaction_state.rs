@@ -144,6 +144,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_runtime_interaction(
         &self,
+        kind: super::CardKind,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
@@ -188,32 +189,35 @@ impl KernelRuntimeState {
                 return Ok(rx);
             }
         }
-        self.create_runtime_interaction_with_forwarding(session_id, interaction, None)
+        self.create_runtime_interaction_with_forwarding(kind, session_id, interaction, None)
             .await
     }
 
     pub(in crate::runtime) async fn create_runtime_interaction_with_forwarding(
         &self,
+        kind: super::CardKind,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
-        self.create_agent_interaction(session_id, interaction, forwarding, None)
+        self.create_agent_interaction(kind, session_id, interaction, forwarding, None)
             .await
     }
 
     pub(in crate::runtime) async fn create_codex_workspace_approval(
         &self,
+        kind: super::CardKind,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         request: &crate::runtime::native_interaction_bridge::CodexApprovalRequest,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
-        self.create_agent_interaction(session_id, interaction, None, Some(request))
+        self.create_agent_interaction(kind, session_id, interaction, None, Some(request))
             .await
     }
 
     async fn create_agent_interaction(
         &self,
+        kind: super::CardKind,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
@@ -235,12 +239,22 @@ impl KernelRuntimeState {
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
         if let Some(request) = codex_approval {
-            self.owned
-                .register_codex_workspace_approval(session_id, interaction, tx, request)?;
+            self.owned.register_codex_workspace_approval(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    kind,
+                    interaction,
+                ),
+                session_id,
+                tx,
+                request,
+            )?;
         } else {
             self.owned.register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    kind,
+                    interaction,
+                ),
                 session_id,
-                interaction,
                 tx,
                 None,
                 forwarding,
@@ -308,8 +322,11 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id)?;
         let (tx, rx) = oneshot::channel();
         self.owned.register_runtime_interaction(
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                super::CardKind::VaultCredentialPayment,
+                interaction,
+            ),
             session_id,
-            interaction,
             tx,
             None,
             None,
@@ -321,6 +338,7 @@ impl KernelRuntimeState {
 
     pub(in crate::runtime) async fn create_kernel_operation_interaction(
         &self,
+        kind: super::CardKind,
         session_id: &str,
         owner_user_id: &str,
         interaction: crate::session::RuntimeInteraction,
@@ -333,8 +351,8 @@ impl KernelRuntimeState {
         }
         let (tx, rx) = oneshot::channel();
         self.owned.register_runtime_interaction(
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(kind, interaction),
             session_id,
-            interaction,
             tx,
             Some(owner_user_id),
             None,

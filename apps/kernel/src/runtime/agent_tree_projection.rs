@@ -489,8 +489,8 @@ mod tests {
             agent("c1", Some("root"), 2),
             agent("c2", Some("root"), 3),
         ]);
-        session.add_active_interaction(ask("c1"));
-        session.add_active_interaction(ask("root"));
+        session.add_interaction_fixture(ask("c1"));
+        session.add_interaction_fixture(ask("root"));
         let tree = project_agent_tree(
             &session,
             session.agents(),
@@ -526,8 +526,8 @@ mod tests {
             agent("c1", Some("root"), 2),
             agent("c2", Some("root"), 3),
         ]);
-        session.add_active_interaction(ask("c1"));
-        session.add_active_interaction(ask("c2"));
+        session.add_interaction_fixture(ask("c1"));
+        session.add_interaction_fixture(ask("c2"));
         let tree = project_agent_tree(
             &session,
             session.agents(),

@@ -206,12 +206,11 @@ impl KernelRuntimeState {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
                     let mut latest = sessions.get_session(&task.room_id)?;
-                    if let Some(current) = latest.remove_active_interaction(&id) {
-                        latest.add_active_interaction(
-                            current
-                                .with_message(message)
-                                .with_related_agent_id(task.agent_id.clone()),
-                        );
+                    if latest.update_active_interaction(&id, |current| {
+                        current
+                            .with_message(message)
+                            .with_related_agent_id(task.agent_id.clone())
+                    }) {
                         sessions.restore_session(latest);
                     }
                     drop(sessions);
@@ -270,6 +269,7 @@ impl KernelRuntimeState {
 
         let rx = self
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::Task,
                 &task.room_id,
                 session.owner_user_id(),
                 interaction,

@@ -313,7 +313,12 @@ impl AppInstallControl {
             }
             let interaction = approval_interaction(&prompt.challenge);
             let result = runtime
-                .create_kernel_operation_interaction(&prompt.session, &prompt.key.0, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    &prompt.session,
+                    &prompt.key.0,
+                    interaction,
+                )
                 .await;
             let mut abandoned = false;
             {

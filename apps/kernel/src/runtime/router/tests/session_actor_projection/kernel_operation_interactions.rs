@@ -53,11 +53,13 @@ async fn two_kernel_decisions_project_without_agents_and_use_the_existing_termin
     let before = router.terminal_session_change_sequence(&session);
     let (first, second) = tokio::join!(
         router.runtime_state.create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("first", "operation-one")
         ),
         router.runtime_state.create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("second", "operation-two")
@@ -108,6 +110,7 @@ async fn kernel_decisions_reject_agent_resolution_other_users_and_remote_kernels
     let receiver = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("owned", "operation"),
@@ -172,6 +175,7 @@ async fn duplicate_subject_and_foreign_timeout_cannot_replace_or_remove_a_decisi
     let receiver = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("original", "operation"),
@@ -181,6 +185,7 @@ async fn duplicate_subject_and_foreign_timeout_cannot_replace_or_remove_a_decisi
     assert!(router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("replacement", "operation")
@@ -189,7 +194,11 @@ async fn duplicate_subject_and_foreign_timeout_cannot_replace_or_remove_a_decisi
         .is_err());
     assert!(router
         .runtime_state
-        .create_runtime_interaction(&session, decision("agent-bypass", "other"))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            decision("agent-bypass", "other")
+        )
         .await
         .is_err());
     router
@@ -221,6 +230,7 @@ async fn a_decision_nobody_waits_for_is_superseded_by_the_same_subject() {
     let abandoned = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("abandoned", "operation"),
@@ -232,6 +242,7 @@ async fn a_decision_nobody_waits_for_is_superseded_by_the_same_subject() {
     let replacement = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("replacement", "operation"),
@@ -252,6 +263,7 @@ async fn a_decision_nobody_waits_for_is_superseded_by_the_same_subject() {
     assert!(router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("third", "operation"),
@@ -278,11 +290,12 @@ async fn a_decision_restored_after_a_restart_is_superseded_by_the_same_subject()
     // Persisted with the session, but no pending entry survived the restart:
     // nobody can resolve it.
     let (router, session) = setup_with(|session| {
-        session.add_active_interaction(decision("restored", "operation"));
+        session.add_interaction_fixture(decision("restored", "operation"));
     });
     let replacement = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("replacement", "operation"),
@@ -300,12 +313,18 @@ async fn another_owners_decision_blocks_the_subject_until_abandoned() {
     });
     let pending = router
         .runtime_state
-        .create_kernel_operation_interaction(&session, "bob", decision("bob", "operation"))
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session,
+            "bob",
+            decision("bob", "operation"),
+        )
         .await
         .unwrap();
     assert!(router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("alice", "operation"),
@@ -337,6 +356,7 @@ async fn an_owner_at_the_limit_can_replace_an_abandoned_decision() {
             router
                 .runtime_state
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     &session,
                     DEFAULT_LOCAL_USER_ID,
                     decision(&format!("live-{index}"), &format!("operation-{index}")),
@@ -348,6 +368,7 @@ async fn an_owner_at_the_limit_can_replace_an_abandoned_decision() {
     let abandoned = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("abandoned", "operation"),
@@ -358,6 +379,7 @@ async fn an_owner_at_the_limit_can_replace_an_abandoned_decision() {
     let replacement = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("replacement", "operation"),
@@ -383,7 +405,12 @@ async fn kernel_registration_rejects_custom_or_automatic_approval() {
         let interaction = serde_json::from_value(wire).unwrap();
         assert!(router
             .runtime_state
-            .create_kernel_operation_interaction(&session, DEFAULT_LOCAL_USER_ID, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session,
+                DEFAULT_LOCAL_USER_ID,
+                interaction
+            )
             .await
             .is_err());
     }

@@ -730,6 +730,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+pub(crate) use runtime_interaction_owned_state::{CardKind, LiveRoomCard};
 mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;

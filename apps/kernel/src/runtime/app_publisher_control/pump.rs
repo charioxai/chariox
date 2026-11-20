@@ -249,7 +249,12 @@ impl AppPublisherControl {
                 ],
             );
             let result = runtime
-                .create_kernel_operation_interaction(session, &key.0, interaction)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::App,
+                    session,
+                    &key.0,
+                    interaction,
+                )
                 .await;
             let mut abandoned = false;
             {

@@ -166,6 +166,7 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &room.session_id,
             crate::session::DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(

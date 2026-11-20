@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
     /// Called under the shared interaction mutation/admission guards.
     pub(super) fn register_user_domain_interaction(
         &self,
+        kind: super::CardKind,
         interaction: RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -24,6 +25,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
+        super::card_registry::admit_scoped_card(kind, &interaction, &responder)?;
         self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
             self.session_store.get_session(id).ok()
         })?;
@@ -219,6 +221,7 @@ mod tests {
             receivers.push(
                 state
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         "",
                         "alice",
                         interaction(&format!("detached-{number}")),
@@ -230,7 +233,12 @@ mod tests {
         assert_eq!(state.owned.user_domain_interactions("alice").len(), 8);
         assert!(state.owned.user_domain_interactions("bob").is_empty());
         assert!(state
-            .create_kernel_operation_interaction("", "alice", interaction("over-limit"))
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                "",
+                "alice",
+                interaction("over-limit")
+            )
             .await
             .is_err());
         assert!(state

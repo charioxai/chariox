@@ -569,11 +569,17 @@ async fn wait_for_runtime_interaction(
         }
         let receiver = if let Some(request) = codex_approval {
             state
-                .create_codex_workspace_approval(session_id, interaction.clone(), request)
+                .create_codex_workspace_approval(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    session_id,
+                    interaction.clone(),
+                    request,
+                )
                 .await
         } else {
             state
                 .create_runtime_interaction_with_forwarding(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     session_id,
                     interaction.clone(),
                     forwarding,
@@ -775,7 +781,11 @@ mod tests {
         let first_id = format!("native-queue-{session}-first");
         let second_id = format!("native-queue-{session}-second");
         let first = state
-            .create_runtime_interaction(&session, queued_permission(&first_id, &agent, 10))
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session,
+                queued_permission(&first_id, &agent, 10),
+            )
             .await
             .unwrap();
         let pending_state = state.clone();
@@ -825,7 +835,11 @@ mod tests {
         let first_id = format!("native-queue-{session}-first");
         let second_id = format!("native-queue-{session}-second");
         let _first = state
-            .create_runtime_interaction(&session, queued_permission(&first_id, &agent, 10))
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session,
+                queued_permission(&first_id, &agent, 10),
+            )
             .await
             .unwrap();
         let started = tokio::time::Instant::now();
@@ -853,7 +867,11 @@ mod tests {
         let state = router.runtime_state();
         let shared = format!("shared-{agent}");
         let first = state
-            .create_runtime_interaction(&session, queued_permission(&shared, &agent, 10))
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session,
+                queued_permission(&shared, &agent, 10),
+            )
             .await
             .unwrap();
         let waiting_state = state.clone();

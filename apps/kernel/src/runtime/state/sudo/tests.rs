@@ -16,6 +16,7 @@ async fn a12_owner_sudo_reaches_passkey_when_agent_decisions_fill_the_cap() {
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     &f.request.session_id,
                     "local",
                     RuntimeInteraction::for_kernel_operation(
@@ -67,6 +68,7 @@ async fn a12_external_sudo_keeps_the_agent_decision_quota() {
             receivers.push(
                 f.state
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         &f.request.session_id,
                         "local",
                         RuntimeInteraction::for_kernel_operation(
@@ -396,6 +398,7 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
     let responder = f
         .state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             other.id(),
             "local",
             RuntimeInteraction::for_kernel_operation(
@@ -698,6 +701,7 @@ async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
     let _responder = f
         .state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &turn.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(
@@ -1850,6 +1854,7 @@ async fn sudo_admission_waiting_for_grants_does_not_block_an_owner_decision() {
     let responder = f
         .state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.request.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(
