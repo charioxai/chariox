@@ -440,7 +440,7 @@ async fn rejects_cross_room_attachment() {
 async fn prepare_room_display(fixture: &LiveWorker) -> (String, String, String) {
     create_running_selkies_slice(fixture).await;
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice": {
             "session_id": &room, "slice_ref": "desktop"

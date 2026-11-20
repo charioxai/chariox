@@ -201,7 +201,7 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
             )
             .expect("fixture slice should be running");
         let room = fixture.rooms[0].clone();
-        dispatch_json(
+        dispatch_bind_room(
             &fixture.home,
             json!({"BindRoomEnvironmentSlice": {
                 "session_id":room, "slice_ref":"desktop"

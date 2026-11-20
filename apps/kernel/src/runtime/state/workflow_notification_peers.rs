@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
+    pub(super) fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         if config.kernel_runtime_role != crate::config::KernelRuntimeRole::General
             || config.daemon_id.starts_with("slice:")

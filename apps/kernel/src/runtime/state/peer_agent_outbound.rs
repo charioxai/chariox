@@ -178,6 +178,13 @@ impl KernelRuntimeState {
         ) {
             return Ok(None);
         }
+        // A slice reaches no discovery of its own: its provisioned home is the one kernel it names.
+        if let Some(home) = self
+            .slice_home()
+            .filter(|home| home.kernel_id == kernel_ref)
+        {
+            return Ok(Some(home.kernel_id));
+        }
         #[cfg(test)]
         match peer_agent_link_for_tests::resolve(kernel_ref).as_slice() {
             [] => {}

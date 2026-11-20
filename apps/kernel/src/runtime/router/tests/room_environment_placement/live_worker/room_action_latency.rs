@@ -30,7 +30,7 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
     let assertions = std::panic::AssertUnwindSafe(async {
         fixture.create_slice().await;
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop")).await.unwrap();
+        dispatch_bind_room(&fixture.home, bind(room, "desktop")).await.unwrap();
         let started = dispatch_json(&fixture.home, json!({"StartRoomEnvironment": {
             "session_id":room,"viewport":{
                 "css_width":1280,"css_height":800,"device_scale_factor":1,
@@ -102,7 +102,7 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
     let assertions = std::panic::AssertUnwindSafe(async {
         fixture.create_slice().await;
         let room = &fixture.rooms[0];
-        dispatch_json(&fixture.home, bind(room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(room, "desktop"))
             .await
             .unwrap();
         dispatch_json(
@@ -220,7 +220,7 @@ async fn state_read_degrades_when_slice_relay_disconnects() {
     let assertions = std::panic::AssertUnwindSafe(async {
         fixture.create_slice().await;
         let room = fixture.rooms[0].clone();
-        dispatch_json(&fixture.home, bind(&room, "desktop"))
+        dispatch_bind_room(&fixture.home, bind(&room, "desktop"))
             .await
             .unwrap();
         dispatch_json(
