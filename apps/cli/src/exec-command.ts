@@ -51,8 +51,14 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
   }
   let session = options.session
   if (!session) {
-    const made = await send({ CreateSession: { workspace_id: options.workspace, worktree_id: options.workspace, alias: null, slice_ref: null, no_subscribe: true } }) as { SessionCreated: { session: { id: string } } }
-    session = made.SessionCreated.session.id
+    const made = await send({ CreateSession: { workspace_id: options.workspace, worktree_id: options.workspace, alias: null, slice_ref: null, no_subscribe: true } }) as {
+      SessionCreated?: { session_id?: string; session?: { id?: string } }
+    }
+    const roomId = made.SessionCreated?.session_id ?? made.SessionCreated?.session?.id
+    if (typeof roomId !== "string" || !roomId.trim()) {
+      throw new CommandFailure("exec_target_unreadable", "the kernel did not return the id of the new Room")
+    }
+    session = roomId
   }
   const request = async (operation: Record<string, unknown>) => {
     const response = await send({ RoomTerminal: { session_id: session, ...(options.hostAgent ? { host_agent: options.hostAgent } : {}), operation } }) as Reply
