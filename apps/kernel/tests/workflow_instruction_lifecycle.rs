@@ -136,6 +136,30 @@ async fn wait_for_status(socket: &mut Socket, session: &str, run: &str, expected
     .expect("the workflow must reach its expected status");
 }
 
+async fn cancel_run(socket: &mut Socket, session: &str, run: &str) {
+    wait_for_status(socket, session, run, "Running").await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match request(
+                socket,
+                json!({"CancelWorkflowRun": {
+                    "session_id": session, "workflow_run_ref": run,
+                }}),
+            )
+            .await
+            {
+                Ok(_) => break,
+                Err(error) if error["code"] == "no_active_prompt" => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("workflow cancellation failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the workflow must accept cancellation once its prompt is active");
+}
+
 #[tokio::test]
 async fn terminal_workflow_runs_remove_their_instructions() {
     let scratch = test_temp_dir::TestTempDir::new("workflow-instruction-lifecycle");
@@ -172,15 +196,7 @@ async fn terminal_workflow_runs_remove_their_instructions() {
             "workflow instruction lifecycle witness"
         );
         if expected == "Stopped" {
-            wait_for_status(&mut socket, &session, &run, "Running").await;
-            request(
-                &mut socket,
-                json!({"CancelWorkflowRun": {
-                    "session_id": session, "workflow_run_ref": run,
-                }}),
-            )
-            .await
-            .unwrap();
+            cancel_run(&mut socket, &session, &run).await;
         }
         wait_for_status(&mut socket, &session, &run, expected).await;
         let directory = file.parent().unwrap();
@@ -208,15 +224,8 @@ async fn cold_start_removes_instructions_left_after_a_terminal_commit() {
     let (session, run, node) = invoke(&mut socket, &first, "workflow-test-idle", None).await;
     let file = instruction_file(&home, &session, &run, &node);
     wait_for_file(&file).await;
-    wait_for_status(&mut socket, &session, &run, "Running").await;
-    request(
-        &mut socket,
-        json!({"CancelWorkflowRun": {
-            "session_id": session, "workflow_run_ref": run,
-        }}),
-    )
-    .await
-    .unwrap();
+    cancel_run(&mut socket, &session, &run).await;
+    wait_for_status(&mut socket, &session, &run, "Stopped").await;
     drop(socket);
     drop(kernel);
 
