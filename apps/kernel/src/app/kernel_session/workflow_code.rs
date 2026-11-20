@@ -459,6 +459,7 @@ impl<'a> KernelSessionService<'a> {
                 definition: rebound_definition,
                 validation,
                 logs: compile.logs,
+                source_sha256: compile.source_sha256,
                 source_spans: compile.source_spans,
             },
             apply,
