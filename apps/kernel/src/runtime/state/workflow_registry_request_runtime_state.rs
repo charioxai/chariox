@@ -337,6 +337,7 @@ impl KernelRuntimeState {
                 },
                 &caller_user_id,
                 caller_metaagent_id,
+                None,
             )
             .await;
         let result = match invoke_response {
