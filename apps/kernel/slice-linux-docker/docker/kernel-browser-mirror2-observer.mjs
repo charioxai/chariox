@@ -1357,7 +1357,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const [dw, dh] = k ? [sw * k, sh * k] : [W, H];
       try {
         g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
-        if (!video) { const data = g.getImageData(0, 0, W, H).data; let blank = true; for (let i = 3; i < data.length && blank; i += 4) blank = !data[i]; if (blank) return null; }
+        // WebGL's cleared buffer reads as all transparent, or all opaque black with alpha:false (three.js's default).
+        // All black is the page's own pixels only on a 2D canvas (getContext('2d') returns its context, null for WebGL;
+        // a canvas without a context read transparent above, so this creates none).
+        if (!video) {
+          const data = g.getImageData(0, 0, W, H).data; let clear = true, black = true;
+          for (let i = 0; i < data.length && (clear || black); i += 4) { clear &&= !data[i + 3]; black &&= !data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] === 255; }
+          if (clear) return null;
+          if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
+        }
         for (let still = canvas; ;) {
           const bytes = new Uint8Array(await (await still.convertToBlob({ type: 'image/png' })).arrayBuffer());
           if (4 * Math.ceil(bytes.length / 3) <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary) }; }

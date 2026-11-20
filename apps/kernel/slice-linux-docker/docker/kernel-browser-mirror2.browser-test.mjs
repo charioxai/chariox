@@ -425,6 +425,21 @@ for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) t
   assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
 }, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
+// compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
+// shows; a 2D canvas the page fills black stays black.
+const glOpaque = '<style>body{margin:0}canvas{display:block;width:240px;height:120px}</style><canvas id="g" width="240" height="120"></canvas><canvas id="k" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl",{alpha:false});g.clearColor(0.1,0.5,0.8,1);g.clear(g.COLOR_BUFFER_BIT);const k=document.querySelector("#k").getContext("2d");k.fillStyle="#000";k.fillRect(0,0,240,120)</script>';
+for (const device_scale_factor of [1, 2]) test(`MP-10: the still of an opaque WebGL canvas shows its pixels, a black 2D canvas stays black (DPR${device_scale_factor})`, () => mirrored(glOpaque, async ({ subscribe, evaluate }) => {
+  assert.equal(await evaluate('!!document.querySelector("#g").getContext("webgl")'), true, "fixture: the browser has WebGL");
+  const { next } = await subscribe({ device_scale_factor });
+  const stills = new Map();
+  for (let i = 0; i < 8 && stills.size < 2; i++) for (const tile of (await next(1100)).tiles) stills.set(tile.node_id, tile);
+  assert.equal(stills.size, 2, "both canvases' stills reach the viewer");
+  const centre = (still) => { const p = decodePng(still.data_base64, device_scale_factor), x = p.width >> 1, y = p.height >> 1; return [...p.pixels.subarray((y * p.width + x) * 4, (y * p.width + x) * 4 + 3)].join(","); };
+  // The WebGL canvas's still holds its clear colour, not black; the black 2D canvas's still stays black.
+  assert.deepEqual([...stills.values()].map(centre).sort(), ["0,0,0", "26,128,204"]);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
 // on it reaches the content.
