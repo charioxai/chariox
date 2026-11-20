@@ -309,6 +309,54 @@ fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> 
     Ok(())
 }
 
+pub(super) fn adopt(
+    tx: &Transaction<'_>,
+    holder: &AgentTaskExecution,
+    task: &AgentTaskExecution,
+    registration: &Registration,
+) -> Result<(), DaemonError> {
+    if registration.obligation_id.as_deref() != Some(registration.source_id.as_str())
+        || registration.id != format!("completion-{}", registration.source_id)
+    {
+        return Ok(());
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload FROM agent_wakes WHERE id=?1",
+            [&registration.source_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let mut wake: AgentWake = decode(&payload)?;
+    if wake.id != registration.source_id
+        || wake.task_id != holder.task_id
+        || wake.room_id != holder.room_id
+        || wake.agent_id != holder.agent_id
+        || wake.registration_id != registration.id
+    {
+        return Err(error("wake binding does not match its registration"));
+    }
+    if terminal(&wake) || wake.state == "cancelling" {
+        return Err(error(format!(
+            "Registration `{}` in task `{}` is ending. Read its outcome in chariox.events.inbox and retry with any remaining live registrations.",
+            registration.id, holder.task_id,
+        )));
+    }
+    // A leased worker still returns the immutable identity of its original launch.
+    super::leased_processes::retain_launch_task(tx, &wake)?;
+    wake.task_id.clone_from(&task.task_id);
+    tx.execute(
+        "UPDATE agent_wakes SET task_id=?2,payload=?3 WHERE id=?1",
+        params![wake.id, wake.task_id, encode(&wake)?],
+    )
+    .map_err(sql)?;
+    Ok(())
+}
+
 /// Reads only wakes in `states` through the state index; finished history
 /// is never decoded by the scheduler.
 fn wakes_in(tx: &Transaction<'_>, states: &[&str]) -> Result<Vec<AgentWake>, DaemonError> {

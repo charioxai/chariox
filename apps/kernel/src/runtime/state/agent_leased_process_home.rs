@@ -147,9 +147,13 @@ impl KernelRuntimeState {
             return Err(ledger::error("unexpected leased process receipt response"));
         };
         if let Some(receipt) = &receipt {
+            let launch_task = self
+                .owned
+                .durable_state_store
+                .leased_wake_launch_task(&wake.id)?;
             if receipt.binding != *binding
                 || receipt.wake.id != wake.id
-                || receipt.wake.task_id != wake.task_id
+                || receipt.wake.task_id != launch_task.as_deref().unwrap_or(&wake.task_id)
                 || receipt.wake.room_id != wake.room_id
                 || receipt.wake.agent_id != wake.agent_id
                 || receipt.wake.command != wake.command
