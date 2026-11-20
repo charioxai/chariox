@@ -1004,6 +1004,12 @@ impl CommandRouter {
                     self.runtime_state.room_agent_tools_enabled(),
                 )
             }
+            "room" | "session" if self.runtime_state.room_agent_tools_enabled() => {
+                super::room_lifecycle::meta_room_request(session, tokens)
+            }
+            "room" | "session" => Err(meta_command_error(
+                "agents in Meta mode stay in their session; Room agents create and delete Rooms with `room create` and `room delete`",
+            )),
             "slice" => meta_slice_request(&tokens[1..]),
             "environment" => meta_environment_request(session, &tokens[1..], |from| {
                 self.runtime_state

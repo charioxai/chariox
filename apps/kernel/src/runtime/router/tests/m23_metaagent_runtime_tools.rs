@@ -322,6 +322,7 @@ mod person_inbox_notify;
 mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;
+mod room_create;
 mod room_prompt_dispatch;
 mod self_settings;
 mod subtree;

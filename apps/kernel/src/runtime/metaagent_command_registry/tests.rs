@@ -2,6 +2,10 @@ use super::*;
 
 const ROUTED_COMMAND_CASES: &[&str] = &[
     "prompt agent-2 investigate",
+    "room create --name Bench --provider dev-stub --account-profile drill",
+    "session create --name Bench",
+    "session new",
+    "room delete room-2",
     "agent list",
     "agent ls",
     "agent spawn reviewer",
@@ -414,4 +418,22 @@ fn peer_commands_and_owner_room_card_authority_are_documented() {
         .as_str()
         .unwrap()
         .contains("never acts for a peer"));
+}
+
+#[test]
+fn a_room_can_be_created_and_deleted_but_never_attached_switched_or_dropped_as_a_session() {
+    for command in [
+        "session attach room-2",
+        "session use room-2",
+        "session delete room-2",
+    ] {
+        let tokens = tokenize_command(command).unwrap();
+        assert!(
+            matches!(
+                execution_policy(&tokens),
+                MetaCommandExecutionPolicy::Denied { message } if message.contains("room create")
+            ),
+            "`{command}` stays denied and names the Room commands"
+        );
+    }
 }

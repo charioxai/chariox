@@ -221,7 +221,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
     };
     match command.policy {
         MetaCommandPolicy::Deny => MetaCommandExecutionPolicy::Denied {
-            message: "agents in Meta mode cannot create, attach to, switch, or delete sessions",
+            message: "agents cannot attach to, switch, or delete sessions; use `room create` for a new Room and `room delete <room-id>` for one you created, and ask the owner for anything else",
         },
         MetaCommandPolicy::Approval if !command.routed => MetaCommandExecutionPolicy::NotRouted {
             message: format!(
@@ -341,9 +341,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "room" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "agents" | "cards") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("list" | "agents" | "cards" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed room commands: `room list`, `room agents <room-id>` and `room cards <room-id>`".to_string(),
+                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards <room-id>`, `room create` and `room delete <room-id>`".to_string(),
             }),
         },
         "slice" => match tokens.get(1).map(String::as_str) {
