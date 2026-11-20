@@ -122,6 +122,8 @@ class Handler(socketserver.StreamRequestHandler):
                     elif method == 'account/read':
                         result = {'account': {'email':'fixture@chariox.test'} if login_marker.exists() else None, 'requiresOpenaiAuth': True}
                     elif method == 'account/login/start':
+                        if (home / 'auth.json').exists():
+                            (home / 'synthetic-copied-auth-at-login').touch()
                         (home / 'synthetic-official-login-invoked').write_text('account/login/start')
                         result = {'type':'chatgptDeviceCode', 'loginId':'synthetic-login', 'verificationUrl':oauth_url + '/device', 'userCode':'SYNTHETIC'}
                     elif method == 'thread/start':

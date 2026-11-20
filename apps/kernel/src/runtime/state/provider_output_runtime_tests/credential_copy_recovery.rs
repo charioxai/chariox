@@ -294,7 +294,7 @@ async fn run_case(recovery: RecoveryCase) {
                 &DaemonError::ProviderProtocol {
                     provider_run_id: run.id().into(),
                     operation: "initialize fixture provider",
-                    message: "refresh_token_reused".into(),
+                    message: "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.".into(),
                 },
             )
             .await;
@@ -324,6 +324,15 @@ async fn run_case(recovery: RecoveryCase) {
                     break;
                 }
                 assert_eq!(interaction.title(), Some("Log in to Codex on this machine"));
+                assert_eq!(
+                    runtime
+                        .owned
+                        .provider_account_profiles
+                        .get(owner, "codex", &copied.profile_id)
+                        .unwrap()
+                        .auth_state,
+                    crate::account_profile::ProviderAccountAuthState::Expired
+                );
                 runtime
                     .resolve_runtime_interaction(session.id(), interaction.id(), "login", None)
                     .await
@@ -382,6 +391,10 @@ async fn run_case(recovery: RecoveryCase) {
     assert!(target_home
         .join("synthetic-official-login-invoked")
         .exists());
+    assert!(
+        !target_home.join("synthetic-copied-auth-at-login").exists(),
+        "provider sign-in must start without the copied login"
+    );
     assert!(!source_auth
         .parent()
         .unwrap()

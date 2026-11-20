@@ -194,6 +194,21 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             let provider = provider_label(run.adapter_key());
+            if !setup_token {
+                self.owned.provider_account_profiles.update_observation(
+                    &owner,
+                    run.adapter_key(),
+                    run.account_profile(),
+                    crate::account_profile::ProviderAccountAuthState::Expired,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                    .await;
+                self.record_room_list_change();
+            }
             let sudo_entry = self
                 .sudo_for_provider_run(run.id())
                 .ok()

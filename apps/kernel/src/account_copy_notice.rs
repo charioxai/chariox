@@ -1,5 +1,7 @@
 //! MP-08/MP-10/MP-11: local metadata only; provider CLIs own the credential state.
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct CredentialCopyNotice {
@@ -122,6 +124,69 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    /// Disconnect a received login without allowing the provider to revoke its source.
+    pub(crate) fn discard_copied_login(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        if !matches!(provider, "codex" | "claude") {
+            return Ok(false);
+        }
+        // Resolve aliases before looking up provenance, and retain a stable root
+        // until its local credential has been removed.
+        let profile = self.get(owner_user_id, provider, profile_id)?;
+        let document = self.read_document()?;
+        let stored =
+            resolve_stored_profile(&document, owner_user_id, provider, &profile.profile_id)?;
+        let copied = stored.materialized_replica
+            || stored.transferred_from.is_some()
+            || document.credential_copy_notices.iter().any(|notice| {
+                notice.owner_user_id == owner_user_id
+                    && notice.provider == provider
+                    && notice.profile_id == profile.profile_id
+            });
+        if !copied {
+            return Ok(false);
+        }
+
+        match &stored.locator {
+            ProviderAccountLocator::Codex { codex_home } => {
+                remove_local_login_file(codex_home, "auth.json")?;
+            }
+            ProviderAccountLocator::Claude {
+                claude_config_dir,
+                ambient_default,
+            } => {
+                #[cfg(target_os = "macos")]
+                for service in
+                    claude_keychain_service_names(claude_config_dir, *ambient_default == Some(true))
+                {
+                    let status = crate::process_spawn::command("security")
+                        .args(["delete-generic-password", "-s", &service])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .bounded_status()
+                        .map_err(registry_io("discard copied Claude login"))?;
+                    // security returns 44 when the item is already absent.
+                    if !status.success() && status.code() != Some(44) {
+                        return Err(registry_error(
+                            "discard copied Claude login",
+                            format!("Keychain deletion failed ({status}). Unlock the Keychain and retry."),
+                        ));
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = ambient_default;
+                remove_local_login_file(claude_config_dir, ".credentials.json")?;
+            }
+            ProviderAccountLocator::Opencode { .. } => return Ok(false),
+        }
+        Ok(true)
+    }
+
     pub(crate) fn take_credential_copy_notice(
         &self,
         owner_user_id: &str,
@@ -153,6 +218,18 @@ impl ProviderAccountProfileRegistry {
             return Err(error);
         }
         Ok(Some(message))
+    }
+}
+
+fn remove_local_login_file(root: &Path, name: &str) -> Result<(), DaemonError> {
+    validate_materialization_root(root)?;
+    match fs::remove_file(root.join(name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(registry_error(
+            "discard copied provider login",
+            format!("{error}. Check access to the provider profile and retry."),
+        )),
     }
 }
 
