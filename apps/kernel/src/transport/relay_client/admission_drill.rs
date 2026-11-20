@@ -36,7 +36,7 @@ fn load_sender(spec: &SenderSpec) -> DaemonConfig {
     for (key, value) in &spec.env {
         std::env::set_var(key, value);
     }
-    DaemonConfig::load_from_env()
+    DaemonConfig::load_from_env().unwrap()
 }
 
 async fn with_fresh_token(config: &DaemonConfig) -> Result<DaemonConfig, String> {

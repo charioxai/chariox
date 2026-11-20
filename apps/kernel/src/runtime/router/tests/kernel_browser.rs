@@ -274,7 +274,7 @@ fn kernel_browser_linux_integration_drill() {
 fn drill_config(home: &std::path::Path) -> DaemonConfig {
     // MD-4/MD-5: normal product identity persistence, never a handcrafted key.
     // The replay's clean environment binds this loader to disposable CHARIOX_HOME.
-    let mut config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env().unwrap();
     config.provider_process_orphan_ttl_ms = u64::MAX;
     config.user_config.state.path = Some(home.join("state.db").display().to_string());
     config.user_config_path = home.join("config.toml");
