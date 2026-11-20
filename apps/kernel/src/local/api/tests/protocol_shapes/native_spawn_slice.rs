@@ -518,6 +518,18 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
         format!("{hash:x}"),
         "b1dd5c4a49ec8243c410f8d5e063842e113505e0121ff58b4a1859ec7bb8f24d"
     );
+    assert!(snapshot
+        .pointer("/Slice/slice/delete_when_unused")
+        .is_none());
+    let LocalDaemonResponse::Slice { mut slice } = serde_json::from_value(snapshot).unwrap() else {
+        panic!("expected a slice response");
+    };
+    slice.delete_when_unused = true;
+    let scoped = serde_json::to_value(LocalDaemonResponse::Slice { slice }).unwrap();
+    assert_eq!(
+        scoped.pointer("/Slice/slice/delete_when_unused"),
+        Some(&serde_json::json!(true))
+    );
 }
 
 #[test]
