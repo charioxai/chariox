@@ -620,4 +620,6 @@ pub use workspace::*;
 /// Relay registrations and machine records include each kernel's registered local protocol.
 /// Provisional 1015 (relay peer 452): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
+/// Provisional 1016 (relay peer 453): the mirror v2 header carries `page_wheel`, whether the page's own script takes the
+/// wheel (a non-passive wheel listener on window, document, html or body); the viewer then sends it every wheel step.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
