@@ -575,6 +575,66 @@ async fn sweep_releases_abandoned_and_expired_decisions_without_resolving_live_o
 }
 
 #[tokio::test]
+async fn decisioncap_owner_list_and_admission_agree_after_room_deletion() {
+    let f = Fixture::new();
+    let lost_room = f.id("deleted-room");
+    f.state
+        .owned
+        .session_store
+        .restore_session(RuntimeSession::new(
+            lost_room.clone(),
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        ));
+    let mut receivers = Vec::new();
+    for index in 0..8 {
+        let id = f.id(&format!("invisible-{index}"));
+        receivers.push(
+            f.state
+                .create_kernel_operation_interaction(
+                    &lost_room,
+                    DEFAULT_LOCAL_USER_ID,
+                    RuntimeInteraction::for_kernel_operation(
+                        &id,
+                        &id,
+                        "Unrelated decision",
+                        "Choose an action",
+                        vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+                    ),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        f.state.list_owner_interactions(DEFAULT_LOCAL_USER_ID).len(),
+        8
+    );
+    f.state.owned.delete_session_ref(&lost_room, None).unwrap();
+    assert!(f
+        .state
+        .list_owner_interactions(DEFAULT_LOCAL_USER_ID)
+        .is_empty());
+
+    let new_decision = f.register("next");
+    assert!(
+        new_decision.is_ok(),
+        "unlisted decisions filled the owner quota: {new_decision:?}"
+    );
+    assert_eq!(
+        f.state.list_owner_interactions(DEFAULT_LOCAL_USER_ID)[0].interaction_id,
+        f.id("next")
+    );
+    for mut receiver in receivers {
+        assert_eq!(receiver.try_recv().unwrap().status, "timed_out");
+    }
+}
+
+#[tokio::test]
 async fn a_stale_sweep_candidate_cannot_expire_a_reused_interaction_id() {
     let fixture = Fixture::new();
     let old = fixture.register("reused").unwrap();
