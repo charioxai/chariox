@@ -212,11 +212,6 @@ pub(super) async fn check_native_copy(
         "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit; fi\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --listen ]; then shift; export CTXFIX_ACCOUNT_LISTEN=\"$1\"; break; fi; shift; done\nexport CTXFIX_ACCOUNT_LOG={}\nexport CTXFIX_ACCOUNT_LOGIN_COMPLETE={}\nexec {} --exact local::provider_requests::catalog::codex_refresh_tests::account_endpoint_child --ignored --nocapture\n",
         quote(&launches), quote(&approval), quote(&std::env::current_exe().unwrap())
     )).unwrap();
-    std::fs::write(
-        &target_auth,
-        r#"{"tokens":{"access_token":"synthetic-accepted-login-interim"}}"#,
-    )
-    .unwrap();
     let started = source_request(
         target_router,
         serde_json::json!({"StartProviderLogin":{
