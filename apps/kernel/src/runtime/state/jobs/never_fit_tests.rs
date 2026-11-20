@@ -170,6 +170,7 @@ async fn offload_job_larger_than_the_machine_asks_for_a_machine_even_with_offloa
         .set_remote_job_policy(
             &task.room_id,
             Some(&task.agent_id),
+            false,
             &task.owner_user_id,
             Some(crate::local::OffloadPolicy::Off),
         )

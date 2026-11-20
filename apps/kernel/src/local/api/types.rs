@@ -620,4 +620,5 @@ pub use workspace::*;
 /// Relay registrations and machine records include each kernel's registered local protocol.
 /// `PreflightProviderAccountPortability` carries the launch's `kernelContext`, so a copy of this
 /// kernel holds its Vault unlock for the export that follows.
+/// 1013 allows a remote-job policy request to name the Room project with `project: true`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1066;
