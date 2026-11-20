@@ -537,7 +537,7 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
 
 // A one-shot `GetSessionState` carries the process rows the live feed shows.
 #[test]
-fn a_one_shot_session_state_lists_the_rooms_processes() {
+fn a_one_shot_machine_resources_read_lists_the_rooms_processes() {
     run("room-state-processes", || async {
         let worktree = crate::test_support::TestWorktree::new("room_state_processes");
         let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
@@ -566,18 +566,19 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
             panic!("unexpected result");
         };
         let rows = || async {
-            let request =
-                LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+            let request = LocalDaemonRequest::GetMachineRoomResources(
+                crate::local::GetMachineRoomResourcesRequest {
                     session_id: session_id.clone(),
-                });
+                },
+            );
             let response = router
                 .dispatch(
                     remote_command_for_request(&request, Some(DEFAULT_LOCAL_USER_ID)),
                     request,
                 )
                 .await
-                .expect("one-shot session state");
-            serde_json::to_value(response).unwrap()["SessionState"]["processes"].clone()
+                .expect("one-shot Room resources");
+            serde_json::to_value(response).unwrap()["MachineRoomResources"]["processes"].clone()
         };
         let mut found = serde_json::Value::Null;
         for _ in 0..100 {
@@ -604,7 +605,7 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
         let row = found
             .as_array()
             .and_then(|rows| rows.first())
-            .unwrap_or_else(|| panic!("the one-shot state lists no process: {found}"));
+            .unwrap_or_else(|| panic!("the one-shot Room resources list no process: {found}"));
         assert_eq!(row["owner"]["kind"], "terminal");
         assert_eq!(row["owner"]["id"], terminal.terminal_id.as_str());
     });
