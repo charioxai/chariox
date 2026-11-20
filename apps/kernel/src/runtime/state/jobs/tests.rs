@@ -732,3 +732,98 @@ async fn job_admission_ignores_active_jobs_pipe_count() {
     assert!(result["job_id"].as_str().is_some(), "{result}");
     assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
 }
+
+// TL6: a job the agent's time limit cancelled says so, and an earlier cancel by the agent does not.
+#[tokio::test]
+async fn a_job_cancelled_by_its_agents_limit_says_so_in_its_status() {
+    let (state, run, task, _worktree) = fixture().await;
+    let start = || async {
+        state
+            .dispatch_job_tool(
+                Some(&run),
+                "chariox.jobs.run",
+                &serde_json::json!({"command":["/bin/sleep","30"],"wait_s":1}),
+                &task,
+            )
+            .await
+            .unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (cancelled_by_agent, cancelled_by_limit) = (start().await, start().await);
+    state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.cancel",
+            &serde_json::json!({ "job_id": cancelled_by_agent }),
+            &task,
+        )
+        .await
+        .unwrap();
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::SetDeadline {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            deadline: Some(crate::session::unix_epoch_ms() + 300),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let _ = state
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await;
+    let status = |id: String| {
+        let (state, run, task) = (&state, &run, &task);
+        async move {
+            for _ in 0..50 {
+                let status = state
+                    .dispatch_job_tool(
+                        Some(run),
+                        "chariox.jobs.status",
+                        &serde_json::json!({ "job_id": id }),
+                        task,
+                    )
+                    .await
+                    .unwrap();
+                if status["result"].is_object() {
+                    return status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("job {id} never saved a result");
+        }
+    };
+    let by_limit = status(cancelled_by_limit).await;
+    assert_eq!(by_limit["result"]["outcome"], "cancelled", "{by_limit}");
+    assert_eq!(
+        by_limit["cancelled_by"]["reason"], "the agent's time limit ended",
+        "{by_limit}"
+    );
+    assert!(by_limit["cancelled_by"]["at_ms"].is_u64());
+    assert!(by_limit["cancelled_by"]["next_step"]
+        .as_str()
+        .unwrap()
+        .contains("agent deadline"));
+    let by_agent = status(cancelled_by_agent).await;
+    assert!(
+        by_agent.get("cancelled_by").is_none(),
+        "the agent's own cancel is not the limit's: {by_agent}"
+    );
+    // A job id without a saved result names the likely reasons and the next step.
+    let missing = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.status",
+            &serde_json::json!({ "job_id": "job-nothing" }),
+            &task,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing.contains("no saved result") && missing.contains("chariox.jobs.list"),
+        "{missing}"
+    );
+}

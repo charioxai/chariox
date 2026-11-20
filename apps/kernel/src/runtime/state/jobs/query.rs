@@ -48,12 +48,55 @@ impl KernelRuntimeState {
                     .collect()
             })
             .unwrap_or_default();
+        let limit = self.limit_cancellation(&record);
         let mut value = public_record(record)?;
+        if let Some(limit) = limit {
+            value["cancelled_by"] = limit;
+        }
         if let Some(wait) = wait {
             value["waiting"] = serde_json::to_value(wait).expect("launch wait");
             value["running_job_ids"] = serde_json::json!(running);
             value["next_action"] = WAIT_ACTION.into();
         }
         Ok(value)
+    }
+
+    /// TL6: a job whose result was saved as cancelled after its agent's time limit ended says
+    /// that the limit ended it, and when, for the parent or successor who finds it later.
+    fn limit_cancellation(&self, record: &Record) -> Option<serde_json::Value> {
+        record
+            .result
+            .as_ref()
+            .filter(|result| result.outcome == crate::local::JobOutcome::Cancelled)?;
+        let deadline = self
+            .owned
+            .durable_state_store
+            .agent_deadline(&record.room_id, &record.agent_id)
+            .ok()??;
+        let reached_at_ms = deadline
+            .reached_at_ms
+            .filter(|_| deadline.state == crate::local::AgentDeadlineState::Reached)?;
+        // The result was saved when the limit ended, not earlier by the agent's own cancel.
+        let saved_at_ms =
+            std::fs::metadata(self.job_wake_driver.as_ref()?.path(&record.job_id).ok()?)
+                .and_then(|meta| meta.modified())
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())?;
+        if saved_at_ms + 1_000 < reached_at_ms {
+            return None;
+        }
+        let agent = self.owned.agent_store.get_agent(&record.agent_id).ok();
+        let name = agent
+            .as_ref()
+            .and_then(|agent| agent.alias())
+            .unwrap_or(&record.agent_id);
+        Some(serde_json::json!({
+            "agent_id": record.agent_id,
+            "reason": "the agent's time limit ended",
+            "at_ms": reached_at_ms,
+            "next_step": format!("The job did not finish. The owner, or {name}'s parent, can give {name} a new limit with `agent deadline {name} <duration|none>`; then start the command again."),
+        }))
     }
 }
