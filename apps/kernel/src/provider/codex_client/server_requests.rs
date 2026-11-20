@@ -179,15 +179,11 @@ impl CodexClient {
                 "params": params,
             }),
         );
-        let mut body = command_execution_approval_body(&params);
-        if let Some(sandbox) = &self.unavailable_workspace_sandbox {
-            let Some(explained_body) =
-                sandbox.approval_body(&params, self.native_approval_turn_id.as_deref(), body)
-            else {
-                return Ok(json!({ "decision": "decline" }));
-            };
-            body = explained_body;
-        }
+        let body = command_execution_approval_body(&params);
+        let body = match &self.unavailable_workspace_sandbox {
+            Some(sandbox) => sandbox.approval_body(&params, body),
+            None => body,
+        };
         self.request_native_permission_interaction(
             &params,
             "codex-command-approval",
