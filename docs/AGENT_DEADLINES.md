@@ -10,8 +10,12 @@ executing kernel before submitting its first prompt:
 `deadline_ms` is a required field: an absolute UTC epoch millisecond to set,
 extend or shorten, or JSON `null` to clear. An omitted field is refused.
 One `SetAgentDeadline` request returns the resulting durable receipt;
-`deadline:null` confirms there is no deadline. A reached deadline cannot be
-reset: new work after it fires needs a new agent.
+`deadline:null` confirms there is no deadline. A reached deadline ended that
+run, not the agent: once its cleanup has finished (`stopped_at_ms` is set), the
+owner, or a parent whose own limit has not ended, sets a new time or `none`, and
+the agent takes prompts again. An agent under an ended subtree cannot extend a
+finished agent; the refusal names who can. Edits during pending cleanup are refused
+with `agent_deadline_cleanup_pending`; retry shortly.
 
 The owner can use `chariox agent deadline <agent> <90s|30m|2h|1d|none>`
 (optionally `--session ROOM`, `--kernel KERNEL`, `--socket PATH`). Durations start
@@ -21,8 +25,9 @@ at the time of the request. Agents use the Room command
 coordinator can edit a peer of the same owner when its authority covers the
 peer, including an ordinary agent in another room. An agent cannot edit its own
 deadline, an ancestor's, a hidden sub-agent in another room, or another owner's
-agent. A child cannot outlive a bounded ancestor,
-and cannot clear that inherited limit.
+agent. A child cannot outlive the nearest ancestor limit that is still running
+(an ancestor whose deadline was reached bounds nothing), and cannot clear
+that inherited limit; the refusal names the ancestor, its limit and who can extend it.
 
 An edit is serialized with deadline cleanup, so an old scheduler snapshot
 cannot stop a run after an accepted extension or clear. Children inherit the

@@ -1601,7 +1601,7 @@ fn deadline_refuses_later_messages_and_settles_the_queued_message_once() {
             assert_eq!(refused.payload["code"], "agent_deadline_reached");
             assert_eq!(
                 refused.payload["error"],
-                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+                format!("This agent’s time limit ended at {time}. The owner, or a parent whose own time limit has not ended, can extend it with `agent deadline <agent> <duration|none>`; or start a new agent.")
             );
         }
         let app = app.lock().await;

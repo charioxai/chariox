@@ -92,12 +92,15 @@ fn validate(
                 .into(),
         });
     }
+    // A finished agent can be given a new limit, but not while its cleanup is still pending.
     if get(db, room, agent)?.is_some_and(|old| {
-        old.state == AgentDeadlineState::Reached && deadline != Some(old.deadline_ms)
+        old.state == AgentDeadlineState::Reached
+            && old.stopped_at_ms.is_none()
+            && deadline != Some(old.deadline_ms)
     }) {
         return Err(DaemonError::MachineRequest {
-            code: "agent_deadline_reached".into(),
-            message: "agent deadline reached; start a new agent for new work".into(),
+            code: "agent_deadline_cleanup_pending".into(),
+            message: "the agent's deadline was reached and its cleanup is still running; retry the edit in a few seconds".into(),
         });
     }
     Ok(())
@@ -157,6 +160,16 @@ pub(super) fn set(
     } else {
         db.execute(
             "DELETE FROM agent_deadline_intents WHERE room_id=?1 AND agent_id=?2",
+            params![room, agent],
+        )
+        .map_err(sql)?;
+    }
+    // The new limit replaces the one that ended this agent's run.
+    if get(db, &room, &agent)?.is_some_and(|old| {
+        old.state == AgentDeadlineState::Reached && deadline != Some(old.deadline_ms)
+    }) {
+        db.execute(
+            "DELETE FROM agent_deadlines WHERE room_id=?1 AND agent_id=?2",
             params![room, agent],
         )
         .map_err(sql)?;
