@@ -161,6 +161,12 @@ pub struct ProviderAccountMaterialization {
     pub generated_at_ms: u64,
 }
 
+impl ProviderAccountMaterialization {
+    pub(crate) fn is_credentialless_opencode(&self) -> bool {
+        self.profile.provider == "opencode" && self.files.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManagedContextProviderAccountReceipt {
@@ -2893,6 +2899,21 @@ impl ProviderAccountProfileRegistry {
             resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
                 .legacy_unpinned_replica,
         )
+    }
+
+    pub(crate) fn opencode_profile_has_no_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner_user_id, "opencode", profile_id)?;
+        let ProviderAccountLocator::Opencode { xdg_data_home, .. } = &stored.locator else {
+            return Ok(false);
+        };
+        Ok(!path_entry_exists(
+            &xdg_data_home.join("opencode/auth.json"),
+        )?)
     }
 
     #[cfg(unix)]
