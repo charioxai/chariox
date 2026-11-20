@@ -117,6 +117,7 @@ impl KernelRuntimeState {
                 .try_claim_idle_queue_promotion(&session, agent_id)?;
             let mut waiting_for_launch = false;
             let mut activated_head = false;
+            let mut vault_refused_head = None;
             let result: Result<Option<crate::session::PromptQueueItem>, DaemonError> = async {
                 loop {
                     let session = self.owned.session_store.get_session(session_id)?;
@@ -127,12 +128,32 @@ impl KernelRuntimeState {
                     else {
                         return Ok(None);
                     };
-                    let provider_run_id = self
-                        .with_project_prompt_environment(session_id, agent_id, |app| {
-                            crate::app::KernelAgentService::new(app)
-                                .prepare_queued_prompt_provider_run(session_id, agent_id, &queued)
-                        })
-                        .await?;
+                    let provider_run_id = match self
+                        .with_project_prompt_environment(
+                            session_id,
+                            agent_id,
+                            super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                            |app| {
+                                crate::app::KernelAgentService::new(app)
+                                    .prepare_queued_prompt_provider_run(
+                                        session_id, agent_id, &queued,
+                                    )
+                            },
+                        )
+                        .await
+                    {
+                        Ok(provider_run_id) => provider_run_id,
+                        Err(
+                            refusal @ DaemonError::VaultUnlock {
+                                code: "vault_unlock_declined",
+                                ..
+                            },
+                        ) => {
+                            vault_refused_head = Some((queued.id().to_string(), refusal));
+                            return Ok(None);
+                        }
+                        Err(error) => return Err(error),
+                    };
                     let run = self.owned.provider_store.get_run(&provider_run_id)?;
                     if run.state() == crate::provider::ProviderRunState::Starting {
                         waiting_for_launch = true;
@@ -220,6 +241,42 @@ impl KernelRuntimeState {
                     .get_run_for_agent(session_id, agent_id)
                     .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
             {
+                continue;
+            }
+            if let Some((prompt_id, refusal)) = vault_refused_head {
+                match self
+                    .owned
+                    .end_queued_prompt_without_vault(session_id, agent_id, &prompt_id, &refusal)
+                {
+                    // A workflow step waits on its prompt: the run fails with the reason.
+                    Ok(Some(ended)) => match self.owned.workflow_fail_prompt_needing_help(
+                        session_id,
+                        &ended,
+                        &refusal.to_string(),
+                    ) {
+                        Ok(dispatches) => self.spawn_workflow_prompt_dispatches(dispatches),
+                        Err(error) => self.owned.record_notice(
+                            session_id,
+                            None,
+                            self.owned
+                                .attachment_store
+                                .list_session_attachment_ids(session_id),
+                            format!("The workflow step of an ended queued prompt was not settled: {error}"),
+                        ),
+                    },
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.owned.record_notice(
+                            session_id,
+                            None,
+                            self.owned
+                                .attachment_store
+                                .list_session_attachment_ids(session_id),
+                            format!("Queued prompt remained pending after its Vault unlock was refused: {error}"),
+                        );
+                        return None;
+                    }
+                }
                 continue;
             }
             return match result {

@@ -202,6 +202,10 @@ pub struct WorkflowOutputPayload {
     message: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<WorkflowArtifactRef>,
+    /// The occurrence's values for its source's declared options, keyed by option name, and
+    /// nothing else of the event's payload.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    data: serde_json::Map<String, serde_json::Value>,
 }
 
 impl WorkflowOutputPayload {
@@ -213,11 +217,21 @@ impl WorkflowOutputPayload {
         Self {
             message: message.into(),
             artifacts,
+            data: serde_json::Map::new(),
         }
+    }
+
+    pub fn with_data(mut self, data: serde_json::Map<String, serde_json::Value>) -> Self {
+        self.data = data;
+        self
     }
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn data(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.data
     }
 
     pub fn artifacts(&self) -> &[WorkflowArtifactRef] {

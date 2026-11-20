@@ -436,6 +436,8 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -573,11 +575,11 @@ async fn get_session_state_uses_projection_after_prompt_submit_without_app_lock(
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "warm GetSessionState should be served from the session projection without app lock access"
-    );
+    assert_finishes_without_app_lock(
+        &state_task,
+        "warm GetSessionState should be served from the session projection without app lock access",
+    )
+    .await;
 
     drop(app_guard);
     let state_response = state_task

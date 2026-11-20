@@ -58,15 +58,11 @@ const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 
 fn registered_external_provider_profile_roots(
     runtime_state: &KernelRuntimeState,
-    owner_filter: Option<&str>,
 ) -> Vec<crate::app::ExternalProviderSessionProfileRoot> {
     let registry = runtime_state.provider_account_profile_registry();
-    let profiles = match owner_filter {
-        Some(owner_user_id) => registry.list(owner_user_id, None),
-        None => registry.list_all(),
-    }
-    .unwrap_or_default();
-    profiles
+    registry
+        .list_all()
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|profile| {
             let environment = registry
@@ -76,31 +72,7 @@ fn registered_external_provider_profile_roots(
                     &profile.profile_id,
                 )
                 .ok()?;
-            let roots = match profile.provider.as_str() {
-                "codex" => environment
-                    .get("CODEX_HOME")
-                    .map(PathBuf::from)
-                    .into_iter()
-                    .collect(),
-                "claude" => environment
-                    .get("CLAUDE_CONFIG_DIR")
-                    .map(PathBuf::from)
-                    .into_iter()
-                    .collect(),
-                "opencode" => {
-                    let mut roots = Vec::new();
-                    if let Some(path) = environment.get("XDG_DATA_HOME") {
-                        roots.push(PathBuf::from(path).join("opencode"));
-                    }
-                    if let Some(path) = environment.get("OPENCODE_CONFIG_DIR") {
-                        roots.push(PathBuf::from(path));
-                    }
-                    roots.sort();
-                    roots.dedup();
-                    roots
-                }
-                _ => Vec::new(),
-            };
+            let roots = profile_roots(&profile.provider, &environment);
             (!roots.is_empty()).then_some(crate::app::ExternalProviderSessionProfileRoot {
                 owner_user_id: profile.owner_user_id,
                 provider: profile.provider,
@@ -111,6 +83,8 @@ fn registered_external_provider_profile_roots(
         .collect()
 }
 
+/// The roots of one target's profile. Polls and attaches call this for each
+/// target, so it resolves that profile alone.
 fn registered_external_provider_profile_roots_for(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -119,11 +93,50 @@ fn registered_external_provider_profile_roots_for(
 ) -> Vec<PathBuf> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(owner_user_id);
-    registered_external_provider_profile_roots(runtime_state, Some(&account_owner_user_id))
+    // A worker keeps its leased profile under the lease owner's own id, not the local alias.
+    let registry = runtime_state.provider_account_profile_registry();
+    let environment = [account_owner_user_id.as_str(), owner_user_id]
         .into_iter()
-        .find(|profile| profile.provider == provider && profile.account_profile == account_profile)
-        .map(|profile| profile.roots)
+        .find_map(|owner| {
+            registry
+                .resolve_environment(owner, provider, account_profile)
+                .ok()
+        });
+    environment
+        .map(|environment| profile_roots(provider, &environment))
         .unwrap_or_default()
+}
+
+/// Where a provider keeps its sessions under a profile's environment.
+fn profile_roots(
+    provider: &str,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Vec<PathBuf> {
+    match provider {
+        "codex" => environment
+            .get("CODEX_HOME")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect(),
+        "claude" => environment
+            .get("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect(),
+        "opencode" => {
+            let mut roots = Vec::new();
+            if let Some(path) = environment.get("XDG_DATA_HOME") {
+                roots.push(PathBuf::from(path).join("opencode"));
+            }
+            if let Some(path) = environment.get("OPENCODE_CONFIG_DIR") {
+                roots.push(PathBuf::from(path));
+            }
+            roots.sort();
+            roots.dedup();
+            roots
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Debug, Default)]

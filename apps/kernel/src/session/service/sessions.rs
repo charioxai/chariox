@@ -153,7 +153,7 @@ impl SessionService {
             .sessions_in_project(&project_id)?
             .into_iter()
             .any(|session| !session.is_hidden() && session.id() != session_id);
-        let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
+        let removed_project = (!project_has_visible_sessions)
             .then(|| self.projects.remove(&project_id))
             .flatten();
         Ok((deleted, removed_project))
@@ -340,6 +340,29 @@ impl SessionService {
         task_markdown: impl Into<String>,
         attachments: Vec<crate::session::PromptAttachment>,
     ) -> Result<crate::session::QueuedMetaagentTask, DaemonError> {
+        self.enqueue_metaagent_task_with_skills(
+            session_id,
+            metaagent_id,
+            source_attachment_id,
+            task_markdown,
+            attachments,
+            crate::session::SkillIntent {
+                selections: vec![],
+                user_syntax: false,
+            },
+        )
+    }
+
+    // MP-08 / MP-10 / MP-11: one existing task queue and durable transaction.
+    pub(crate) fn enqueue_metaagent_task_with_skills(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        source_attachment_id: &str,
+        task_markdown: impl Into<String>,
+        attachments: Vec<crate::session::PromptAttachment>,
+        skill_intent: crate::session::SkillIntent,
+    ) -> Result<crate::session::QueuedMetaagentTask, DaemonError> {
         let id = format!("session-task:{}", self.reserve_prompt_id());
         let task = crate::session::QueuedMetaagentTask::new(
             id,
@@ -347,7 +370,8 @@ impl SessionService {
             source_attachment_id,
             task_markdown,
             attachments,
-        );
+        )
+        .with_skill_intent(skill_intent);
         let session = self.get_session_mut_for_operation(session_id, "enqueue metaagent task")?;
         let task = session.enqueue_metaagent_task(task);
         session.touch();

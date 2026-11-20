@@ -39,6 +39,8 @@ async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_i
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
     let human_spawn = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         session_id: session.id().to_string(),
@@ -186,6 +188,8 @@ async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -324,7 +328,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         Some(true)
     );
 
-    for command in ["mcp list", "skill list", "credential list", "slice list"] {
+    for command in ["mcp list", "credential list", "slice list"] {
         let routed = router
             .dispatch_authenticated_runtime_tool_call(
                 &meta_auth_token,

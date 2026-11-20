@@ -42,20 +42,23 @@ impl KernelRuntimeState {
             })
     }
 
-    /// The prompt carries the message, so it counts as read: a turn that never
-    /// opens its inbox must not hand the row back to pending.
-    pub(super) fn mark_brief_shown(
+    /// The prompt carries these events' text, so they count as read: a turn
+    /// that never opens its inbox must not hand the rows back to pending.
+    pub(super) fn mark_prompt_events_shown(
         &self,
         room: &str,
         agent: &str,
-        sequence: u64,
+        sequences: &[u64],
     ) -> Result<(), DaemonError> {
+        if sequences.is_empty() {
+            return Ok(());
+        }
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::MarkShown {
                 room: room.into(),
                 agent: agent.into(),
-                sequences: vec![sequence],
+                sequences: sequences.to_vec(),
             })?;
         Ok(())
     }
@@ -151,7 +154,16 @@ impl KernelRuntimeState {
                             })?;
                         continue;
                     }
-                    WakeDisposition::Hold => return Ok(()),
+                    WakeDisposition::Hold => match self.urgent_past_held_wake(
+                        room,
+                        agent,
+                        &event,
+                        &tasks,
+                        work.as_deref(),
+                    )? {
+                        Some(urgent) => break urgent,
+                        None => return Ok(()),
+                    },
                     WakeDisposition::Deliver => {}
                 }
             }
@@ -225,10 +237,13 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_read_cursor(&event, work.as_deref())?;
-        let brief = self.parent_brief(agent, &event, &batch);
-        let carries_brief = brief.is_some();
-        let text =
-            brief.unwrap_or_else(|| super::agent_inbox_wake_text::wake_text(&event, &batch, after));
+        let (text, shown) = match self.parent_brief(agent, &event, &batch) {
+            Some(brief) => (brief, vec![event.sequence]),
+            None => {
+                let wake = self.inline_wake(room, agent, &event, &batch, after)?;
+                (wake.text, wake.shown)
+            }
+        };
         let attachments = std::iter::once(&event)
             .chain(&batch)
             .map(|row| {
@@ -267,7 +282,7 @@ impl KernelRuntimeState {
                     active,
                     prompt,
                     work,
-                    carries_brief,
+                    &shown,
                 )
                 .await;
         }
@@ -311,13 +326,8 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
-        if attempt.state == "blocked" {
-            return Ok(());
-        }
         self.owned.record_woken_waits(&waiting, &attempt);
-        if carries_brief {
-            self.mark_brief_shown(room, agent, event.sequence)?;
-        }
+        self.mark_prompt_events_shown(room, agent, &shown)?;
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then
             // sent nothing: the row waits for the idle wake instead of the lane.
@@ -338,6 +348,7 @@ impl KernelRuntimeState {
                 .unwrap_or(false)
             {
                 self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
+                self.deliver_skipped_steer_again(room, agent, event.sequence, &dispatch, None);
                 return Ok(());
             }
 
@@ -374,6 +385,19 @@ impl KernelRuntimeState {
                 .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                 .await;
             self.record_agent_event_dispatch_result(&dispatch, &result)?;
+            // The shared dispatch checks the target turn again at the native write: a turn that
+            // ended in between took nothing, and the row is pending again.
+            if self.inbox_row_is_pending(room, agent, event.sequence)? {
+                let error = result.err().map(|error| error.to_string());
+                self.deliver_skipped_steer_again(
+                    room,
+                    agent,
+                    event.sequence,
+                    &dispatch,
+                    error.as_deref(),
+                );
+                return Ok(());
+            }
             result?;
         } else {
             let result = Box::pin(self.submit_prepared_prompt_with_queue_policy(
@@ -406,9 +430,16 @@ impl KernelRuntimeState {
                         }
                     }
                 }
+                // The agent took a turn between the check and the start: the event stays pending
+                // and goes into its next turn. Not a failed start, and nobody is told to retry.
+                Err(DaemonError::LocalTransport { message, .. })
+                    if message == crate::runtime::prompt_state::TARGET_BUSY_MESSAGE =>
+                {
+                    self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
+                }
                 Err(e) => {
                     if let DaemonError::VaultUnlock {
-                        code: "vault_unlock_declined" | "vault_unlock_timed_out",
+                        code: "vault_unlock_declined",
                         retryable: false,
                         ..
                     } = &e
@@ -422,8 +453,10 @@ impl KernelRuntimeState {
                     }
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    self.owned
-                        .settle_failed_delegate_start(room, agent, &e.to_string())?;
+                    if !crate::error::is_agent_deadline_refusal(&e) {
+                        self.owned
+                            .settle_failed_delegate_start(room, agent, &e.to_string())?;
+                    }
                     self.publish_task_change(room);
                     return Err(e);
                 }
@@ -431,6 +464,47 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    fn inbox_row_is_pending(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<bool, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .agent_work_inbox(room, agent, sequence.saturating_sub(1), None)?
+            .into_iter()
+            .find(|row| row.sequence == sequence)
+            .is_some_and(|row| row.state == "pending"))
+    }
+
+    /// A steer whose target turn ended before the native write took nothing: its row is
+    /// pending again and goes to the agent's next turn, started now if the agent is idle.
+    fn deliver_skipped_steer_again(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        dispatch: &crate::app::KernelPromptDispatch,
+        error: Option<&str>,
+    ) {
+        crate::logging::warn_with_fields(
+            "runtime.agent_inbox",
+            "inbox steer skipped before native write; event is pending and delivered again",
+            serde_json::json!({
+                "session_id": room,
+                "agent_id": agent,
+                "sequence": sequence,
+                "dispatch_prompt_id": dispatch.prompt_id,
+                "target_active_prompt_id": dispatch.target_active_prompt_id,
+                "provider_run_id": dispatch.provider_run_id,
+                "error": error.map(crate::secret_redaction::redact_secrets),
+            }),
+        );
+        self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
+    }
+
     /// The caller holds the dispatch's run lane.
     async fn dispatch_agent_event_prompt(
         &self,
@@ -578,6 +652,82 @@ impl KernelRuntimeState {
             return WakeDisposition::Retire;
         }
         WakeDisposition::Deliver
+    }
+    /// What the sender is told when message `sequence` waits for the owner's next prompt to
+    /// `agent`, which the owner stopped: no turn is coming, so it must not wait for an answer.
+    pub(super) fn held_for_stopped_agent_note(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<Option<String>, DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
+        let store = &self.owned.durable_state_store;
+        let waits = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .is_none()
+            && store
+                .agent_tasks(Some(room), Some(agent))?
+                .last()
+                .is_some_and(|task| task.stopped_by_owner())
+            && store
+                .agent_work_inbox(room, agent, 0, None)?
+                .iter()
+                .any(|event| event.sequence == sequence && event.state == "pending");
+        Ok(waits.then(|| {
+            let name = self.agent_notice_name(agent);
+            format!(
+                "{name} was stopped by its owner and runs nothing until the owner's next prompt to it; this message is held until then. Do not wait for an answer."
+            )
+        }))
+    }
+    /// The urgent row that starts a turn while the front is a wake held for its blocked task's
+    /// Resume: the held wake keeps its answer for the owner, and an urgent message, or an urgent
+    /// wake of other work, does not wait for that answer. A sudo-bound window keeps its fence.
+    fn urgent_past_held_wake(
+        &self,
+        room: &str,
+        agent: &str,
+        held: &ledger::InboxEvent,
+        tasks: &[ledger::AgentTaskExecution],
+        work: Option<&str>,
+    ) -> Result<Option<ledger::InboxEvent>, DaemonError> {
+        if work.is_some() {
+            return Ok(None);
+        }
+        let Some(urgent) = self
+            .owned
+            .durable_state_store
+            .agent_urgent_delivery_front(room, agent)?
+            .filter(|urgent| {
+                urgent.state == "pending"
+                    && (urgent.kind == "message"
+                        || matches!(
+                            self.wake_disposition(urgent, tasks),
+                            WakeDisposition::Deliver
+                        ))
+            })
+        else {
+            return Ok(None);
+        };
+        crate::logging::info_with_fields(
+            "runtime.agent_inbox",
+            "urgent inbox event passes a wake held for its blocked task's Resume",
+            serde_json::json!({
+                "session_id": room,
+                "agent_id": agent,
+                "sequence": urgent.sequence,
+                "held_sequence": held.sequence,
+                "held_task_ids": tasks
+                    .iter()
+                    .filter(|t| t.state == ExecutionState::Blocked && names_task(held, &t.task_id))
+                    .map(|t| t.task_id.as_str())
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        Ok(Some(urgent))
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.

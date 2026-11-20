@@ -19,7 +19,7 @@ pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::LocalTransport { operation: "runtime interaction", message }
-            if message == INTERACTION_ALREADY_PENDING || message == KERNEL_DECISION_LIMIT
+            if message == INTERACTION_ALREADY_PENDING || message.starts_with(KERNEL_DECISION_LIMIT)
     )
 }
 
@@ -476,12 +476,12 @@ impl KernelRuntimeOwnedState {
             let target = session
                 .as_ref()
                 .ok_or_else(|| interaction_error("owner-only kernel decision"))?;
-            self.authorize_owner_card(&source, &caller, target, &pending, &interaction)?;
+            self.authorize_owner_card(&sessions, &source, &caller, target, &pending, &interaction)?;
         }
         // The authority limit is rechecked here, under the interaction lock: an answer from an
         // agent that no longer holds the decision by its current authority is refused.
-        if let (Some(agent), Some(session)) = (as_holder, session.as_ref()) {
-            if !self.holder_may_answer(session, &pending, &interaction, agent) {
+        if let Some(agent) = as_holder.filter(|_| session.is_some()) {
+            if !self.holder_may_answer(&sessions, &pending, &interaction, agent) {
                 return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
             }
         }
@@ -538,15 +538,10 @@ impl KernelRuntimeOwnedState {
                 "approving this critical action needs your Chariox passkey",
             ));
         }
-        if !terminal_answer
-            && choice_id == "allow_browser"
-            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
+        if super::owner_context_review::is_owner_context_review(&interaction)
+            && !terminal_answer
+            && !self.answers_for_person(answerer)
         {
-            return Err(interaction_error(
-                "Allow browser access from your Chariox terminal",
-            ));
-        }
-        if super::owner_context_review::is_owner_context_review(&interaction) && !terminal_answer {
             return Err(interaction_error(
                 "Only the owner's Chariox terminal can answer this review",
             ));
@@ -743,7 +738,7 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| interaction_error("interaction is no longer pending"))?
         };
         if !holds_card {
-            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
+            self.withdraw_settled_child_decision(interaction_id, &pending);
         }
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
@@ -996,7 +991,7 @@ impl KernelRuntimeOwnedState {
         }
         let consume = || {
             self.pending_interactions.write().remove(interaction_id);
-            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
+            self.withdraw_settled_child_decision(interaction_id, &pending);
             if pending.passkey_prompt.is_some() {
                 let reason = if pending
                     .kernel_operation_deadline

@@ -123,6 +123,28 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    /// End the original command history before the provider gets its continuation.
+    pub(super) fn end_foreground_provider_tools_left_by_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let mut interrupted = false;
+        if let Some(run) = prompt.durable_delivery_provider_run_id() {
+            let rows = crate::app::interrupted_foreground_provider_tool_rows(
+                self.operational_history_store
+                    .load_provider_tool_entries_for_prompt(session_id, run, prompt.id())?,
+            );
+            interrupted = !rows.is_empty();
+            self.append_ended_provider_tool_rows(session_id, run, agent_id, rows);
+        }
+        Ok(interrupted
+            || self
+                .operational_history_store
+                .foreground_command_interrupted_by_restart(session_id, agent_id, prompt.id())?)
+    }
+
     /// Ends the background commands of a run whose provider process is gone
     /// (see `crate::app::ended_background_provider_tool_rows`).
     pub(super) fn end_background_provider_tools(
@@ -1218,6 +1240,7 @@ impl KernelRuntimeOwnedState {
         workflow_run_id: Option<&str>,
         workflow_node_run_id: Option<&str>,
         timestamp_ms: Option<u64>,
+        prompt_author: Option<&str>,
     ) -> Result<(), DaemonError> {
         // Take the session snapshot before the transcript mutex for the same
         // lock-order reason as provider-output history appends below.
@@ -1230,12 +1253,53 @@ impl KernelRuntimeOwnedState {
             attachments,
         )
         .with_prompt_origin(prompt_origin);
+        entry.prompt_author = prompt_author.map(str::to_string);
         if let Some(timestamp_ms) = timestamp_ms {
             entry.timestamp_ms = timestamp_ms;
         }
-        if let Some(prompt_id) = prompt_id {
-            entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
-        }
+        entry.merge_key = prompt_id.map(user_prompt_history_merge_key);
+        self.append_prompt_boundary_history(
+            entry,
+            prompt_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        Ok(())
+    }
+
+    /// A provider's own turn resumes `prompt_id`, a prompt held for its background calls: its
+    /// boundary marks where the prompt's answer continues.
+    pub(super) fn append_resumed_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        prompt_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let _ = self.session_snapshot_without_projection_update(session_id)?;
+        let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            prompt.to_string(),
+            &[],
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::Notification);
+        entry.timestamp_ms = timestamp_ms;
+        entry.merge_key = Some(crate::history::resumed_prompt_merge_key(prompt_id));
+        self.append_prompt_boundary_history(entry, Some(prompt_id), None, None);
+        Ok(())
+    }
+
+    fn append_prompt_boundary_history(
+        &self,
+        entry: crate::history::SessionHistoryEntry,
+        prompt_id: Option<&str>,
+        workflow_run_id: Option<&str>,
+        workflow_node_run_id: Option<&str>,
+    ) {
         let context = self.operational_history_context(
             &entry,
             prompt_id,
@@ -1244,7 +1308,6 @@ impl KernelRuntimeOwnedState {
         );
         let _append_guard = self.transcript_history_append_guard();
         let _ = self.append_operational_history_entry_unlocked(&entry, context);
-        Ok(())
     }
 
     pub(super) fn record_started_user_prompt(
@@ -1301,6 +1364,7 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt_sent_at_ms),
+            prompt.prompt_author(),
         )
     }
 

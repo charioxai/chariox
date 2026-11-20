@@ -47,11 +47,11 @@ impl AgentStore {
             .filter(|agent_id| {
                 self.agents
                     .get(*agent_id)
-                    .is_some_and(|agent| !agent.archived() && !agent.is_sub_agent())
+                    .is_some_and(|agent| !agent.archived() && agent.is_room_agent())
             })
             .cloned()
             .collect::<Vec<_>>();
-        let room_agents = agents.iter().filter(|agent| !agent.is_sub_agent()).count();
+        let room_agents = agents.iter().filter(|agent| agent.is_room_agent()).count();
         let positions = calculate_agent_layout(existing_agent_ids.len() + room_agents);
 
         for (index, agent_id) in existing_agent_ids.iter().enumerate() {
@@ -78,7 +78,7 @@ impl AgentStore {
         let mut stored_agents = Vec::with_capacity(agents.len());
         for mut agent in agents.drain(..) {
             debug_assert_eq!(agent.session_id(), session_id);
-            if !agent.is_sub_agent() {
+            if agent.is_room_agent() {
                 if let Some(position) = positions.get(next_cell) {
                     agent.set_position(position.clone());
                 }
@@ -200,7 +200,7 @@ impl AgentStore {
         self.session_agent_ids(session_id).map_or(0, |ids| {
             ids.iter()
                 .filter_map(|id| self.agents.get(id))
-                .filter(|agent| !agent.is_sub_agent())
+                .filter(|agent| agent.is_room_agent())
                 .count()
         })
     }
@@ -212,7 +212,7 @@ impl AgentStore {
         };
         for agent_id in agent_ids {
             if let Some(agent) = self.agents.get(agent_id) {
-                if !agent.archived() && !agent.is_sub_agent() {
+                if !agent.archived() && agent.is_room_agent() {
                     summary.count += 1;
                 }
                 if let Some(alias) = agent.alias() {

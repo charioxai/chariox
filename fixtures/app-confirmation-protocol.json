@@ -7,7 +7,7 @@
     "kind": "choice",
     "level": "warning",
     "title": "Confirm pay",
-    "message": "Campaign by Chariox asks you to confirm pay.\nInput: {\"amount\":1200}",
+    "message": "Campaign by Chariox asks you to confirm pay.\nInput:\n{\n  \"amount\": 1200\n}",
     "choices": [
       { "id": "confirm", "label": "Confirm", "reply": "confirm", "style": "primary" },
       { "id": "cancel", "label": "Cancel", "reply": "cancel", "style": "danger" }
@@ -21,7 +21,8 @@
       "app_name": "Campaign",
       "publisher_id": "com.chariox",
       "publisher_name": "Chariox",
-      "action_name": "pay"
+      "action_name": "pay",
+      "input": "{\n  \"amount\": 1200\n}"
     }
   },
   "action": {

@@ -1,0 +1,100 @@
+{
+  "local": 1015,
+  "relayPeer": 452,
+  "responses": [
+    {
+      "ProviderCatalog": {
+        "catalog": {
+          "all": [
+            {
+              "id": "claude-p",
+              "name": "Claude -p",
+              "remote_machine_aliases": [],
+              "models": {
+                "claude-haiku-5-5": {
+                  "id": "claude-haiku-5-5",
+                  "name": "Haiku 5.5",
+                  "status": "available",
+                  "limit": null,
+                  "variants": {
+                    "low": {
+                      "name": "Low"
+                    }
+                  },
+                  "aliases": [
+                    "haiku"
+                  ]
+                },
+                "claude-sonnet-5-5": {
+                  "id": "claude-sonnet-5-5",
+                  "name": "Sonnet 5.5",
+                  "status": "available",
+                  "limit": null,
+                  "variants": {
+                    "low": {
+                      "name": "Low"
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "default": {
+            "claude-p": "claude-sonnet-5-5"
+          },
+          "connected": [
+            "claude-p"
+          ]
+        }
+      }
+    }
+  ],
+  "events": [
+    {
+      "event": "provider_catalog_changed",
+      "generated_at_ms": 1,
+      "catalog": {
+        "all": [
+          {
+            "id": "claude-p",
+            "name": "Claude -p",
+            "remote_machine_aliases": [],
+            "models": {
+              "claude-haiku-5-5": {
+                "id": "claude-haiku-5-5",
+                "name": "Haiku 5.5",
+                "status": "available",
+                "limit": null,
+                "variants": {
+                  "low": {
+                    "name": "Low"
+                  }
+                },
+                "aliases": [
+                  "haiku"
+                ]
+              },
+              "claude-sonnet-5-5": {
+                "id": "claude-sonnet-5-5",
+                "name": "Sonnet 5.5",
+                "status": "available",
+                "limit": null,
+                "variants": {
+                  "low": {
+                    "name": "Low"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "default": {
+          "claude-p": "claude-sonnet-5-5"
+        },
+        "connected": [
+          "claude-p"
+        ]
+      }
+    }
+  ]
+}

@@ -73,6 +73,7 @@ fn registration(
         accepting_remote_leases: false,
         leased_agent_count: 0,
         local_session_count: 0,
+        local_protocol: None,
     }
 }
 
@@ -189,6 +190,7 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
     config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
     config.cloud_relay = Some(test_cloud_profile(cloud_url, machine_id.clone()));
     let owner_public_key = config.relay_public_key.clone();
+    let owner_private_key = config.relay_private_key.clone();
     let app = DaemonApp::bootstrap(config).unwrap();
     let state = app.relay_client_state();
     let router = Arc::new(CommandRouter::with_interactive_capacity(
@@ -259,25 +261,28 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
             .await
             .unwrap();
     });
-    let (mut owner, _) = connect_async(&url).await.unwrap();
-    let (mut worker, _) = connect_async(&url).await.unwrap();
+    let (mut owner, owner_handshake) = connect_async(&url).await.unwrap();
+    let (mut worker, worker_handshake) = connect_async(&url).await.unwrap();
     send(
         &mut owner,
-        RelayEnvelope::DaemonRegister {
-            registration: registration(&owner_id, &machine_id, &owner_public_key, None),
-        },
+        crate::transport::relay_socket_connect::daemon_register(
+            &url,
+            &owner_handshake,
+            registration(&owner_id, &machine_id, &owner_public_key, None),
+            &owner_private_key,
+        )
+        .unwrap(),
     )
     .await;
     send(
         &mut worker,
-        RelayEnvelope::DaemonRegister {
-            registration: registration(
-                &worker_id,
-                &machine_id,
-                &worker_public_key,
-                Some(&owner_id),
-            ),
-        },
+        crate::transport::relay_socket_connect::daemon_register(
+            &url,
+            &worker_handshake,
+            registration(&worker_id, &machine_id, &worker_public_key, Some(&owner_id)),
+            &worker_private_key,
+        )
+        .unwrap(),
     )
     .await;
     timeout(Duration::from_secs(5), async {

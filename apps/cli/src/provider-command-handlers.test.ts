@@ -94,6 +94,7 @@ test("provider account list explains unavailable usage and exhausted limits", as
         availability: "unavailable",
         meters: [],
         source: "opencode.local_stats",
+        management_url: "https://opencode.ai/console/go",
       },
       materializations: [],
     }],
@@ -105,6 +106,7 @@ test("provider account list explains unavailable usage and exhausted limits", as
   assert.match(notices.join("\n"), /not reported \(OpenCode exposes local stats, not upstream balance\)/)
   assert.match(notices.join("\n"), /OpenCode Zen authenticated \(api key\/prepaid\)/)
   assert.match(notices.join("\n"), /OpenCode Go authenticated \(api key\/subscription\)/)
+  assert.ok(notices.join("\n").includes("https://opencode.ai/console/go"))
   assert.match(notices.join("\n"), /OpenAI authenticated \(oauth\)/)
   assert.doesNotMatch(notices.join("\n"), /secondary|owner@example.com/)
 })

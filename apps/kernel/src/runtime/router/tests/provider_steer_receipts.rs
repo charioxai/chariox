@@ -145,7 +145,6 @@ async fn a_leased_steer_the_provider_rejects_is_not_recorded_as_accepted() {
                 prompt_summary: "remote active prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -167,7 +166,6 @@ async fn a_leased_steer_the_provider_rejects_is_not_recorded_as_accepted() {
             "REJECTED_LEASED_STEER",
             "",
             Vec::new(),
-            None,
         )
         .await;
 

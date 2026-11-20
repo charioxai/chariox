@@ -1,0 +1,12 @@
+{
+  "local": 1015,
+  "requests": [
+    { "SubscribeEvents": { "targets": [], "like": "access-0123456789abcdef" } },
+    { "SubscribeEvents": { "targets": [{ "kernel": "kernel-1", "session_id": "room-1" }] } },
+    { "WaitEvents": { "timeout_ms": 540000, "limit": 1000 } }
+  ],
+  "responses": [
+    { "KernelAccessStatus": { "status": { "state": "granted", "holder_pid": 42, "holder_executable": "/usr/bin/claude", "grant": { "grant_id": "access-0123456789abcdef", "owner_user_id": "local", "holder_pid": 42, "holder_executable": "/usr/bin/claude", "term": "until_holder_exits" }, "follows": 0 } } },
+    { "EventSubscription": { "subscription": { "subscription_id": "access-0123456789abcdef", "targets": [], "kernels": [], "acknowledged_cursor": 0, "ended": null } } }
+  ]
+}

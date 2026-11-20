@@ -1,0 +1,30 @@
+{
+  "local": 1015,
+  "run_jobs": [
+    {
+      "command": [
+        "cargo",
+        "build"
+      ],
+      "cwd": null,
+      "env": [],
+      "needs": {},
+      "timeout_s": 3600,
+      "wait_s": 0,
+      "outputs": [],
+      "machine": "allocation"
+    },
+    {
+      "command": [
+        "cargo",
+        "build"
+      ],
+      "cwd": null,
+      "env": [],
+      "needs": {},
+      "timeout_s": 3600,
+      "wait_s": 0,
+      "outputs": []
+    }
+  ]
+}

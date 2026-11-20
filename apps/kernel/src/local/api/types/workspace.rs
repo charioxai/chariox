@@ -37,20 +37,6 @@ pub struct DeleteWorkspaceWorktreeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateWorkspacePullRequestRequest {
-    pub workspace_id: String,
-    pub worktree_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "crate::session::is_false")]
-    pub draft: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetWorkspaceGitOverviewRequest {
     pub workspace_id: String,
     pub worktree_id: String,
@@ -98,21 +84,12 @@ pub struct CommitWorkspaceChangesRequest {
     pub workspace_id: String,
     pub worktree_id: String,
     pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PushWorkspaceBranchRequest {
-    pub workspace_id: String,
-    pub worktree_id: String,
-    #[serde(default)]
-    pub force_with_lease: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommitAndPushWorkspaceChangesRequest {
-    pub workspace_id: String,
-    pub worktree_id: String,
-    pub message: String,
+    /// Exactly the changed files the commit holds, relative to the worktree.
+    pub files: Vec<String>,
+    /// A feature branch to commit on; none keeps the current one, or makes
+    /// `chariox/<slug>` when the worktree is on the default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,19 +204,6 @@ pub struct WorkspaceWorktreeRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub current: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspacePullRequestRecord {
-    pub workspace_id: String,
-    pub worktree_id: String,
-    pub branch: String,
-    pub base_ref: String,
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub draft: bool,
-    pub generated_at_ms: u64,
 }
 
 /// MP-02 / MP-08: metadata travels in the same response as directory choices.

@@ -93,7 +93,8 @@ async fn assert_placed_project_environment(remote: bool) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::CharioxEncrypted;
-    config.user_config.credential_vault.path = root.path().join("vault.json").display().to_string();
+    config.user_config.credential_vault.path =
+        root.path().join("vault/vault.json").display().to_string();
     crate::secret::unlock_chariox_encrypted_vault(
         std::path::Path::new(&config.user_config.credential_vault.path),
         "fixture-pass",
@@ -389,7 +390,7 @@ async fn environment_tools_use_the_authenticated_agent_checkout() {
         "check must inspect the agent files"
     );
     runtime.owned.notification_inventory_projection.update(
-        vec![],
+        Default::default(),
         vec![chariox_relay::protocol::RelayKernelPresence {
             kernel_id: "source-kernel".into(),
             machine_id: "source-machine".into(),
@@ -403,6 +404,7 @@ async fn environment_tools_use_the_authenticated_agent_checkout() {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "00".repeat(32),
+            local_protocol: None,
         }],
     );
     let update = runtime

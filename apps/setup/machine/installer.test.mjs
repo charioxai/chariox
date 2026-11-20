@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 import { createFixture } from "./fixture.mjs"
-import { runMachine, validateRequest, ensureSystemdUserPersistence } from "./remote.mjs"
+import { runMachine, validateRequest, ensureSystemdUserPersistence, ensureBubblewrap } from "./remote.mjs"
 
 const base = process.env.CHARIOX_BYOM_TEST_STATE ?? join(tmpdir(), "chariox-byom-tests")
 await mkdir(base, { recursive: true, mode: 0o700 })
@@ -17,7 +17,7 @@ async function harness(t, kernelBytes) {
   for (const [name, p] of [["release.tar.gz", f.archive], ["release-public-pin", f.releasePublicKey], ["builder-public-pin", f.builderPublicKey]]) await copyFile(p, join(stage, name))
   for (const [name, p] of [["extract-release.py", "../../../deploy/runtime-release/extract-release.py"], ["verify-rootfs.mjs", "../../../deploy/runtime-release/verify-rootfs.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
-  const options = { home, stage, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
+  const options = { home, stage, servicePersistence: async () => {}, agentConfinement: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   const root = join(home, ".local/share/chariox/machines/byom-test")
   return { dir, home, stage, f, calls, request, options, root }
 }
@@ -58,6 +58,30 @@ test("MP-07/MP-11 user persistence uses logind's owner operation and verifies it
     }, 1001), /sudo loginctl enable-linger 1001, then retry Setup\. No enrollment code was consumed/)
   }
   await assert.rejects(ensureSystemdUserPersistence(undefined, -1), /cannot identify/)
+})
+test("Setup adds Bubblewrap as root and names the administrator command otherwise", async () => {
+  const host = installed => {
+    const calls = []
+    const invoke = async (program, args) => {
+      calls.push([program, ...args].join(" "))
+      if (program === "bwrap" && !installed) throw Error("missing")
+      if (program === "apt-get" && args[0] === "install") installed = true
+      if (program === "dnf") throw Error("missing")
+    }
+    return { calls, invoke }
+  }
+  const ready = host(true)
+  await ensureBubblewrap(ready.invoke, 1001)
+  assert.deepEqual(ready.calls, ["bwrap --dev-bind / / -- /bin/true"])
+  const root = host(false)
+  await ensureBubblewrap(root.invoke, 0)
+  assert.ok(root.calls.includes("apt-get install -y --no-install-recommends bubblewrap"), root.calls.join("\n"))
+  assert.equal(root.calls.at(-1), "bwrap --dev-bind / / -- /bin/true")
+  const user = host(false)
+  await assert.rejects(ensureBubblewrap(user.invoke, 1001), /sudo apt-get install -y bubblewrap .*No enrollment code was consumed/)
+  assert.ok(!user.calls.some(call => call.startsWith("apt-get") || call.startsWith("dnf")))
+  await assert.rejects(ensureBubblewrap(async () => { throw Error("refused") }, 0), /could not install it with apt-get or dnf/)
+  await assert.rejects(ensureBubblewrap(async (_program, args) => { if (args[0] !== "--version") throw Error("no namespace") }, 1001), /allow unprivileged user namespaces/)
 })
 test("MP-07 invalid roots/IDs/digests/default port are refused before target work", () => {
   const r = { action: "install", installId: "byom-test", port: 55129, releaseDigest: `sha256:${"a".repeat(64)}` }

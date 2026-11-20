@@ -18,6 +18,7 @@
     F(XNextEvent) \
     F(XOpenDisplay) \
     F(XPending) \
+    F(XQueryPointer) \
     F(XQueryTree) \
     F(XSelectInput) \
     F(XSetErrorHandler) \
@@ -105,6 +106,7 @@ static Display *open_display(const char *name) {
 #define XNextEvent (*cx_XNextEvent)
 #define XOpenDisplay open_display
 #define XPending (*cx_XPending)
+#define XQueryPointer (*cx_XQueryPointer)
 #define XQueryTree (*cx_XQueryTree)
 #define XSelectInput (*cx_XSelectInput)
 #define XSetErrorHandler (*cx_XSetErrorHandler)

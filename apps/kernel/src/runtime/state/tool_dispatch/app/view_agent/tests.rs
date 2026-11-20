@@ -745,7 +745,6 @@ async fn an_unclaimed_user_view_is_refused_before_any_approval_card() {
     host.claim_resource(
         Some(&admission),
         crate::local::UserDomainResource::AppView { view_id },
-        false,
     )
     .unwrap();
     let invoke = rig

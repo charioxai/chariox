@@ -99,7 +99,7 @@ fn test_config(root: &std::path::Path, services: &Services) -> crate::config::Da
     config.user_config_path = root.join("state/config.toml");
     config = config.with_session_history_root(root.join("session-history"));
     config.user_config.history.operational.path =
-        Some(root.join("operational.db").display().to_string());
+        Some(root.join("state/operational.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =

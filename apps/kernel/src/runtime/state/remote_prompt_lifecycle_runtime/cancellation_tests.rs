@@ -269,7 +269,7 @@ async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: S
         .await
         .expect("relay should accept worker metadata lookup before timeout")
         .expect("relay metadata listener should accept");
-    let mut socket = accept_async(stream)
+    let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
         .await
         .expect("relay should upgrade worker metadata lookup");
     let RelayEnvelope::ClientMetadataRequest {
@@ -302,6 +302,7 @@ async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: S
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: worker_public_key,
+                local_protocol: None,
             }),
             error: None,
         },
@@ -560,7 +561,7 @@ async fn cancel_response_wait_keeps_home_app_lock_available(cancel_parent: Optio
             .accept()
             .await
             .expect("temporary relay should accept peer connection");
-        let mut peer = accept_async(stream)
+        let mut peer = crate::transport::relay_socket_connect::accept_as_relay(stream)
             .await
             .expect("temporary relay should upgrade peer connection");
         assert!(matches!(

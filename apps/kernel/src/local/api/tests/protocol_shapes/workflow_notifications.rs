@@ -37,6 +37,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         name: "reviewer".into(),
         exit_ordinal: 2,
         display_name: "reviewer-2".into(),
+        options: Vec::new(),
     };
     let sub = WorkflowNotificationSubscription {
         subscription_id: "sub".into(),
@@ -103,6 +104,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
                 name: source.name,
                 display_name: source.display_name,
                 available: true,
+                options: Vec::new(),
             }],
             subscriptions: vec![sub.clone(), agent_sub, outside_sub],
             listeners: vec![sub],
@@ -176,6 +178,7 @@ fn agent_notification_trigger_shape_carries_source_availability() {
         "wf_subscription".into(),
         "Release pipeline-2".into(),
         "Triage".into(),
+        crate::session::AgentTriggerBusyPolicy::Queue,
         1_000,
     );
     assert!(trigger.set_notification_source_available(false));

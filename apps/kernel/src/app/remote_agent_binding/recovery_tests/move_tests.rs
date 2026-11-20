@@ -310,7 +310,7 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     // Reopen both roles at every home boundary: target on Move, source on Return.
     reboot_worker(&mut fixture).await;
     let operation = move_journal(&fixture, &session).await;
@@ -554,7 +554,7 @@ async fn crash_role_boundary(phase: &'static str, forward: bool, worker: bool) {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     move_request(&fixture, &session, forward).await;
     let operation = move_journal(&fixture, &session).await;
     assert_eq!(operation["phase"]["phase"], "complete", "{phase}");
@@ -773,7 +773,7 @@ async fn rollback_crash_boundary(phase: &'static str) {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     let router =
         crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -868,7 +868,7 @@ async fn captured_peer_failure_keeps_operation(phase: &'static str) {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     let router =
         crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -1741,7 +1741,7 @@ async fn mk03_abort_recovers_after_source_release_before_terminal_write() {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToRemote":{"session_id":session,"agent_ref":fixture.agent_id,"machine_ref":fixture.presences[0].machine_id}})).await.unwrap_err();
     assert!(
         error.to_string().contains("cancelled"),
@@ -1960,7 +1960,7 @@ async fn mk04_changed_grants_invalidate_prepared_move_after_restart() {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     fixture
         .home
         .lock()
@@ -2118,7 +2118,13 @@ async fn mk04_capability_preparation_cannot_mutate_another_lease() {
     };
     worker
         .agents()
-        .grant_skill(&unrelated.backing_agent_id, "keep-unrelated-grant".into())
+        .grant_extension(
+            &unrelated.backing_agent_id,
+            crate::extension::ExtensionGrant::new(
+                crate::extension::ExtensionKind::Mcp,
+                "keep-unrelated-grant",
+            ),
+        )
         .unwrap();
     let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
         .prepare_agent_move_capabilities(identity, &unrelated.id, &requirements)
@@ -2129,7 +2135,10 @@ async fn mk04_capability_preparation_cannot_mutate_another_lease() {
             .agents()
             .get_agent(&unrelated.backing_agent_id)
             .unwrap()
-            .skill_grants(),
+            .extension_grants()
+            .iter()
+            .map(|grant| grant.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["keep-unrelated-grant"]
     );
 }
@@ -2190,7 +2199,7 @@ async fn mk04_home_package_hash_change_invalidates_preparation_after_restart() {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     package.transport =
         crate::mcp::CharioxMcpServerConfig::stdio("mk04-hash", "/bin/echo", vec!["changed".into()])
             .transport;
@@ -2307,7 +2316,7 @@ async fn committed_grant_recovery(already_activated: bool) {
     {
         let home = fixture.home.lock().await;
         home.remote_relay_inventory_projection_store()
-            .update(Vec::new(), fixture.presences.clone());
+            .update(Default::default(), fixture.presences.clone());
         home.agents()
             .revoke_mcp(&fixture.agent_id, "mk04-revoked")
             .unwrap();
@@ -2396,7 +2405,7 @@ async fn mk04_corrupt_captured_archive_rejects_before_target_activation() {
         .lock()
         .await
         .remote_relay_inventory_projection_store()
-        .update(Vec::new(), fixture.presences.clone());
+        .update(Default::default(), fixture.presences.clone());
     let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
         crate::local::MoveAgentToRemoteRequest {
             session_id: session.clone(),

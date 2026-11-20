@@ -323,9 +323,9 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
     std::fs::remove_dir_all(history_root).unwrap();
 }
 
-/// What a steer asked for is answered like a message: the steerer hears the peer's reply.
+/// A steer joins an existing turn, so that turn's answer cannot answer the request.
 #[tokio::test]
-async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
+async fn a_steered_request_gets_a_correlated_no_answer_outcome() {
     let team = family("peer-steer-reply", 2, None, true).await;
     let (steerer, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
     let store = &team.runtime.owned.durable_state_store;
@@ -385,14 +385,14 @@ async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
     let heard = inbox(&team, &steerer);
     let reply = heard
         .iter()
-        .find(|event| event.kind == "source_completed")
-        .unwrap_or_else(|| panic!("the steerer hears the reply: {heard:?}"));
+        .find(|event| event.kind == "source_lost")
+        .unwrap_or_else(|| panic!("the steerer hears why there is no reply: {heard:?}"));
     assert_eq!(
         reply.source_id,
         format!("agent-event-{peer}-{}", sent.sequence)
     );
     assert_eq!(reply.payload["public_answer"]["agent_id"], peer.as_str());
-    assert!(reply.payload["public_answer"]["excerpt"].is_string());
+    assert_eq!(reply.payload["public_answer"]["kind"], "no_answer");
 }
 
 #[tokio::test]
@@ -546,7 +546,7 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .active_prompt_for_agent(&session, &follower)
         .expect("the wake starts one turn");
     assert!(
-        prompt.prompt().contains("3 peer event") && prompt.prompt().chars().count() <= 240,
+        prompt.prompt().contains("3 new events"),
         "{}",
         prompt.prompt()
     );
@@ -554,18 +554,13 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .agent_events_for_prompt(&team.room, &follower, prompt.id())
         .unwrap();
     assert_eq!(batch.len(), 3, "three events, one prompt id");
-    let read = team
-        .runtime
-        .read_agent_inbox(&team.room, &follower, &serde_json::json!({}))
-        .unwrap();
-    let sources: Vec<&str> = read["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|event| event["source"]["id"].as_str().unwrap())
-        .collect();
+    // The one wake carries every peer's event, so nothing is left to read.
     for peer in &peers {
-        assert!(sources.contains(&peer.as_str()), "{sources:?}");
+        assert!(
+            prompt.prompt().contains(peer.as_str()),
+            "{}",
+            prompt.prompt()
+        );
     }
 }
 

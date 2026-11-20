@@ -66,12 +66,31 @@ entries and native Open/Save shortcuts call the broker functions directly. Dropp
 also request a kernel file grant.
 Opening a diagram keeps the previous canvas in native Undo history. Use Undo
 before closing or reloading the view to restore it; the restored scene auto-saves.
+The elements it replaces are saved as deleted, so another window that shows the old
+diagram removes them and shows only the opened one.
 
 The current scene auto-saves after 300 ms without an edit, with an optimistic
 state version check. The window asks the change feed once a second; when an agent
 (or another window) saved meanwhile it merges the saved scene into its canvas with
 Excalidraw's reconciliation and saves what is still its own, so neither side's edit is
-lost. An agent's selection is shown once. Explicit private files use `files.atomic_replace`; imports
+lost. An agent's selection is shown once. The window's page keeps nothing when the App
+updates or the connection returns and the view is replaced, so a scene it has not saved yet
+(waiting for the timer or for the answer to a save) is also kept in the App, in
+`data/drafts/<window id>.json`: one draft per window (the App holds one document), holding the
+window's whole scene, every element and every document setting (such as the canvas background),
+replaced atomically on each write (`save_draft`, `list_drafts`, `read_draft`, `retire_draft`,
+`discard_draft`; none older than the hour a deletion is kept). While a save is in flight the draft
+keeps the canvas even when it equals the scene last saved, so a change the person reverts during
+the save comes back too. The new window lists the kept drafts and reads them one at a time, because
+several scenes together can exceed the 512 KiB the catalog allows a reply. It merges them into its
+canvas by this policy: elements by version, so a draft never overwrites an element an agent saved
+meanwhile; document settings, which have no versions, replace the shown ones as the replaced
+window's own save would have (oldest draft first, so the newest draft's settings win). It saves the
+merged scene, and once that save succeeds it retires exactly the revisions it read, so a window that
+is still open and has written since keeps its newer draft. A draft is otherwise removed only by its
+own window (when a save leaves its canvas equal to the saved scene) or once it is an hour old. A
+refused draft write is shown to the person and never stops a save or a recovery. Merging a draft twice is
+harmless, as the newer version of each element wins. Explicit private files use `files.atomic_replace`; imports
 use `host.request_file`, `host.await_file` and `files.import` (one call waits 20 s for the person's choice and returns `{pending, pickId}` while they have not chosen; the window asks again with that `pickId`, and the request ends when the window closes), and exports use `files.export`. Inputs
 are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently

@@ -115,7 +115,11 @@ impl CommandRouter {
                 ok: true,
                 payload: serde_json::json!({"command": command, "response": sent.payload}),
             },
-            Ok(refused) => meta_command_failure_result(command, refused.payload),
+            Ok(mut refused) => {
+                refused.payload["command"] =
+                    super::result::redacted_meta_command_for_payload(command).into();
+                refused
+            }
             Err(error) => meta_command_failure_result(command, error),
         }
     }
@@ -155,7 +159,11 @@ impl CommandRouter {
                 ok: true,
                 payload: serde_json::json!({"command": command, "response": promoted.payload}),
             },
-            Ok(refused) => meta_command_failure_result(command, refused.payload),
+            Ok(mut refused) => {
+                refused.payload["command"] =
+                    super::result::redacted_meta_command_for_payload(command).into();
+                refused
+            }
             Err(error) => meta_command_failure_result(command, error),
         }
     }

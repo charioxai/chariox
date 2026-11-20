@@ -1,6 +1,10 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
 pub(crate) mod gateway_placement;
+#[cfg(unix)]
+mod job_handover;
+#[cfg(unix)]
+mod job_process;
 mod launch;
 mod lease;
 mod place_command;
@@ -29,13 +33,16 @@ use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
+#[cfg(unix)]
+pub(crate) use buffer::JobExecBuffer;
+pub(crate) use buffer::OUTPUT_LOSS_NOTICE;
+#[cfg(unix)]
+pub(crate) use job_handover::{JobExecGuard, JobExecHandover};
 pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
 
 pub const CHUNK_BYTES: usize = 256 * 1024;
-const MAX_PER_ROOM: usize = 16;
-const MAX_PER_KERNEL: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -112,7 +119,7 @@ pub struct ExecOutput {
     pub outcome: Option<ExecOutcome>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum CancelReason {
     Canceled,
     Expired,
@@ -132,8 +139,9 @@ pub(super) struct Record {
     input: Mutex<Input>,
     output: Mutex<buffer::Output>,
     changed: Notify,
-    space: Notify,
     cancel: watch::Sender<Option<CancelReason>>,
+    #[cfg(unix)]
+    transfer: Option<mpsc::Sender<job_process::TransferRequest>>,
 }
 
 impl Record {
@@ -157,6 +165,7 @@ pub struct RoomExecService {
 #[derive(Default)]
 struct Inner {
     records: Mutex<BTreeMap<String, Arc<Record>>>,
+    output_pool: Arc<Mutex<buffer::Pool>>,
     managed: ManagedWork,
     running: AtomicUsize,
     admission: LaunchAdmission,
@@ -280,19 +289,6 @@ impl RoomExecService {
         .map_err(|failure| error("exec_spawn_failed", failure.to_string()))?;
         let admission = self.inner.managed.admission()?;
         let mut records = self.inner.records.lock().expect("exec records poisoned");
-        if records.len() >= MAX_PER_KERNEL
-            || self.inner.running.load(Ordering::Acquire) >= MAX_PER_KERNEL
-            || records
-                .values()
-                .filter(|record| record.intent.session_id == session_id)
-                .count()
-                >= MAX_PER_ROOM
-        {
-            return Err(error(
-                "exec_limit",
-                "use RoomTerminal exec_list to find and exec_close a collected or abandoned command before starting another",
-            ));
-        }
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
@@ -305,6 +301,13 @@ impl RoomExecService {
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         let (force, forced) = watch::channel(false);
         let (place, placed) = watch::channel(None);
+        #[cfg(unix)]
+        let (transfer, requests) = if job {
+            let (tx, rx) = mpsc::channel(1);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let record = Arc::new(Record {
             job,
             minimum_memory,
@@ -336,10 +339,11 @@ impl RoomExecService {
                 offset: 0,
                 last: None,
             }),
-            output: Mutex::new(buffer::Output::default()),
+            output: Mutex::new(buffer::Output::new(self.inner.output_pool.clone())),
             changed: Notify::new(),
-            space: Notify::new(),
             cancel,
+            #[cfg(unix)]
+            transfer,
         });
         records.insert(exec_id.clone(), record.clone());
         self.inner.running.fetch_add(1, Ordering::AcqRel);
@@ -351,6 +355,8 @@ impl RoomExecService {
                 cancel: cancelled,
                 forced,
                 placed,
+                #[cfg(unix)]
+                transfers: requests,
             },
             self.clone(),
             authority,
@@ -397,7 +403,7 @@ impl RoomExecService {
             .ok_or_else(|| {
                 error(
                     "exec_not_found",
-                    "this Room has no such exec (records expire after five minutes without an output read); use exec_list to find current IDs",
+                    "this Room has no such command; its reader lease may have expired",
                 )
             })
     }
@@ -500,7 +506,6 @@ impl RoomExecService {
                 .lock()
                 .expect("exec output poisoned")
                 .page(after_cursor)?;
-            record.space.notify_waiters();
             if !page.chunks.is_empty()
                 || page.outcome.is_some()
                 || tokio::time::Instant::now() >= deadline

@@ -12,6 +12,8 @@ pub(super) struct Signals {
     pub(super) cancel: watch::Receiver<Option<CancelReason>>,
     pub(super) forced: watch::Receiver<bool>,
     pub(super) placed: watch::Receiver<Option<Arc<Placed>>>,
+    #[cfg(unix)]
+    pub(super) transfers: Option<mpsc::Receiver<super::job_process::TransferRequest>>,
 }
 
 pub(super) fn start(
@@ -25,6 +27,8 @@ pub(super) fn start(
         mut cancel,
         mut forced,
         mut placed,
+        #[cfg(unix)]
+        transfers,
     } = signals;
     tokio::spawn(async move {
         loop {
@@ -111,6 +115,13 @@ pub(super) fn start(
                         Ok(Ok((child, permit))) => {
                             *record.state.lock().expect("exec state poisoned") = ExecState::Running;
                             record.changed.notify_waiters();
+                            #[cfg(unix)]
+                            if let Some(transfers) = transfers {
+                                super::job_process::start(
+                                    child, input, cancel, service, record, permit, transfers,
+                                );
+                                return;
+                            }
                             process::run(child, record, input, cancel, service, permit);
                         }
                         failure => {

@@ -3,6 +3,9 @@
 //! restart finds it again on the agent. No agent has to be awake, or on another account, for it.
 
 use super::agent_task_owner_resolution::OwnerTaskAction;
+use super::usage_limit_stop_transitions::{
+    next_resume_at, transition, AfterLimit, LimitHit, StopEvent, StopOrigin,
+};
 use super::workflow_run_help::is_run_step;
 use super::*;
 use crate::agent::{UsageLimitStop, UsageLimitStopState};
@@ -12,31 +15,28 @@ use crate::local::UsageLimitStopAction as UsageLimitAction;
 
 /// Between two resumes the kernel sends, so a team on one account does not reach the provider at once.
 pub(crate) const RESUME_STAGGER_MS: u64 = 20_000;
-/// The provider named a reset time and still refused at it: wait this long after each refusal.
-const RETRY_AFTER_NAMED_RESET_MS: [u64; 3] = [60_000, 300_000, 900_000];
-/// The provider named no time: wait this long after the stop and after each refusal.
-const RETRY_AFTER_UNNAMED_RESET_MS: [u64; 4] = [900_000, 1_800_000, 3_600_000, 7_200_000];
-/// A resume that has not stopped again after this long worked.
-const RESUME_SETTLE_MS: u64 = 30_000;
-
-/// When the kernel resumes next: at the reset time the provider named, otherwise after a wait
-/// that grows with each refusal; `None` once it has tried as often as it will.
-fn next_resume_at(now_ms: u64, named_reset_ms: Option<u64>, refused: u32) -> Option<u64> {
-    match (named_reset_ms, refused) {
-        (Some(reset), 0) => Some(reset.max(now_ms)),
-        (Some(_), refused) => RETRY_AFTER_NAMED_RESET_MS
-            .get(refused as usize - 1)
-            .map(|wait| now_ms + wait),
-        (None, refused) => RETRY_AFTER_UNNAMED_RESET_MS
-            .get(refused as usize)
-            .map(|wait| now_ms + wait),
-    }
-}
 
 pub(super) fn clock(at_ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at_ms as i64)
         .map(|time| time.format("%H:%M UTC").to_string())
         .unwrap_or_default()
+}
+
+/// Why a resume is taken, which decides what the stop may be when the claim is made.
+pub(super) enum ResumeReason<'a> {
+    /// The scheduler found this exact stop armed and due.
+    Due(&'a UsageLimitStop),
+    /// A person chose to go on: whatever the stop says now, unless a resume already took it.
+    Decided,
+}
+
+impl<'a> ResumeReason<'a> {
+    fn claim(&self, now: u64) -> StopEvent<'a> {
+        match self {
+            Self::Due(selected) => StopEvent::ClaimDue { selected, now },
+            Self::Decided => StopEvent::ClaimDecided { now },
+        }
+    }
 }
 
 fn refused(message: impl Into<String>) -> DaemonError {
@@ -46,38 +46,65 @@ fn refused(message: impl Into<String>) -> DaemonError {
     }
 }
 
-/// How a turn that ended on the usage limit goes on.
-pub(super) struct UsageLimitPlan {
-    named_reset: Option<u64>,
-    refusals: u32,
-    stopped_at_ms: u64,
-    state: UsageLimitStopState,
-}
-
-impl UsageLimitPlan {
-    /// The failed turn's line while the kernel resumes it by itself: the time the provider named,
-    /// or `None` when it named none. `None` outside that case, where the person still decides.
-    pub(super) fn resume_line(&self, failure: &crate::provider::TurnOutcome) -> Option<String> {
-        let UsageLimitStopState::Armed { at_ms } = self.state else {
-            return None;
+impl KernelRuntimeOwnedState {
+    /// A delivery acknowledgement identifies the account that actually took the prompt.
+    /// Write the stop's end before completion can make the turn invisible to the scheduler.
+    pub(super) fn settle_usage_limit_on_delivery(
+        &self,
+        agent_id: &str,
+        prompt_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let Some(stop) = agent.usage_limit_stop() else {
+            return Ok(());
         };
-        Some(failure.notice_resuming(self.named_reset.map(|_| clock(at_ms)).as_deref()))
+        let account_label = self.account_label(&agent, run.account_profile());
+        let event = StopEvent::Continued {
+            account_profile: run.account_profile(),
+            account_label: &account_label,
+        };
+        let changed = self.agent_store.change_usage_limit_stop_durably(
+            &self.durable_state_store,
+            agent_id,
+            |held| {
+                let held = held.filter(|held| *held == stop && held.prompt_id != prompt_id)?;
+                transition(Some(held), &event)
+            },
+        )?;
+        if let Some(updated) = changed {
+            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
+            self.close_usage_limit_decision(&updated, stop)?;
+            let _ = self.session_snapshot(agent.session_id());
+        }
+        Ok(())
+    }
+
+    fn notice_usage_limit_stop(&self, agent: &crate::agent::AgentInstance, notice: &str) {
+        if !notice.is_empty() {
+            self.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent.id()),
+                self.attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                notice,
+            );
+        }
     }
 }
 
 impl KernelRuntimeState {
-    /// What the kernel does with a turn that ended on the usage limit: when it resumes it, or that
-    /// it asks. `None` for a turn that did not end on the limit, a step of a workflow run (the run
-    /// owns the step, so no stop continues it outside the run, whether or not a task was kept for
-    /// it), or an agent whose worker owns the stop. The failed turn's line and the stop on the agent
-    /// both read it.
-    pub(super) fn plan_usage_limit_stop(
+    /// How the usage limit reached a turn, or `None` for a turn that did not end on it, a step of a
+    /// workflow run (the run owns the step, so no stop continues it outside the run, whether or not
+    /// a task was kept for it), or an agent whose worker owns the stop.
+    fn usage_limit_hit(
         &self,
         agent: &crate::agent::AgentInstance,
         prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         now: u64,
-    ) -> Option<UsageLimitPlan> {
+    ) -> Option<LimitHit> {
         if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit
             || agent.remote_execution().is_some()
             || agent.archived()
@@ -85,16 +112,6 @@ impl KernelRuntimeState {
         {
             return None;
         }
-        let previous = agent.usage_limit_stop();
-        // A stop while a resume runs is that resume refused.
-        let resumed_before =
-            previous.filter(|stop| matches!(stop.state, UsageLimitStopState::Resuming { .. }));
-        let refusals = resumed_before.map_or(0, |stop| stop.refused + 1);
-        let named_reset = match resumed_before {
-            Some(stop) => stop.resumes_at_ms,
-            None => crate::provider::usage_limit_reset_at_ms(&failure.reason, now)
-                .filter(|at| *at > now),
-        };
         let automatic = self
             .owned
             .config_projection
@@ -104,19 +121,10 @@ impl KernelRuntimeState {
             .usage_limit_resume
             .unwrap_or_default()
             == UsageLimitResume::Automatic;
-        let state = if automatic || resumed_before.is_some() {
-            match next_resume_at(now, named_reset, refusals) {
-                Some(at_ms) => UsageLimitStopState::Armed { at_ms },
-                None => UsageLimitStopState::Asking,
-            }
-        } else {
-            UsageLimitStopState::Asking
-        };
-        Some(UsageLimitPlan {
-            named_reset,
-            refusals,
-            stopped_at_ms: resumed_before.map_or(now, |stop| stop.stopped_at_ms),
-            state,
+        Some(LimitHit {
+            reset_at_ms: crate::provider::usage_limit_reset_at_ms(&failure.reason, now),
+            automatic,
+            now,
         })
     }
 
@@ -128,8 +136,12 @@ impl KernelRuntimeState {
         failure: &crate::provider::TurnOutcome,
     ) -> Option<String> {
         let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
-        self.plan_usage_limit_stop(&agent, prompt, failure, crate::session::unix_epoch_ms())?
-            .resume_line(failure)
+        let hit = self.usage_limit_hit(&agent, prompt, failure, crate::session::unix_epoch_ms())?;
+        let after = AfterLimit::of(agent.usage_limit_stop(), hit);
+        let UsageLimitStopState::Armed { at_ms } = after.state else {
+            return None;
+        };
+        Some(failure.notice_resuming(after.named_reset.map(|_| clock(at_ms)).as_deref()))
     }
 
     /// The turn of `agent_id` ended on the provider's usage limit: records the stop on the agent
@@ -144,49 +156,27 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let agent = owned.agent_store.get_agent(agent_id)?;
-        let now = crate::session::unix_epoch_ms();
-        let Some(plan) = self.plan_usage_limit_stop(&agent, prompt, failure, now) else {
+        let Some(hit) =
+            self.usage_limit_hit(&agent, prompt, failure, crate::session::unix_epoch_ms())
+        else {
             return Ok(());
         };
-        let UsageLimitPlan {
-            named_reset,
-            refusals,
-            stopped_at_ms,
-            state,
-        } = plan;
-        let stop = UsageLimitStop {
+        let origin = StopOrigin {
             // The turn that failed now: a resumed task goes on under a new prompt each time.
             prompt_id: prompt.id().to_string(),
             provider: run.provider().to_string(),
             account_profile: run.account_profile().to_string(),
             account_label: owned.account_label(&agent, run.account_profile()),
-            stopped_at_ms,
-            resumes_at_ms: named_reset,
-            refused: refusals,
-            state,
         };
-        let line = match (&stop.state, refusals) {
-            (UsageLimitStopState::Armed { at_ms }, 0) => format!(
-                "Usage limit reached on {}. The kernel resumes at {}.",
-                stop.account_label,
-                clock(*at_ms)
-            ),
-            (UsageLimitStopState::Armed { at_ms }, _) => format!(
-                "Still limited on {}. The kernel tries again at {}.",
-                stop.account_label,
-                clock(*at_ms)
-            ),
-            (_, 0) => match stop.resumes_at_ms {
-                Some(at_ms) => format!(
-                    "Usage limit reached on {}, back at {}.",
-                    stop.account_label,
-                    clock(at_ms)
-                ),
-                None => format!("Usage limit reached on {}.", stop.account_label),
+        self.apply_stop_event(
+            agent_id,
+            &StopEvent::Hit {
+                origin: &origin,
+                hit,
             },
-            (_, _) => format!("Still limited on {}.", stop.account_label),
-        };
-        self.store_usage_limit_stop(&agent, Some(stop), &line).await
+        )
+        .await?;
+        Ok(())
     }
 
     /// A stop that cannot be recorded leaves the failed turn as it was: the person still sees it.
@@ -205,31 +195,45 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn store_usage_limit_stop(
+    /// The one owner of the stop: `event` moves it when the stop held at this moment accepts it
+    /// (`transition`), checked and written under the agent store's lock, and only then is it told
+    /// to the session and every client. `None` comes back, with nothing written, when the held
+    /// stop does not accept the event, and so does the stop it held before.
+    pub(super) async fn apply_stop_event(
         &self,
-        agent: &crate::agent::AgentInstance,
-        stop: Option<UsageLimitStop>,
+        agent_id: &str,
+        event: &StopEvent<'_>,
+    ) -> Result<Option<AppliedStop>, DaemonError> {
+        let mut before = None;
+        let changed = self.owned.agent_store.change_usage_limit_stop_durably(
+            &self.owned.durable_state_store,
+            agent_id,
+            |held| {
+                let next = transition(held, event);
+                if next.is_some() {
+                    before = held.cloned();
+                }
+                next
+            },
+        )?;
+        let Some(agent) = changed else {
+            return Ok(None);
+        };
+        let notice = event_notice(event, agent.usage_limit_stop());
+        self.announce_usage_limit_stop(&agent, &notice).await?;
+        Ok(Some(AppliedStop { before }))
+    }
+
+    /// Tells the session and every client of a stop that is already written.
+    async fn announce_usage_limit_stop(
+        &self,
+        updated: &crate::agent::AgentInstance,
         notice: &str,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
-        let updated = owned
-            .agent_store
-            .set_agent_usage_limit_stop(agent.id(), stop)?;
-        if !notice.is_empty() {
-            owned.record_notice_for_agent(
-                agent.session_id(),
-                None,
-                Some(agent.id()),
-                owned
-                    .attachment_store
-                    .list_session_attachment_ids(agent.session_id()),
-                notice,
-            );
-        }
-        self.append_agent_durable_event("agent.updated", &updated, None)
-            .await?;
-        let _ = owned.session_snapshot(agent.session_id());
-        self.sync_usage_limit_interaction(&updated).await
+        owned.notice_usage_limit_stop(updated, notice);
+        let _ = owned.session_snapshot(updated.session_id());
+        self.sync_usage_limit_interaction(updated).await
     }
 
     /// The one-second scheduler: resumes every agent whose armed time has come, one per stagger.
@@ -258,8 +262,11 @@ impl KernelRuntimeState {
             }
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
-                    if self.claim_resume(&agent, &stop, now, true).await? {
-                        sends.push(self.spawn_resume(agent, stop));
+                    if let Some(taken) = self
+                        .claim_resume(&agent, now, ResumeReason::Due(&stop))
+                        .await?
+                    {
+                        sends.push(self.spawn_resume(agent, taken, now));
                     }
                 }
                 UsageLimitStopState::Resuming {
@@ -275,23 +282,31 @@ impl KernelRuntimeState {
                             .last_prompt_sent_at_ms()
                             .is_some_and(|started_ms| started_ms >= since_ms);
                     if admitted {
-                        self.mark_resume_sent(&agent).await;
+                        self.mark_resume_sent(&agent, since_ms).await;
                     } else {
-                        let due = UsageLimitStop {
-                            state: UsageLimitStopState::Armed { at_ms: now },
-                            ..stop
-                        };
-                        self.store_usage_limit_stop(&agent, Some(due), "").await?;
+                        self.apply_stop_event(
+                            agent.id(),
+                            &StopEvent::Lost {
+                                selected: &stop,
+                                now,
+                            },
+                        )
+                        .await?;
                     }
                 }
-                UsageLimitStopState::Resuming {
-                    since_ms,
-                    sent: true,
-                } if now.saturating_sub(since_ms) > RESUME_SETTLE_MS
-                    && !self.agent_has_turn(&agent) =>
+                UsageLimitStopState::Resuming { sent: true, .. }
+                    if !self.agent_has_turn(&agent) =>
                 {
-                    // The turn it started ended without the limit: the agent is back.
-                    self.store_usage_limit_stop(&agent, None, "").await?;
+                    // The turn it started ended without the limit, once it has run a while: the
+                    // agent is back.
+                    self.apply_stop_event(
+                        agent.id(),
+                        &StopEvent::Settle {
+                            selected: &stop,
+                            now,
+                        },
+                    )
+                    .await?;
                 }
                 _ => {}
             }
@@ -324,7 +339,13 @@ impl KernelRuntimeState {
         if !self.stopped_task_was_cancelled(agent, stop)? {
             return Ok(false);
         }
-        self.store_usage_limit_stop(agent, None, "").await?;
+        self.apply_stop_event(
+            agent.id(),
+            &StopEvent::Drop {
+                prompt_id: &stop.prompt_id,
+            },
+        )
+        .await?;
         Ok(true)
     }
 
@@ -352,57 +373,85 @@ impl KernelRuntimeState {
     }
 
     /// Takes the resume of a stopped agent: marks it as going on, so no other tick or decision
-    /// sends it again. `staggered` holds it back until the kernel has not sent another for a while.
-    async fn claim_resume(
+    /// sends it again, and returns the stop it took. A scheduled resume is held back until the
+    /// kernel has not sent another for a while. The scheduler and a person's decision can arrive
+    /// together, so there is one claim per agent and whoever finds it taken sends nothing.
+    pub(super) async fn claim_resume(
         &self,
         agent: &crate::agent::AgentInstance,
-        stop: &UsageLimitStop,
         now: u64,
-        staggered: bool,
-    ) -> Result<bool, DaemonError> {
+        reason: ResumeReason<'_>,
+    ) -> Result<Option<UsageLimitStop>, DaemonError> {
+        let claimed = self
+            .owned
+            .usage_limit_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent.id().to_string());
+        if !claimed {
+            return Ok(None);
+        }
+        let taken = self.take_claimed_resume(agent, now, reason).await;
+        if !matches!(taken, Ok(Some(_))) {
+            self.end_resume_send(agent);
+        }
+        taken
+    }
+
+    async fn take_claimed_resume(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        now: u64,
+        reason: ResumeReason<'_>,
+    ) -> Result<Option<UsageLimitStop>, DaemonError> {
         // A person's own prompt is running: usage is back for it, or it ends the stop itself.
         if self.agent_has_turn(agent) {
-            return Ok(false);
+            return Ok(None);
         }
-        if self.drop_stop_of_cancelled_task(agent, stop).await? {
-            return Ok(false);
+        let current = self.owned.agent_store.get_agent(agent.id())?;
+        let Some(current) = current
+            .usage_limit_stop()
+            .filter(|current| !matches!(current.state, UsageLimitStopState::Resuming { .. }))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if self.drop_stop_of_cancelled_task(agent, &current).await? {
+            return Ok(None);
         }
-        {
-            let mut last = self
+        if matches!(reason, ResumeReason::Due(_)) {
+            let last = *self
                 .owned
                 .usage_limit_resumes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if staggered && now < last.saturating_add(RESUME_STAGGER_MS) {
-                return Ok(false);
+            if now < last.saturating_add(RESUME_STAGGER_MS) {
+                return Ok(None);
             }
-            *last = now;
         }
+        // The caller read the stop before it got here, and a person can cancel, or another claim
+        // can move it on, until the write: the claim is an event the held stop accepts or refuses,
+        // so a decision or a resume sent meanwhile is never overwritten and sent again.
+        let Some(applied) = self
+            .apply_stop_event(agent.id(), &reason.claim(now))
+            .await?
+        else {
+            return Ok(None);
+        };
+        *self
+            .owned
+            .usage_limit_resumes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = now;
         crate::logging::info_with_fields(
             "daemon.usage_limit",
             "resuming a stopped agent",
             serde_json::json!({"agent_id": agent.id(), "now_ms": now}),
         );
-        let resuming = UsageLimitStop {
-            state: UsageLimitStopState::Resuming {
-                since_ms: now,
-                sent: false,
-            },
-            ..stop.clone()
-        };
-        self.owned
-            .usage_limit_sends
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent.id().to_string());
-        if let Err(error) = self.store_usage_limit_stop(agent, Some(resuming), "").await {
-            self.end_resume_send(agent);
-            return Err(error);
-        }
-        Ok(true)
+        Ok(applied.before)
     }
 
-    fn end_resume_send(&self, agent: &crate::agent::AgentInstance) {
+    pub(super) fn end_resume_send(&self, agent: &crate::agent::AgentInstance) {
         self.owned
             .usage_limit_sends
             .lock()
@@ -410,22 +459,29 @@ impl KernelRuntimeState {
             .remove(agent.id());
     }
 
+    /// Sends the continuation of the stop a claim at `since_ms` took.
     fn spawn_resume(
         &self,
         agent: crate::agent::AgentInstance,
         stop: UsageLimitStop,
+        since_ms: u64,
     ) -> tokio::task::JoinHandle<()> {
         let state = self.clone();
-        tokio::spawn(async move { state.finish_resume(&agent, &stop).await })
+        tokio::spawn(async move { state.finish_resume(&agent, &stop, since_ms).await })
     }
 
-    /// Sends the continuation. When it cannot be sent the stop is armed again for the next tick,
-    /// and the pane says why once.
-    async fn finish_resume(&self, agent: &crate::agent::AgentInstance, stop: &UsageLimitStop) {
+    /// Sends the continuation. When it cannot be sent the stop the claim took is back for the next
+    /// tick, and the pane says why once.
+    async fn finish_resume(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+        since_ms: u64,
+    ) {
         let sent = self.send_resume(agent, stop).await;
         match sent {
             Ok(()) => {
-                self.mark_resume_sent(agent).await;
+                self.mark_resume_sent(agent, since_ms).await;
                 self.owned
                     .usage_limit_resume_failures
                     .lock()
@@ -438,13 +494,14 @@ impl KernelRuntimeState {
                     "resume retained for the next tick",
                     serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
                 );
-                if let Err(store_error) = self
-                    .store_usage_limit_stop(agent, Some(stop.clone()), "")
-                    .await
-                {
+                let event = StopEvent::Retain {
+                    since_ms,
+                    restore: stop,
+                };
+                if let Err(store_error) = self.apply_stop_event(agent.id(), &event).await {
                     crate::logging::warn_with_fields(
                         "daemon.usage_limit",
-                        "could not arm a refused resume again",
+                        "could not restore the stop of a refused resume",
                         serde_json::json!({"agent_id": agent.id(), "error": store_error.to_string()}),
                     );
                 }
@@ -454,29 +511,12 @@ impl KernelRuntimeState {
         self.end_resume_send(agent);
     }
 
-    /// Records that the claimed resume was admitted, so a restart finds it sent.
-    async fn mark_resume_sent(&self, agent: &crate::agent::AgentInstance) {
-        let owned = &self.owned;
-        let Ok(current) = owned.agent_store.get_agent(agent.id()) else {
-            return;
-        };
-        let Some(UsageLimitStopState::Resuming { since_ms, .. }) =
-            current.usage_limit_stop().map(|stop| stop.state.clone())
-        else {
-            return;
-        };
-        let marked = match owned
-            .agent_store
-            .mark_usage_limit_resume_sent(agent.id(), since_ms)
+    /// Records that the resume claimed at `since_ms` was admitted, so a restart finds it sent.
+    async fn mark_resume_sent(&self, agent: &crate::agent::AgentInstance, since_ms: u64) {
+        if let Err(error) = self
+            .apply_stop_event(agent.id(), &StopEvent::Sent { since_ms })
+            .await
         {
-            Ok(Some(updated)) => {
-                self.append_agent_durable_event("agent.updated", &updated, None)
-                    .await
-            }
-            Ok(None) => return,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = marked {
             crate::logging::warn_with_fields(
                 "daemon.usage_limit",
                 "could not record a sent resume",
@@ -609,17 +649,14 @@ impl KernelRuntimeState {
                 }
                 let at_ms = next_resume_at(now, stop.resumes_at_ms, 0)
                     .ok_or_else(|| refused("the kernel has no time to resume at"))?;
-                let line = format!(
-                    "The kernel resumes {} at {}.",
-                    stop.account_label,
-                    clock(at_ms)
-                );
-                let armed = UsageLimitStop {
-                    state: UsageLimitStopState::Armed { at_ms },
-                    ..stop
-                };
-                self.store_usage_limit_stop(&agent, Some(armed), &line)
-                    .await?;
+                self.decide_usage_limit_stop(
+                    agent_id,
+                    &StopEvent::Arm {
+                        shown: &stop,
+                        at_ms,
+                    },
+                )
+                .await?;
             }
             UsageLimitAction::NotNow | UsageLimitAction::Cancel => {
                 if !matches!(
@@ -628,11 +665,8 @@ impl KernelRuntimeState {
                 ) {
                     return Err(refused("this stop is not waiting for a decision"));
                 }
-                let left = UsageLimitStop {
-                    state: UsageLimitStopState::Declined,
-                    ..stop
-                };
-                self.store_usage_limit_stop(&agent, Some(left), "").await?;
+                self.decide_usage_limit_stop(agent_id, &StopEvent::Decline { shown: &stop })
+                    .await?;
             }
             UsageLimitAction::ContinueOn { account_profile } => {
                 if !matches!(
@@ -654,45 +688,81 @@ impl KernelRuntimeState {
                 )
                 .await?;
                 let agent = owned.agent_store.get_agent(agent_id)?;
-                self.resume_stopped_agent_now(&agent, &stop, now).await?;
+                self.resume_stopped_agent_now(&agent, now).await?;
             }
         }
         owned.agent_store.get_agent(agent_id)
     }
 
+    /// Stores a person's decision on the stop they were shown. A resume the scheduler claimed since
+    /// then, or a stop that changed some other way, has moved the stop on, and the decision is
+    /// refused rather than written over it.
+    pub(super) async fn decide_usage_limit_stop(
+        &self,
+        agent_id: &str,
+        decision: &StopEvent<'_>,
+    ) -> Result<(), DaemonError> {
+        self.apply_stop_event(agent_id, decision)
+            .await?
+            .map(|_| ())
+            .ok_or_else(|| refused("the stop changed while the decision was made; read it again"))
+    }
+
     /// Resumes without the stagger: a person asked for it.
-    async fn resume_stopped_agent_now(
+    pub(super) async fn resume_stopped_agent_now(
         &self,
         agent: &crate::agent::AgentInstance,
-        stop: &UsageLimitStop,
         now: u64,
     ) -> Result<(), DaemonError> {
-        if self.claim_resume(agent, stop, now, false).await? {
-            self.spawn_resume(agent.clone(), stop.clone());
+        if let Some(taken) = self.claim_resume(agent, now, ResumeReason::Decided).await? {
+            self.spawn_resume(agent.clone(), taken, now);
         }
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// What a stop event changed: the stop the agent held before it.
+pub(super) struct AppliedStop {
+    pub before: Option<UsageLimitStop>,
+}
 
-    #[test]
-    fn a_named_reset_is_waited_for_and_then_retried_a_few_times() {
-        assert_eq!(next_resume_at(1_000, Some(5_000), 0), Some(5_000));
-        assert_eq!(next_resume_at(9_000, Some(5_000), 0), Some(9_000));
-        assert_eq!(next_resume_at(10_000, Some(5_000), 1), Some(70_000));
-        assert_eq!(next_resume_at(10_000, Some(5_000), 2), Some(310_000));
-        assert_eq!(next_resume_at(10_000, Some(5_000), 3), Some(910_000));
-        assert_eq!(next_resume_at(10_000, Some(5_000), 4), None);
+/// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
+fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
+    if let StopEvent::Continued { account_label, .. } = event {
+        return format!("Continued on {account_label}.");
     }
-
-    #[test]
-    fn an_unnamed_reset_backs_off_and_then_asks() {
-        assert_eq!(next_resume_at(0, None, 0), Some(900_000));
-        assert_eq!(next_resume_at(0, None, 1), Some(1_800_000));
-        assert_eq!(next_resume_at(0, None, 3), Some(7_200_000));
-        assert_eq!(next_resume_at(0, None, 4), None);
+    let Some(stop) = stop else {
+        return String::new();
+    };
+    match (event, &stop.state) {
+        (StopEvent::Arm { .. }, UsageLimitStopState::Armed { at_ms }) => {
+            format!(
+                "The kernel resumes {} at {}.",
+                stop.account_label,
+                clock(*at_ms)
+            )
+        }
+        (StopEvent::Hit { .. }, UsageLimitStopState::Armed { at_ms }) if stop.refused == 0 => {
+            format!(
+                "Usage limit reached on {}. The kernel resumes at {}.",
+                stop.account_label,
+                clock(*at_ms)
+            )
+        }
+        (StopEvent::Hit { .. }, UsageLimitStopState::Armed { at_ms }) => format!(
+            "Still limited on {}. The kernel tries again at {}.",
+            stop.account_label,
+            clock(*at_ms)
+        ),
+        (StopEvent::Hit { .. }, _) if stop.refused == 0 => match stop.resumes_at_ms {
+            Some(at_ms) => format!(
+                "Usage limit reached on {}, back at {}.",
+                stop.account_label,
+                clock(at_ms)
+            ),
+            None => format!("Usage limit reached on {}.", stop.account_label),
+        },
+        (StopEvent::Hit { .. }, _) => format!("Still limited on {}.", stop.account_label),
+        _ => String::new(),
     }
 }

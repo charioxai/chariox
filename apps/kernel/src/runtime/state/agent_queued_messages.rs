@@ -6,6 +6,10 @@ use crate::session::{PromptQueueItem, PromptStatus, QueuedAgentMessage};
 
 /// What one stripe shows of a message.
 const TEXT_LIMIT: usize = 4000;
+/// What a session shows of a queued message: its start.
+const PREVIEW_LIMIT: usize = 200;
+/// How many queued messages of one agent a session shows: the next ones to be delivered.
+const SHOWN_PER_AGENT: usize = 10;
 
 /// What the sender is told when its message queues.
 pub(crate) fn queued_note(agent: &str) -> String {
@@ -18,15 +22,24 @@ impl KernelRuntimeOwnedState {
         &self,
         room: &str,
     ) -> Result<Vec<QueuedAgentMessage>, DaemonError> {
-        Ok(self
-            .durable_state_store
-            .agent_queued_messages(room, None)?
+        let mut shown = std::collections::HashMap::<&str, usize>::new();
+        let queued = self.durable_state_store.agent_queued_messages(room, None)?;
+        Ok(queued
             .iter()
-            .map(|event| QueuedAgentMessage {
-                id: QueuedAgentMessage::id_for(event.sequence),
-                agent_id: event.agent_id.clone(),
-                sender: self.queued_message_sender(event),
-                prompt: bounded_text(event),
+            .filter(|event| {
+                let count = shown.entry(event.agent_id.as_str()).or_default();
+                *count += 1;
+                *count <= SHOWN_PER_AGENT
+            })
+            .map(|event| {
+                let text = redacted_text(event);
+                QueuedAgentMessage {
+                    id: QueuedAgentMessage::id_for(event.sequence),
+                    agent_id: event.agent_id.clone(),
+                    sender: self.queued_message_sender(event),
+                    preview: text.chars().take(PREVIEW_LIMIT).collect(),
+                    truncated: text.chars().nth(PREVIEW_LIMIT).is_some(),
+                }
             })
             .collect())
     }
@@ -64,12 +77,13 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-fn bounded_text(event: &InboxEvent) -> String {
+fn redacted_text(event: &InboxEvent) -> std::borrow::Cow<'_, str> {
     let text = event.payload["message"].as_str().unwrap_or_default();
     crate::secret_redaction::redact_secrets(text)
-        .chars()
-        .take(TEXT_LIMIT)
-        .collect()
+}
+
+fn bounded_text(event: &InboxEvent) -> String {
+    redacted_text(event).chars().take(TEXT_LIMIT).collect()
 }
 
 fn queued_item(event: &InboxEvent, status: PromptStatus) -> PromptQueueItem {
@@ -179,6 +193,8 @@ impl KernelRuntimeState {
     /// The sender makes its own queued message urgent: the same row, delivered once, as a steer or as the
     /// start of a turn.
     async fn promote_queued_message(&self, event: &InboxEvent) -> Result<Promotion, DaemonError> {
+        self.owned
+            .ensure_agent_before_deadline(&event.room_id, &event.agent_id)?;
         let store = &self.owned.durable_state_store;
         let Some((event, read)) = store.agent_inbox_event(event.sequence)? else {
             return Ok(Promotion::Delivered);
@@ -197,7 +213,10 @@ impl KernelRuntimeState {
             agent: event.agent_id.clone(),
             sequence: event.sequence,
         });
-        if released.is_err() {
+        if let Err(error) = released {
+            if crate::error::is_agent_deadline_refusal(&error) {
+                return Err(error);
+            }
             // The recipient read it, or the person cancelled it, between the look and the change.
             return Ok(Promotion::Delivered);
         }
@@ -219,7 +238,7 @@ impl KernelRuntimeState {
             return Ok(promotion_result(first.sequence, &promotion));
         }
         let payload = if first.urgent {
-            serde_json::json!({"status":"durable","sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
+            serde_json::json!({"status":"steering","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
         } else {
             serde_json::json!({"status":"queued","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":false,"reply_requested":first.reply_requested,"note":queued_note(target_name)})
         };

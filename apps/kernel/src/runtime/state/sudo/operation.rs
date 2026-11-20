@@ -75,28 +75,6 @@ impl KernelRuntimeState {
             ),
             None => origin.provider_run_id().to_string(),
         };
-        if interaction
-            .id()
-            .starts_with("claude-selected-workspace-trust-")
-            && interaction.kind() == RuntimeInteractionKind::Permission
-            && interaction
-                .choices()
-                .iter()
-                .any(|choice| choice.id() == "allow_once" && !choice.requires_passkey())
-            && matches!(
-                interaction.native_origin(),
-                Some(NativeInteractionOrigin::ProviderStartup { .. })
-            )
-            && interaction.native_origin().is_some_and(|origin| {
-                self.sudo_authorized_workspace_startup(session_id, interaction, &origin_run(origin))
-            })
-        {
-            return Some(ProviderNativeInteractionResolution {
-                status: "answered".into(),
-                choice_id: Some("allow_once".into()),
-                reply: None,
-            });
-        }
         if interaction.kind() != RuntimeInteractionKind::Permission
             || ![
                 "codex-command-approval-",
@@ -140,84 +118,6 @@ impl KernelRuntimeState {
             status: "answered".into(),
             choice_id: Some("allow_once".into()),
             reply: None,
-        })
-    }
-    /// Trust the exact workspace of an already approved launch, even before
-    /// its first prompt is sent. This grants no live sudo/tool authority.
-    fn sudo_authorized_workspace_startup(
-        &self,
-        session_id: &str,
-        interaction: &RuntimeInteraction,
-        provider_run_id: &str,
-    ) -> bool {
-        let Some(agent_id) = interaction.agent_id() else {
-            return false;
-        };
-        let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
-            return false;
-        };
-        let Ok(session) = self.owned.session_store.get_session(session_id) else {
-            return false;
-        };
-        if agent.session_id() != session_id {
-            return false;
-        }
-        if let Some(projected) = self.leased_agent_for_projected_run(provider_run_id) {
-            if projected.id() != agent_id || projected.session_id() != session_id {
-                return false;
-            }
-        } else {
-            let Ok(run) = self.owned.provider_store.get_run(provider_run_id) else {
-                return false;
-            };
-            if run.session_id() != session_id
-                || run.agent_instance_id() != Some(agent_id)
-                || self
-                    .owned
-                    .provider_store
-                    .get_run_for_agent(session_id, agent_id)
-                    .is_none_or(|current| current.id() != run.id())
-                || run.state() != crate::provider::ProviderRunState::Running
-            {
-                return false;
-            }
-            let Some(workspace) = run
-                .working_directory()
-                .and_then(|path| path.canonicalize().ok())
-            else {
-                return false;
-            };
-            if Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()))
-                .canonicalize()
-                .ok()
-                .as_ref()
-                != Some(&workspace)
-            {
-                return false;
-            }
-        }
-        let placement = agent
-            .remote_execution()
-            .map(|remote| remote.execution_lease_id.clone());
-        let turns: Vec<_> = self
-            .owned
-            .sudo_turns
-            .lock()
-            .expect("access state poisoned")
-            .values()
-            .cloned()
-            .collect();
-        turns.iter().any(|turn| {
-            turn.agent_id == agent_id
-                && turn.session_id == session_id
-                && self.owned.acts_for_owner_in(
-                    session.owner_user_id(),
-                    &turn.owner_user_id,
-                    session.owner_user_id(),
-                )
-                && turn.placement == placement
-                && turn.deadline.is_some()
-                && self.sudo_live(turn)
         })
     }
 }

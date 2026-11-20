@@ -229,7 +229,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b1796c2dfc6de2508baa0df1c8ba9bb7ef748aef61fb7dc49d291bc35d63944e"
+        "81aa549b8cd25370a746681fcaac8eccd8bb2eb844f2484ae90956d335f9c21b"
     );
 }
 
@@ -237,6 +237,7 @@ fn outside_events_snapshot_and_hash() {
 fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
     let session = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

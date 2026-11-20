@@ -73,13 +73,36 @@ interface event-routing {
   list-targets: async func() -> result<list<target>, app-error>;
 }
 
+/// An App commits and pushes a Room's worktree as one of the owner's
+/// accounts, as its signed `capabilities.workspace` allows. The kernel holds
+/// the credential: the App names the worktree, the files and the account, and
+/// never sees a token. A call needs a person or an agent whose call a person
+/// approved.
+@since(version = 1.1.0)
+interface workspace {
+  use chariox:app/app-types@1.0.0.{json, app-error};
+
+  /// The worktree's changed files: `{files:[{path,status,additions,deletions}], branch, remote}`. Local facts only: it never asks the remote.
+  changes: async func(worktree: string) -> result<json, app-error>;
+  /// Commits exactly `files` with `message`. On the default branch or a
+  /// detached HEAD the commit moves to a new `chariox/<slug>` branch, and
+  /// `branch` names one instead. `account` lets the kernel ask a private
+  /// `origin` for its default branch. Returns `{commit, branch, createdBranch}`.
+  commit: async func(worktree: string, files: list<string>, message: string, branch: option<string>, account: string) -> result<json, app-error>;
+  /// Pushes the current branch, never the default one and never forced, to
+  /// the worktree's `origin` GitHub repository as `account`.
+  push: async func(worktree: string, account: string) -> result<json, app-error>;
+}
+
 world app {
   include chariox:app/app@1.0.0;
   import event-routing;
+  import workspace;
 }
 
 /// Install-time upper bound of the 1.1.0 world (see `admission.wit`).
 world app-admission {
   include chariox:app/app-admission@1.0.0;
   import event-routing;
+  import workspace;
 }

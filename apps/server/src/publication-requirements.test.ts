@@ -8,25 +8,16 @@ const digest = `sha256:${"a".repeat(64)}`
 test("publication requirements v2 validate exact extension shape and runtime presence", async () => {
   const requests: Record<string, unknown>[] = []
   const extension = {
-    id: "skill:qa",
-    kind: "skill" as const,
+    id: "script:qa",
+    kind: "script" as const,
     name: "qa",
     version: digest,
     content_digest: digest,
-    launch_definition: {
-      kind: "skill_package",
-      package: {
-        name: "qa",
-        description: "Quality checks",
-        short_description: null,
-        version_hash: "a".repeat(64),
-        files: [],
-      },
-    },
+    launch_definition: { kind: "script_snapshot" },
     credential_slots: [],
     network_destinations: [],
     uses: [{ agent_id: "agent-1", node_ids: ["node-1"] }],
-    readiness_test: { kind: "skill_materialized" },
+    readiness_test: { kind: "script_registered" },
     portability: { classification: "portable" as const },
   }
 
@@ -38,14 +29,14 @@ test("publication requirements v2 validate exact extension shape and runtime pre
   }, {
     send: async (request) => {
       requests.push(request)
-      if ("ListSkills" in request) {
-        return { SkillsListed: { skills: [{ name: "qa", path: "/runtime-capabilities/user/skills/qa" }] } }
+      if ("ListScripts" in request) {
+        return { ScriptsListed: { scripts: [{ name: "qa", path: "/runtime-capabilities/user/scripts/qa" }] } }
       }
       throw new Error(`unexpected request: ${JSON.stringify(request)}`)
     },
   }, "/runtime-workspace")
 
-  assert.deepEqual(requests, [{ ListSkills: { workspace_id: "/runtime-workspace" } }])
+  assert.deepEqual(requests, [{ ListScripts: { workspace_id: "/runtime-workspace" } }])
 })
 
 test("publication requirements v2 reject inexact immutable extension requirements", async () => {
@@ -53,16 +44,16 @@ test("publication requirements v2 reject inexact immutable extension requirement
     () => validatePublicationRequirements({
       schema_version: 2,
       extensions: [{
-        id: "skill:qa",
-        kind: "skill",
+        id: "script:qa",
+        kind: "script",
         name: "qa",
         version: digest,
         content_digest: `sha256:${"b".repeat(64)}`,
-        launch_definition: { kind: "skill_package" },
+        launch_definition: { kind: "script_snapshot" },
         credential_slots: [],
         network_destinations: [],
         uses: [{ agent_id: "agent-1", node_ids: ["node-1"] }],
-        readiness_test: { kind: "skill_materialized" },
+        readiness_test: { kind: "script_registered" },
         portability: { classification: "portable" },
       }],
       credential_slots: [],

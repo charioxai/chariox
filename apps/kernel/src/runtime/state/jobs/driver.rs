@@ -22,7 +22,7 @@ impl WakeDriver for JobDriver {
         tokio::spawn(async move {
             pending
                 .state
-                .execute_job(wake.clone(), pending.record, cancelled)
+                .execute_job(wake.clone(), pending.record, cancelled, None)
                 .await;
             live.lock().expect("job live").remove(&wake.id);
         });
@@ -43,25 +43,57 @@ impl WakeDriver for JobDriver {
         let Ok(mut record) = self.read(id) else {
             return Recovery::Lost("job record missing".into());
         };
-        let (Some(driver), Some(router)) = (
-            self.this.get().and_then(std::sync::Weak::upgrade),
-            self.router.get().and_then(std::sync::Weak::upgrade),
-        ) else {
+        let Some(state) = self.recovery_state() else {
             return Recovery::Lost("job service unavailable".into());
         };
-        let mut state = self.state.with_job_router((*router).clone());
-        state.job_wake_driver = Some(driver);
         let wake = wake.clone();
-        let (cancel, cancelled) = watch::channel(false);
-        self.live
-            .lock()
-            .expect("job live")
-            .insert(wake.id.clone(), cancel);
+        let (cancel, cancelled) =
+            watch::channel(record.placement == JobPlacement::Local && wake.state == "cancelling");
+        {
+            let mut live = self.live.lock().expect("job live");
+            if record.placement == JobPlacement::Local && live.contains_key(&wake.id) {
+                return Recovery::Reattached;
+            }
+            live.insert(wake.id.clone(), cancel);
+        }
+        let local = crate::hot_reload::take_local_job(&record.job_id).and_then(|handover| {
+            let active = (record.placement == JobPlacement::Local && record.result.is_none())
+                .then(|| self.local.enter())
+                .flatten();
+            if let Some(active) = active {
+                return Some((handover, active));
+            }
+            handover.discard();
+            None
+        });
         let live = self.live.clone();
         tokio::spawn(async move {
+            if let Some((local, active)) = local {
+                match local.restore(&state, &record) {
+                    Ok((output, progress)) => {
+                        state
+                            .execute_job(
+                                wake.clone(),
+                                record,
+                                cancelled,
+                                Some((output, active, progress)),
+                            )
+                            .await;
+                        live.lock().expect("job live").remove(&wake.id);
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "local job could not resume across the kernel reload")
+                    }
+                }
+            }
             // Left by an earlier run with remote jobs on: end the job with its reason and leave
             // its worker, files and allocation exactly as saved.
-            if !state.remote_jobs_enabled() && record.has_remote_trace() {
+            // A job on a held machine never depended on the switch: the agent named a machine it holds.
+            if !state.remote_jobs_enabled()
+                && record.has_remote_trace()
+                && record.request.machine.is_none()
+            {
                 let result = remote_jobs_off_result(&record);
                 state.finish_job(&wake, &mut record, result).await;
                 live.lock().expect("job live").remove(&wake.id);
@@ -69,7 +101,9 @@ impl WakeDriver for JobDriver {
             }
             // The command still runs on its worker: follow it to its end before anything else.
             if matches!(record.remote, RemoteStage::Running { .. }) {
-                state.execute_job(wake.clone(), record, cancelled).await;
+                state
+                    .execute_job(wake.clone(), record, cancelled, None)
+                    .await;
                 live.lock().expect("job live").remove(&wake.id);
                 return;
             }
@@ -77,7 +111,11 @@ impl WakeDriver for JobDriver {
             // of its files.
             if record.remote == RemoteStage::Planned {
                 state.give_up_pending_return(&mut record);
-                state.forget_pending_return(&record.job_id);
+            }
+            // A held machine keeps what the job uploaded there: remove it unless files are still to
+            // be collected from it. Also finishes a cleanup an earlier run began.
+            if record.request.machine.is_some() && !record.remote.holds_worker() {
+                state.settle_or_warn(&record).await;
             }
             if record.placement == JobPlacement::Local {
                 let markers = BTreeMap::from([(record.job_id.clone(), record.started_at_ms)]);
@@ -105,6 +143,7 @@ impl WakeDriver for JobDriver {
             }
             if record.placement == JobPlacement::Remote
                 && record.allocation_ref.is_none()
+                && record.request.machine.is_none()
                 && !record.remote.holds_worker()
             {
                 match state.job_compute_release_job_ref(&record.job_id).await {
@@ -118,10 +157,16 @@ impl WakeDriver for JobDriver {
                 exit_code: None,
                 output_tail: if record.remote.holds_worker() {
                     "The kernel restarted after this job's command ended on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
+                } else if record.placement == JobPlacement::Local {
+                    "This local job was ended by the kernel restart. No command exit status is available. Run it again with chariox.jobs.run if you still need the result.".into()
                 } else {
                     "The kernel restarted; this job was not relaunched.".into()
                 },
-                log: String::new(),
+                log: if record.placement == JobPlacement::Local {
+                    super::execute::Output::existing_log(&state, &record).unwrap_or_default()
+                } else {
+                    String::new()
+                },
                 files_back: vec![],
                 conflicts: vec![],
                 ran_on: JobRanOn {
@@ -142,6 +187,40 @@ impl WakeDriver for JobDriver {
             live.lock().expect("job live").remove(&wake.id);
         });
         Recovery::Reattached
+    }
+    fn reconcile_ended(&self) {
+        let Some(state) = self.recovery_state() else {
+            return;
+        };
+        let jobs = state
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root()
+            .join("jobs");
+        let Ok(entries) = std::fs::read_dir(&jobs) else {
+            return;
+        };
+        // A plan on disk is what is left to clean; only settled held-machine jobs are cleaned here
+        // (one whose files are still to be collected keeps its plan for chariox.jobs.status).
+        let owed: Vec<Record> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join("return.json").is_file())
+            .filter_map(|entry| self.read(entry.file_name().to_str()?).ok())
+            .filter(|record| {
+                record.state == "finished"
+                    && record.request.machine.is_some()
+                    && !record.remote.holds_worker()
+            })
+            .collect();
+        if owed.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            for record in owed {
+                state.settle_or_warn(&record).await;
+            }
+        });
     }
     fn liveness(&self, wake: &AgentWake) -> Liveness {
         if self.live.lock().expect("job live").contains_key(&wake.id) {
@@ -172,6 +251,19 @@ fn remote_jobs_off_result(record: &Record) -> JobResult {
     }
 }
 
+impl JobDriver {
+    /// A state that holds this driver and the job gateway, for work a restart resumes.
+    fn recovery_state(&self) -> Option<KernelRuntimeState> {
+        let (driver, router) = (
+            self.this.get().and_then(std::sync::Weak::upgrade)?,
+            self.router.get().and_then(std::sync::Weak::upgrade)?,
+        );
+        let mut state = self.state.with_job_router((*router).clone());
+        state.job_wake_driver = Some(driver);
+        Some(state)
+    }
+}
+
 impl KernelRuntimeState {
     pub(in crate::runtime::state) fn register_job_wake_driver(&mut self) {
         let driver = Arc::new(JobDriver {
@@ -180,6 +272,7 @@ impl KernelRuntimeState {
             router: Default::default(),
             pending: Default::default(),
             live: Default::default(),
+            local: Default::default(),
             remote_requested: Default::default(),
             owner_stops: Default::default(),
             remote_samples: Default::default(),
@@ -196,6 +289,26 @@ impl KernelRuntimeState {
     pub(crate) fn bind_job_recovery(&self, router: &Arc<crate::runtime::router::CommandRouter>) {
         if let Some(driver) = &self.job_wake_driver {
             let _ = driver.router.set(Arc::downgrade(router));
+            // Claim the inherited children before the transport can start a new reload.
+            // The wake scheduler may still be starting when the kernel accepts that reload.
+            for id in crate::hot_reload::local_job_wakes() {
+                match self.owned.durable_state_store.agent_wake(&id) {
+                    Ok(Some(wake))
+                        if wake.kind == KIND
+                            && matches!(
+                                wake.state.as_str(),
+                                "starting" | "running" | "cancelling"
+                            ) =>
+                    {
+                        if let Recovery::Lost(reason) = driver.recover(&wake) {
+                            tracing::warn!(%reason, "could not recover the inherited local job");
+                        }
+                    }
+                    Ok(_) => tracing::warn!("the inherited local job has no active wake"),
+                    Err(error) => tracing::warn!(%error, "could not load the inherited job's wake"),
+                }
+            }
+            crate::hot_reload::discard_unclaimed_local_jobs();
         }
     }
 

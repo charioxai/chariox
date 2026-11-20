@@ -252,13 +252,13 @@ pub(crate) async fn authorize_import(
     }
     let development = match &plan.development {
         super::package::ManagedContextDevelopmentSelection::Empty => json!({ "kind": "empty" }),
-        super::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } => json!({
-            "kind": "source_project", "projectId": project_id,
-            "repositories": repositories.iter().map(|repository| json!({ "role": repository.role,
-                "workspaceId": repository.workspace_id, "worktreeId": repository.worktree_id })).collect::<Vec<_>>()
+        super::package::ManagedContextDevelopmentSelection::SourceProjects { projects } => json!({
+            "kind": "source_projects",
+            "projects": projects.iter().map(|project| json!({
+                "projectId": project.project_id,
+                "repositories": project.repositories.iter().map(|repository| json!({ "role": repository.role,
+                    "workspaceId": repository.workspace_id, "worktreeId": repository.worktree_id })).collect::<Vec<_>>()
+            })).collect::<Vec<_>>()
         }),
     };
     if binding.context_selection

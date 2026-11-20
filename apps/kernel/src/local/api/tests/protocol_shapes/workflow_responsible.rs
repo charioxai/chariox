@@ -4,13 +4,13 @@ use crate::session::{WorkflowResponsible, WorkflowRunOutcome};
 use crate::transport::relay_peer::RelayPeerRequest;
 use sha2::{Digest, Sha256};
 
-// Local 1011 / relay peer 448: a workflow has a responsible, a run has a number, an outcome and an attention flag.
+// Local 1012 / relay peer 449: a workflow has a responsible, a run has a number, an outcome and an attention flag.
 #[test]
 fn workflow_responsible_run_outcome_and_requests_are_bound_to_protocol1011() {
     let bytes = include_bytes!("workflow-responsible-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "87065a803d7034e00b1820e3a35af9aa073e4de4ddaaad75d50ca355807a222d"
+        "27abbe991c9d12e3ed1ac95bb306acfd9bef98898f7215388510011691c8cb3a"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(

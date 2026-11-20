@@ -13,6 +13,8 @@ pub(crate) const FILES_LIST: &str = "chariox.files.list";
 pub(crate) const FILES_READ: &str = "chariox.files.read";
 pub(crate) const FILES_COPY: &str = "chariox.files.copy";
 pub(crate) const FILES_TRANSFER: &str = "chariox.files.transfer";
+pub(crate) const FILES_TRASH: &str = "chariox.files.trash";
+pub(crate) const FILES_RESTORE: &str = "chariox.files.restore";
 
 const SLICE_TIMEOUT: Duration = Duration::from_secs(90);
 const READ_DEFAULT_BYTES: u64 = 16 * 1024;
@@ -28,6 +30,8 @@ pub(crate) fn is_files_tool(tool_name: &str) -> bool {
             | "chariox.files.read"
             | "chariox.files.copy"
             | "chariox.files.transfer"
+            | "chariox.files.trash"
+            | "chariox.files.restore"
     )
 }
 
@@ -74,7 +78,39 @@ pub(crate) fn files_tool_specs() -> Vec<RuntimeToolSpec> {
                 "wait_seconds":{"type":"integer","minimum":0,"maximum":WAIT_MAX_SECONDS,"default":0}},
                 "additionalProperties":false}),
         },
+        RuntimeToolSpec {
+            name: FILES_TRASH.into(),
+            description: "Move files and folders on this machine or another machine of yours to that machine's own Trash, never a permanent delete. Each item keeps its place in the Trash so chariox.files.restore can put it back. Returns `trashed` (each item's original `path` and its `trash_path`) and `failed` (path and reason); keep `trashed` to undo. The kernel's own state and Vault, and your home folder, are never moved.".into(),
+            input_schema: serde_json::json!({"type":"object","required":["paths"],"properties":{
+                "machine": machine,
+                "paths":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Absolute paths or ~/ paths"}},
+                "additionalProperties":false}),
+        },
+        RuntimeToolSpec {
+            name: FILES_RESTORE.into(),
+            description: "Put items that chariox.files.trash moved to the Trash back at their original paths (`items` are entries of its `trashed`). An item whose path is taken stays in the Trash and is reported in `failed`; nothing is ever overwritten.".into(),
+            input_schema: serde_json::json!({"type":"object","required":["items"],"properties":{
+                "machine": machine,
+                "items":{"type":"array","minItems":1,"items":{"type":"object","required":["path","trash_path"],"properties":{"path":{"type":"string"},"trash_path":{"type":"string"}},"additionalProperties":false}}},
+                "additionalProperties":false}),
+        },
     ]
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrashArgs {
+    #[serde(default)]
+    machine: Option<String>,
+    paths: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreArgs {
+    #[serde(default)]
+    machine: Option<String>,
+    items: Vec<crate::local::TrashedKernelFile>,
 }
 
 #[derive(serde::Deserialize)]
@@ -189,6 +225,16 @@ impl KernelRuntimeState {
                 let args: CopyArgs =
                     serde_json::from_value(arguments).map_err(|e| bad_arguments(FILES_COPY, e))?;
                 self.files_copy(&agent, args).await
+            }
+            FILES_TRASH => {
+                let args: TrashArgs =
+                    serde_json::from_value(arguments).map_err(|e| bad_arguments(FILES_TRASH, e))?;
+                self.files_trash(&agent, args).await
+            }
+            FILES_RESTORE => {
+                let args: RestoreArgs = serde_json::from_value(arguments)
+                    .map_err(|e| bad_arguments(FILES_RESTORE, e))?;
+                self.files_restore(&agent, args).await
             }
             _ => {
                 let args: TransferArgs = serde_json::from_value(arguments)
@@ -354,6 +400,86 @@ impl KernelRuntimeState {
             }
         }
         Ok(success(payload))
+    }
+
+    async fn files_trash(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        args: TrashArgs,
+    ) -> Result<RuntimeToolResult, String> {
+        let (trashed, failed) = match self.files_machine(agent, args.machine.as_deref()).await? {
+            Target::Here => {
+                let guard = self.machine_state_guard();
+                let request = crate::local::TrashKernelFilesRequest { paths: args.paths };
+                match tokio::task::spawn_blocking(move || {
+                    crate::runtime::kernel_trash::trash(&request, &guard)
+                })
+                .await
+                .map_err(|_| "the move to the Trash stopped unexpectedly".to_owned())?
+                .map_err(super::machine_files_runtime::error_text)?
+                {
+                    crate::local::LocalDaemonResponse::KernelFilesTrashed { trashed, failed } => {
+                        (trashed, failed)
+                    }
+                    _ => return Err("the kernel answered with something unexpected".into()),
+                }
+            }
+            Target::There { kernel, name } => match self
+                .ask_machine(
+                    agent,
+                    &kernel,
+                    &name,
+                    RelayPeerRequest::TrashMachineFiles { paths: args.paths },
+                )
+                .await?
+            {
+                RelayPeerResponse::MachineFilesTrashed { trashed, failed } => (trashed, failed),
+                _ => return Err("the machine answered with something unexpected".into()),
+            },
+        };
+        Ok(success(
+            serde_json::json!({"trashed": trashed, "failed": failed}),
+        ))
+    }
+
+    async fn files_restore(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        args: RestoreArgs,
+    ) -> Result<RuntimeToolResult, String> {
+        let (restored, failed) = match self.files_machine(agent, args.machine.as_deref()).await? {
+            Target::Here => {
+                let guard = self.machine_state_guard();
+                let request = crate::local::RestoreKernelTrashRequest { items: args.items };
+                match tokio::task::spawn_blocking(move || {
+                    crate::runtime::kernel_trash::restore(&request, &guard)
+                })
+                .await
+                .map_err(|_| "the restore stopped unexpectedly".to_owned())?
+                .map_err(super::machine_files_runtime::error_text)?
+                {
+                    crate::local::LocalDaemonResponse::KernelTrashRestored { restored, failed } => {
+                        (restored, failed)
+                    }
+                    _ => return Err("the kernel answered with something unexpected".into()),
+                }
+            }
+            Target::There { kernel, name } => match self
+                .ask_machine(
+                    agent,
+                    &kernel,
+                    &name,
+                    RelayPeerRequest::RestoreMachineTrash { items: args.items },
+                )
+                .await?
+            {
+                RelayPeerResponse::MachineTrashRestored { restored, failed } => (restored, failed),
+                _ => return Err("the machine answered with something unexpected".into()),
+            },
+        };
+        Ok(success(
+            serde_json::json!({"restored": restored, "failed": failed}),
+        ))
     }
 
     async fn files_copy(

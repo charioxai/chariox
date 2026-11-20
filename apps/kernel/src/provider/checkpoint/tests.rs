@@ -281,8 +281,15 @@ fn required_native_session_blocks_durable_clearing_until_a_real_resume_ack() {
     confirmed.record_native_resume_accepted("codex", SESSION);
     assert!(confirmed.required_native_session().is_none());
     assert_eq!(confirmed.codex_thread_id(), Some(SESSION));
+    let stored = agents.get_agent("agent").unwrap();
     agents
-        .set_agent_provider_resume_state_durably(&durable, "agent", confirmed, "run")
+        .set_agent_provider_resume_state_durably(
+            &durable,
+            "agent",
+            confirmed,
+            "run",
+            (stored.provider(), stored.provider_account_profile()),
+        )
         .unwrap();
     assert!(matches!(
         agents

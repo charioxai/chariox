@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::agent::{AgentInstance, AgentState};
-use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
+use crate::extension::RemoteExtensionManifestSyncState;
 use crate::local::{RoomListItemActivitySummary, RoomListSessionActivitySummary};
 use crate::session::{RuntimeSession, WorkflowRunStatus};
 
@@ -55,9 +55,9 @@ pub(crate) fn room_list_workflow_activity_summary(
     }
 }
 
-/// A4: archived agents and sub-agents are no part of a room's counts.
-fn counted_in_room(agent: &crate::agent::AgentInstance) -> bool {
-    !agent.archived() && !agent.is_sub_agent()
+/// A4: archived agents and sub-agents are no part of a room: its agent list and its counts carry the same agents.
+pub(crate) fn counted_in_room(agent: &crate::agent::AgentInstance) -> bool {
+    !agent.archived() && agent.is_room_agent()
 }
 
 pub(crate) fn room_list_session_activity_summary(
@@ -185,10 +185,7 @@ struct HomeProxyExtensionActivity {
 }
 
 fn home_proxy_extension_activity(agent: &AgentInstance) -> Option<HomeProxyExtensionActivity> {
-    let active_home_proxy_grant = agent
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.kind != ExtensionKind::Skill);
+    let active_home_proxy_grant = !agent.extension_grants().is_empty();
     let pending_revoke = agent
         .remote_extension_manifest_sync()
         .and_then(|status| status.pending_revoke)
@@ -229,8 +226,15 @@ mod tests {
     };
 
     fn session_with_agents(agents: Vec<AgentInstance>) -> RuntimeSession {
-        let mut session =
-            RuntimeSession::new("session", None, "/repo", "/repo", "machine", "daemon");
+        let mut session = RuntimeSession::new(
+            "session",
+            crate::session::ProjectId::test(),
+            None,
+            "/repo",
+            "/repo",
+            "machine",
+            "daemon",
+        );
         session.set_agents(agents);
         session
     }
@@ -621,7 +625,6 @@ mod tests {
             ),
             home_proxy_agent("missing-connector", ExtensionKind::Connector, None),
             home_proxy_agent("stale-mcp", ExtensionKind::Mcp, Some(stale)),
-            home_proxy_agent("skill-only", ExtensionKind::Skill, None),
             {
                 let mut agent =
                     remote_agent("revoked", AgentState::Idle, false, Some("worker-run"));
@@ -632,7 +635,7 @@ mod tests {
 
         let summary =
             room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
-        assert_eq!(summary.remote_agent_count, 5);
+        assert_eq!(summary.remote_agent_count, 4);
         assert_eq!(summary.home_proxy_agent_count, 4);
         assert_eq!(summary.remote_extension_sync_issue_count, 3);
         assert_eq!(summary.remote_extension_pending_revoke_count, 1);

@@ -115,7 +115,25 @@ pub struct Capabilities {
     /// import that uses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_routing: Option<EventRouting>,
+    /// Commit and push in a Room's worktree as one of the owner's accounts.
+    /// Only the App world 1.1.0 has the import that uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceAccess>,
 }
+
+/// The git actions an App may take in a worktree. They run as the owner's
+/// account bound to `credential`, whose destination must be GitHub's API: the
+/// kernel pushes to GitHub repositories only, and the App never holds the token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceAccess {
+    /// The credential label of one `network` destination.
+    pub credential: String,
+}
+
+/// The only origin whose account may push: `git` reaches GitHub with the token
+/// the owner bound for its API.
+pub const WORKSPACE_ACCOUNT_ORIGIN: &str = "https://api.github.com";
 
 /// One event generator (for example `dev.chariox.github`) whose events the App
 /// routes to its own declared incoming events. The owner still chooses the
@@ -170,6 +188,16 @@ pub struct CredentialRoute {
     pub method: HttpMethod,
     pub path: String,
     pub safety: RouteSafety,
+    /// Host suffixes (`*.blob.core.windows.net`) a read of this route may be
+    /// redirected to, for an answer GitHub keeps on other storage (a job log).
+    /// Nothing else is followed, and the account's credential is never sent
+    /// to the redirected host.
+    #[serde(
+        default,
+        rename = "redirectHosts",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub redirect_hosts: Vec<String>,
 }
 
 /// Ordered: a binding that allows `Write` also allows `Read`.
@@ -183,6 +211,8 @@ pub enum RouteSafety {
 
 /// Routes one destination may declare.
 const MAX_CREDENTIAL_ROUTES: usize = 128;
+/// Redirect host suffixes one route may declare.
+const MAX_REDIRECT_HOSTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -298,6 +328,17 @@ impl Capabilities {
         if let Some(routing) = &self.event_routing {
             routing.validate()?;
         }
+        if let Some(workspace) = &self.workspace {
+            let bound = self.network.iter().any(|destination| {
+                destination.origin == WORKSPACE_ACCOUNT_ORIGIN
+                    && destination.credential.as_deref() == Some(workspace.credential.as_str())
+            });
+            if !bound {
+                return Err(invalid_manifest(
+                    "workspace needs the credential label of a network destination at https://api.github.com",
+                ));
+            }
+        }
         if self.network.len() > 64 {
             return Err(invalid_manifest("too many network destinations"));
         }
@@ -401,6 +442,16 @@ impl NetworkDestination {
                     "credential routes must be unique, exact path templates",
                 ));
             }
+            if !route.redirect_hosts.is_empty()
+                && (route.method != HttpMethod::Get
+                    || route.safety != RouteSafety::Read
+                    || route.redirect_hosts.len() > MAX_REDIRECT_HOSTS
+                    || !route.redirect_hosts.iter().all(|host| redirect_host(host)))
+            {
+                return Err(invalid_manifest(
+                    "redirectHosts belong to a read route and are host suffixes like *.example.com",
+                ));
+            }
         }
         let methods: BTreeSet<_> = self.routes.iter().map(|route| route.method).collect();
         if methods != self.methods.iter().copied().collect() {
@@ -410,6 +461,25 @@ impl NetworkDestination {
         }
         Ok(())
     }
+}
+
+/// `*.example.com`: a wildcard label and a lowercase DNS suffix of at least
+/// two labels, so a redirect can never be allowed to a whole top-level domain.
+fn redirect_host(pattern: &str) -> bool {
+    let Some(suffix) = pattern.strip_prefix("*.") else {
+        return false;
+    };
+    suffix.len() <= 253
+        && suffix.split('.').count() >= 2
+        && suffix.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 /// `/a/{b}/c`: segments are literal or one `{name}`; no query, fragment,
@@ -492,6 +562,9 @@ impl Manifest {
         self.capabilities.validate()?;
         if self.capabilities.event_routing.is_some() {
             return Err(invalid("eventRouting needs a v2 App"));
+        }
+        if self.capabilities.workspace.is_some() {
+            return Err(invalid("workspace needs a v2 App"));
         }
         if let Some(migrations) = &self.migrations {
             migrations.validate(limits, javascript_path)?;
@@ -596,6 +669,7 @@ mod credential_tests {
                     method: *method,
                     path: (*path).into(),
                     safety: *safety,
+                    redirect_hosts: Vec::new(),
                 })
                 .collect(),
         }
@@ -653,6 +727,59 @@ mod credential_tests {
                 "{destination:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_read_route_may_name_the_host_suffixes_its_answer_is_redirected_to_and_no_others_may() {
+        let logs = "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs";
+        let with = |method, safety, hosts: &[&str]| {
+            let mut destination = destination(&[(method, logs, safety)]);
+            destination.routes[0].redirect_hosts = hosts.iter().map(|h| (*h).into()).collect();
+            destination
+        };
+        with(
+            HttpMethod::Get,
+            RouteSafety::Read,
+            &["*.blob.core.windows.net"],
+        )
+        .validate_credential()
+        .unwrap();
+        for hosts in [
+            &["blob.core.windows.net"][..],
+            &["*.com"],
+            &["*"],
+            &["*.Blob.core.windows.net"],
+            &["*.-x.example.com"],
+            &[
+                "*.a.example.com",
+                "*.b.example.com",
+                "*.c.example.com",
+                "*.d.example.com",
+                "*.e.example.com",
+            ],
+        ] {
+            assert!(
+                with(HttpMethod::Get, RouteSafety::Read, hosts)
+                    .validate_credential()
+                    .is_err(),
+                "{hosts:?}"
+            );
+        }
+        // A redirect belongs to a read: a write or a destructive route follows none.
+        assert!(with(
+            HttpMethod::Post,
+            RouteSafety::Write,
+            &["*.blob.core.windows.net"]
+        )
+        .validate_credential()
+        .is_err());
+        assert!(with(
+            HttpMethod::Get,
+            RouteSafety::Write,
+            &["*.blob.core.windows.net"]
+        )
+        .validate_credential()
+        .is_err());
     }
 }
 
@@ -723,5 +850,60 @@ mod event_routing_tests {
         let routed = serde_json::to_value(capabilities(routing())).unwrap();
         assert_eq!(routed["eventRouting"]["maxRoutes"], 200);
         assert_eq!(routed["eventRouting"]["generator"], "dev.chariox.github");
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn destination(origin: &str, credential: Option<&str>) -> NetworkDestination {
+        NetworkDestination {
+            origin: origin.into(),
+            methods: vec![HttpMethod::Get],
+            credential: credential.map(Into::into),
+            routes: credential
+                .map(|_| CredentialRoute {
+                    method: HttpMethod::Get,
+                    path: "/user".into(),
+                    safety: RouteSafety::Read,
+                    redirect_hosts: Vec::new(),
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn capabilities(network: Vec<NetworkDestination>, credential: &str) -> Capabilities {
+        Capabilities {
+            network,
+            workspace: Some(WorkspaceAccess {
+                credential: credential.into(),
+            }),
+            ..Capabilities::default()
+        }
+    }
+
+    #[test]
+    fn workspace_needs_the_credential_label_of_the_github_api_destination() {
+        let github = || destination(WORKSPACE_ACCOUNT_ORIGIN, Some("github"));
+        capabilities(vec![github()], "github").validate().unwrap();
+        for refused in [
+            capabilities(Vec::new(), "github"),
+            capabilities(vec![github()], "gitlab"),
+            capabilities(vec![destination(WORKSPACE_ACCOUNT_ORIGIN, None)], "github"),
+            capabilities(
+                vec![destination("https://example.com", Some("github"))],
+                "github",
+            ),
+        ] {
+            assert!(refused.validate().is_err(), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn an_app_without_workspace_keeps_its_manifest_bytes() {
+        let json = serde_json::to_string(&Capabilities::default()).unwrap();
+        assert!(!json.contains("workspace"), "{json}");
     }
 }

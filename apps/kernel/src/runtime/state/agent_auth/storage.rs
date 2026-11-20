@@ -131,6 +131,7 @@ impl KernelRuntimeState {
                 vault_key: Some(handle.into()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
+                copied_from: None,
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;
@@ -140,7 +141,7 @@ impl KernelRuntimeState {
             credential.clone(),
             issued.value.as_str(),
             false,
-            Some(&authority.context),
+            Some(&|| self.recheck_vault_agent(&authority.context)),
         )
         .await?;
         record_registration(self, &credential, &issued.registration_id)?;

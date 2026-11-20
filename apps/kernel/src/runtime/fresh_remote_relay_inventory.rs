@@ -98,6 +98,7 @@ mod tests {
             leased_agent_count: 1,
             local_session_count: 2,
             public_key: "fixture-public-key".to_string(),
+            local_protocol: None,
         }
     }
 

@@ -1,13 +1,14 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 VAUDIT S2: Vault capture from a command and
 //! Vault use as a command's environment or stdin. The kernel moves the value;
 //! the model only ever holds an opaque credential_id.
-use super::vault_use::VaultAgentContext;
+use super::vault_use::{VaultActor, VaultAgentContext, VaultRecheck};
 use super::*;
 use crate::runtime::kernel_access::error;
 
 mod capture;
 mod copy;
 mod files;
+mod home;
 mod remove;
 mod use_env;
 
@@ -16,8 +17,10 @@ pub(in crate::runtime::state) use capture::{
     capture_binding_schema, committed as committed_capture, service_host, Captured,
 };
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
+pub(in crate::runtime::state) use copy::site_bearer_use;
 pub(crate) use copy::{copy_for_use_spec, VAULT_COPY_FOR_USE};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
+pub(crate) use home::HomeVaultCaptureAnswer;
 pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};
 pub(crate) use use_env::{use_env_spec, VAULT_USE_ENV};
 

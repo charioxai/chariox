@@ -20,7 +20,7 @@ async fn capability_response_ordering(initially_bound: bool) {
         fixture.create_slice().await;
         let room = fixture.rooms[0].clone();
         if initially_bound {
-            dispatch_json(
+            dispatch_bind_room(
                 &fixture.home,
                 json!({"BindRoomEnvironmentSlice": {
                     "session_id": room, "slice_ref": "desktop"
@@ -77,7 +77,7 @@ async fn capability_response_ordering(initially_bound: bool) {
                 .delete_slice("desktop")
                 .expect("delete the Room binding through shared kernel state");
         } else {
-            dispatch_json(
+            dispatch_bind_room(
                 &fixture.home,
                 json!({"BindRoomEnvironmentSlice": {
                     "session_id": room, "slice_ref": "desktop"

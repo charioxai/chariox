@@ -905,7 +905,7 @@ async fn a_substitute_on_another_account_never_resumes_the_primary_session() {
 
 impl FailingTurn {
     /// Queues "implement that solution" behind the active turn.
-    async fn queue_follow_up(&self) {
+    pub(super) async fn queue_follow_up(&self) {
         self.runtime
             .with_app_side_effect(|app| {
                 let attachment = crate::app::KernelSessionService::new(app).attach(

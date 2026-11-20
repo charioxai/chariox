@@ -21,6 +21,7 @@ struct LeasedTree {
     runtime: KernelRuntimeState,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     priority_rx: tokio::sync::mpsc::Receiver<chariox_relay::protocol::RelayEnvelope>,
+    home: crate::config::DaemonConfig,
     worker: crate::config::DaemonConfig,
     home_public_key: String,
     room: String,
@@ -106,7 +107,7 @@ async fn leased_tree_under(
     config.relay_token = Some("relay-token".to_string());
     let home_public_key = config.relay_public_key.clone();
     let worker = crate::config::DaemonConfig::for_tests();
-    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let mut app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, low) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-leased-limits",
@@ -189,6 +190,7 @@ async fn leased_tree_under(
         runtime,
         relay_state,
         priority_rx,
+        home: config,
         worker,
         home_public_key,
         room,
@@ -559,6 +561,8 @@ fn leased_agent(id: &str, mode: Mode, level: Level) -> crate::execution_lease::L
         applied_home_steer_ids: Vec::new(),
         home_steer_receipts: Vec::new(),
         replayable_completion: None,
+        skill_names: None,
+        skill_view_revision: 0,
         created_at_ms: 1,
     }
 }
@@ -604,6 +608,49 @@ async fn a_higher_root_never_raises_a_leased_agent_above_its_own_settings() {
             (&grandchild, Mode::Plan, Level::Required),
         ]),
         "a Required/Plan agent and the team below it stay at Required/Plan under a Yolo/Build root"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_person_raise_of_a_leased_agent_above_its_parent_stays_on_the_home_record_and_in_later_limits(
+) {
+    let mut tree = leased_tree(Mode::Plan, Level::Required).await;
+    let (low, child, grandchild) = (
+        tree.low.clone(),
+        tree.child.clone(),
+        tree.grandchild.clone(),
+    );
+    tree.place_child(&low).await;
+
+    let raised = tree.told([
+        (&child, Mode::Build, Level::Yolo),
+        (&grandchild, Mode::Build, Level::Yolo),
+    ]);
+    let told = tree.set_settings(&child, Mode::Build, Level::Yolo).await;
+    assert_eq!(told, raised, "the worker runs the person's raise");
+    let record = tree.runtime.owned.agent_store.get_agent(&child).unwrap();
+    assert!(
+        record.parent_limit_waived(),
+        "the home record keeps the person's raise, so the limit does not come back"
+    );
+
+    // The limits of the tree go out again: the raise stays.
+    let told = tree.set_settings(&low, Mode::Plan, Level::Required).await;
+    assert_eq!(
+        told, raised,
+        "a later limit propagation must not send the old limit back to the worker"
+    );
+
+    let home = tree.home.clone();
+    drop(tree);
+    let restored = crate::app::DaemonApp::bootstrap(home).unwrap();
+    assert!(
+        restored
+            .agents()
+            .get_agent(&child)
+            .unwrap()
+            .parent_limit_waived(),
+        "the acknowledged waiver survives a home kernel restart"
     );
 }
 
@@ -710,7 +757,7 @@ const LIMITED: (Mode, Level) = (Mode::Plan, Level::Required);
 const OPEN: (Mode, Level) = (Mode::Build, Level::Yolo);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_local_agent_raised_beneath_a_lower_parent_keeps_its_run_at_the_parent_limit() {
+async fn a_local_agent_the_person_raised_beneath_a_lower_parent_runs_at_the_persons_setting() {
     let mut tree = leased_tree(Mode::Plan, Level::Required).await;
     let (low, local) = (tree.low.clone(), tree.local.clone());
     tree.place(&local, &low).await;
@@ -718,8 +765,8 @@ async fn a_local_agent_raised_beneath_a_lower_parent_keeps_its_run_at_the_parent
     tree.set_settings(&local, Mode::Build, Level::Yolo).await;
     assert_eq!(
         tree.next_turn(&local),
-        LIMITED,
-        "a local agent raised to Yolo/Build beneath a Required/Plan parent must keep running at Required/Plan"
+        OPEN,
+        "the person's Yolo/Build for an agent beneath a Required/Plan parent holds against the parent's limit"
     );
     assert_eq!(
         tree.own_settings(&local),

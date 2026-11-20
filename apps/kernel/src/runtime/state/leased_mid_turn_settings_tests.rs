@@ -52,8 +52,8 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
+            crate::transport::relay_peer::LeasedNativeSkills::default(),
         )
         .unwrap();
     if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) = prepared.provider_run {
@@ -77,9 +77,9 @@ async fn running_leased_turn() -> RunningLeasedTurn {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            crate::transport::relay_peer::LeasedNativeSkills::default(),
         )
         .await
         .expect("the worker admits the turn");

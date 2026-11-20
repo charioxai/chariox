@@ -1,28 +1,37 @@
 //! Reads the account catalog an agent's model and variant are chosen from (see
 //! `agent_model_choice`) for the places that create or reconfigure an agent.
 
-use super::agent_model_choice::{choose, NoModelOffered, Requested};
+use super::agent_model_choice::{choose, ModelRefusal, Requested, Source};
 use super::agent_profile_owned_state::{AgentProfileSelections, ValidatedAgentProfile};
 use super::*;
 
 impl KernelRuntimeState {
     /// The model and variant a new agent runs. Providers without a catalog (the dev stub) keep what
-    /// the caller sent. A caller that named both needs no catalog.
+    /// the caller sent. A model the caller names now (`Source::Named`) must be one the account
+    /// offers, and a model list that cannot be read refuses it; a model already in use
+    /// (`Source::Kept`) needs no catalog when the variant is named too.
     pub(crate) async fn resolve_new_agent_selection(
         &self,
         owner_user_id: &str,
         provider: &str,
         account_profile: Option<&str>,
         model: Option<String>,
+        model_source: Source,
         effort: Option<String>,
     ) -> Result<(Option<String>, Option<String>), DaemonError> {
-        if model.is_some() && effort.is_some() {
-            return Ok((model, effort));
-        }
         let Some(family) = crate::provider::canonical_provider_family(provider) else {
             return Ok((model, effort));
         };
         let account_owner = self.provider_account_authority_owner_user_id(owner_user_id);
+        let is_explicit_go =
+            family == "opencode" && crate::account_profile::is_opencode_go_model(model.as_deref());
+        if is_explicit_go {
+            self.verify_opencode_go_account(&account_owner, account_profile.unwrap_or("default"))
+                .await?;
+        }
+        if model.is_some() && effort.is_some() && model_source != Source::Named {
+            return Ok((model, effort));
+        }
         // An account the owner does not have is refused by the launch admission that follows, with
         // the action to take; this step only chooses among the models of an account that exists.
         let Ok(profile) = self.provider_account_profile_registry().get(
@@ -33,14 +42,18 @@ impl KernelRuntimeState {
             return Ok((model, effort));
         };
         let profile = profile.profile_id;
-        let model_named = model.is_some();
+        let model_source = if model.is_some() {
+            model_source
+        } else {
+            Source::Inherited
+        };
         let catalog = match self
             .read_account_catalog(owner_user_id, provider, family, &profile)
             .await
         {
             Ok(catalog) => catalog,
-            // The caller chose the model; its variant can wait for a readable catalog.
-            Err(_) if model_named => return Ok((model, effort)),
+            // A model already in use stays; its variant can wait for a readable catalog.
+            Err(_) if model_source == Source::Kept => return Ok((model, effort)),
             Err(error) => return Err(error),
         };
         let choice = choose(
@@ -48,14 +61,25 @@ impl KernelRuntimeState {
             provider,
             Requested {
                 value: model.as_deref(),
-                explicit: model_named,
+                source: model_source,
             },
             Requested {
                 value: effort.as_deref(),
-                explicit: effort.is_some(),
+                source: if effort.is_some() {
+                    Source::Named
+                } else {
+                    Source::Inherited
+                },
             },
         )
-        .map_err(|NoModelOffered| no_model_offered(provider, &profile))?;
+        .map_err(|refusal| model_refused(provider, &profile, refusal))?;
+        if !is_explicit_go
+            && family == "opencode"
+            && crate::account_profile::is_opencode_go_model(Some(&choice.model))
+        {
+            self.verify_opencode_go_account(&account_owner, &profile)
+                .await?;
+        }
         Ok((Some(choice.model), choice.effort))
     }
 
@@ -78,6 +102,7 @@ impl KernelRuntimeState {
                 &defaults.provider,
                 defaults.account_profile.as_deref(),
                 defaults.model.take(),
+                Source::Named,
                 defaults.effort.take(),
             )
             .await?;
@@ -119,8 +144,10 @@ impl KernelRuntimeState {
         let account_changed = family_changed || target.account_profile != original_account;
         let model_changed = target.model.as_deref() != original.model();
         let keeps_model = !account_changed && target.model.is_some();
+        // Naming the model the agent already runs on its account asks for nothing new.
+        let model_requested = model_named && (model_changed || account_changed);
         let settled = target.model.is_some() && target.effort.is_some();
-        if (model_named && effort_named)
+        if (model_named && effort_named && !model_requested)
             || (settled && !account_changed && !model_changed && !model_named)
         {
             return Ok(selections);
@@ -136,7 +163,7 @@ impl KernelRuntimeState {
         {
             Ok(catalog) => catalog,
             // The agent keeps a model it already runs; only its variant waits for a readable catalog.
-            Err(error) if model_named || keeps_model => {
+            Err(error) if keeps_model && !model_requested => {
                 crate::logging::warn_with_fields(
                     "agent.model",
                     "the model list could not be read; the agent keeps what it has",
@@ -151,16 +178,26 @@ impl KernelRuntimeState {
             &target.provider,
             Requested {
                 value: target.model.as_deref(),
-                // A model the agent already runs on the same account stays even when the
-                // catalog does not list it (an alias or a withdrawn model).
-                explicit: model_named || keeps_model,
+                source: if model_requested {
+                    Source::Named
+                } else if keeps_model {
+                    // A model the agent already runs on the same account stays even when the
+                    // catalog does not list it (an alias or a withdrawn model).
+                    Source::Kept
+                } else {
+                    Source::Inherited
+                },
             },
             Requested {
                 value: target.effort.as_deref(),
-                explicit: effort_named,
+                source: if effort_named {
+                    Source::Named
+                } else {
+                    Source::Inherited
+                },
             },
         )
-        .map_err(|NoModelOffered| no_model_offered(&target.provider, &target.account_profile))?;
+        .map_err(|refusal| model_refused(&target.provider, &target.account_profile, refusal))?;
         // Selections that already match the validated target stay as they are, so a true
         // no-op is still recognised as one.
         if target.model.as_deref() != Some(choice.model.as_str()) {
@@ -205,11 +242,31 @@ impl KernelRuntimeState {
     }
 }
 
-fn no_model_offered(provider: &str, profile_id: &str) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "resolve agent model",
-        message: format!(
+/// The most model ids an error lists; a catalog such as OpenCode's can hold hundreds.
+const LISTED_MODELS: usize = 12;
+
+fn model_refused(provider: &str, profile_id: &str, refusal: ModelRefusal) -> DaemonError {
+    let message = match refusal {
+        ModelRefusal::NoModelOffered => format!(
             "{provider} account `{profile_id}` offers no models. Check the account and retry"
         ),
+        ModelRefusal::NotOffered { wanted, available } => format!(
+            "unknown model \"{wanted}\" for provider {provider}; use one of: {}{}",
+            available
+                .iter()
+                .take(LISTED_MODELS)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+            if available.len() > LISTED_MODELS {
+                ", ..."
+            } else {
+                ""
+            },
+        ),
+    };
+    DaemonError::LocalTransport {
+        operation: "resolve agent model",
+        message,
     }
 }

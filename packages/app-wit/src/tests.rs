@@ -97,6 +97,12 @@ fn the_event_routing_minor_is_admitted_only_in_its_own_world() {
 }
 
 #[test]
+fn a_component_importing_the_minor_interfaces_targets_the_minor_world() {
+    assert_eq!(app_world_of(&v1()), APP_WORLD);
+    assert_eq!(app_world_of(&event_routing_component()), APP_WORLD_1_1);
+}
+
+#[test]
 fn rejects_a_changed_signature_under_an_allowed_import_name() {
     let source = include_str!("../wit/app.wit")
         .replace("get: async func(key: string)", "get: async func(key: u32)");

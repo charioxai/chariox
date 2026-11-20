@@ -1189,6 +1189,7 @@ mod tests {
     fn session_with_runs() -> RuntimeSession {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "/workspace",
             "/workspace",
@@ -1663,6 +1664,7 @@ mod tests {
         let (_dir, store, path) = temp_store("workflow-runtime-large-history");
         let mut hot_session = RuntimeSession::new(
             "session-scale",
+            crate::session::ProjectId::test(),
             None,
             "/workspace",
             "/workspace",

@@ -156,6 +156,8 @@ async fn kernel_websocket_streams_workflow_run_updates() {
         &mut socket,
         "spawn-workflow-agent",
         LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             session_id: session_id.clone(),

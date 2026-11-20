@@ -1,3 +1,4 @@
+import type { RemoteMachineRecord as KernelRemoteMachineRecord } from "@chariox/kernel-client/kernel-types"
 import type { LocalIpcClient } from "./ipc.js"
 import type {
   WaitingRoomRemoteKernelView,
@@ -12,12 +13,17 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
+export function remoteMachineView(record: KernelRemoteMachineRecord): WaitingRoomRemoteMachineView {
+  const { presence, ...rest } = record
+  return { ...rest, online: presence === "online" }
+}
+
 export async function listRemoteMachines(client: LocalIpcClient): Promise<WaitingRoomRemoteMachineView[]> {
   const response = await client.send<Record<string, unknown>>(listRemoteMachinesRequest())
   const payload = expectVariant<{
-    machines: WaitingRoomRemoteMachineView[]
+    machines: KernelRemoteMachineRecord[]
   }>(response, "RemoteMachinesListed")
-  return payload.machines
+  return payload.machines.map(remoteMachineView)
 }
 
 export async function approveRemoteMachine(
@@ -25,15 +31,15 @@ export async function approveRemoteMachine(
   machineRef: string,
 ): Promise<WaitingRoomRemoteMachineView> {
   const response = await client.send<Record<string, unknown>>(approveRemoteMachineRequest(machineRef))
-  return expectVariant<{ machine: WaitingRoomRemoteMachineView }>(response, "RemoteMachineApproved").machine
+  return remoteMachineView(expectVariant<{ machine: KernelRemoteMachineRecord }>(response, "RemoteMachineApproved").machine)
 }
 
 export async function forgetRemoteMachine(
   client: LocalIpcClient,
   machineRef: string,
-): Promise<WaitingRoomRemoteMachineView> {
+): Promise<{ machine_id: string; display_name: string }> {
   const response = await client.send<Record<string, unknown>>(forgetRemoteMachineRequest(machineRef))
-  return expectVariant<{ machine: WaitingRoomRemoteMachineView }>(response, "RemoteMachineForgotten").machine
+  return expectVariant<{ machine_id: string; display_name: string }>(response, "RemoteMachineForgotten")
 }
 
 export async function listRemoteMachineKernels(

@@ -4,6 +4,7 @@ use serde_json::Value;
 mod agent_events;
 mod agent_messaging_tools;
 mod agent_peek_tools;
+mod agent_run_tool;
 mod credential_tools;
 mod extension_tools;
 mod jobs;
@@ -12,14 +13,18 @@ mod meta_tool_names;
 mod meta_tool_specs;
 mod permission_prompt_tool;
 mod recall_tools;
+mod skill_tools;
 mod slice_tools;
 mod terminal_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
-pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};
+pub(crate) use agent_events::{
+    agent_event_tool_specs, canonical_agent_event_tool_name, missing_agent_event_arguments,
+};
 pub use agent_messaging_tools::*;
 pub use agent_peek_tools::*;
+pub use agent_run_tool::*;
 pub use credential_tools::*;
 pub use extension_tools::*;
 pub use meta_tool_args::*;
@@ -27,6 +32,7 @@ pub use meta_tool_names::canonical_meta_tool_name;
 pub use meta_tool_specs::meta_runtime_tool_specs;
 pub use permission_prompt_tool::*;
 pub use recall_tools::*;
+pub use skill_tools::*;
 pub use slice_tools::{canonical_slice_tool_name, slice_runtime_tool_specs};
 pub use terminal_tools::*;
 pub use validation::{validate_json_output_schema, validate_workflow_handoff_schema};
@@ -51,7 +57,6 @@ pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "chariox.agent_app_action";
 pub const LIST_EXTENSIONS_TOOL: &str = "chariox.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "chariox.request_extension";
 pub const REGISTER_MCP_TOOL: &str = "chariox.register_mcp";
-pub const REGISTER_SKILL_PATH_TOOL: &str = "chariox.register_skill_path";
 pub const REGISTER_ENVIRONMENT_TOOL: &str = "chariox.register_environment";
 pub const REGISTER_SCRIPT_PATH_TOOL: &str = "chariox.register_script_path";
 pub const REGISTER_CONNECTOR_PATH_TOOL: &str = "chariox.register_connector_path";
@@ -253,5 +258,7 @@ pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runti
 
 mod notification_tools;
 pub use notification_tools::{
-    notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
+    is_notification_tool, notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE,
+    NOTIFICATION_UNSUBSCRIBE, NOTIFY_PERSON, WATCHER_ACTIVATE, WATCHER_CREATE, WATCHER_DRY_RUN,
+    WATCHER_REMOVE, WATCHER_STATUS,
 };

@@ -22,26 +22,20 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    /// Resolves a session's launch provider/model/effort selection.
-    ///
-    /// When the caller supplies an explicit selection, it is persisted to
-    /// `config.toml` as the new `providers.default/model/effort`, overwriting
-    /// whatever was there. When the caller supplies none, the persisted
-    /// config.toml default is used to seed the session (if one is set).
-    pub(crate) async fn resolve_session_agent_defaults(
+    /// The provider/model/effort selection a new session starts from: what the caller sent, or the
+    /// persisted `config.toml` default when it sent none. Reads only; see
+    /// [`Self::persist_provider_launch_defaults`] for the write.
+    pub(crate) fn seed_session_agent_defaults(
         &self,
         agent_defaults: Option<SessionAgentDefaults>,
-    ) -> Result<Option<SessionAgentDefaults>, DaemonError> {
-        match agent_defaults {
-            Some(defaults) => {
-                self.persist_provider_launch_defaults(&defaults).await?;
-                Ok(Some(defaults))
-            }
-            None => Ok(self.owned.configured_session_agent_defaults()),
-        }
+    ) -> Option<SessionAgentDefaults> {
+        agent_defaults.or_else(|| self.owned.configured_session_agent_defaults())
     }
 
-    async fn persist_provider_launch_defaults(
+    /// Saves an explicit selection as the new `providers.default/model/effort`, overwriting what
+    /// was there. Callers save only after the selection has been accepted, so a refused request
+    /// leaves the saved defaults as they were.
+    pub(crate) async fn persist_provider_launch_defaults(
         &self,
         defaults: &SessionAgentDefaults,
     ) -> Result<(), DaemonError> {

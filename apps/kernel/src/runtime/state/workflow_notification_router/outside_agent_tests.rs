@@ -285,6 +285,7 @@ async fn a_grant_follows_only_the_owners_sources_of_this_kernel() {
     let request = LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
         targets: Vec::new(),
         sources: vec![own.source_id.clone()],
+        like: None,
     });
     assert!(router
         .kernel_gateway()

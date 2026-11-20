@@ -30,7 +30,25 @@ impl KernelRuntimeState {
         if self.drives_as_room_guest(session, sender) {
             return Err(unavailable());
         }
-        self.resolve_peer_agent(sender.owner_user_id(), room, reference)
+        let room = self
+            .owned
+            .session_store
+            .read()
+            .resolve_session_ref(room, None)
+            .map_err(|_| unavailable())?
+            .id()
+            .to_owned();
+        let target =
+            self.resolve_same_owner_room_agent(sender.owner_user_id(), &room, reference)?;
+        let store = &self.owned.agent_store;
+        if (!target.is_sub_agent()
+            || store.is_ancestor(sender.id(), &target)
+            || store.is_ancestor(target.id(), sender))
+            && !target.archived()
+        {
+            return Ok(target);
+        }
+        Err(unavailable())
     }
 
     /// The rooms `--room` accepts for `caller` on this kernel: its own, marked current, and the
@@ -84,6 +102,19 @@ impl KernelRuntimeState {
         room: &str,
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let target = self.resolve_same_owner_room_agent(owner, room, reference)?;
+        if target.is_sub_agent() || target.archived() {
+            return Err(unavailable());
+        }
+        Ok(target)
+    }
+
+    fn resolve_same_owner_room_agent(
+        &self,
+        owner: &str,
+        room: &str,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let reference = reference.trim().trim_start_matches('@');
         let other = self
             .owned
@@ -94,51 +125,9 @@ impl KernelRuntimeState {
             return Err(unavailable());
         }
         let agents = self.session_agents(room);
-        let target = resolve_agent(&agents, room, reference).map_err(|_| unavailable())?;
-        if target.parent_agent_id().is_some() || target.archived() {
-            return Err(unavailable());
-        }
-        Ok(target.clone())
-    }
-}
-
-impl KernelRuntimeState {
-    /// The turn that spawned `peer` in another room follows it: each of the peer's turn ends
-    /// reaches the spawner as a peer event while this task waits on the returned registration.
-    pub(crate) fn follow_spawned_peer(
-        &self,
-        spawner: &crate::agent::AgentInstance,
-        peer: &crate::agent::AgentInstance,
-    ) -> Result<String, DaemonError> {
-        use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Registration};
-        let session = self.owned.session_store.get_session(spawner.session_id())?;
-        let prompt = session
-            .active_prompt_for_agent(spawner.id())
-            .ok_or_else(|| ledger::error("no live creating turn"))?;
-        let task = self
-            .owned
-            .durable_state_store
-            .agent_tasks(Some(spawner.session_id()), Some(spawner.id()))?
-            .into_iter()
-            .find(|task| task.prompt_id == prompt.id())
-            .ok_or_else(|| ledger::error("no live creating turn"))?;
-        let id = format!("follow-{}", peer.id());
-        self.owned
-            .durable_state_store
-            .agent_lifecycle(Operation::Subscribe {
-                task: task.task_id.clone(),
-                prompt: prompt.id().into(),
-                registration: Registration {
-                    id: id.clone(),
-                    task_id: task.task_id,
-                    source_id: peer.id().into(),
-                    obligation_id: None,
-                    source_cursor: 0,
-                    live: true,
-                    peer: true,
-                },
-            })?;
-        Ok(id)
+        resolve_agent(&agents, room, reference)
+            .cloned()
+            .map_err(|_| unavailable())
     }
 }
 
@@ -159,20 +148,20 @@ impl KernelRuntimeState {
         target: &crate::agent::AgentInstance,
         control: PeerControl,
     ) -> Result<(), DaemonError> {
-        if target.session_id() == actor.session_id() {
-            let agents = self.session_agents(actor.session_id());
-            let actor_above = crate::agent::authority_limit::ancestors(target, &agents)
-                .iter()
-                .any(|agent| agent.id() == actor.id());
-            let actor_below = crate::agent::authority_limit::ancestors(actor, &agents)
-                .iter()
-                .any(|agent| agent.id() == target.id());
-            if actor_above || (actor_below && control == PeerControl::Steer) {
-                return Ok(());
+        let store = &self.owned.agent_store;
+        let actor_above = store.is_ancestor(actor.id(), target);
+        let actor_below = store.is_ancestor(target.id(), actor);
+        if actor_above || (actor_below && control == PeerControl::Steer) {
+            if actor.session_id() != target.session_id() {
+                let source = self.owned.session_store.get_session(actor.session_id())?;
+                if self.drives_as_room_guest(&source, actor) {
+                    return Err(unavailable());
+                }
             }
-            if actor_below {
-                return crate::runtime::room_tool_admission::in_subtree(actor, target, &agents);
-            }
+            return Ok(());
+        }
+        if actor_below {
+            return Err(denied("only the agents above an agent can control it"));
         }
         let target_session = self
             .owned
@@ -185,10 +174,10 @@ impl KernelRuntimeState {
             return Err(unavailable());
         }
         let actor_session = self.owned.session_store.get_session(actor.session_id())?;
-        let mine = crate::session::effective_agent_execution_config_in_tree(
+        let mine = self.owned.agent_store.effective_execution_config(
             &actor_session,
             actor,
-            &self.session_agents(actor.session_id()),
+            &self.owned.session_store,
         );
         self.peer_authority_covers(mine, &target_session, target)
             .map_err(|theirs| {
@@ -211,10 +200,10 @@ impl KernelRuntimeState {
         target_session: &crate::session::RuntimeSession,
         target: &crate::agent::AgentInstance,
     ) -> Result<(), crate::session::EffectiveAgentExecutionConfig> {
-        let theirs = crate::session::effective_agent_execution_config_in_tree(
+        let theirs = self.owned.agent_store.effective_execution_config(
             target_session,
             target,
-            &self.session_agents(target.session_id()),
+            &self.owned.session_store,
         );
         if mine.permission_level.permits(theirs.permission_level) && mine.mode.permits(theirs.mode)
         {

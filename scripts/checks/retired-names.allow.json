@@ -191,7 +191,7 @@
  {"path":"apps/cli/src/relay-api.ts","count":5,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/relay-cloud-command-handlers.ts","count":3,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/relay-tui-carrier.test.ts","count":4,"why":"written before the name was retired; rename when touching the file"},
- {"path":"apps/cli/src/remote-machine-api.ts","count":10,"why":"written before the name was retired; rename when touching the file"},
+ {"path":"apps/cli/src/remote-machine-api.ts","count":7,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/remote-machine-command-handlers.test.ts","count":5,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/remote-machine-command-handlers.ts","count":4,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/session-api.ts","count":2,"why":"written before the name was retired; rename when touching the file"},

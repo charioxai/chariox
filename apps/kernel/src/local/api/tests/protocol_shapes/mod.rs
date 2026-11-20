@@ -42,16 +42,20 @@ mod extension_apps;
 mod files_watch;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
+mod job_held_machine;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
 mod kernel_gateway;
 mod kernel_operation_interactions;
 mod kernel_resources;
+mod kernel_trash;
 mod landing8;
+mod machine_presence;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
+mod multi_project_context;
 mod native_spawn_slice;
 mod notes;
 mod panes_history;
@@ -59,6 +63,8 @@ mod project_environment;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;
+mod provider_catalog_aliases;
+mod provider_login_vault_entry;
 mod provider_usage_activity;
 mod provider_vault_login;
 mod publication;
@@ -105,6 +111,7 @@ fn history_page_entry(
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
         entry: crate::history::SessionHistoryEntry {
+            prompt_author: None,
             session_id: "session-1".to_string(),
             provider_run_id: Some("provider-run-1".to_string()),
             agent_id: Some(agent_id.to_string()),
@@ -116,6 +123,7 @@ fn history_page_entry(
                 _ => None,
             },
             kind,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -135,6 +143,7 @@ mod relay_transport;
 mod room_list_workspace;
 mod room_workflows;
 mod screenshot;
+mod skills_v2;
 
 mod leased_agent_file_copy;
 mod machine_files;
@@ -154,5 +163,8 @@ mod async_questions;
 mod provider_login;
 mod session_activity;
 
+mod event_follow;
 mod owner_vault;
+mod person_inbox;
 mod totp;
+mod watcher;

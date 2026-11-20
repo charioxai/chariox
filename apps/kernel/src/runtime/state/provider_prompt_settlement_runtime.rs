@@ -39,6 +39,21 @@ impl KernelRuntimeState {
             // busy after the writer recovers.
             self.owned.retry_failed_prompt_settlement(provider_run_id);
         }
+        if settled.is_ok() {
+            if let Err(error) = self.adopt_pending_provider_turn(session_id, provider_run_id) {
+                // The prompt is settled; the own turn stays pending and the next batch that
+                // still reports it adopts it.
+                crate::logging::warn_with_fields(
+                    "runtime.agent_lifecycle",
+                    "adopting the provider's own turn after a settlement failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
         settled
     }
 
@@ -83,9 +98,22 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        let session = owned.session_store.get_session(session_id)?;
+        // An ended run settles only the prompt that held it: forcing a newer
+        // prompt closed here would report a turn the provider never ran as
+        // completed (m3h).
         let active_prompt = owned
             .prompt_state_owner
-            .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
+            .active_prompt_for_agent(&session, &agent_id)
+            .filter(|prompt| {
+                provider_run.state() != crate::provider::ProviderRunState::Ended
+                    || crate::runtime::prompt_state::prompt_holds_provider_run(
+                        prompt,
+                        &provider_run,
+                        &session,
+                        &owned.provider_store,
+                    )
+            });
         let Some(mut active_prompt) = active_prompt else {
             if !force && !prompt_completed {
                 crate::logging::debug_with_fields(
@@ -612,7 +640,10 @@ impl KernelRuntimeState {
             })
             .transpose()?
             .unwrap_or(false);
+        // A deferred settings change belongs to the next turn. Route a queued
+        // prompt through provider selection instead of promoting it on this run.
         let defer_queued_prompt = is_workflow_prompt
+            || (provider_run.settings_stale() && provider_run.client_interface().is_chariox())
             || next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),

@@ -9,6 +9,7 @@ import { createCloudClientInvite } from "./cloud-client-invite.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest, listWorkflowNotificationsRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
+import type { SkillsV2Response } from "@chariox/kernel-client/kernel-types-skills-v2"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
@@ -68,15 +69,11 @@ import {
   getCredential,
   getEnvironment,
   getScript,
-  getSkill,
   grantAgentMcp,
   grantAgentConnector,
   grantAgentScript,
-  grantAgentSkill,
   importMcpServers,
-  importSkills,
   installMcpServer,
-  installSkill,
   listEnvironments,
   listConnectors,
   listConnectorAdapters,
@@ -84,7 +81,6 @@ import {
   listMcpServers,
   listHomeExtensionAudit,
   listScripts,
-  listSkills,
   registerEnvironment,
   registerConnector,
   registerConnectorAdapter,
@@ -98,12 +94,9 @@ import {
   revokeAgentMcp,
   revokeAgentConnector,
   revokeAgentScript,
-  revokeAgentSkill,
   syncRemoteExtensionManifest,
   uninstallMcpServer,
-  uninstallSkill,
   updateMcpServer,
-  updateSkill,
   validateScript,
   testConnector,
 } from "./extension-api.js"
@@ -528,6 +521,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     flashFooter,
     appendNotice,
     sendRoomEnvironmentRequest: (request) => client.send(request),
+    sendSkillsRequest: async (request) => {
+      const response = await client.send<{ SkillsV2?: { result: SkillsV2Response } }>(request)
+      if (!response.SkillsV2) throw new Error("this kernel does not serve Skills v2; upgrade the kernel")
+      return response.SkillsV2.result
+    },
     reconnectRoomEventStream: async () => {
       if (!client.supportsKernelEvents()) return false
       await client.restartKernelEventStream()
@@ -779,14 +777,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getMcpServer: (name) => getMcpServer(client, pendingWorkspaceTarget(), name),
     grantAgentMcp: (agentRef, name) => grantAgentMcp(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentMcp: (agentRef, name) => revokeAgentMcp(client, agentRef, name),
-    listSkills: () => listSkills(client, pendingWorkspaceTarget()),
-    installSkill: (sourcePath) => installSkill(client, pendingWorkspaceTarget(), sourcePath),
-    updateSkill: (sourcePath) => updateSkill(client, pendingWorkspaceTarget(), sourcePath),
-    uninstallSkill: (name) => uninstallSkill(client, pendingWorkspaceTarget(), name),
-    importSkills: (provider, name) => importSkills(client, pendingWorkspaceTarget(), provider, name),
-    getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
-    grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
-    revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
     projectEnvironmentCommand: (args) => projectEnvironmentCommand({
       send: (request) => client.send(request as never),
       room: () => ({ projectId: sessionState().project_id, checkoutPath: sessionState().worktree_id }),

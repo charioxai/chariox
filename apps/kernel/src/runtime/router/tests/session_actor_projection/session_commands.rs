@@ -51,11 +51,11 @@ async fn update_session_config_uses_session_runtime_projection_without_app_lock(
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "session config update should publish a session projection for lock-free state reads"
-    );
+    assert_finishes_without_app_lock(
+        &state_task,
+        "session config update should publish a session projection for lock-free state reads",
+    )
+    .await;
 
     drop(app_guard);
     let state_response = state_task

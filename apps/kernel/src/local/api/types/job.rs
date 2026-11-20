@@ -34,6 +34,10 @@ pub struct RunJobRequest {
     pub wait_s: u64,
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// The allocation_ref of a machine the agent already holds (from `chariox.machines.acquire`):
+    /// the job runs on that machine's kernel and leaves the machine held afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 fn job_timeout() -> u64 {
@@ -77,6 +81,18 @@ pub struct JobResult {
     pub outcome: JobOutcome,
 }
 
+/// The list keeps counts and a bounded refusal reason; status opens the full saved result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResultSummary {
+    pub exit_code: Option<i32>,
+    pub reason: Option<String>,
+    pub files_back_count: u64,
+    pub conflicts_count: u64,
+    pub ran_on: JobRanOn,
+    pub duration_ms: u64,
+    pub outcome: JobOutcome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobView {
     pub job_id: String,
@@ -91,5 +107,6 @@ pub struct JobView {
     pub rate_per_minute: Option<JobMachineRate>,
     pub estimate_micros: Option<u64>,
     pub deleted: bool,
-    pub result: Option<JobResult>,
+    pub result: Option<JobResultSummary>,
+    pub read_error: Option<String>,
 }

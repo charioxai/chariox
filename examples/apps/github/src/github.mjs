@@ -16,6 +16,8 @@ const API_VERSION = '2022-11-28';
  * allowed: a promise one invocation resolves for another leaves the other's host call tied to a task that has ended.
  */
 const BUSY_RETRIES = 30;
+/** GitHub lists a pull request's files up to 3000 and a commit's checks without a fixed end; reading stops here. */
+const MAX_PAGES = 30;
 const pause = ms => new Promise(resume => setTimeout(resume, ms));
 
 const fail = (code, message, extra) => { throw { code, message, retryable: false, ...extra }; };
@@ -49,7 +51,7 @@ export function parseLink(header) {
 /** What a kernel refusal or GitHub answer means for the person, in the App's own codes. */
 const kernelRefusals = {
   APP_HTTP_ACCOUNT_UNKNOWN: ['ACCOUNT_NOT_BOUND', account => `No GitHub account named "${account}" is bound to this App. The owner binds one in the kernel.`],
-  APP_HTTP_ACCOUNT_NOT_ALLOWED: ['ACCOUNT_NOT_ALLOWED', account => `The account "${account}" is not allowed to do this. The owner can raise what it may do in the kernel.`],
+  APP_HTTP_ACCOUNT_NOT_ALLOWED: ['ACCOUNT_NOT_ALLOWED', account => `Allow this App to make changes: the account "${account}" is bound to read only. The owner raises it when approving the App's update, or with /app account grant.`],
   APP_HTTP_ACCOUNT_UNAVAILABLE: ['ACCOUNT_UNAVAILABLE', account => `The credential of the account "${account}" cannot be read: unlock the kernel's Vault.`],
   APP_HTTP_ROUTE_NOT_DECLARED: ['ROUTE_NOT_DECLARED', () => 'This App has not declared that GitHub call.'],
 };
@@ -113,7 +115,7 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
   }
 
   /** One GET. Answers `{data, headers, link, stale, cached}`; `data` is the parsed JSON or, for a diff, text. */
-  async function get(account, template, params, { query, accept = 'application/vnd.github+json', fresh = false } = {}) {
+  async function get(account, template, params, { query, accept = 'application/vnd.github+json', text = false, fresh = false } = {}) {
     const url = ORIGIN + expand(template, params) + queryString(query);
     const resource = template.startsWith('/search/') ? 'search' : 'core';
     const cached = fresh ? null : await readCache(account, url, accept);
@@ -130,7 +132,7 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     if (response.status === 200 || response.status === 201) {
       await noteRate(account, response.headers);
       const etag = response.headers.get('etag');
-      const entry = { url, account, accept, etag, body, link: response.headers.get('link') };
+      const entry = { url, account, accept, text, etag, body, link: response.headers.get('link') };
       if (etag && body.length <= CACHE_VALUE_LIMIT) await put(`cache:${slotOf(account, url, accept)}`, entry, cached);
       return answer(entry);
     }
@@ -157,7 +159,7 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
 
   function answer(entry, { stale = false, cached = false } = {}) {
     return {
-      data: entry.accept.includes('json') ? (entry.body ? JSON.parse(entry.body) : null) : entry.body,
+      data: entry.text ? entry.body : (entry.body ? JSON.parse(entry.body) : null),
       link: parseLink(entry.link), stale, cached,
     };
   }
@@ -192,5 +194,16 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     return { items: result.data, page, hasNext: Boolean(result.link.next), stale: result.stale };
   }
 
-  return { get, list, send, rate };
+  /** Every page of a list, at 100 a page. `items` reads the entries of one answer. */
+  async function listAll(account, template, params, { items = data => data, ...options } = {}) {
+    const all = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const result = await list(account, template, params, { ...options, page, perPage: 100 });
+      all.push(...items(result.items));
+      if (!result.hasNext) return all;
+    }
+    fail('GITHUB_ERROR', `${template} has more than ${MAX_PAGES * 100} entries; narrow the request.`);
+  }
+
+  return { get, list, listAll, send, rate };
 }

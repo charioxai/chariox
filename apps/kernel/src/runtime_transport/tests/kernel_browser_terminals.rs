@@ -49,7 +49,7 @@ fn success(frame: KernelOutgoingFrame) -> serde_json::Value {
 }
 
 #[test]
-fn mdnotes_two_local_connections_keep_observation_and_takeover_private() {
+fn mdnotes_two_local_connections_keep_observation_private_and_share_the_takeover() {
     let root = RuntimeTransportTempDir::new("mdnotes-two-terminals");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("slice-linux-docker/docker/kernel-browser-terminal-fixture.mjs");
@@ -410,25 +410,21 @@ async fn mdnotes_two_local_connections_child() {
             )
             .await,
         );
-        let blocked = request(
-            &mut b.0,
-            "MP-mirror-b-input",
-            Browser::MirrorInput {
-                tab_id: tab.clone(),
-                generation,
-                document_id: b_packet["document_id"].as_str().unwrap().into(),
-                subscription_id: b_subscription.clone(),
-                sequence: 1,
-                action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
-            },
-        )
-        .await;
-        assert!(
-            matches!(
-                blocked,
-                KernelOutgoingFrame::Response { error: Some(_), .. }
-            ),
-            "MP-11: mirror input uses video takeover ledger"
+        // The takeover belongs to the person: their other connection types on, through the same ledger.
+        success(
+            request(
+                &mut b.0,
+                "MP-mirror-b-input",
+                Browser::MirrorInput {
+                    tab_id: tab.clone(),
+                    generation,
+                    document_id: b_packet["document_id"].as_str().unwrap().into(),
+                    subscription_id: b_subscription.clone(),
+                    sequence: 1,
+                    action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
+                },
+            )
+            .await,
         );
         success(
             request(
@@ -480,7 +476,70 @@ async fn mdnotes_two_local_connections_child() {
         );
         // A can act again after refreshing its own receipt; failed stale input
         // must not be repaired by B's state refresh or a cached response.
-        success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);
+        let refreshed = success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);
+        // A person's display input is answered by the frame it causes: its reply
+        // carries the generation, never the Tab state (every Tab's favicon).
+        let document_id = refreshed["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shown| shown["tab_id"] == tab.as_str())
+            .unwrap()["document_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let typed = state
+            .kernel_browser_display_request(
+                &caller_a,
+                Display::Input {
+                    binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
+                        tab_id: tab.clone(),
+                        generation,
+                        document_id,
+                    },
+                    input: KernelBrowserInput::Text {
+                        text: "MD-N5-display".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(typed, serde_json::json!({ "generation": generation }));
+        // A state read names each Tab's icon by hash; its PNG travels only to a
+        // viewer that lists no such hash (protocol 1012), never on a plain read.
+        let shown = |reply: serde_json::Value| {
+            reply["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|shown| shown["tab_id"] == tab.as_str())
+                .unwrap()
+                .clone()
+        };
+        let mut plain = serde_json::Value::Null;
+        for attempt in 0..40 {
+            plain = shown(success(
+                request(&mut a.0, &format!("MP-08-icon-{attempt}"), Browser::State).await,
+            ));
+            if !plain["favicon_hash"].is_null() || !plain["favicon_png_base64"].is_null() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let hash = plain["favicon_hash"].as_str().expect("MP-08: a named icon");
+        assert!(plain.get("favicon_png_base64").is_none(), "MP-08: {plain}");
+        let wait = |id: &'static str, known: Vec<&str>| {
+            let command = serde_json::json!({"op":"state_wait","after":"","wait_ms":0,"known_favicons":known});
+            (id, serde_json::from_value::<Browser>(command).expect("MP-08: protocol 1012 state wait"))
+        };
+        let (id, lacking) = wait("MP-08-icon-lacking", vec![]);
+        let lacking = shown(success(request(&mut a.0, id, lacking).await));
+        assert_eq!(lacking["favicon_hash"], hash);
+        assert!(lacking["favicon_png_base64"].as_str().unwrap().starts_with("iVBORw0KGgo"));
+        let (id, holding) = wait("MP-08-icon-holding", vec![hash]);
+        let holding = shown(success(request(&mut a.0, id, holding).await));
+        assert_eq!(holding["favicon_hash"], hash);
+        assert!(holding.get("favicon_png_base64").is_none(), "MP-08: {holding}");
         success(
             request(
                 &mut a.0,

@@ -393,6 +393,91 @@ fn the_new_machine_writes_the_login_into_its_own_vault_and_registers_the_profile
 }
 
 #[test]
+fn a_carried_default_setup_token_login_becomes_the_new_machines_default_account() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::new("vault-login-default");
+    let source_default = transfer
+        .source
+        .registry
+        .migrate_effective_defaults(OWNER, &transfer.source.home.join("native"))
+        .expect("the home kernel has its default Claude account")
+        .into_iter()
+        .find(|profile| profile.provider == "claude")
+        .expect("default Claude profile")
+        .profile_id;
+    crate::test_support::authenticate_provider_account(
+        &transfer.source.registry,
+        OWNER,
+        "claude",
+        &source_default,
+    )
+    .expect("authenticate the default account");
+    transfer.source.enter();
+    crate::provider::store_provider_account_credential(
+        &transfer.source.config,
+        OWNER,
+        "claude",
+        &source_default,
+        FIRST_TOKEN,
+        false,
+    )
+    .expect("the setup token is stored in the home Vault");
+    transfer.target.enter();
+    let machine_default = transfer
+        .target
+        .registry
+        .migrate_effective_defaults(OWNER, &transfer.target.home.join("native"))
+        .expect("the new machine has its own signed-out default")
+        .into_iter()
+        .find(|profile| profile.provider == "claude")
+        .expect("machine default Claude profile")
+        .profile_id;
+    let exported = transfer.export("context-default", &[&source_default]);
+
+    let receipt = transfer.apply(&exported).expect("apply package");
+
+    transfer.target.enter();
+    let selected = transfer
+        .target
+        .registry
+        .get(OWNER, "claude", "default")
+        .expect("the new machine has a default Claude account");
+    assert_eq!(
+        selected.profile_id, source_default,
+        "Claude on the new machine uses the carried login, not its own signed-out default"
+    );
+    assert_eq!(selected.auth_state, ProviderAccountAuthState::Authenticated);
+    assert!(
+        !transfer
+            .target
+            .registry
+            .get(OWNER, "claude", &machine_default)
+            .expect("the machine's own profile stays")
+            .is_default
+    );
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
+    else {
+        panic!("selected provider account became None")
+    };
+    transfer
+        .target
+        .registry
+        .rollback_managed_context_account(&transfer.target.config, OWNER, &accounts[0])
+        .expect("roll back the carried login");
+    assert_eq!(
+        transfer
+            .target
+            .registry
+            .get(OWNER, "claude", "default")
+            .expect("a default remains after the rollback")
+            .profile_id,
+        machine_default,
+        "a rollback gives the machine its own default back"
+    );
+}
+
+#[test]
 fn no_secret_value_reaches_the_receipt_the_package_or_any_plain_file() {
     crate::test_support::isolated_env_test!();
     let transfer = Transfer::new("vault-login-scan");

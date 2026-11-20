@@ -83,6 +83,12 @@ fn adopts_handed_over_turn(request: &LaunchProviderRequest) -> bool {
     }
 }
 
+/// The folder the person or orchestrating agent chose for this agent: its own
+/// worktree, else the Room's. Claude runs here and trusts only this folder.
+pub(crate) fn chosen_workspace(session_worktree: &str, agent_worktree: Option<&str>) -> PathBuf {
+    PathBuf::from(agent_worktree.unwrap_or(session_worktree))
+}
+
 impl DaemonApp {
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
@@ -254,10 +260,10 @@ impl DaemonApp {
             request = request.with_agent_settings(agent);
         }
         if request.working_directory.is_none() {
-            let working_directory = agent
-                .as_ref()
-                .and_then(|agent| agent.worktree_id().map(PathBuf::from))
-                .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+            let working_directory = chosen_workspace(
+                session.worktree_id(),
+                agent.as_ref().and_then(|agent| agent.worktree_id()),
+            );
             request = request.with_working_directory(working_directory);
         }
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
@@ -280,6 +286,21 @@ impl DaemonApp {
                     &[],
                 )?;
             }
+        }
+        // Leased runs already carry their execution's cache. Local runs read
+        // the roots `load_skill` returns from the kernel's package store.
+        if request.skill_cache_roots.is_empty() {
+            let home = self
+                .config
+                .user_config_path
+                .parent()
+                .ok_or(DaemonError::InvalidConfig {
+                    field: "CHARIOX_HOME",
+                    message: "Skills require a resolved Chariox home",
+                })?;
+            let store = crate::skill::service::SkillCatalogService::local_package_store(home)?;
+            crate::provider::state_confinement::validate_skill_package_store(&self.config, &store)?;
+            request = request.with_skill_cache_root(store);
         }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
@@ -984,7 +1005,7 @@ mod tests {
                     .with_hidden(true),
             )
             .expect("hidden remote lease session should create");
-        assert!(session.project_id().is_empty());
+        assert!(session.project().is_hidden_scope());
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
@@ -1001,6 +1022,34 @@ mod tests {
         assert_eq!(prepared.working_directory.as_deref(), Some(root.as_path()));
         assert!(prepared.workspace_live_sync_roots.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_confined_local_launch_can_read_the_roots_load_skill_returns() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("sv04-local-skill-read-root");
+        let app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                worktree.path().to_string_lossy(),
+                worktree.path().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let home = app.config.user_config_path.parent().unwrap().to_path_buf();
+
+        let prepared = app.prepare_app_provider_launch_request(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "model"),
+            "SV-04 local launch",
+        );
+        let store = std::fs::canonicalize(home.join("skills/packages"))
+            .expect("the package store exists before any skill is installed");
+        assert_eq!(
+            prepared.expect("local launch should prepare").skill_cache_roots,
+            vec![store],
+            "load_skill returns roots under the package store; the confined provider must read them"
+        );
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {

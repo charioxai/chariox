@@ -135,8 +135,36 @@ impl KernelRuntimeState {
         const SESSION: &str = "access-session";
         const AGENT: &str = "access-vault-agent";
         const PASSKEY: &str = "Access TEST Passkey";
-        let root = vault.parent().unwrap().to_owned();
+        // The fixture root holds the Vault's own folder.
+        let root = vault
+            .parent()
+            .and_then(std::path::Path::parent)
+            .unwrap()
+            .to_owned();
         match action {
+            // A Room whose state alone is larger than a gateway reply may be: one more open
+            // card carrying a long message stays in every snapshot of the Room.
+            "large-room" => {
+                let receiver = self
+                    .create_kernel_operation_interaction(
+                        SESSION,
+                        "local",
+                        crate::session::RuntimeInteraction::for_kernel_operation(
+                            "padding-access-operation-card",
+                            "padding-operation",
+                            "Padding",
+                            "x".repeat(700_000),
+                            vec![crate::session::RuntimeInteractionChoice::new(
+                                "continue", "Continue", "continue", None,
+                            )],
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                tokio::spawn(async move {
+                    let _ = receiver.await;
+                });
+            }
             "agent-question" | "agent-critical-question" => {
                 let critical = action == "agent-critical-question";
                 let receiver = self

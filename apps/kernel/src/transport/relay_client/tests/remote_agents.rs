@@ -53,30 +53,37 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
     worker_config.host_machine_id = "termination-machine".to_string();
     let worker_private_key = worker_config.relay_private_key.clone();
     let worker_public_key = worker_config.relay_public_key.clone();
-    let (mut worker_socket, _) = connect_async(&relay_url)
+    let (mut worker_socket, worker_socket_handshake) = connect_async(&relay_url)
         .await
         .expect("worker fixture should connect to relay");
     worker_socket
         .send(Message::Text(
-            serde_json::to_string(&chariox_relay::protocol::RelayEnvelope::DaemonRegister {
-                registration: chariox_relay::protocol::DaemonRegistration {
-                    auth_token: "termination-test-token".to_string(),
-                    daemon_id: worker_config.daemon_id.clone(),
-                    machine_id: worker_config.host_machine_id.clone(),
-                    machine_alias: Some("termination-machine".to_string()),
-                    os_name: Some("Linux".to_string()),
-                    kernel_started_at_ms: crate::session::unix_epoch_ms(),
-                    daemon_alias: None,
-                    kernel_alias: Some("termination-worker".to_string()),
-                    public_key: worker_public_key.clone(),
-                    capabilities: vec!["kernel_ws".to_string()],
-                    available_providers: vec!["managed-dev-stub".to_string()],
-                    provider_accounts: Vec::new(),
-                    accepting_remote_leases: true,
-                    leased_agent_count: 1,
-                    local_session_count: 0,
-                },
-            })
+            serde_json::to_string(
+                &crate::transport::relay_socket_connect::daemon_register(
+                    &relay_url,
+                    &worker_socket_handshake,
+                    chariox_relay::protocol::DaemonRegistration {
+                        auth_token: "termination-test-token".to_string(),
+                        daemon_id: worker_config.daemon_id.clone(),
+                        machine_id: worker_config.host_machine_id.clone(),
+                        machine_alias: Some("termination-machine".to_string()),
+                        os_name: Some("Linux".to_string()),
+                        kernel_started_at_ms: crate::session::unix_epoch_ms(),
+                        daemon_alias: None,
+                        kernel_alias: Some("termination-worker".to_string()),
+                        public_key: worker_public_key.clone(),
+                        capabilities: vec!["kernel_ws".to_string()],
+                        available_providers: vec!["managed-dev-stub".to_string()],
+                        provider_accounts: Vec::new(),
+                        accepting_remote_leases: true,
+                        leased_agent_count: 1,
+                        local_session_count: 0,
+                        local_protocol: None,
+                    },
+                    &worker_private_key,
+                )
+                .unwrap(),
+            )
             .expect("worker registration should serialize")
             .into(),
         ))
@@ -1115,6 +1122,220 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
     .await;
     assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
 
+    // The Vault is the home owner's: a Vault fill by the worker's provider reaches
+    // the home Vault as the home agent, whose Room names the credential.
+    let fill = worker_router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &worker_token,
+            "chariox.vault.write_file",
+            serde_json::json!({
+                "path": "vault-fill.txt",
+                "template": "{{TOKEN}}",
+                "values": {"TOKEN": "not-registered"},
+            }),
+        )
+        .await
+        .expect_err("the home Vault holds no such credential");
+    assert!(
+        fill.to_string()
+            .contains("unknown credential `not-registered`"),
+        "the fill must be answered by the home Vault, got: {fill}"
+    );
+    // Every tool that stores into the Vault or removes from it acts on the home Vault as the
+    // home's agent for this leased run, the same as the fill above.
+    let home_session_id = session_id;
+    let binding = serde_json::json!({"target": {
+        "kind": "command_environment", "name": "SLICE_TOKEN", "origin": "https://slice.example.com"
+    }});
+    let stored_by_home = |credential_id: &str, created_by_kind: &str| {
+        let metadata = crate::credential::CharioxCredentialRegistry::user()
+            .expect("the home Vault opens")
+            .get(credential_id)
+            .expect("the home Vault reads")
+            .unwrap_or_else(|| panic!("the home Vault holds {credential_id}"))
+            .metadata
+            .expect("a stored entry carries its metadata");
+        assert_eq!(metadata.created_by_kind.as_deref(), Some(created_by_kind));
+        assert_eq!(
+            metadata.created_by_id.as_deref(),
+            Some(remote_agent.id()),
+            "{credential_id} is the leased agent's at the home, not the worker's own agent"
+        );
+        assert_eq!(metadata.session_id.as_deref(), Some(home_session_id));
+    };
+    // The Vault the owner unlocked: nobody answers an unlock card in this test.
+    let home_vault_path = app_home
+        .lock()
+        .await
+        .config()
+        .user_config
+        .credential_vault
+        .path
+        .clone();
+    // "Just this once": a capture that fails on the worker keeps that unlock, and its retry
+    // stores under it; the Vault locks only after the store.
+    crate::secret::unlock_chariox_encrypted_vault(
+        home_vault_path.clone(),
+        "remote agents vault passphrase",
+        crate::secret::VaultUnlockLease::SingleUse,
+    )
+    .expect("the home Vault unlocks once");
+    let failed = worker_router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &worker_token,
+            "chariox.vault.capture_command",
+            serde_json::json!({
+                "request_id": "slice-capture-once",
+                "argv": ["sh", "-c", "exit 3"],
+                "host": "slice.example.com",
+                "use_binding": binding,
+            }),
+        )
+        .await
+        .expect_err("the command fails");
+    assert!(
+        failed.to_string().contains("exited with code 3"),
+        "{failed}"
+    );
+    let vault_unlocked = || {
+        crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .unlocked
+    };
+    assert!(
+        vault_unlocked(),
+        "a failed capture keeps the once-only unlock"
+    );
+    assert!(
+        crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .expires_at_ms
+            .is_some_and(|until| until >= crate::session::unix_epoch_ms() + 4 * 60_000),
+        "the kept unlock outlasts the retry's command"
+    );
+    let captured_once = tool(
+        "chariox.vault.capture_command",
+        serde_json::json!({
+            "request_id": "slice-capture-once",
+            "argv": ["printf", "slice-once-value"],
+            "host": "slice.example.com",
+            "use_binding": binding,
+        }),
+    )
+    .await;
+    assert!(captured_once.ok, "{:?}", captured_once.payload);
+    stored_by_home(
+        captured_once.payload["credential_id"]
+            .as_str()
+            .expect("captured handle"),
+        "vault_capture",
+    );
+    assert!(
+        !vault_unlocked(),
+        "the once-only unlock ends with the store"
+    );
+    crate::secret::unlock_chariox_encrypted_vault(
+        home_vault_path,
+        "remote agents vault passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("the home Vault unlocks");
+    let generated = tool(
+        "chariox.vault.generate",
+        serde_json::json!({"request_id": "slice-generate", "origin": "https://slice.example.com"}),
+    )
+    .await;
+    assert!(generated.ok, "{:?}", generated.payload);
+    let generated_id = generated.payload["credential_id"]
+        .as_str()
+        .expect("generated handle")
+        .to_string();
+    stored_by_home(&generated_id, "vault_generate");
+    let copied = tool(
+        "chariox.vault.copy_for_use",
+        serde_json::json!({
+            "request_id": "slice-copy",
+            "from": generated_id,
+            "use_binding": {"target": {"kind": "site", "origin": "https://api.slice.example.com"}},
+        }),
+    )
+    .await;
+    assert!(copied.ok, "{:?}", copied.payload);
+    let copied_id = copied.payload["credential_id"]
+        .as_str()
+        .expect("copied handle")
+        .to_string();
+    stored_by_home(&copied_id, "vault_copy");
+    let captured = tool(
+        "chariox.vault.capture_command",
+        serde_json::json!({
+            "request_id": "slice-capture",
+            "argv": ["sh", "-c", "printf 'TOKEN=slice-captured-value' | tee slice-capture.env"],
+            "host": "slice.example.com",
+            "use_binding": binding,
+            "extract": {"kind": "regex", "pattern": "^TOKEN=(.+)$", "group": 1},
+        }),
+    )
+    .await;
+    assert!(captured.ok, "{:?}", captured.payload);
+    let captured_id = captured.payload["credential_id"]
+        .as_str()
+        .expect("captured handle")
+        .to_string();
+    stored_by_home(&captured_id, "vault_capture");
+    let retried = tool(
+        "chariox.vault.capture_command",
+        serde_json::json!({
+            "request_id": "slice-capture",
+            "argv": ["sh", "-c", "exit 1"],
+            "host": "slice.example.com",
+            "use_binding": binding,
+        }),
+    )
+    .await;
+    assert_eq!(
+        retried.payload["credential_id"], captured_id,
+        "a retry names the entry the home already committed, without running again: {:?}",
+        retried.payload
+    );
+    let from_file = tool(
+        "chariox.vault.capture_file",
+        serde_json::json!({
+            "request_id": "slice-file",
+            "path": "slice-capture.env",
+            "host": "slice.example.com",
+            "use_binding": binding,
+            "extract": {"kind": "regex", "pattern": "^TOKEN=(.+)$", "group": 1},
+            "replace_with_handle": true,
+        }),
+    )
+    .await;
+    assert!(from_file.ok, "{:?}", from_file.payload);
+    let file_id = from_file.payload["credential_id"]
+        .as_str()
+        .expect("file handle")
+        .to_string();
+    stored_by_home(&file_id, "vault_capture");
+    // Only a capture can be removed with this tool; a generated or copied entry stays.
+    for credential_id in [&captured_id, &file_id] {
+        let removed = tool(
+            "chariox.vault.remove_capture",
+            serde_json::json!({ "credential_id": credential_id }),
+        )
+        .await;
+        assert!(removed.ok, "{:?}", removed.payload);
+        assert!(
+            crate::credential::CharioxCredentialRegistry::user()
+                .expect("the home Vault opens")
+                .get(credential_id)
+                .expect("the home Vault reads")
+                .is_none(),
+            "{credential_id} is gone from the home Vault"
+        );
+    }
+
     // A terminal the user opened on the home kernel names no worker. The
     // provider addresses it by asking for the home kernel, without naming
     // any home agent of the Room.
@@ -1871,6 +2092,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                         agent_id: Some(remote_agent_id.clone()),
                     }],
                     sources: Vec::new(),
+                    like: None,
                 }),
             )
             .unwrap();

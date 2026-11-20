@@ -1,3 +1,4 @@
+import { formatNativeReopenHint } from "./exit-hint.js"
 import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { detachFromSessionRequest } from "../ipc-requests.js"
 import { spawn } from "node:child_process"
@@ -35,6 +36,7 @@ import {
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
+  NATIVE_PROMPT_POLICY,
 } from "./runtime-banner.js"
 import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
@@ -62,13 +64,12 @@ type NativeCodexOptions = {
   sliceRef?: string
   alias?: string
   agentAlias?: string
-  model: string
+  model?: string
   effort: string
   mode: "build" | "plan"
   permissions: "required" | "yolo"
   initialPrompt?: string
   grantMcps: string[]
-  grantSkills: string[]
 }
 
 export async function runCodexNativeTui(args: string[]): Promise<void> {
@@ -98,11 +99,11 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
         provider: "codex",
-        model: options.model,
+        model: options.model ?? null,
         effort: options.effort,
         execution_mode: options.mode,
         permission_level: options.permissions,
-      }, options.sliceRef)
+      }, options.sliceRef, options.machineRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attachment = await attachNativeSession(client, session.id, options.clientId)
     const recovery = createRemoteAttachmentRecovery({
@@ -117,9 +118,12 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     detach = async () => { await client.send(detachFromSessionRequest(attachment.id)) }
 
     const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias)
       : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
-    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
+    // The kernel chose the model on the provider that runs the agent, or refused the spawn.
+    const model = agent.model?.trim()
+    if (!model) throw new Error(`The kernel chose no Codex model for agent ${agent.id}. Pass one with --model.`)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
     const bindState: CodexNativeBindingState = {
       promise: null,
       run: null,
@@ -131,7 +135,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       client,
       sessionId: session.id,
       agentId: agent.id,
-      model: options.model,
+      model,
       effort: options.effort,
     })
     if (!run.structured_endpoint) {
@@ -150,7 +154,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       get attachmentId() { return attachment.id },
       recovery,
       agentId: agent.id,
-      model: options.model,
+      model,
       effort: options.effort,
       bindState,
       inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
@@ -174,18 +178,20 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run: bindState.run,
       grantedMcps: options.grantMcps,
-      grantedSkills: options.grantSkills,
       providerLines: [
         `  app-server:     ${upstreamEndpoint}`,
         `  proxy:          ${proxyUrl}`,
         ...(run.provider_session_id ? [`  codex thread:   ${run.provider_session_id}`] : []),
       ],
-      promptPolicy: "native prompts pass through; Chariox observes the session",
+      promptPolicy: NATIVE_PROMPT_POLICY.throughKernel,
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment, {
       recovery,
       onTerminalRecords: (records) => proxy?.projectKernelOutputToTui(records),
-      onAgentActivity: (activity) => proxy?.projectKernelActivityToTui(activity[agent.id]),
+      onAgentActivity: async (activity) => {
+        await proxy?.projectKernelActivityToTui(activity[agent.id])
+        await proxy?.refreshSkills()
+      },
       onInteractions: (interactions) => proxy?.projectKernelInteractionsToTui(interactions),
       pollRuntimeNotices: false,
       debug: debugNativeCodex,
@@ -193,10 +199,11 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     })
     await runCodexTui({
       proxyUrl,
-      model: options.model,
+      model,
       workingDirectory: worktree,
       initialPrompt: options.initialPrompt,
     })
+    process.stderr.write(formatNativeReopenHint("codex", session.id))
   } finally {
     active = false
     pump?.stop()
@@ -212,12 +219,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
 function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   const options: NativeCodexOptions = {
     clientId: `chariox-codex-native-${process.pid}`,
-    model: "gpt-5.4-mini",
     effort: "high",
     mode: "build",
     permissions: "yolo",
     grantMcps: [],
-    grantSkills: [],
   }
   let relayTokenSource = false
   const positional: string[] = []
@@ -311,8 +316,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
         options.grantMcps.push(next())
         break
       case "--grant-skill":
-        options.grantSkills.push(next())
-        break
+        throw new Error("--grant-skill is retired: install skills in Skills and select instructions with $name")
       case "--help":
       case "-h":
         printNativeCodexUsage()
@@ -351,7 +355,6 @@ function printNativeCodexUsage() {
     "",
     "behavior:",
     "  --grant-mcp NAME                Grant an installed Chariox MCP to the native agent before provider launch",
-    "  --grant-skill NAME              Grant an installed Chariox skill to the native agent before provider launch",
     "  creates a new Chariox agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
 }

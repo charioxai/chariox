@@ -34,6 +34,13 @@ pub struct AgentTreeTotals {
 pub struct AgentTreeNode {
     pub agent_id: String,
     pub parent_agent_id: Option<String>,
+    /// Present when the child works in another Room on this kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
     pub kernel_id: Option<String>,
     pub alias: Option<String>,
     pub provider: String,

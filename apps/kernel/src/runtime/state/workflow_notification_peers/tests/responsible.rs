@@ -241,6 +241,53 @@ fn an_agent_on_another_kernel_is_told_of_a_failed_run_and_released_by_a_hand_ove
 }
 
 #[test]
+fn an_agent_renamed_and_chosen_again_keeps_its_trigger_and_is_still_told_of_a_failed_run() {
+    on_a_big_stack(async {
+        let drill = Drill::connect().await;
+        register_agent(&drill);
+        set(&drill, target_of(&drill)).await;
+        let mut agent = drill
+            .target_runtime
+            .owned
+            .agent_store
+            .get_agent(AGENT)
+            .unwrap();
+        agent.set_alias(Some("renamed".into()));
+        drill.target_runtime.owned.agent_store.restore_agent(agent);
+
+        set(&drill, target_of(&drill)).await;
+
+        let (_, workflow) = workflow_of(&drill);
+        assert_eq!(
+            workflow.responsible().agent().map(|agent| agent.label),
+            Some("renamed")
+        );
+        assert_eq!(
+            responsible_triggers(&drill),
+            1,
+            "choosing the renamed agent again must not detach its trigger"
+        );
+        let subscriptions = drill
+            .source
+            .store
+            .notification_inventory("local")
+            .unwrap()
+            .1;
+        assert!(
+            subscriptions
+                .iter()
+                .any(|s| s.subscription_id.starts_with("wf_responsible_")),
+            "{subscriptions:?}"
+        );
+        fail_run(&drill, "run-1", "resend the diff");
+        pump(&drill, |drill| !prompts_of_agent(drill).is_empty()).await;
+        let prompts = prompts_of_agent(&drill);
+        assert_eq!(prompts.len(), 1, "{prompts:?} {}", trigger_report(&drill));
+        drill.finish().await;
+    });
+}
+
+#[test]
 fn an_agent_of_another_kernel_takes_a_workflow_through_its_own_kernel() {
     on_a_big_stack(async {
         let drill = Drill::connect().await;
@@ -404,6 +451,7 @@ async fn follow_run_finished(drill: &Drill) -> String {
             "wf_subscription_own".into(),
             source.display_name.clone(),
             Some("Look at the failed run.".into()),
+            crate::session::AgentTriggerBusyPolicy::Queue,
         )
         .unwrap();
     let home = drill.target_runtime.owned.home_kernel_id();

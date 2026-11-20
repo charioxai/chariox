@@ -28,10 +28,23 @@ const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
     ("claude-fable-5-1", "Fable 5.1"),
 ];
 
+// The names `--model` takes for the newest model of each family, as the official picker lists them.
+const CLAUDE_KNOWN_ALIASES: &[(&str, &str)] = &[
+    ("haiku", "claude-haiku-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("opus", "claude-opus-5-5"),
+    ("fable", "claude-fable-5-1"),
+];
+
 pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
     let mut models = BTreeMap::new();
     for (id, name) in claude_catalog_model_entries() {
         models.insert(id.clone(), claude_model(&id, &name));
+    }
+    for (alias, id) in CLAUDE_KNOWN_ALIASES {
+        if let Some(model) = models.get_mut(*id) {
+            model.aliases.push((*alias).to_string());
+        }
     }
     let providers = [
         (CLAUDE_HEADLESS_PROVIDER_ID, "Claude headless"),
@@ -114,7 +127,12 @@ fn catalog_from_native_models(value: &serde_json::Value) -> Option<OpenCodeProvi
             .filter_map(serde_json::Value::as_str)
             .map(|effort| (effort.to_string(), serde_json::json!({})))
             .collect();
-        models.insert(id.to_string(), model);
+        // The picker names a model by the value `--model` takes (`sonnet`) and by the id it
+        // resolves to; two picker rows can resolve to one id, and keep both names.
+        let known: &mut OpenCodeProviderModel = models.entry(id.to_string()).or_insert(model);
+        if native_value != id && !known.aliases.iter().any(|alias| alias == native_value) {
+            known.aliases.push(native_value.to_string());
+        }
     }
     if models.is_empty() {
         return None;
@@ -243,6 +261,7 @@ fn claude_model(id: &str, name: &str) -> OpenCodeProviderModel {
         id: id.to_string(),
         name: name.to_string(),
         status: "available".to_string(),
+        aliases: Vec::new(),
         limit: None,
         variants: BTreeMap::from([
             ("low".to_string(), serde_json::json!({ "name": "Low" })),
@@ -281,6 +300,16 @@ mod tests {
     }
 
     #[test]
+    fn the_offline_list_names_each_family_alias_so_a_named_alias_resolves_without_the_picker() {
+        let catalog = claude_provider_catalog();
+        for provider in catalog.all {
+            for (alias, id) in CLAUDE_KNOWN_ALIASES {
+                assert_eq!(provider.models[*id].aliases, [*alias], "{alias}");
+            }
+        }
+    }
+
+    #[test]
     fn unknown_model_without_native_display_name_keeps_its_id() {
         let mut entries = Vec::new();
         push_claude_model_entry(&mut entries, "claude-future-7-2", None);
@@ -302,6 +331,8 @@ mod tests {
         for provider in catalog.all {
             assert_eq!(provider.models.len(), 2);
             assert_eq!(provider.models["claude-opus-5-5"].name, "Opus");
+            assert_eq!(provider.models["claude-opus-5-5"].aliases, ["opus"]);
+            assert_eq!(provider.models["claude-haiku-5-5"].aliases, ["haiku"]);
             assert_eq!(
                 provider.models["claude-haiku-5-5"]
                     .variants

@@ -64,65 +64,16 @@ export function importProviderCapabilitiesRequest(
   }
 }
 
-export function getSkillRequest(workspaceId: string | null, name: string) {
-  return {
-    GetSkill: {
-      workspace_id: workspaceId ?? null,
-      name,
-    },
-  }
-}
 
-export function installSkillRequest(workspaceId: string | null, sourcePath: string) {
-  return {
-    InstallSkill: {
-      workspace_id: workspaceId ?? null,
-      source_path: sourcePath,
-    },
-  }
-}
 
-export function upsertSkillRequest(workspaceId: string | null, source: Record<string, unknown>) {
-  return {
-    UpsertSkill: {
-      workspace_id: workspaceId ?? null,
-      source,
-    },
-  }
-}
 
-export function updateSkillRequest(workspaceId: string | null, sourcePath: string) {
-  return {
-    UpdateSkill: {
-      workspace_id: workspaceId ?? null,
-      source_path: sourcePath,
-    },
-  }
-}
 
-export function uninstallSkillRequest(workspaceId: string | null, name: string) {
-  return {
-    UninstallSkill: {
-      workspace_id: workspaceId ?? null,
-      name,
-    },
-  }
-}
 
-export function importSkillsRequest(workspaceId: string | null, provider: string, name?: string | null) {
-  return {
-    ImportSkills: {
-      workspace_id: workspaceId ?? null,
-      provider,
-      name: name ?? null,
-    },
-  }
-}
 
 export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector" | "app",
+  kind: "mcp" | "script" | "connector" | "app",
   name: string,
   environment?: string | null,
   options?: { credential?: string | null; maxSafety?: string | null } | null,
@@ -140,7 +91,7 @@ export function grantAgentExtensionRequest(
   }
 }
 
-export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script" | "connector" | "app", name: string) {
+export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "script" | "connector" | "app", name: string) {
   return {
     RevokeAgentExtension: {
       agent_ref: agentRef,
@@ -321,14 +272,6 @@ export function listScriptsRequest(workspaceId?: string | null) {
 export function listMcpServersRequest(workspaceId?: string | null) {
   return {
     ListMcpServers: {
-      workspace_id: workspaceId ?? null,
-    },
-  }
-}
-
-export function listSkillsRequest(workspaceId?: string | null) {
-  return {
-    ListSkills: {
       workspace_id: workspaceId ?? null,
     },
   }

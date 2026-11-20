@@ -11,7 +11,7 @@ use crate::config::ListenPort;
 use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -20,10 +20,15 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::room_terminal::{RoomTerminalService, TerminalHandover};
+use crate::runtime::state::LocalJobHandover;
+
+mod job_state_file;
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 13;
+/// This includes the persisted terminal records used to restore the handed-over PTYs;
+/// TerminalScope records cannot restore the earlier session-only records.
+pub const HANDOVER_FORMAT: u32 = 17;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -36,6 +41,10 @@ struct Handover {
     // Jobs that workloads which ended left running stay their owners' (agent or
     // Room terminal): the next program watches them again.
     released_jobs: Vec<crate::runtime::process_resources::ReleasedJobs>,
+    // Processes agents watch keep their wakes: the next program supervises the
+    // same processes again, from the pipes handed over with them.
+    watched: Vec<crate::runtime::state::WatchedHandover>,
+    local_jobs: Vec<LocalJobHandover>,
     // Commands whose admission stopped them for room stay stopped, listed and
     // startable: the next program's admission is told which they are.
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
@@ -61,6 +70,8 @@ impl Handover {
             providers: Vec::new(),
             attachments: Vec::new(),
             released_jobs: Vec::new(),
+            watched: Vec::new(),
+            local_jobs: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
             revoked_reach_runs: Vec::new(),
@@ -76,6 +87,12 @@ impl Handover {
             .iter()
             .map(TerminalHandover::master_fd)
             .chain(self.providers.iter().flat_map(ProviderHandover::fds))
+            .chain(
+                self.watched
+                    .iter()
+                    .flat_map(|watched| watched.fds().iter().copied()),
+            )
+            .chain(self.local_jobs.iter().flat_map(LocalJobHandover::fds))
             .chain(self.credentials_fd)
             .chain(self.vault_fd)
             .chain(self.listeners.values().copied())
@@ -104,6 +121,11 @@ pub(crate) struct ProviderHandover {
     run_id: String,
     // The running process authenticates its kernel tool calls with it.
     runtime_mcp_auth_token: Option<String>,
+    // The run as far as tool calls need it, until a recovered prompt claims the process: the
+    // surviving process keeps calling its tools with the token it has (Vault, timers, events).
+    // A program older than this field hands none over, and its runs authenticate at the claim.
+    #[serde(default)]
+    identity: Option<RunIdentity>,
     process: HandedOverProcess,
 }
 
@@ -154,6 +176,44 @@ impl ProviderHandover {
     }
 }
 
+/// A handed-over run as its tool calls read it. The run's own serialization leaves out what is
+/// kept in memory only; the runtime state tool calls read is carried beside it: whether workflow
+/// actions are offered (`workflow_tools_enabled`) and the workflow node whose fresh context the run
+/// holds. The other runtime-only fields (resolved account, discovery and substitute markers,
+/// settings staleness, sync roots, project environment revision, native checkpoint, last output
+/// time) are read at launch, prompt dispatch, settlement and reload, which the claiming run does.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RunIdentity {
+    run: crate::provider::RuntimeProviderRun,
+    #[serde(default)]
+    workflow_tools_enabled: bool,
+    #[serde(default)]
+    workflow_fresh_context_node_run_id: Option<String>,
+}
+
+impl RunIdentity {
+    pub(crate) fn of(run: &crate::provider::RuntimeProviderRun) -> Self {
+        Self {
+            run: run.handover_identity(),
+            workflow_tools_enabled: run.workflow_tools_enabled(),
+            workflow_fresh_context_node_run_id: run
+                .workflow_fresh_context_node_run_id()
+                .map(str::to_string),
+        }
+    }
+
+    pub(crate) fn into_run(self) -> crate::provider::RuntimeProviderRun {
+        let mut run = self.run;
+        if self.workflow_tools_enabled {
+            run.enable_workflow_tools();
+        }
+        if let Some(node) = self.workflow_fresh_context_node_run_id {
+            run.mark_workflow_fresh_context(node);
+        }
+        run
+    }
+}
+
 /// How this program was started, to start its successor the same way: the
 /// kernel removes secrets from its environment once it has read them.
 struct Start {
@@ -167,12 +227,19 @@ static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldComm
     Mutex::new(Vec::new());
 static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
     Mutex::new(Vec::new());
+static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
+    Mutex::new(Vec::new());
+static RECEIVED_LOCAL_JOBS: Mutex<Vec<LocalJobHandover>> = Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
 static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
     Mutex::new(None);
 static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+// The handed-over runs' tool identities, from the handover until a recovered prompt claims the run:
+// their processes are alive and keep calling the kernel's tools with the token they have.
+static UNCLAIMED_RUNS: Mutex<BTreeMap<String, crate::provider::RuntimeProviderRun>> =
+    Mutex::new(BTreeMap::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -236,6 +303,14 @@ pub fn receive() {
             set_close_on_exec(fd, true);
         }
     }
+    for watched in &handover.watched {
+        for fd in watched.fds() {
+            set_close_on_exec(*fd, true);
+        }
+    }
+    for fd in handover.local_jobs.iter().flat_map(LocalJobHandover::fds) {
+        set_close_on_exec(fd, true);
+    }
     let mut handover = handover;
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
@@ -251,6 +326,8 @@ pub fn receive() {
     // Activate these only after startup finishes consuming the environment.
     *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
+    *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
+    *lock(&RECEIVED_LOCAL_JOBS) = std::mem::take(&mut handover.local_jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -260,6 +337,15 @@ pub fn receive() {
             "attachments": handover.attachments.len(),
         }),
     );
+    *lock(&UNCLAIMED_RUNS) = handover
+        .providers
+        .iter_mut()
+        .filter_map(|p| {
+            p.identity
+                .take()
+                .map(|identity| (p.run_id.clone(), identity.into_run()))
+        })
+        .collect();
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
@@ -274,6 +360,11 @@ pub fn adopt_received_processes() {
     // Admission must precede the first watch sample.
     crate::runtime::process_resources::adopt_admission(held);
     crate::runtime::process_resources::adopt_released(jobs);
+}
+
+/// The watched processes the previous program handed over, once.
+pub(crate) fn take_watched() -> Vec<crate::runtime::state::WatchedHandover> {
+    std::mem::take(&mut *lock(&RECEIVED_WATCHED))
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -533,6 +624,49 @@ pub(crate) fn handed_over_run_id(
         .map(|p| p.run_id.clone())
 }
 
+/// The handed-over runs no recovered prompt has claimed yet that hold this tool token: their
+/// processes are alive and keep calling the kernel's tools, so the token must keep working.
+pub(crate) fn unclaimed_runs_for_token(token: &str) -> Vec<crate::provider::RuntimeProviderRun> {
+    lock(&UNCLAIMED_RUNS)
+        .values()
+        .filter(|run| run.runtime_mcp_auth_token() == Some(token))
+        .cloned()
+        .collect()
+}
+
+/// The handed-over run of an agent that no recovered prompt has claimed yet: until then it is the
+/// agent's current run, the one its event tools (timers, waits, inbox) name.
+pub(crate) fn unclaimed_run_for_agent(
+    session_id: &str,
+    agent_id: &str,
+) -> Option<crate::provider::RuntimeProviderRun> {
+    lock(&UNCLAIMED_RUNS)
+        .values()
+        .find(|run| run.session_id() == session_id && run.agent_instance_id() == Some(agent_id))
+        .cloned()
+}
+
+/// The run as the next program reads it from the handover: through the serialized form.
+#[cfg(test)]
+pub(crate) fn run_after_handover_for_tests(
+    run: &crate::provider::RuntimeProviderRun,
+) -> crate::provider::RuntimeProviderRun {
+    let body = serde_json::to_vec(&RunIdentity::of(run)).unwrap();
+    serde_json::from_slice::<RunIdentity>(&body)
+        .unwrap()
+        .into_run()
+}
+
+#[cfg(test)]
+pub(crate) fn hold_unclaimed_run_for_tests(run: crate::provider::RuntimeProviderRun) {
+    lock(&UNCLAIMED_RUNS).insert(run.id().to_string(), run);
+}
+
+#[cfg(test)]
+pub(crate) fn forget_unclaimed_runs_for_tests() {
+    lock(&UNCLAIMED_RUNS).clear();
+}
+
 /// A new run of the agent takes the handed-over run's id and tool token, and
 /// its runtime adopts the process instead of starting one.
 pub(crate) fn claim_provider_run(
@@ -547,6 +681,7 @@ pub(crate) fn claim_provider_run(
             && p.process.adapter_key() == adapter_key
     })?;
     let provider = providers.remove(index);
+    lock(&UNCLAIMED_RUNS).remove(&provider.run_id);
     lock(&ADOPTING).insert(provider.run_id.clone(), provider.process);
     Some((provider.run_id, provider.runtime_mcp_auth_token))
 }
@@ -560,6 +695,15 @@ pub(crate) fn take_claude(run_id: &str) -> Option<crate::provider::ClaudeHandove
             None
         }
     }
+}
+
+/// A handed-over Claude turn this program adopts for `run_id`, as after a claim.
+#[cfg(test)]
+pub(crate) fn adopt_claude_for_tests(run_id: &str, claude: crate::provider::ClaudeHandover) {
+    lock(&ADOPTING).insert(
+        run_id.to_string(),
+        HandedOverProcess::Claude(Box::new(claude)),
+    );
 }
 
 /// The PTY of a claimed run's handed-over provider server, to adopt instead
@@ -599,6 +743,7 @@ pub(crate) fn is_handed_over_run(run_id: &str) -> bool {
 /// Ends handed-over turns no recovered prompt claimed, as a restart would have.
 pub(crate) fn end_unclaimed_providers() {
     let unclaimed = std::mem::take(&mut *lock(&RECEIVED_PROVIDERS));
+    lock(&UNCLAIMED_RUNS).clear();
     for provider in unclaimed {
         crate::logging::warn_with_fields(
             "hot_reload",
@@ -642,9 +787,11 @@ impl PreparedForTests {
         *lock(&PREPARED) = Some(Prepared {
             handover: Handover::default(),
             masters: Vec::new(),
+            watched_resources: Vec::new(),
             kernel: None,
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
+            local_job_guards: Vec::new(),
         });
         Self
     }
@@ -695,6 +842,70 @@ pub(crate) fn hand_over_claude(
             HandedOverProcess::Claude(Box::new(claude)),
         ));
     }
+}
+
+/// Keeps the processes agents watch and their output pipes until exec.
+pub(crate) fn hand_over_watched(watched: Vec<crate::runtime::state::WatchedProcessTransfer>) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        for transfer in watched {
+            prepared.handover.watched.push(transfer.handover);
+            prepared.masters.extend(transfer.pipes);
+            prepared.watched_resources.extend(transfer.resources);
+        }
+    }
+}
+
+pub(crate) fn hand_over_local_job(
+    job_id: String,
+    wake_id: String,
+    exec: crate::room_exec::JobExecHandover,
+    pipes: Vec<OwnedFd>,
+    guard: Option<crate::room_exec::JobExecGuard>,
+    log: OwnedFd,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let state = job_state_file::write(body)?;
+    let mut prepared = lock(&PREPARED);
+    let prepared = prepared
+        .as_mut()
+        .ok_or_else(|| std::io::Error::other("the kernel reload is no longer prepared"))?;
+    prepared.handover.local_jobs.push(LocalJobHandover::new(
+        job_id,
+        wake_id,
+        exec,
+        state.as_raw_fd(),
+        log.as_raw_fd(),
+    ));
+    prepared.masters.extend(pipes);
+    prepared.masters.push(state);
+    prepared.masters.push(log);
+    prepared.local_job_guards.extend(guard);
+    Ok(())
+}
+
+pub(crate) fn local_job_wakes() -> Vec<String> {
+    lock(&RECEIVED_LOCAL_JOBS)
+        .iter()
+        .map(|job| job.wake_id().to_string())
+        .collect()
+}
+
+pub(crate) fn take_local_job(id: &str) -> Option<LocalJobHandover> {
+    let mut jobs = lock(&RECEIVED_LOCAL_JOBS);
+    let index = jobs.iter().position(|job| job.id() == id)?;
+    Some(jobs.swap_remove(index))
+}
+
+pub(crate) fn discard_unclaimed_local_jobs() {
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_LOCAL_JOBS));
+    for job in jobs {
+        job.discard();
+    }
+}
+
+pub(crate) fn read_local_job_state(fd: i32) -> std::io::Result<zeroize::Zeroizing<Vec<u8>>> {
+    // The previous program named this descriptor for this job alone.
+    job_state_file::read(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// Keeps the users' focus and grants for the next program.
@@ -775,6 +986,7 @@ fn provider_handover(
         agent_id: run.agent_instance_id().map(str::to_string),
         run_id: run.id().to_string(),
         runtime_mcp_auth_token: run.runtime_mcp_auth_token().map(str::to_string),
+        identity: Some(RunIdentity::of(run)),
         process,
     }
 }
@@ -787,10 +999,12 @@ struct Prepared {
     // `exec`: the terminals and runs that handed them over close their own
     // descriptors whenever the kernel's stop drops them.
     masters: Vec<OwnedFd>,
+    watched_resources: Vec<crate::runtime::process_resources::ProcessDomain>,
     // The stopped kernel's state, which owns the handed-over PTY processes.
     kernel: Option<Box<dyn std::any::Any + Send>>,
     path: PathBuf,
     offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
+    local_job_guards: Vec<crate::room_exec::JobExecGuard>,
 }
 
 impl Prepared {
@@ -799,9 +1013,11 @@ impl Prepared {
         Self {
             handover: Handover::with_terminals(terminals),
             masters,
+            watched_resources: Vec::new(),
             kernel: None,
             path,
             offered_ptys: BTreeMap::new(),
+            local_job_guards: Vec::new(),
         }
     }
 }
@@ -940,6 +1156,20 @@ fn replace_program() -> Option<String> {
                 .released_jobs
                 .iter()
                 .flat_map(crate::runtime::process_resources::ReleasedJobs::pids),
+        )
+        .chain(
+            prepared
+                .handover
+                .watched
+                .iter()
+                .map(crate::runtime::state::WatchedHandover::pid),
+        )
+        .chain(
+            prepared
+                .handover
+                .local_jobs
+                .iter()
+                .filter_map(LocalJobHandover::pid),
         )
         .collect();
     end_children_except(&kept);

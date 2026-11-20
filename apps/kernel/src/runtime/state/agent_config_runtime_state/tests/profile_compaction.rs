@@ -1121,7 +1121,6 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
                     prompt_summary: "next home request".into(),
                 }),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
                 Some(
                     crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -1133,6 +1132,7 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
                             ),
                     },
                 ),
+                Default::default(),
             )
             .await
             .unwrap();

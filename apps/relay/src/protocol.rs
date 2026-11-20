@@ -113,6 +113,10 @@ pub struct DaemonRegistration {
     pub leased_agent_count: u32,
     #[serde(default)]
     pub local_session_count: u32,
+    /// The kernel's local protocol version. Absent when the kernel predates the field, so
+    /// clients show its protocol as unknown and ask for an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +154,9 @@ pub struct RelayKernelPresence {
     #[serde(default)]
     pub local_session_count: u32,
     pub public_key: String,
+    /// Copied from the kernel's own registration; clients compare it with what they need.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +263,9 @@ pub struct InitialDisplayResumeRegistration {
 pub enum RelayEnvelope {
     DaemonRegister {
         registration: DaemonRegistration,
+        /// The kernel identity key's signature over this connection's challenge
+        /// (`registration_proof`).
+        proof: String,
     },
     DaemonHeartbeat {
         daemon_id: String,
@@ -488,10 +498,13 @@ mod tests {
                 accepting_remote_leases: false,
                 leased_agent_count: 0,
                 local_session_count: 1,
+                local_protocol: None,
             },
+            proof: "proof".to_string(),
         };
         let json = serde_json::to_string(&envelope).expect("envelope should serialize");
         assert!(json.contains("\"kind\":\"daemon_register\""));
+        assert!(json.contains("\"proof\":\"proof\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
     }

@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-use rand::RngCore;
 
 use crate::error::DaemonError;
 use crate::provider::{
@@ -18,6 +15,8 @@ mod catalog;
 mod launch_args;
 mod mcp_config;
 mod native_tui;
+mod project_trust;
+mod state_file;
 mod state_path;
 mod usage_capture;
 mod usage_probe;
@@ -26,11 +25,12 @@ pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
 pub(crate) use catalog::claude_provider_catalog_with_environment;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
-pub(crate) use launch_args::claude_args_with_execution_config;
 use launch_args::claude_launch_args;
+pub(crate) use launch_args::{claude_args_with_execution_config, normalized_claude_model};
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::CLAUDE_RUNTIME_FILES_PREFIX;
+pub(crate) use mcp_config::CLAUDE_RUNTIME_MCP_SERVER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
@@ -38,8 +38,11 @@ pub(crate) use native_tui::{
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
+pub(crate) use project_trust::trusted_workspace_notice;
+use project_trust::{ClaudeStateUpdate, StateChange};
 pub(crate) use usage_probe::{
-    read_claude_rate_limits, verify_claude_account_credential, ClaudeCredentialCheckError,
+    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
+    ClaudeCredentialCheckError,
 };
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
@@ -48,6 +51,17 @@ const CLAUDE_ENV_OVERRIDE: &str = "CHARIOX_CLAUDE_BIN";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
+/// The one bound of a Claude start phase, headless and terminal alike: a
+/// start that has not ended within it (anything but an owner-answerable card,
+/// which waits as long as the card) fails the turn, naming why.
+pub(crate) const CLAUDE_START_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+/// Claude Code waits this long for its MCP servers before a turn starts (30 s
+/// by default), as Codex does with `startup_timeout_sec`. It stays inside the
+/// start budget, so a server that never answers ends the start with Claude's
+/// own `init` status (`claude_runtime::events`) rather than the budget.
+const CLAUDE_MCP_STARTUP_TIMEOUT_ENV: &str = "MCP_TIMEOUT";
+const CLAUDE_MCP_STARTUP_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(CLAUDE_START_BUDGET.as_secs() - 30);
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
@@ -305,14 +319,19 @@ fn plan_claude_launch_unlocked(
     Ok(launch)
 }
 
-/// Initializes the selected profile's onboarding state while the launch
-/// environment (including a Project-bound HOME) is still in the request,
-/// before secrets are separated from it and its metadata is persisted.
-pub(crate) fn prepare_claude_onboarding_state(
+/// Prepares the selected profile's Claude state while the launch environment
+/// (including a Project-bound HOME) is still in the request, before secrets are
+/// separated from it and its metadata is persisted: onboarding for Chariox-run
+/// and vaulted launches, and trust for the workspace Chariox chose for the
+/// agent, so Claude never asks a person about a folder they already picked.
+///
+/// Returns the folder this call newly trusted, for the Room to announce.
+pub(crate) fn prepare_claude_launch_state(
     request: &LaunchProviderRequest,
-) -> Result<(), DaemonError> {
+    chosen_workspace: &Path,
+) -> Result<Option<PathBuf>, DaemonError> {
     if crate::provider::canonical_provider_family(&request.provider) != Some("claude") {
-        return Ok(());
+        return Ok(None);
     }
     let headless = request.provider == CLAUDE_HEADLESS_PROVIDER_ID;
     let vaulted_native = !request.client_interface.is_chariox()
@@ -320,17 +339,31 @@ pub(crate) fn prepare_claude_onboarding_state(
             .provider_credential_env
             .iter()
             .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty());
-    if headless || vaulted_native {
-        ensure_claude_headless_onboarding_state(Some(request))?;
-    }
-    Ok(())
+    let trusted_workspace = project_trust::workspace_to_trust(request, chosen_workspace)?;
+    let update = ClaudeStateUpdate {
+        onboarding: headless || vaulted_native,
+        trusted_workspace: trusted_workspace.as_deref(),
+    };
+    let change = update_claude_state(Some(request), &update)?;
+    Ok(trusted_workspace.filter(|_| change.trusted))
 }
 
+#[cfg(test)]
 fn ensure_claude_headless_onboarding_state(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(), DaemonError> {
+    update_claude_state(request, &ClaudeStateUpdate::onboarding_only()).map(|_| ())
+}
+
+fn update_claude_state(
+    request: Option<&LaunchProviderRequest>,
+    update: &ClaudeStateUpdate,
+) -> Result<StateChange, DaemonError> {
+    if update.is_empty() {
+        return Ok(StateChange::default());
+    }
     let state_path = state_path::for_launch(request)?;
-    ensure_claude_headless_onboarding_state_at(&state_path).map_err(|error| match error {
+    state_file::update(&state_path, update).map_err(|error| match error {
         DaemonError::LocalTransport {
             operation,
             mut message,
@@ -349,200 +382,11 @@ fn ensure_claude_headless_onboarding_state(
     })
 }
 
+#[cfg(test)]
 pub(super) fn ensure_claude_headless_onboarding_state_at(
     state_path: &Path,
 ) -> Result<(), DaemonError> {
-    let parent = state_path
-        .parent()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: "Claude config directory is unavailable".to_string(),
-        })?;
-    fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-        operation: "initialize Claude headless onboarding state",
-        message: error.to_string(),
-    })?;
-    let mut state_options = fs::OpenOptions::new();
-    state_options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        state_options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let existing_state = match state_options.open(state_path) {
-        Ok(file) => {
-            let metadata = file
-                .metadata()
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: error.to_string(),
-                })?;
-            if !metadata.is_file() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: format!(
-                        "Claude onboarding state is not a regular file: {}",
-                        state_path.display()
-                    ),
-                });
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "initialize Claude headless onboarding state",
-                        message: format!(
-                            "Claude onboarding state is not a regular file: {}",
-                            state_path.display()
-                        ),
-                    });
-                }
-            }
-            const MAX_ONBOARDING_BYTES: u64 = 1024 * 1024;
-            if metadata.len() > MAX_ONBOARDING_BYTES {
-                return Err(DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: "Claude onboarding state exceeds its size limit".into(),
-                });
-            }
-            let mut bytes = Vec::new();
-            file.take(MAX_ONBOARDING_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: "Claude onboarding state could not be read".into(),
-                })?;
-            if bytes.len() as u64 > MAX_ONBOARDING_BYTES {
-                return Err(DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: "Claude onboarding state exceeds its size limit".into(),
-                });
-            }
-            let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "initialize Claude headless onboarding state",
-                        message: format!("Claude onboarding state is invalid JSON: {error}"),
-                    }
-                })?
-            };
-            let object = state
-                .as_object_mut()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: "Claude onboarding state is not a JSON object".to_string(),
-                })?;
-            if object
-                .get("hasCompletedOnboarding")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
-                return Ok(());
-            }
-            object.insert(
-                "hasCompletedOnboarding".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            let mut bytes =
-                serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: error.to_string(),
-                })?;
-            bytes.push(b'\n');
-            Some(bytes)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            #[cfg(unix)]
-            if error.raw_os_error() == Some(libc::ELOOP) {
-                return Err(DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: format!(
-                        "Claude onboarding state is not a regular file: {}",
-                        state_path.display()
-                    ),
-                });
-            }
-            return Err(DaemonError::LocalTransport {
-                operation: "initialize Claude headless onboarding state",
-                message: error.to_string(),
-            });
-        }
-    };
-    let mut nonce = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce);
-    let pending_path = parent.join(format!(
-        ".claude-headless-onboarding-{}-{}.tmp",
-        std::process::id(),
-        u64::from_le_bytes(nonce),
-    ));
-    let mut pending_options = fs::OpenOptions::new();
-    pending_options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        pending_options.mode(0o600);
-    }
-    let mut pending =
-        pending_options
-            .open(&pending_path)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "initialize Claude headless onboarding state",
-                message: error.to_string(),
-            })?;
-    let contents = existing_state
-        .as_deref()
-        .unwrap_or(b"{\"hasCompletedOnboarding\":true}\n");
-    let write_result = pending
-        .write_all(contents)
-        .and_then(|()| pending.sync_all());
-    if let Err(error) = write_result {
-        drop(pending);
-        let _ = fs::remove_file(pending_path);
-        return Err(DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: error.to_string(),
-        });
-    }
-    drop(pending);
-    let result = if existing_state.is_some() {
-        fs::rename(&pending_path, state_path).map_err(|error| DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: error.to_string(),
-        })
-    } else {
-        match fs::hard_link(&pending_path, state_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&pending_path);
-                return ensure_claude_headless_onboarding_state_at(state_path);
-            }
-            Err(error) => Err(DaemonError::LocalTransport {
-                operation: "initialize Claude headless onboarding state",
-                message: error.to_string(),
-            }),
-        }
-    };
-    let _ = fs::remove_file(pending_path);
-    result?;
-    #[cfg(unix)]
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: error.to_string(),
-        })?;
-    Ok(())
+    state_file::update(state_path, &ClaudeStateUpdate::onboarding_only()).map(|_| ())
 }
 
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
@@ -558,7 +402,13 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
 }
 
 fn claude_process_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())]);
+    let mut env = BTreeMap::from([
+        (CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string()),
+        (
+            CLAUDE_MCP_STARTUP_TIMEOUT_ENV.to_string(),
+            CLAUDE_MCP_STARTUP_TIMEOUT.as_millis().to_string(),
+        ),
+    ]);
     env.extend(request.provider_account_env.clone());
     apply_claude_root_yolo_environment(&mut env, request.permission_level.unwrap_or_default());
     if let Some(tokens) = request
@@ -680,6 +530,7 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{
@@ -1007,6 +858,22 @@ mod tests {
             .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
     }
 
+    /// The launch records onboarding and trust for the agent's own folder only.
+    fn assert_onboarded_and_trusted(state_path: &Path, workspace: &Path) {
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(state_path).expect("state should exist")).unwrap();
+        assert_eq!(
+            state,
+            serde_json::json!({
+                "hasCompletedOnboarding": true,
+                "projects": {
+                    workspace.canonicalize().unwrap().to_str().unwrap():
+                        {"hasTrustDialogAccepted": true}
+                }
+            })
+        );
+    }
+
     #[test]
     fn plans_claude_headless_mode_without_print_stream_json() {
         crate::test_support::isolated_env_test!();
@@ -1029,8 +896,9 @@ mod tests {
             "claude-headless",
             "default",
             "claude-headless/claude-sonnet-4-6",
-        );
-        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
+        )
+        .with_working_directory(root.clone());
+        super::prepare_claude_launch_state(&request, &root).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
@@ -1061,10 +929,7 @@ mod tests {
             Some("1")
         );
         let state_path = config_dir.join(".claude.json");
-        assert_eq!(
-            fs::read_to_string(&state_path).expect("headless state should exist"),
-            "{\"hasCompletedOnboarding\":true}\n"
-        );
+        assert_onboarded_and_trusted(&state_path, &root);
         #[cfg(unix)]
         assert_eq!(
             fs::metadata(&state_path)
@@ -1120,8 +985,9 @@ mod tests {
         .with_provider_account_env(std::collections::BTreeMap::from([(
             "CLAUDE_CONFIG_DIR".to_string(),
             selected_config_dir.display().to_string(),
-        )]));
-        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
+        )]))
+        .with_working_directory(root.clone());
+        super::prepare_claude_launch_state(&request, &root).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
@@ -1135,11 +1001,7 @@ mod tests {
             launch.pty_env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
             Some(selected_config_dir.to_string_lossy().as_ref())
         );
-        assert_eq!(
-            fs::read_to_string(selected_config_dir.join(".claude.json"))
-                .expect("selected profile onboarding state should exist"),
-            "{\"hasCompletedOnboarding\":true}\n"
-        );
+        assert_onboarded_and_trusted(&selected_config_dir.join(".claude.json"), &root);
         assert!(
             !ambient_config_dir.join(".claude.json").exists(),
             "launch must not initialize the ambient profile"
@@ -1183,8 +1045,9 @@ mod tests {
         );
         let request = request
             .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
-            .with_provider_credential_env(credentials);
-        super::prepare_claude_onboarding_state(&request)
+            .with_provider_credential_env(credentials)
+            .with_working_directory(root.clone());
+        super::prepare_claude_launch_state(&request, &root)
             .expect("selected account should initialize");
         let mut request = request;
         let _credentials = std::mem::take(&mut request.provider_credential_env);
@@ -1201,11 +1064,7 @@ mod tests {
             launch.pty_env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
             Some(selected_config_dir.to_string_lossy().as_ref())
         );
-        assert_eq!(
-            fs::read_to_string(selected_config_dir.join(".claude.json"))
-                .expect("selected profile onboarding state should exist"),
-            "{\"hasCompletedOnboarding\":true}\n"
-        );
+        assert_onboarded_and_trusted(&selected_config_dir.join(".claude.json"), &root);
         assert!(
             !ambient_config_dir.join(".claude.json").exists(),
             "launch must not initialize the ambient profile"

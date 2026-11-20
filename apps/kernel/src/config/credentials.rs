@@ -38,6 +38,10 @@ pub struct UserCredentialMetadataConfig {
     pub provider_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_key: Option<String>,
+    /// The Vault entry a `vault_copy` made this one from, so a replay of the same request that names
+    /// another entry is refused instead of answered with this copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -984,6 +984,7 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt.created_at_ms()),
+            None,
         )?;
         let mut dispatches = WorkflowPromptDispatches::default();
         dispatches.local.push(crate::app::KernelPromptDispatch {

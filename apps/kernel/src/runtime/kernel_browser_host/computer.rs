@@ -117,27 +117,6 @@ impl KernelBrowserHost {
         // The supervised child validates health at startup. Warm operations
         // use the same liveness check as browser credits, outside its barriers.
         let ready = backend.host_is_live()?;
-        if params["op"] == "start"
-            && admission
-                .and_then(|a| a.agent.as_deref())
-                .is_some_and(|agent| !self.is_focused(user, agent))
-        {
-            if !ready {
-                return Err("MP-08: not_focused_agent: a new desktop requires focus".into());
-            }
-            let current = backend
-                .host_request_classified("host.computer", serde_json::json!({"op":"state"}))?;
-            self.claim_resource(
-                admission,
-                UserDomainResource::Desktop {
-                    surface_id: current["surface_id"]
-                        .as_str()
-                        .ok_or("MP-11: desktop unavailable")?
-                        .into(),
-                },
-                false,
-            )?;
-        }
         if !ready {
             if params["op"] != "start" {
                 return Err(
@@ -180,7 +159,6 @@ impl KernelBrowserHost {
                 UserDomainResource::Desktop {
                     surface_id: surface.into(),
                 },
-                false,
             )?;
             let browser_state = backend
                 .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
@@ -210,7 +188,6 @@ impl KernelBrowserHost {
             UserDomainResource::Desktop {
                 surface_id: surface.into(),
             },
-            false,
         )?;
         let model = self.actor_model(user)?;
         {

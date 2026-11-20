@@ -26,11 +26,11 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut home, _) = connect_async_with_retry(&url).await.expect("home connects");
-    let (mut worker, _) = connect_async_with_retry(&url)
+    let (mut home, home_handshake) = connect_async_with_retry(&url).await.expect("home connects");
+    let (mut worker, worker_handshake) = connect_async_with_retry(&url)
         .await
         .expect("worker connects");
-    let (mut alias_home, _) = connect_async_with_retry(&url)
+    let (mut alias_home, alias_home_handshake) = connect_async_with_retry(&url)
         .await
         .expect("alias home connects");
 
@@ -67,53 +67,59 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
     let registrations = [
         (
             &mut home,
+            &home_handshake,
             "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
             None,
             "machine-home",
-            "home-public-key",
             claims(
                 "home-token",
                 "home-kernel",
                 "user-home",
                 "machine-home",
-                &thumbprint("home-public-key"),
+                &thumbprint(&test_public_key(
+                    "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+                )),
             ),
         ),
         (
             &mut worker,
+            &worker_handshake,
             "worker-kernel",
             None,
             "machine-worker",
-            "worker-public-key",
             claims(
                 "worker-token",
                 "worker-kernel",
                 "user-home",
                 "machine-worker",
-                &thumbprint("worker-public-key"),
+                &thumbprint(&test_public_key("worker-kernel")),
             ),
         ),
         (
             &mut alias_home,
+            &alias_home_handshake,
             "forged-home:peer-tmp:daemon-peer-tmp-4243-1767225600123-8",
             Some("home-alias"),
             "machine-forged",
-            "alias-public-key",
             claims(
                 "alias-token",
                 "home-alias",
                 "user-home",
                 "machine-forged",
-                &thumbprint("alias-public-key"),
+                &thumbprint(&test_public_key(
+                    "forged-home:peer-tmp:daemon-peer-tmp-4243-1767225600123-8",
+                )),
             ),
         ),
     ];
-    for (socket, daemon_id, daemon_alias, machine_id, public_key, claims) in registrations {
+    for (socket, handshake, daemon_id, daemon_alias, machine_id, claims) in registrations {
         let token = hosted_kernel_jwt(&claims, issuer_secret);
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: DaemonRegistration {
+                serde_json::to_string(&signed_register(
+                    &url,
+                    handshake,
+                    DaemonRegistration {
                         auth_token: token,
                         daemon_id: daemon_id.to_string(),
                         machine_id: machine_id.to_string(),
@@ -122,15 +128,16 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
                         kernel_started_at_ms: 10,
                         daemon_alias: daemon_alias.map(str::to_string),
                         kernel_alias: None,
-                        public_key: public_key.to_string(),
+                        public_key: test_public_key(daemon_id),
                         capabilities: vec!["kernel_ws".to_string()],
                         available_providers: Vec::new(),
                         provider_accounts: Vec::new(),
                         accepting_remote_leases: true,
                         leased_agent_count: 0,
                         local_session_count: 0,
+                        local_protocol: None,
                     },
-                })
+                ))
                 .expect("registration serializes")
                 .into(),
             ))
@@ -182,7 +189,9 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
     else {
         panic!("unexpected incoming peer request")
     };
-    let home_thumbprint = thumbprint("home-public-key");
+    let home_thumbprint = thumbprint(&test_public_key(
+        "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+    ));
     assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
     assert_eq!(identity.subject, "machine-home");
     assert_eq!(identity.realm_id, "realm-home");
@@ -229,19 +238,21 @@ async fn daemon_peer_requests_are_routed_between_registered_kernels() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect to relay");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect to relay");
 
-    for (socket, daemon_id, daemon_alias, public_key) in [
-        (&mut daemon_a, "daemon-a", "alpha", "public-key-a"),
-        (&mut daemon_b, "daemon-b", "beta", "public-key-b"),
+    for (socket, handshake, daemon_id, daemon_alias) in [
+        (&mut daemon_a, &daemon_a_handshake, "daemon-a", "alpha"),
+        (&mut daemon_b, &daemon_b_handshake, "daemon-b", "beta"),
     ] {
-        let register = RelayEnvelope::DaemonRegister {
-            registration: DaemonRegistration {
+        let register = signed_register(
+            &url,
+            handshake,
+            DaemonRegistration {
                 auth_token: "secret".to_string(),
                 daemon_id: daemon_id.to_string(),
                 machine_id: format!("machine-{daemon_id}"),
@@ -250,15 +261,16 @@ async fn daemon_peer_requests_are_routed_between_registered_kernels() {
                 kernel_started_at_ms: 10,
                 daemon_alias: Some(daemon_alias.to_string()),
                 kernel_alias: Some(daemon_alias.to_string()),
-                public_key: public_key.to_string(),
+                public_key: test_public_key(daemon_id),
                 capabilities: vec!["kernel_ws".to_string()],
                 available_providers: vec!["opencode".to_string()],
                 provider_accounts: Vec::new(),
                 accepting_remote_leases: true,
                 leased_agent_count: 0,
                 local_session_count: 0,
+                local_protocol: None,
             },
-        };
+        );
         socket
             .send(Message::Text(
                 serde_json::to_string(&register)
@@ -467,27 +479,33 @@ async fn scoped_daemon_tokens_gate_peer_routing_actions() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect");
-    for (socket, daemon_id, auth_token) in [
-        (&mut daemon_a, "daemon-a", "daemon-a-token"),
-        (&mut daemon_b, "daemon-b", "daemon-b-token"),
+    for (socket, handshake, daemon_id, auth_token) in [
+        (
+            &mut daemon_a,
+            &daemon_a_handshake,
+            "daemon-a",
+            "daemon-a-token",
+        ),
+        (
+            &mut daemon_b,
+            &daemon_b_handshake,
+            "daemon-b",
+            "daemon-b-token",
+        ),
     ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                    registration: test_registration_with_token(
-                        daemon_id,
-                        "machine-1",
-                        "Linux",
-                        10,
-                        auth_token,
-                    ),
-                })
+                serde_json::to_string(&signed_register(
+                    &url,
+                    handshake,
+                    test_registration_with_token(daemon_id, "machine-1", "Linux", 10, auth_token),
+                ))
                 .expect("register should serialize")
                 .into(),
             ))

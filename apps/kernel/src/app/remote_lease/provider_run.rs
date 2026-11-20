@@ -405,6 +405,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         existing: Option<&crate::provider::RuntimeProviderRun>,
         existing_profile_matches: bool,
     ) -> Result<LaunchProviderRequest, DaemonError> {
+        let skill_cache_root = self.leased_skill_cache_root(&leased_agent.id)?;
         let mut request = LaunchProviderRequest::new(
             &leased_agent.backing_session_id,
             &leased_agent.provider,
@@ -416,6 +417,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .unwrap_or_else(|| "default".to_string()),
         )
         .with_agent_id(&leased_agent.backing_agent_id)
+        .with_skill_cache_root(skill_cache_root)
         .with_owner_user_id(owner_user_id)
         .with_working_directory(std::path::PathBuf::from(
             self.app

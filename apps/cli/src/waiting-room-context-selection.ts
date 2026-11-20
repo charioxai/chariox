@@ -79,7 +79,7 @@ export function waitingRoomProjectDevelopmentSetup(
       workspaceId: option.workspaceId,
       worktreeId: option.primary ? remote.worktreeId ?? null : null,
     }))
-  return { kind: "source_project", projectId: project.id, repositories }
+  return { kind: "source_projects", projects: [{ projectId: project.id, repositories }] }
 }
 
 export function waitingRoomProjectRepositoryOptions(

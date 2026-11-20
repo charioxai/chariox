@@ -982,7 +982,7 @@ fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch()
 }
 
 #[test]
-fn workflow_instruction_reference_is_written_under_kernel_state_root() {
+fn workflow_instruction_reference_is_written_outside_the_hidden_kernel_state() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let config = DaemonConfig::for_tests();
@@ -1073,14 +1073,19 @@ fn workflow_instruction_reference_is_written_under_kernel_state_root() {
     )
     .expect("prompt should build");
 
-    let prefix = runtime_root
+    let prefix = app
+        .config()
+        .workflow_instruction_root()
         .join(session.id())
-        .join(workflow_run.id())
-        .join("workflow-instructions");
+        .join(workflow_run.id());
     let prefix_string = prefix.to_string_lossy().to_string();
     assert!(
         prompt.contains(&prefix_string),
-        "prompt should reference a file under the kernel state root: {prompt}"
+        "prompt should reference the node's instruction file: {prompt}"
+    );
+    assert!(
+        !prefix.starts_with(&runtime_root),
+        "an agent cannot read the kernel's runtime state, so its instructions live outside it"
     );
     let expected_file = prefix.join(format!("node-{node_id}.md"));
     assert!(expected_file.exists(), "instruction file should be written");

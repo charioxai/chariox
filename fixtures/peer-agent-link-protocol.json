@@ -71,6 +71,7 @@
         "room_id": "room-a",
         "agent_id": "agent-a"
       },
+      "sender_name": "Lead",
       "room": "room-b",
       "provider": "claude",
       "account_profile": null,
@@ -192,6 +193,14 @@
       "protocol_version": 0,
       "refusal": {
         "reason": "room_unavailable"
+      }
+    },
+    {
+      "kind": "peer_agent_refused",
+      "protocol_version": 0,
+      "refusal": {
+        "reason": "agent_deadline_reached",
+        "message": "This agent’s time limit ended at 2026-11-19 17:00:00 UTC. Start a new agent for new work."
       }
     }
   ]

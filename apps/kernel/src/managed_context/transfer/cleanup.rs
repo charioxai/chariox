@@ -65,11 +65,11 @@ impl ManagedContextTransferStore {
     fn cleanup_failed_transfer(&self, id: &str, destination: &Path) -> Result<(), DaemonError> {
         // Validate the publication before touching staging or archives: a
         // missing/mismatched ownership proof must preserve all ambiguous data.
-        crate::managed_context::development::cleanup_development_context_publication(
+        crate::managed_context::development::cleanup_present_development_context_publications(
             destination,
             id,
         )?;
-        crate::managed_context::development::cleanup_development_context_publication_staging(
+        crate::managed_context::development::cleanup_development_context_staging_units(
             destination,
             id,
         )?;

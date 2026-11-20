@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 fn semantic_session_activity_protocol_snapshot_and_hash() {
     let session = crate::session::RuntimeSession::new(
         "session",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

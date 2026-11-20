@@ -98,8 +98,10 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   const linkId = first.ops.find(op => op.op === "children").children[0];
   await evaluate("render(['Ada Lovelace','Adam Smith'])");
   const second = await next(600);
-  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["text"], JSON.stringify(second.ops));
-  assert.deepEqual(second.ops.map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["attr", "text"], JSON.stringify(second.ops));
+  assert.deepEqual(second.ops.filter(op => op.op === "text").map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
+  // The links' new href values (what an href selector reads), never their URLs as an href.
+  assert.deepEqual(second.ops.filter(op => op.op === "attr").map(op => [op.name, op.value]).sort(), [["chariox-href", "/wiki/Ada Lovelace"], ["chariox-href", "/wiki/Adam Smith"]]);
   assert(JSON.stringify(second).length < 1500, "MP-10: one keystroke-sized delta");
   // One more item: only that item's records travel.
   await evaluate("render(['Ada','Adams','Adobe'])");
@@ -1438,8 +1440,10 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     // To a fragment, then removed: the key goes, the fragment travels as an attribute.
     await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
     const later = (await next(1000)).ops;
-    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]]);
-    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", null]]);
+    // An attribute op by its name: the href, then the value an href selector reads (see sanitizeMirrorCss).
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null], ["chariox-href", null]]);
   }, {
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
@@ -1913,10 +1917,11 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     for (const banned of ["script", "onclick", "evil.test", "<image", "<a ", "javascript", "foreignObject", "animate", "<p>"]) assert(!text.includes(banned), `MP-10: ${banned} never travels`);
     await evaluate("u.setAttribute('href','/sprite.svg#other');true");
     let ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["attr", "#other"]], "MP-10: the same file, another symbol");
+    const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
+    assert.deepEqual(ops.map(named), [["href", "#other"], ["chariox-href", "/sprite.svg#other"]], "MP-10: the same file, another symbol");
     await evaluate("u.setAttribute('href','#sym');true");
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
+    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region

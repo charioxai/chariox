@@ -45,13 +45,17 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
             context_id: "context-empty-apply".to_string(),
             plan_digest: format!("sha256:{}", "1".repeat(64)),
             kernel_context: ManagedContextKernelSelection::Empty,
-            development: ManagedContextDevelopmentSelection::SourceProject {
-                project_id: "project-empty-apply".to_string(),
-                repositories: vec![DevelopmentSourceRepositoryBinding {
-                    role: DevelopmentRepositoryRole::Primary,
-                    workspace_id: "workspace-primary".to_string(),
-                    worktree_id: None,
-                }],
+            development: ManagedContextDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::package::ManagedContextSourceProject {
+                        project_id: "project-empty-apply".to_string(),
+                        repositories: vec![DevelopmentSourceRepositoryBinding {
+                            role: DevelopmentRepositoryRole::Primary,
+                            workspace_id: "workspace-primary".to_string(),
+                            worktree_id: None,
+                        }],
+                    },
+                ],
             },
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
@@ -71,8 +75,12 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         target_kernel_id: binding.target_kernel_id.clone(),
         target_key_thumbprint: binding.target_key_thumbprint.clone(),
         development: ManagedContextPackageDevelopment::FromSource {
-            archive_path: development.archive_path,
-            archive_sha256: development.archive_sha256,
+            archives: vec![
+                crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                    archive_path: development.archive_path,
+                    archive_sha256: development.archive_sha256,
+                },
+            ],
         },
         kernel_context: ManagedContextPackageKernel::Empty,
         provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -98,15 +106,293 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         receipt.kernel_context,
         ManagedContextImportedKernelContext::Empty
     ));
-    let ManagedContextImportedDevelopment::FromSource { receipt, .. } = receipt.development else {
+    let ManagedContextImportedDevelopment::FromSource { projects } = receipt.development else {
         panic!("selected development context became Empty")
     };
+    let receipt = &projects[0].receipt;
     assert_eq!(
         fs::read_to_string(receipt.repositories[0].destination_path.join("tracked.txt"))
             .expect("read imported file"),
         "explicit Empty\n"
     );
     fs::remove_dir_all(root).expect("remove Empty apply fixture");
+}
+
+/// Two Projects, each a real repository, exported as separate archives under one plan.
+struct TwoProjectPackage {
+    root: PathBuf,
+    package: ManagedContextPackageExportResult,
+    binding: ManagedContextPackageBinding,
+}
+
+fn export_two_projects(label: &str, second_archive_project_id: &str) -> TwoProjectPackage {
+    export_two_projects_named(label, second_archive_project_id, None)
+}
+
+/// `repository_name` gives both Projects a repository of that name, as two Projects of one machine often have.
+fn export_two_projects_named(
+    label: &str,
+    second_archive_project_id: &str,
+    repository_name: Option<&str>,
+) -> TwoProjectPackage {
+    use crate::managed_context::development::{
+        export_development_context, DevelopmentContextExportRequest, DevelopmentRepositorySelection,
+    };
+    let root = std::env::temp_dir().join(format!(
+        "chariox-managed-context-{label}-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let mut archives = Vec::new();
+    let mut projects = Vec::new();
+    for (name, archive_project_id) in [
+        ("alpha", "project-alpha"),
+        ("beta", second_archive_project_id),
+    ] {
+        let repository = match repository_name {
+            Some(repository_name) => root.join(format!("source-{name}")).join(repository_name),
+            None => root.join(format!("source-{name}")),
+        };
+        fs::create_dir_all(&repository).expect("create source repository");
+        git(&repository, &["init", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "tests@chariox.local"],
+        );
+        git(&repository, &["config", "user.name", "Chariox Tests"]);
+        fs::write(repository.join("tracked.txt"), format!("{name}\n")).expect("write source file");
+        git(&repository, &["add", "tracked.txt"]);
+        git(&repository, &["commit", "-m", "initial"]);
+        let exported = export_development_context(DevelopmentContextExportRequest {
+            project_id: archive_project_id.to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: format!("workspace-{name}"),
+                worktree_id: None,
+                worktree_path: repository,
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: root.join(format!("{name}.tar.gz")),
+        })
+        .expect("export development context");
+        archives.push(ManagedContextPackageDevelopmentArchive {
+            archive_path: exported.archive_path,
+            archive_sha256: exported.archive_sha256,
+        });
+        projects.push(ManagedContextSourceProject {
+            project_id: format!("project-{name}"),
+            repositories: vec![DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Primary,
+                workspace_id: format!("workspace-{name}"),
+                worktree_id: None,
+            }],
+        });
+    }
+    let binding = ManagedContextPackageBinding {
+        plan: ManagedContextPlanBinding {
+            destination: None,
+            context_id: "context-two-projects".to_string(),
+            plan_digest: format!("sha256:{}", "1".repeat(64)),
+            kernel_context: ManagedContextKernelSelection::Empty,
+            development: ManagedContextDevelopmentSelection::SourceProjects { projects },
+            provider_accounts: ManagedContextProviderAccountSelection::None,
+            git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
+        },
+        target_environment_id: "environment-two-projects".to_string(),
+        source_kernel_id: "source-kernel".to_string(),
+        source_key_thumbprint: "a".repeat(64),
+        target_kernel_id: "target-kernel".to_string(),
+        target_key_thumbprint: "b".repeat(64),
+    };
+    let package = export_managed_context_package(ManagedContextPackageExportRequest {
+        plan: binding.plan.clone(),
+        target_environment_id: binding.target_environment_id.clone(),
+        source_kernel_id: binding.source_kernel_id.clone(),
+        source_key_thumbprint: binding.source_key_thumbprint.clone(),
+        target_kernel_id: binding.target_kernel_id.clone(),
+        target_key_thumbprint: binding.target_key_thumbprint.clone(),
+        development: ManagedContextPackageDevelopment::FromSource { archives },
+        kernel_context: ManagedContextPackageKernel::Empty,
+        provider_accounts: ManagedContextPackageProviderAccounts::None,
+        git_credentials: ManagedContextPackageGitCredentials::None,
+        event_connections: Default::default(),
+        package_path: root.join("context.chariox"),
+    })
+    .expect("export a package of two Projects");
+    assert_eq!(package.development_archive_sha256s.len(), 2);
+    TwoProjectPackage {
+        root,
+        package,
+        binding,
+    }
+}
+
+fn apply_two_projects(
+    fixture: &TwoProjectPackage,
+) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
+    apply_two_projects_at(fixture, fixture.root.join("managed/project"))
+}
+
+fn apply_two_projects_at(
+    fixture: &TwoProjectPackage,
+    development_destination_root: PathBuf,
+) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
+    apply_managed_context_package(ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_two_projects".to_string(),
+        package_path: fixture.package.package_path.clone(),
+        expected_package_sha256: fixture.package.package_sha256.clone(),
+        expected_binding: fixture.binding.clone(),
+        development_destination_root,
+        target_private_key: "unused-for-explicit-empty".to_string(),
+        context_import_target: None,
+        provider_account_target: None,
+        git_credential_target: None,
+        event_connection_target: None,
+    })
+}
+
+#[test]
+fn a_package_of_two_projects_lands_each_in_its_own_sibling_root() {
+    let fixture = export_two_projects("two-projects-apply", "project-beta");
+    let receipt = apply_two_projects(&fixture).expect("apply two Projects");
+    let ManagedContextImportedDevelopment::FromSource { projects } = receipt.development else {
+        panic!("selected development context became Empty")
+    };
+    assert_eq!(
+        projects
+            .iter()
+            .map(|project| project.project_id.as_str())
+            .collect::<Vec<_>>(),
+        ["project-alpha", "project-beta"]
+    );
+    let parent = fixture.root.join("managed");
+    assert_eq!(projects[0].receipt.destination_root, parent.join("project"));
+    assert_eq!(
+        projects[1].receipt.destination_root,
+        parent.join("project-1")
+    );
+    for (project, name) in projects.iter().zip(["alpha", "beta"]) {
+        assert_eq!(
+            fs::read_to_string(
+                project.receipt.repositories[0]
+                    .destination_path
+                    .join("tracked.txt")
+            )
+            .expect("read imported file"),
+            format!("{name}\n")
+        );
+    }
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
+}
+
+/// A managed kernel keeps every repository under its repository root, so each Project of one copy needs its own
+/// directory there: two repositories named `app` must not meet at `<repository root>/app`.
+#[test]
+fn two_projects_with_the_same_repository_name_land_apart_on_a_managed_kernel() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let fixture = export_two_projects_named("two-projects-same-name", "project-beta", Some("app"));
+    let control_state = fixture.root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = fixture.root.join("repositories");
+    fs::create_dir_all(&control_parent).expect("create the control parent");
+    fs::create_dir_all(&repository_root).expect("create the managed repository root");
+    let _environment = ManagedRepositoryEnvironment::set(&control_state, &repository_root);
+
+    let receipt = apply_two_projects_at(&fixture, control_parent.join("project"))
+        .expect("two Projects with the same repository name copy to a managed kernel");
+    let ManagedContextImportedDevelopment::FromSource { projects } = receipt.development else {
+        panic!("selected development context became Empty")
+    };
+    let placed: Vec<_> = projects
+        .iter()
+        .map(|project| project.receipt.repositories[0].destination_path.clone())
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            repository_root.join("app"),
+            repository_root.join("project-1").join("app")
+        ]
+    );
+    for (path, name) in placed.iter().zip(["alpha", "beta"]) {
+        assert_eq!(
+            fs::read_to_string(path.join("tracked.txt")).expect("read imported file"),
+            format!("{name}\n"),
+            "{} holds the Project it was copied from",
+            path.display()
+        );
+    }
+
+    crate::managed_context::development::cleanup_development_context_publications(
+        &control_parent.join("project"),
+        "ctx_two_projects",
+        2,
+    )
+    .expect("remove both Projects");
+    assert_eq!(
+        fs::read_dir(&repository_root).unwrap().count(),
+        0,
+        "no repository and no Project directory stays behind"
+    );
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_cleanup_pass_removes_the_project_the_first_could_not() {
+    let fixture = export_two_projects("two-projects-second-pass", "project-beta");
+    apply_two_projects(&fixture).expect("apply two Projects");
+    let parent = fixture.root.join("managed");
+    let first = parent.join("project");
+    let second = parent.join("project-1");
+    // The later Project cannot be removed while something other than its directory stands in its place.
+    let moved = parent.join("project-1.moved");
+    fs::rename(&second, &moved).expect("move the second Project aside");
+    std::os::unix::fs::symlink(&moved, &second).expect("stand a link in its place");
+
+    let error =
+        crate::managed_context::development::cleanup_present_development_context_publications(
+            &first,
+            "ctx_two_projects",
+        )
+        .expect_err("the second Project cannot be removed behind a link");
+    assert!(
+        error.to_string().contains("could not be removed"),
+        "{error}"
+    );
+    assert!(!first.exists(), "the first Project is removed all the same");
+
+    fs::remove_file(&second).expect("take the link away");
+    fs::rename(&moved, &second).expect("put the second Project back");
+    crate::managed_context::development::cleanup_present_development_context_publications(
+        &first,
+        "ctx_two_projects",
+    )
+    .expect("the next pass removes what the first left");
+    assert!(
+        !second.exists(),
+        "the second Project must not stay behind once the first is gone"
+    );
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
+}
+
+#[test]
+fn a_second_project_that_fails_to_import_takes_the_first_back_out() {
+    // The second archive carries another Project than the plan names, so it is refused after the first landed.
+    let fixture = export_two_projects("two-projects-rollback", "project-other");
+    let error = apply_two_projects(&fixture).expect_err("a mismatched second Project fails");
+    assert!(
+        !error.to_string().contains("roll back"),
+        "the rollback itself must succeed: {error}"
+    );
+    let parent = fixture.root.join("managed");
+    assert!(
+        !parent.join("project").exists(),
+        "the first Project must not stay behind"
+    );
+    assert!(!parent.join("project-1").exists());
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
 }
 
 #[test]
@@ -152,11 +438,10 @@ fn empty_package_round_trips_as_explicit_empty_context() {
         extracted.kernel_context,
         ManagedContextPackageKernel::Empty
     ));
-    let ExtractedManagedContextDevelopment::FromSource { archive_path, .. } =
-        &extracted.development
-    else {
+    let ExtractedManagedContextDevelopment::FromSource { archives } = &extracted.development else {
         panic!("selected development context became Empty")
     };
+    let archive_path = &archives[0].archive_path;
     assert_eq!(
         fs::read(archive_path).expect("read development component"),
         fixture.development_bytes
@@ -260,7 +545,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
     request.plan.development = ManagedContextDevelopmentSelection::Empty;
     request.development = ManagedContextPackageDevelopment::Empty;
     let exported = export_managed_context_package(request).expect("export no-development package");
-    assert!(exported.development_archive_sha256.is_none());
+    assert!(exported.development_archive_sha256s.is_empty());
     let binding = ManagedContextPackageBinding {
         plan: exported.plan.clone(),
         ..fixture.binding.clone()
@@ -290,19 +575,21 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
 fn package_manifest_carries_a_near_cloud_limit_plan() {
     let fixture = PackageFixture::new("large-plan");
     let mut request = fixture.export_request(ManagedContextPackageKernel::Empty);
-    request.plan.development = ManagedContextDevelopmentSelection::SourceProject {
-        project_id: "project-large-plan".to_string(),
-        repositories: (0..16)
-            .map(|index| DevelopmentSourceRepositoryBinding {
-                role: if index == 0 {
-                    DevelopmentRepositoryRole::Primary
-                } else {
-                    DevelopmentRepositoryRole::Supporting
-                },
-                workspace_id: format!("workspace-{index}-{}", "x".repeat(4_060)),
-                worktree_id: None,
-            })
-            .collect(),
+    request.plan.development = ManagedContextDevelopmentSelection::SourceProjects {
+        projects: vec![ManagedContextSourceProject {
+            project_id: "project-large-plan".to_string(),
+            repositories: (0..16)
+                .map(|index| DevelopmentSourceRepositoryBinding {
+                    role: if index == 0 {
+                        DevelopmentRepositoryRole::Primary
+                    } else {
+                        DevelopmentRepositoryRole::Supporting
+                    },
+                    workspace_id: format!("workspace-{index}-{}", "x".repeat(4_060)),
+                    worktree_id: None,
+                })
+                .collect(),
+        }],
     };
     let plan_bytes = serde_json::to_vec(&request.plan).expect("serialize large plan");
     assert!(plan_bytes.len() > 63 * 1024);
@@ -825,11 +1112,12 @@ fn package_rejects_a_substituted_workspace_selection_before_publication() {
         export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
             .expect("export package");
     let mut request = fixture.import_request(&exported);
-    let ManagedContextDevelopmentSelection::SourceProject { repositories, .. } =
+    let ManagedContextDevelopmentSelection::SourceProjects { projects } =
         &mut request.expected_binding.plan.development
     else {
         panic!("fixture must select source development")
     };
+    let repositories = &mut projects[0].repositories;
     repositories[0].workspace_id = "workspace-substituted".to_string();
     let error = extract_managed_context_package(request)
         .expect_err("substituted Workspace selection must fail");
@@ -911,13 +1199,17 @@ impl PackageFixture {
                     context_id: "context-1".to_string(),
                     plan_digest: format!("sha256:{}", "1".repeat(64)),
                     kernel_context: ManagedContextKernelSelection::Empty,
-                    development: ManagedContextDevelopmentSelection::SourceProject {
-                        project_id: "project-1".to_string(),
-                        repositories: vec![DevelopmentSourceRepositoryBinding {
-                            role: DevelopmentRepositoryRole::Primary,
-                            workspace_id: "workspace-1".to_string(),
-                            worktree_id: None,
-                        }],
+                    development: ManagedContextDevelopmentSelection::SourceProjects {
+                        projects: vec![
+                            crate::managed_context::package::ManagedContextSourceProject {
+                                project_id: "project-1".to_string(),
+                                repositories: vec![DevelopmentSourceRepositoryBinding {
+                                    role: DevelopmentRepositoryRole::Primary,
+                                    workspace_id: "workspace-1".to_string(),
+                                    worktree_id: None,
+                                }],
+                            },
+                        ],
                     },
                     provider_accounts: ManagedContextProviderAccountSelection::None,
                     git_credentials: ManagedContextGitCredentialSelection::None,
@@ -951,8 +1243,12 @@ impl PackageFixture {
             target_kernel_id: self.binding.target_kernel_id.clone(),
             target_key_thumbprint: self.binding.target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: self.development_path.clone(),
-                archive_sha256: sha256_bytes(&self.development_bytes),
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: self.development_path.clone(),
+                        archive_sha256: sha256_bytes(&self.development_bytes),
+                    },
+                ],
             },
             kernel_context,
             provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -2054,4 +2350,47 @@ fn event_connection_rollback_leaves_a_record_the_owner_already_held() {
 
     assert!(shared.holds_connection());
     shared.fixture.cleanup();
+}
+
+/// A managed kernel: control state in its own directory and repositories under the selected repository root.
+struct ManagedRepositoryEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl ManagedRepositoryEnvironment {
+    fn set(control_state: &Path, repository_root: &Path) -> Self {
+        let values: [(&'static str, Option<&std::ffi::OsStr>); 3] = [
+            (
+                "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+                Some(control_state.as_os_str()),
+            ),
+            (
+                crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+                Some(repository_root.as_os_str()),
+            ),
+            ("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", None),
+        ];
+        Self(
+            values
+                .into_iter()
+                .map(|(name, value)| {
+                    let previous = std::env::var_os(name);
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                    (name, previous)
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Drop for ManagedRepositoryEnvironment {
+    fn drop(&mut self) {
+        for (name, previous) in self.0.drain(..) {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 }

@@ -255,6 +255,11 @@ async fn status_reports_the_named_holder_and_refuses_pids_outside_the_callers_ch
         .kernel_access_status(&requester, Some(holder.holder))
         .unwrap();
     assert_eq!(status.state, KernelAccessHolderState::Granted);
+    assert_eq!(
+        status.follows,
+        Some(0),
+        "a grant that never subscribed follows nothing"
+    );
     assert_eq!(status.grant.unwrap().grant_id, grant.grant_id);
     for pid in [unrelated.holder, unrelated.requester, 99_999_999] {
         let refused = state

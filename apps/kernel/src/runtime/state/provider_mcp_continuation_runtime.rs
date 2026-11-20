@@ -22,21 +22,28 @@ impl KernelRuntimeState {
         self.runtime_catalog_signature(token)
     }
 
-    /// What catalog-change detection compares. MP-08/MP-10/MP-11 A04/A06: a
-    /// sudo window lists its tools only while live and reloads the provider
-    /// itself before its first turn. Counting them would let a later unrelated
-    /// change arm a continuation that replays whichever ordinary prompt is active.
-    pub(crate) fn runtime_catalog_signature(
+    /// Every tool this token lists, sorted by name: what its provider's
+    /// catalog notification stream compares.
+    pub(crate) fn runtime_catalog_listing(
         &self,
         token: &str,
     ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_current_grants(token)
             .into_iter()
-            .filter(|tool| tool.name != sudo::SUDO_TOOL)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
+        tools
+    }
+
+    /// What catalog-change detection compares.
+    pub(crate) fn runtime_catalog_signature(
+        &self,
+        token: &str,
+    ) -> Vec<(String, String, serde_json::Value)> {
+        let mut tools = self.runtime_catalog_listing(token);
+        tools.retain(|tool| arms_catalog_reload(&tool.0));
         tools
     }
 
@@ -528,4 +535,12 @@ impl KernelRuntimeState {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
     }
+}
+
+/// MP-08/MP-10/MP-11 A04/A06: a sudo window lists its tools only while live
+/// and reloads the provider itself before its first turn. Counting them would
+/// let a later unrelated change arm a continuation that replays whichever
+/// ordinary prompt is active.
+pub(crate) fn arms_catalog_reload(tool: &str) -> bool {
+    tool != sudo::SUDO_TOOL
 }

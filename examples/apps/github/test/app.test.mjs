@@ -102,6 +102,30 @@ test('what a check reports: its summary and the annotations that carry the failu
   assert.deepEqual((await plain.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK })).steps, [], 'a check that is not a GitHub Actions job has no steps');
 });
 
+test('the log of a failing job: its last lines, read through the logs route the kernel follows to GitHub storage', async () => {
+  const lines = Array.from({ length: 300 }, (_, i) => `2026-11-17T10:00:${String(i % 60).padStart(2, '0')}.0000000Z line ${i + 1}`);
+  const seen = [];
+  // GitHub's logs route answers 415 to an Accept other than its JSON media type, whatever it then redirects to.
+  const logs = app({ override: (url, init) => {
+    if (!/\/logs$/.test(url.pathname)) return undefined;
+    seen.push(url.pathname);
+    const accept = init?.headers?.accept ?? init?.headers?.get?.('accept');
+    if (accept !== 'application/vnd.github+json') return { status: 415, headers: {}, body: `{"message":"Unsupported 'Accept' header: '${accept}'. Must accept 'application/json'."}` };
+    return { status: 200, headers: {}, body: `${lines.join('\n')}\n` };
+  } });
+  const { log } = await logs.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK });
+  assert.deepEqual(seen, [`/repos/${REPO}/actions/jobs/${FAILING_CHECK}/logs`]);
+  assert.deepEqual([log.lines, log.truncated], [300, true]);
+  assert.equal(log.tail.split('\n').length, 200);
+  assert.equal(log.tail.split('\n').at(-1), 'line 300', 'the timestamps GitHub puts in front of every line are dropped');
+  const refused = app({ override: url => /\/logs$/.test(url.pathname) ? { status: 410, headers: {}, body: '{"message":"Gone"}' } : undefined });
+  const gone = (await refused.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK }));
+  assert.match(gone.log.unavailable, /./);
+  const tooBig = app({ override: url => { if (/\/logs$/.test(url.pathname)) throw { payload: { code: 'APP_HTTP_LIMIT', message: 'response exceeds' } }; } });
+  assert.match((await tooBig.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK })).log.unavailable, /^APP_HTTP_LIMIT/);
+  assert.equal(gone.steps.length, 3, 'the steps still come back when the log does not');
+});
+
 test('check state: none, pending, success, failure from runs and statuses', async () => {
   const { checksSummary } = await import('../src/normalize.mjs');
   const run = (status, conclusion) => ({ status, conclusion });
@@ -111,6 +135,14 @@ test('check state: none, pending, success, failure from runs and statuses', asyn
   assert.equal(checksSummary([run('in_progress', null), run('completed', 'timed_out')], []).state, 'failure');
   assert.equal(checksSummary([], [{ state: 'error' }]).state, 'failure');
   assert.equal(checksSummary([run('completed', 'success')], [{ state: 'pending' }]).state, 'pending');
+});
+
+test('check state: a cancelled check is not a success, alone or beside passing ones', async () => {
+  const { checksSummary } = await import('../src/normalize.mjs');
+  const run = (status, conclusion) => ({ status, conclusion });
+  assert.deepEqual(checksSummary([run('completed', 'cancelled')], []), { state: 'failure', total: 1, failed: 1, pending: 0 });
+  assert.equal(checksSummary([run('completed', 'success'), run('completed', 'cancelled')], []).state, 'failure');
+  assert.equal(checksSummary([run('in_progress', null), run('completed', 'cancelled')], []).state, 'failure');
 });
 
 test('reviews: the decision is each reviewer\'s latest verdict; comments, pending and dismissed ones do not decide', async () => {
@@ -139,6 +171,27 @@ test('reviews: every page is read, so a later request for changes outweighs an e
   assert.deepEqual([reviews.decision, reviews.reviews.length, seen], ['changes_requested', 2, [1, 2]]);
   const summary = await paged.call('get_pull_request_summary', pull);
   assert.equal(summary.review, 'changes_requested');
+});
+
+test('checks: every page of runs and statuses counts, so a failing or pending one on page 2 is not reported as success', async () => {
+  const run = (id, conclusion) => ({ id, name: `run ${id}`, status: conclusion ? 'completed' : 'in_progress', conclusion, html_url: '', app: { slug: 'ci' }, output: {} });
+  const status = (id, state) => ({ id, context: `ctx ${id}`, state, description: '', target_url: null });
+  const paged = (key, pages) => (url, template) => {
+    if (!template.test(url.pathname)) return undefined;
+    const page = Number(url.searchParams.get('page') ?? 1);
+    const link = page < pages.length ? { link: `<https://api.github.com${url.pathname}?per_page=100&page=${page + 1}>; rel="next"` } : {};
+    return { status: 200, headers: link, body: JSON.stringify({ total_count: 2, [key]: pages[page - 1] }) };
+  };
+  const failingOnPageTwo = app({ override: url => paged('check_runs', [[run(1, 'success')], [run(2, 'failure')]])(url, /\/check-runs$/)
+    ?? paged('statuses', [[status(1, 'success')], []])(url, /\/status$/) });
+  assert.deepEqual((await failingOnPageTwo.call('get_checks', pull)).state, 'failure');
+  assert.deepEqual((await failingOnPageTwo.call('get_pull_request_summary', pull)).checks, { state: 'failure', total: 3, failed: 1, pending: 0 });
+  const pendingOnPageTwo = app({ override: url => paged('check_runs', [[run(1, 'success')]])(url, /\/check-runs$/)
+    ?? paged('statuses', [[status(1, 'success')], [status(2, 'pending')]])(url, /\/status$/) });
+  assert.equal((await pendingOnPageTwo.call('get_checks', pull)).state, 'pending');
+  const endless = app({ override: url => /\/check-runs$/.test(url.pathname)
+    ? { status: 200, headers: { link: `<https://api.github.com${url.pathname}?page=99>; rel="next"` }, body: JSON.stringify({ check_runs: [run(1, 'success')] }) } : undefined });
+  await assert.rejects(endless.call('get_checks', pull), { code: 'TOO_MANY_CHECKS' });
 });
 
 test('comments: the conversation and the comments on lines of the diff', async () => {
@@ -285,17 +338,16 @@ test('the feed keeps 128 changes and tells an older reader to read the state aga
   assert.equal(state.saved.has('chariox.view.change.2'), false);
 });
 
-test('an event delivery is a change of the feed, so an open window reloads what it is about, even before any automation is set', async () => {
+test('an event delivery is a change of the feed, so an open window reloads what it is about, even when no subscription wants it', async () => {
   const state = memoryState();
   const { definition, call } = app({}, state);
   const delivery = {
     source: { generator_id: 'dev.chariox.github', connection_id: 'c', event_type: 'pull_request.synchronize', event_type_version: 1 },
     occurred_at: '2026-11-15T12:00:00.000Z', text: 'x', metadata: { repository: { full_name: REPO }, pull_request: { number: 2 } }, artifacts: [],
   };
-  await assert.rejects(definition.events.pull_request_updated(delivery, { occurrenceId: 'o1' }), { code: 'NOT_CONFIGURED' });
+  await definition.events.pull_request_updated(delivery, { occurrenceId: 'o1', fetch: fakeGitHub().fetch });
   const feed = await call('view_changes', { since: 0 });
   assert.deepEqual(feed.changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: 2 }]);
-  await call('configure_automations', { automations: { pull_request_updated_notification: [] } });
-  await definition.events.pull_request_updated({ ...delivery, metadata: { repository: { full_name: REPO } } }, { occurrenceId: 'o2' });
+  await definition.events.pull_request_updated({ ...delivery, metadata: { repository: { full_name: REPO } } }, { occurrenceId: 'o2', fetch: fakeGitHub().fetch });
   assert.deepEqual((await call('view_changes', { since: 1 })).changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: null }]);
 });

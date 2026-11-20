@@ -372,19 +372,22 @@ pub(super) async fn record_verified_token(
 ) {
     // Vault storage is already committed. Observation publication must not
     // turn that successful operation into a failed login or refused retry.
-    if let Err(error) = runtime_state
-        .provider_account_profile_registry()
-        .update_observation(
-            owner_user_id,
-            "claude",
-            account_profile,
-            crate::account_profile::ProviderAccountAuthState::Authenticated,
-            None,
-            None,
-            None,
-            None,
-        )
-    {
+    let observed = match injected_observation_failure(account_profile) {
+        Some(error) => Err(error),
+        None => runtime_state
+            .provider_account_profile_registry()
+            .update_observation(
+                owner_user_id,
+                "claude",
+                account_profile,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            ),
+    };
+    if let Err(error) = observed {
         crate::logging::warn_with_fields(
             "daemon.provider_auth",
             "Claude setup token stored; account observation could not be updated",
@@ -395,6 +398,29 @@ pub(super) async fn record_verified_token(
         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
         .await;
     runtime_state.record_room_list_change();
+}
+
+/// Accounts whose next verified-token observation fails: the write a provider
+/// tool cannot reach from its sandbox, failed from the kernel side.
+#[cfg(test)]
+pub(crate) static FAIL_NEXT_OBSERVATION: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+#[cfg(test)]
+fn injected_observation_failure(account_profile: &str) -> Option<DaemonError> {
+    FAIL_NEXT_OBSERVATION
+        .lock()
+        .unwrap()
+        .remove(account_profile)
+        .then(|| DaemonError::LocalTransport {
+            operation: "account_observation",
+            message: "injected observation write failure".to_string(),
+        })
+}
+
+#[cfg(not(test))]
+fn injected_observation_failure(_account_profile: &str) -> Option<DaemonError> {
+    None
 }
 
 async fn store_token(

@@ -2,38 +2,9 @@ use super::*;
 
 impl KernelRuntimeState {
     pub(crate) fn session_jobs(&self, room: &str) -> Vec<crate::local::JobView> {
-        let directory = self
-            .owned
-            .config_projection
-            .snapshot()
-            .private_runtime_state_root()
-            .join("jobs");
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return vec![];
-        };
-        let mut jobs: Vec<_> = entries
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
-            .filter_map(|entry| std::fs::read(entry.path()).ok())
-            .filter_map(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
-            .filter(|record| record.room_id == room)
-            .map(|record| crate::local::JobView {
-                job_id: record.job_id,
-                agent_id: record.agent_id,
-                command: validate(&record.request)
-                    .map(|argv| crate::runtime::process_resources::command_line(&argv))
-                    .unwrap_or_else(|_| "Job".into()),
-                state: record.state,
-                placement: record.placement,
-                started_at_ms: record.started_at_ms,
-                machine_label: record.machine_label,
-                address: record.address,
-                class_id: record.class_id,
-                rate_per_minute: record.rate_per_minute,
-                estimate_micros: record.estimate_micros,
-                deleted: record.deleted,
-                result: record.result,
-            })
+        let mut jobs: Vec<_> = summary::read(self, room)
+            .into_iter()
+            .map(|summary| summary.view)
             .collect();
         jobs.sort_by_key(|job| job.started_at_ms);
         jobs
@@ -42,6 +13,14 @@ impl KernelRuntimeState {
     pub(crate) fn queued_job_processes(
         &self,
         room: &str,
+    ) -> Vec<crate::runtime::process_resources::SessionProcess> {
+        self.queued_job_processes_for(room, None)
+    }
+
+    pub(super) fn queued_job_processes_for(
+        &self,
+        room: &str,
+        agent: Option<&str>,
     ) -> Vec<crate::runtime::process_resources::SessionProcess> {
         use crate::runtime::process_resources::{
             ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState, Waiting,
@@ -53,7 +32,10 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut rows = vec![];
         for job in self.session_jobs(room) {
-            if job.result.is_some() {
+            if agent.is_some_and(|agent| job.agent_id != agent) {
+                continue;
+            }
+            if job.result.is_some() || job.state == "finished" || job.read_error.is_some() {
                 continue;
             }
             if let Some(samples) = driver
@@ -133,41 +115,18 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn job_duration_estimate(&self, record: &Record) -> Option<u64> {
-        let driver = self.job_wake_driver.as_ref()?;
-        let directory = self
-            .owned
-            .config_projection
-            .snapshot()
-            .private_runtime_state_root()
-            .join("jobs");
-        let mut durations: Vec<_> = std::fs::read_dir(directory)
-            .ok()?
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .filter_map(|entry| {
-                entry
-                    .path()
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .and_then(|id| driver.read(id).ok())
-            })
-            .filter(|previous| {
-                previous.workspace == record.workspace
-                    && previous.cwd == record.cwd
-                    && previous.request.command == record.request.command
-            })
+        let command_hash = summary::command_hash(&record.request.command);
+        let mut durations: Vec<_> = summary::read(self, &record.room_id)
+            .into_iter()
+            .filter(|previous| previous.matches(record, &command_hash))
             .filter_map(|previous| {
                 previous
+                    .view
                     .result
                     .filter(|result| {
                         result.outcome == JobOutcome::Completed && result.exit_code == Some(0)
                     })
-                    .map(|result| (previous.started_at_ms, result.duration_ms))
+                    .map(|result| (previous.view.started_at_ms, result.duration_ms))
             })
             .collect();
         if durations.len() < 2 {

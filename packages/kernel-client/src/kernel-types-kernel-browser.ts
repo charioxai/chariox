@@ -24,7 +24,7 @@ export type KernelBrowserCommand =
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
-  | { op: "state_wait"; after: string; wait_ms: number }
+  | { op: "state_wait"; after: string; wait_ms: number; known_favicons?: string[] }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; known_fonts?: string[]; wait_ms?: number; resend?: true; flush?: true }
@@ -70,7 +70,7 @@ export type UserDomainGrant = {
   agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];
   since_ms: number; focused: boolean; idle_since_ms: number | null;
   idle_timeout_seconds: number; expiry_rule: string
-  prompt_id?: string | null; delegated_by_agent_id?: string | null; expires_at_ms?: number | null
+  delegated_by_agent_id?: string | null; expires_at_ms?: number | null
 }
 export type UserDomainGrantEvent = {
   room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
@@ -82,7 +82,7 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
+export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_hash?: string | null; favicon_png_base64?: string; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
   kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string

@@ -91,6 +91,31 @@ fn a_second_outline_read_of_a_growing_reply_decodes_only_the_new_rows() {
 }
 
 #[test]
+fn an_outline_read_builds_one_entry_per_streamed_fragment() {
+    let builds_for = |fragments: u64| {
+        let (_dir, path) = store_path();
+        let store = OperationalHistoryStore::open(path).expect("open history");
+        let events = std::iter::once(prompt(10, 5_000))
+            .chain(
+                (0..fragments).map(|index| fragment(11 + index, 5_001 + index, "streamed words ")),
+            )
+            .collect::<Vec<_>>();
+        store.append_many(&events).expect("append the reply");
+        let builds =
+            || crate::history::session_history_entry_builds::BUILDS.with(|count| count.get());
+        let before = builds();
+        outline(&store, 1);
+        builds() - before
+    };
+
+    let added = builds_for(300) - builds_for(100);
+    assert!(
+        added <= 200,
+        "200 more fragments built {added} more entries; checks must read fields"
+    );
+}
+
+#[test]
 fn an_incremental_outline_equals_the_full_one_after_every_change() {
     let (_dir, path) = store_path();
     let store = OperationalHistoryStore::open(path.clone()).expect("open history");

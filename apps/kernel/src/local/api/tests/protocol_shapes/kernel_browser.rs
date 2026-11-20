@@ -759,6 +759,27 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     );
 }
 
+// MP-08/MP-10: protocol 1012 names each Tab's icon; a state wait sends only the icons the viewer lacks.
+#[test]
+fn mp08_mp10_browser_favicon_cache_1012_shape_and_hash() {
+    let bytes = include_bytes!("browser-favicon-cache-1012.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "74c103f677eeb135816dbdcb61f8f8e34c4b1c1c1780f1746f8008e0e717829c"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["request"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(fixture["response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), fixture["response"]);
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+}
+
 #[test]
 fn mp08_mp10_download_cancellation_937_shape() {
     let wire = serde_json::json!({"op":"cancel_download","tab_id":"t","generation":7,"download_id":"download-a"});

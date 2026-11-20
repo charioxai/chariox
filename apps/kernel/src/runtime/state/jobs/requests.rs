@@ -12,22 +12,26 @@ impl KernelRuntimeState {
             .job_wake_driver
             .as_ref()
             .ok_or_else(|| ledger::error("job service unavailable"))?;
+        if name == "chariox.jobs.list" {
+            return Ok(self.own_job_list(task));
+        }
         if name != "chariox.jobs.run" {
             let id = args["job_id"]
                 .as_str()
                 .ok_or_else(|| ledger::error("job_id required"))?;
             let mut record = driver.own(id, task)?;
             let mut collection_error = None;
+            // Whatever placement the job ended with, a saved allocation receipt keeps its
+            // cleanup owed until the service confirms the deletion.
             if record.state == "finished"
-                && record.placement == JobPlacement::Remote
+                && record.has_remote_trace()
                 && !record.deleted
-                && self.remote_jobs_enabled()
+                && (self.remote_jobs_enabled() || record.request.machine.is_some())
             {
                 match record.remote {
                     RemoteStage::Finished { .. } if name == "chariox.jobs.cancel" => {
                         self.give_up_pending_return(&mut record);
                         driver.save(&record)?;
-                        self.forget_pending_return(&record.job_id);
                     }
                     RemoteStage::Finished { .. } => {
                         match tokio::time::timeout(
@@ -44,6 +48,12 @@ impl KernelRuntimeState {
                         }
                     }
                     _ => {}
+                }
+                // Retries the removal of the workspace a held machine still keeps for the job.
+                if record.request.machine.is_some() && !record.remote.holds_worker() {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(30), self.settle_or_warn(&record))
+                            .await;
                 }
                 if let (Some(allocation), Some(revision), false) = (
                     &record.allocation_ref,
@@ -74,7 +84,7 @@ impl KernelRuntimeState {
                 self.cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
                     .await?;
             }
-            let mut value = public_record(driver.read(id)?)?;
+            let mut value = self.job_response(driver.read(id)?)?;
             if let Some(error) = collection_error {
                 value["return_error"] = error.into();
             }
@@ -92,6 +102,12 @@ impl KernelRuntimeState {
         let request: RunJobRequest = serde_json::from_value(arguments)
             .map_err(|e| ledger::error(format!("Invalid job request: {e}")))?;
         let command = validate(&request)?;
+        // The agent already holds the machine, so naming it asks the owner nothing more. It is
+        // checked now so a machine that is gone or unreachable is refused at once, not as a failed job.
+        let held = match &request.machine {
+            Some(allocation_ref) => Some(self.held_machine_for_run(&run, allocation_ref).await?),
+            None => None,
+        };
         let workspace = run
             .working_directory()
             .ok_or_else(|| ledger::error("job workspace missing"))?
@@ -144,8 +160,12 @@ impl KernelRuntimeState {
             memory_mib: None,
             remote: RemoteStage::Idle,
         };
-        if let Some(reach) = self
-            .remote_jobs_enabled()
+        if let Some(machine) = &held {
+            record.placement = JobPlacement::Remote;
+            record.machine_label = Some(machine.machine_label.clone());
+            record.address = machine.address.clone();
+        }
+        if let Some(reach) = (self.remote_jobs_enabled() && held.is_none())
             .then(|| self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id())))
             .flatten()
         {
@@ -204,7 +224,7 @@ impl KernelRuntimeState {
         loop {
             let record = driver.read(&id)?;
             if record.state == "finished" || tokio::time::Instant::now() >= deadline {
-                return public_record(record);
+                return self.job_response(record);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -223,6 +243,15 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
     }
     for output in &request.outputs {
         crate::jobs::relative(output)?;
+    }
+    if request.machine.as_ref().is_some_and(|machine| {
+        machine.is_empty()
+            || machine.len() > 200
+            || machine.chars().any(|c| c.is_whitespace() || c.is_control())
+    }) {
+        return Err(ledger::error(
+            "machine is the allocation_ref chariox.machines.acquire returned",
+        ));
     }
     if request.env.len() > 128
         || request.env.iter().any(|name| {

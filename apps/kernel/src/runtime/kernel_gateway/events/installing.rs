@@ -67,6 +67,7 @@ impl KernelGateway {
             &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                 targets,
                 sources: Vec::new(),
+                like: None,
             }),
             PULL_DEADLINE,
         )

@@ -293,6 +293,31 @@ impl KernelRuntimeState {
                 .as_ref()
                 .is_some_and(|prompt| prompt.delivery_pending());
             if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                if let Some(message) = poll_result.terminal_failure.as_deref().filter(|_| {
+                    polled_prompt_id.is_none()
+                        && !poll_result.prompt_completed
+                        && active_prompt_is_dispatching
+                        && active_prompt
+                            .as_ref()
+                            .and_then(|prompt| prompt.durable_delivery_provider_run_id())
+                            != Some(finished_run_id.as_str())
+                }) {
+                    // An idle poll can report the exit only once. Retire the
+                    // run without applying the old batch to its next prompt.
+                    owned.provider_store.record_terminal_diagnostic(
+                        &finished_run_id,
+                        provider_prompt_dispatch_failure_notice(message),
+                    )?;
+                    self.retire_owned_provider_run_after_terminal_failure(
+                        session_id,
+                        &finished_run_id,
+                    )
+                    .await;
+                    owned
+                        .structured_output_records
+                        .stop_polling(&finished_run_id);
+                    return Ok(records);
+                }
                 crate::logging::debug_with_fields(
                     "daemon.provider",
                     "discarding stale structured output poll before prompt delivery",
@@ -584,18 +609,18 @@ impl KernelRuntimeState {
                 .agent_instance_id()
                 .filter(|_| projected_provider_run.turn_substitute().is_none())
             {
-                owned.agent_store.set_agent_runtime_profile_durably(
+                owned.agent_store.set_agent_provider_resume_state_durably(
                     &owned.durable_state_store,
                     agent_id,
-                    projected_provider_run.provider(),
-                    Some(projected_provider_run.model().to_string()),
-                    projected_provider_run.variant().map(str::to_string),
-                    Some(projected_provider_run.account_profile().to_string()),
                     resume_state.clone(),
-                    Some(projected_provider_run.id()),
-                    None,
+                    projected_provider_run.id(),
+                    (
+                        projected_provider_run.provider(),
+                        crate::account_profile::provider_account_selection_for_run(
+                            &projected_provider_run,
+                        ),
+                    ),
                 )?;
-                let _ = owned.session_snapshot(projected_provider_run.session_id())?;
             }
         }
         Ok(poll_result)
@@ -612,6 +637,9 @@ impl KernelRuntimeState {
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        let held_release = self
+            .follow_provider_own_turn(session_id, provider_run_id, &poll_result)
+            .await?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
             let session = owned.session_store.get_session(session_id)?;
@@ -651,9 +679,11 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(|message| provider_error_message(message).unwrap_or_else(|| message.to_string()));
-        let failure = native_error
-            .as_deref()
-            .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message));
+        let failure = poll_result.turn_outcome.clone().or_else(|| {
+            native_error
+                .as_deref()
+                .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message))
+        });
         // Only adapter-protocol error frames set this provenance bit. PTY or
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
@@ -761,6 +791,8 @@ impl KernelRuntimeState {
             owned.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {
             owned.note_prompt_output(provider_run_id);
+        } else if let Some(tokens) = poll_result.thinking_tokens {
+            owned.active_turns.mark_thinking(provider_run_id, tokens);
         }
         // A step is finished when the batch ends on a tool call's end or an assistant message's
         // end: the provider is between two steps then, not inside one.
@@ -841,8 +873,16 @@ impl KernelRuntimeState {
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
+        if !completions.is_empty()
+            || prompt_completed
+            || terminal_failure.is_some()
+            || held_release.is_some()
+        {
             self.flush_provider_history(provider_run_id).await?;
+        }
+        if let Some(release) = held_release {
+            self.release_held_after_own_turn(session_id, release)
+                .await?;
         }
         for completion in &completions {
             owned.record_assistant_message_completion(
@@ -857,6 +897,15 @@ impl KernelRuntimeState {
             }
         }
         if let Some(message) = terminal_failure {
+            if !prompt_completed
+                && !owned.provider_run_has_bound_prompt(session_id, provider_run_id)?
+            {
+                // The provider ended between turns: no prompt reached it, so its end
+                // retires the run and the next prompt starts on a fresh one.
+                self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                    .await;
+                return Ok(records);
+            }
             self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,

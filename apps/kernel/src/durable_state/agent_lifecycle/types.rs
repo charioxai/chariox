@@ -14,7 +14,6 @@ pub enum ExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
-    BrowserAccess,
     /// The agent itself asked the owner something and waits for the answer.
     Question,
 }
@@ -44,6 +43,15 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
+    /// settled obligation and a retained wait or wake prompt are only its record.
+    pub(crate) fn owns_unfinished_work(&self) -> bool {
+        self.goal.is_some()
+            || self
+                .obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+    }
     /// Who began stopping this turn, as recorded when the cancellation began. A path that only
     /// settles a cancellation consumes this; it never makes a new owner Stop.
     pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {
@@ -273,7 +281,25 @@ pub(crate) enum Operation {
         room: String,
         agent: String,
         deadline: Option<u64>,
-        inherited: Vec<(String, Option<u64>)>,
+        inherited: Vec<(String, String, Option<u64>)>,
+    },
+    /// The deadline tick: a kernel that is running counts down its deadlines.
+    BeatDeadlineClock {
+        now: u64,
+    },
+    /// The worker that enforces this agent's deadline holds the shifted value.
+    DeadlineRearmed {
+        room: String,
+        agent: String,
+    },
+    /// The worker refused the shifted deadline for good: the value it holds governs.
+    DeadlineKeptByWorker {
+        room: String,
+        agent: String,
+    },
+    /// A kernel start gives back the time since the last beat.
+    ResumeDeadlines {
+        now: u64,
     },
     ReachDeadline {
         room: String,
@@ -385,6 +411,11 @@ pub(crate) enum Operation {
         parent_task: String,
         child_task: String,
     },
+    /// The runtime admitted the initial prompt from the child's parent in another Room.
+    BindCrossRoomDelegate {
+        parent_task: String,
+        child_task: String,
+    },
     RegisterObligation {
         owner: String,
         room: String,
@@ -425,13 +456,16 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
-    BlockForBrowserAccess {
+    /// An agent's own question to the owner: the card carries a reply box, not Resume.
+    BlockForQuestion {
         task: String,
         prompt: String,
         reason: String,
     },
-    /// An agent's own question to the owner: the card carries a reply box, not Resume.
-    BlockForQuestion {
+    /// The kernel blocks a task whose attempt was interrupted (a refused or failed
+    /// dispatch, a lost run): a later turn of the agent may supersede it. An owner block
+    /// (`Block`) is never superseded.
+    BlockInterrupted {
         task: String,
         prompt: String,
         reason: String,
@@ -594,6 +628,11 @@ pub(crate) enum Operation {
         room: String,
         source: String,
     },
+    WorkerResultReturned {
+        room: String,
+        parent: String,
+        task: String,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,
@@ -645,10 +684,12 @@ pub(crate) enum Operation {
         run: String,
         node: String,
     },
-    /// Private owner-turn admission; never cancels resources or delivery receipts.
+    /// A later turn of the agent (`later_prompt`) supersedes its interrupted task; never
+    /// cancels open work, resources or delivery receipts.
     RetireRestartFailure {
         task: String,
         revision: u64,
+        later_prompt: String,
         now: u64,
     },
     OwnerResponse {
@@ -812,12 +853,26 @@ pub(crate) enum ReplyOutcome {
         delegate_id: String,
         reason: DelegateGoneReason,
     },
+    NoAnswer {
+        agent_id: String,
+        reason: String,
+    },
+}
+impl ReplyOutcome {
+    pub(super) fn no_answer(agent: &str) -> serde_json::Value {
+        serde_json::to_value(Self::NoAnswer {
+            agent_id: agent.into(),
+            reason: "No answer to this request. It arrived during another task.".into(),
+        })
+        .expect("reply outcome is serializable")
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DelegateGoneReason {
     Deleted,
     FailedStart,
+    AgentDeadlineReached,
     SourceLost,
 }
 impl DelegateGoneReason {
@@ -828,4 +883,10 @@ impl DelegateGoneReason {
         })
         .expect("reply outcome is serializable")
     }
+}
+
+pub(crate) struct UndeliveredDelegateEnd {
+    pub(crate) task: String,
+    pub(crate) parent: String,
+    pub(crate) answer: Option<serde_json::Value>,
 }

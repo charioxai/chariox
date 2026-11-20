@@ -1,4 +1,5 @@
-import { checkedScene, sceneJSON, syncedSceneJSON } from './scene.js';
+import { checkedScene, replacement, sceneJSON, syncedSceneJSON } from './scene.js';
+import { drafts } from './draft.js';
 import { reconcileElements, restore, serializeAsJSON } from '@excalidraw/excalidraw';
 
 // The backend and Excalidraw serialize the same scene with different key order
@@ -19,22 +20,43 @@ export function persistence(chariox, api, loaded, feedHead) {
   let version = loaded.version;
   const normalized = scene => {
     const restored = restore(scene, null, null);
-    return { restored, key: sceneKey(JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'))) };
+    const exported = JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'));
+    return { restored, key: sceneKey(exported), settings: exported.appState };
   };
   let lastSaved = loaded.scene ? normalized(loaded.scene).key : null;
+  // While a save is in flight the saved scene may become the one it sends, so a canvas equal to the
+  // scene last saved is unsaved too: a person who reverts during the save must get the revert back.
+  let saving = false;
   let queue = Promise.resolve();
   let failure = null;
   let shownSelection = '';
+  // The window's draft is its whole scene, as the save would send it: every element and every
+  // document setting. Nothing is unsaved once a save or a merge leaves the canvas equal to the saved scene.
+  const unsaved = () => {
+    if (!saving && sceneKey(JSON.parse(sceneJSON(api))) === lastSaved) return null;
+    return JSON.parse(syncedSceneJSON(api));
+  };
+  const draft = drafts((name, input) => chariox.call(name, input), crypto.randomUUID(), unsaved, {
+    failed: message => draftNotice.show(message),
+    recovered: () => draftNotice.clear(),
+  });
+  const settleDraft = () => { if (!unsaved()) draft.drop(); };
   const enqueue = work => {
     const pending = queue.then(work);
     queue = pending.catch(() => {});
     return pending;
   };
 
-  function merge(remote) {
-    const { restored, key } = normalized(remote.scene);
+  // The saved or kept scene's elements join the canvas: the newer version of each element wins.
+  function blend(scene) {
+    const { restored, key, settings } = normalized(scene);
     const merged = reconcileElements(api.getSceneElementsIncludingDeleted(), restored.elements, api.getAppState());
     api.addFiles(Object.values(restored.files));
+    return { merged, key, settings };
+  }
+
+  function merge(remote) {
+    const { merged, key } = blend(remote.scene);
     const selected = remote.scene.appState?.selectedElementIds;
     api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
     // An agent's selection stays in the saved scene until the window saves; show each one once.
@@ -46,21 +68,25 @@ export function persistence(chariox, api, loaded, feedHead) {
     }
     version = remote.version;
     lastSaved = key;
+    settleDraft();
   }
 
   const save = () => enqueue(async () => {
     for (let attempt = 1; ; attempt++) {
       // The key is the live scene, so a tombstone that expires does not cause a save.
       const key = sceneKey(JSON.parse(sceneJSON(api)));
-      if (key === lastSaved) return;
+      if (key === lastSaved) return settleDraft();
       if (failure) throw failure;
       // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(syncedSceneJSON(api));
+      saving = true;
       try {
         version = (await chariox.call('save_scene', { scene, version })).version;
         lastSaved = key;
-        return;
+        saving = false;
+        return settleDraft();
       } catch (error) {
+        saving = false;
         // A save is refused when the backend moved on: merge what it saved, then save what is left.
         const remote = await chariox.call('load_scene', {}).catch(() => null);
         if (remote && remote.version !== version && attempt < SAVE_ATTEMPTS) { merge(remote); continue; }
@@ -75,20 +101,31 @@ export function persistence(chariox, api, loaded, feedHead) {
     if (remote.version !== version) merge(remote);
   });
 
-  // The next tick asks again, so a standing failure is told once, as a notice and in the console.
-  let pollFailure = null;
+  // A standing failure is shown to the person once, as a notice, and the notice leaves when it works again.
+  const standing = () => {
+    let shown = null;
+    return {
+      show(message) {
+        if (message === shown) return false;
+        shown = message;
+        api.setToast({ message, closable: true, duration: Infinity });
+        return true;
+      },
+      clear() {
+        if (!shown) return;
+        if (api.getAppState().toast?.message === shown) api.setToast(null);
+        shown = null;
+      },
+    };
+  };
+  const draftNotice = standing();
+  // The next tick asks again, so a standing poll failure is told once, as a notice and in the console.
+  const pollNotice = standing();
   const pollFailed = error => {
     const message = `Could not update from the saved diagram: ${error?.message ?? error}`;
-    if (message === pollFailure) return;
-    pollFailure = message;
-    console.error(message);
-    api.setToast({ message, closable: true, duration: Infinity });
+    if (pollNotice.show(message)) console.error(message);
   };
-  const pollRecovered = () => {
-    if (!pollFailure) return;
-    if (api.getAppState().toast?.message === pollFailure) api.setToast(null);
-    pollFailure = null;
-  };
+  const pollRecovered = () => pollNotice.clear();
 
   let since = feedHead, stopped = false;
   (async () => {
@@ -106,6 +143,30 @@ export function persistence(chariox, api, loaded, feedHead) {
   const filename = (name = 'diagram', extension = '.excalidraw') => name.endsWith(extension) ? name : name + extension;
   return {
     save,
+    // The window's edit changed: keep it in the App until it is saved.
+    keepDraft: draft.keep,
+    flushDraft: draft.flush,
+    // The drafts the App keeps for this document join this window's canvas, by this policy:
+    // - elements: the newer version of each element wins (Excalidraw's reconciliation), and a deletion
+    //   travels as a deleted element, so a draft never brings back what was deleted after it;
+    // - document settings carry no versions: a draft's settings replace the shown ones, as that window's
+    //   own save would have replaced the saved ones. Drafts come oldest first, so the newest one's win.
+    // The merged scene is then saved, and only once the saved scene holds it is each draft retired, at
+    // the revision that was read: a draft its window rewrote since stays. Retiring waits for nothing
+    // else, so a refused write of this window's own draft never keeps a recovered one. Merging a draft
+    // twice is harmless.
+    async recover() {
+      const kept = await draft.recall();
+      if (!kept.length) return;
+      await enqueue(async () => {
+        for (const { scene } of kept) {
+          const { merged, settings } = blend(scene);
+          api.updateScene({ elements: merged, appState: settings, captureUpdate: 'NEVER' });
+        }
+      });
+      await save();
+      await draft.retire(kept);
+    },
     stop: () => { stopped = true; },
     status: () => ({ saved: !failure, error: failure?.message ?? null }),
     async save_file({ name } = {}) {
@@ -130,7 +191,8 @@ export function persistence(chariox, api, loaded, feedHead) {
       const scene = checkedScene(JSON.stringify(result.scene));
       // Keep the previous diagram in Excalidraw's native Undo history.
       api.addFiles(Object.values(scene.files));
-      api.updateScene({ elements: scene.elements, appState: scene.appState, captureUpdate: 'IMMEDIATELY' });
+      const elements = replacement(api.getSceneElementsIncludingDeleted(), scene.elements);
+      api.updateScene({ elements, appState: scene.appState, captureUpdate: 'IMMEDIATELY' });
       api.scrollToContent(undefined, { fitToContent: true, animate: false });
       await save();
       return { name: result.name, elements: api.getSceneElements().length };

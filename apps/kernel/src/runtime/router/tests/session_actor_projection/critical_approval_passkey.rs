@@ -71,6 +71,7 @@ impl Fixture {
         let app = DaemonApp::bootstrap(config).unwrap();
         let mut session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

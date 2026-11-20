@@ -101,6 +101,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
                     agent_id: Some(agent.id().into()),
                 }],
                 sources: Vec::new(),
+                like: None,
             }),
         )
         .unwrap();
@@ -230,6 +231,7 @@ fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
             agent_id: Some(agent.id().into()),
         }],
         sources: Vec::new(),
+        like: None,
     });
     let runtime = harness.runtime_state();
     let mut subscribed = false;
@@ -1146,6 +1148,8 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
     };
     let source = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
