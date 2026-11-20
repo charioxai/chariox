@@ -454,7 +454,10 @@ client must select the existing display transport.
 
 Tiles use the same protected compositor capture as display, bounded to visible
 regions and cropped by the kernel. Native controls, canvas/video/WebGL/plugin content, unavailable resources,
-closed shadows and cross-origin frames use opaque tiles. Structured mirror
+closed shadows and cross-origin frames use opaque tiles. A video tile carries its
+poster as a resource key (as an image's source): while the tile has no still (a
+transformed or cross-origin video gets none) the client shows the poster, which is
+what Chrome draws before playback; a still replaces it. Structured mirror
 capture inspects open shadow descendants using trusted CDP metadata; Chromium
 user-agent shadow roots do not turn ordinary controls into secret fields.
 Same-origin frame tile bounds are translated into root compositor coordinates.

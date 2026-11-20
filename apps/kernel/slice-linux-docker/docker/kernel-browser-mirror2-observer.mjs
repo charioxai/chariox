@@ -713,7 +713,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); return record; }
       if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); return record; }
       if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); return record; }
-      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); return record; }
+      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) {
+        opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin');
+        // A video's poster travels as a resource key, as an image's source does: a tile without a still (a transformed or
+        // cross-origin video, airbnb's icons) shows what Chrome draws before playback instead of an empty box.
+        const poster = posterKey(node); if (poster) { record.res = poster; resOf.set(id, poster); }
+        spend(64); remember(record, node); return record;
+      }
       if (ns === HTML && !/^[a-z][a-z0-9-]*$/.test(tag)) { record.tag = 'span'; } else record.tag = tag;
       if (ns === SVG) record.ns = 'svg'; else if (ns === MATH) record.ns = 'math';
       record.attrs = attributes(node, base);
@@ -1017,6 +1023,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
     const spriteKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'), hash = href?.indexOf('#') ?? -1; return hash > 0 ? resource(href.slice(0, hash), node.baseURI, 'sprite') : null; };
+    const posterKey = node => node.namespaceURI === HTML && node.localName === 'video' && node.getAttribute('poster') ? resource(node.getAttribute('poster'), node.baseURI, 'image') : null;
     const imageOp = (node, id, ops, key = imageSource(node) ? resource(imageSource(node), node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
     // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
     // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
@@ -1128,6 +1135,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
         const image = node.localName === 'img' && (names.has('src') || names.has('srcset') || names.has('sizes'));
         if (image) imageOp(node, id, ops);
+        if (kind === 'tile' && node.localName === 'video' && names.has('poster')) imageOp(node, id, ops, posterKey(node));
         if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
         // A new input type, or a select gaining/losing `multiple` (its options become/stop being form controls), re-serializes.
         // Pages re-set the same type on every render (github.com): that keeps the viewer's node (and its focus/caret).

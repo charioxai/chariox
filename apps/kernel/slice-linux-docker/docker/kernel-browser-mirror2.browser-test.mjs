@@ -1342,6 +1342,29 @@ test("MP-10: a URL whose key hash matches an evicted URL's key gets its own key 
 
 // Audit 2026-10-10 §4.7: opaque regions as element pixels, not viewport screenshots (R8-3, item 15).
 const { decodePng } = await import("./kernel-browser-pixels.mjs");
+// MP-08/MP-10: a video's poster travels as a resource key with its bytes, as an image's source does: a tile the kernel sends
+// no still for (a transformed or cross-origin video, airbnb's category icons) shows what Chrome draws before playback.
+test("MP-10: a video tile's poster travels as a resource key with its bytes; a new poster sends its key, a removed one none", () => mirrored(
+  '<span style="display:inline-block;transform:scale(2);transform-origin:0 0"><video id="v" poster="/poster.svg" preload="none" playsinline style="display:block;width:36px;height:36px"></video></span>', async ({ next, evaluate }) => {
+    const snapshot = await next();
+    let id = 0, video; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 5 && row[3]?.id === "v") video = { id: `n${id}`, attrs: row[3], ...(row[4] ?? {}) }; }
+    assert(video, "MP-10: the video is a tile");
+    assert.match(video.res ?? "", /^r[0-9]+$/, "MP-10: the tile carries its poster's key");
+    assert.equal(video.attrs.poster, undefined, "MP-11: the poster URL itself never travels");
+    const delivered = [...snapshot.resources], bytesOf = key => delivered.filter(r => r.key === key).map(r => Buffer.from(r.data_base64, "base64").toString()).join("");
+    for (let i = 0; i < 10 && !bytesOf(video.res).includes("#c0ffee"); i++) delivered.push(...(await next(500)).resources);
+    assert(bytesOf(video.res).includes("#c0ffee"), "MP-10: the poster's bytes reach the viewer under its key");
+    await evaluate("document.getElementById('v').poster = '/other.svg'; true");
+    let key = video.res;
+    for (let i = 0; i < 10 && (key === video.res || !bytesOf(key).includes("#0ff1ce")); i++) { const packet = await next(500); delivered.push(...packet.resources); for (const op of packet.ops ?? []) if (op.op === "res" && op.id === video.id) key = op.res; }
+    assert.notEqual(key, video.res, "MP-10: a new poster sends its key");
+    assert(bytesOf(key).includes("#0ff1ce"), "MP-10: and its bytes");
+    await evaluate("document.getElementById('v').removeAttribute('poster'); true");
+    for (let i = 0; i < 10 && key !== null; i++) for (const op of (await next(500)).ops ?? []) if (op.op === "res" && op.id === video.id) key = op.res;
+    assert.equal(key, null, "MP-10: a removed poster sends no key");
+  }, { "/poster.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><path fill="#c0ffee" d="M0 0h36v36H0z"/></svg>' },
+       "/other.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><path fill="#0ff1ce" d="M0 0h36v36H0z"/></svg>' } }));
+
 const tilePixels = tile => { const png = Buffer.from(tile.data_base64, "base64"), width = png.readUInt32BE(16), height = png.readUInt32BE(20), { pixels } = decodePng(tile.data_base64, 1, { width, height }); let red = 0, blue = 0; for (let i = 0; i < pixels.length; i += 4) { if (pixels[i] > 200 && pixels[i + 2] < 60) red++; if (pixels[i + 2] > 200 && pixels[i] < 60) blue++; } return { width, height, red, blue }; };
 const canvasPage = '<div style="position:relative"><canvas id="c" width="300" height="150"></canvas><div style="position:absolute;left:0;top:0;width:300px;height:40px;background:rgb(0,0,255)">controls</div></div>' +
   '<div style="transform:scale(0.5);transform-origin:0 0;width:400px;height:200px"><canvas id="t" width="200" height="100" style="width:200px;height:100px"></canvas></div>' +
