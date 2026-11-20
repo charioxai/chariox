@@ -2640,6 +2640,48 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
     assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
 }
 
+#[tokio::test]
+async fn sweep_commits_the_yield_of_a_completed_turn_that_did_not_answer() {
+    let f = fixture("sweep-completed-yield", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "sweep-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // The provider can end without an answer after accepting a yield. The sweep
+    // may see this prompt completion before the task ledger commits the wait.
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+
+    let waiting = f.task(&task.task_id);
+    assert_eq!(waiting.state, ExecutionState::Waiting, "{}", waiting.reason);
+    assert_eq!(f.wake_state(&wake.id), "running");
+}
+
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
 // A yield without an explicit deadline reports the kernel's default deadline in its wait row.
 #[tokio::test]
