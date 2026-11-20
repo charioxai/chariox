@@ -56,8 +56,8 @@ impl CatalogMonitor {
         }
     }
 
-    /// Records a new run's catalog before its first MCP request is served, so
-    /// a change between that listing and the next refresh is not missed.
+    /// Records a run's catalog before opening its notification stream, so a
+    /// change between that listing and the next refresh is not missed.
     pub(super) async fn seed(self: &Arc<Self>, router: &Arc<CommandRouter>, token: &str) {
         if self.lock().contains_key(token) {
             return;
@@ -86,7 +86,7 @@ impl CatalogMonitor {
     }
 
     /// Only this refresh replaces a known run's catalog; a run seeded while it
-    /// computed keeps the catalog its first request was served after. Returns
+    /// computed keeps the catalog its stream opened with. Returns
     /// how many runs it armed a reload for.
     pub(super) fn refresh(&self, router: &CommandRouter) -> usize {
         let known = self.lock().keys().cloned().collect::<BTreeSet<_>>();
