@@ -4,13 +4,13 @@ use crate::session::{WorkflowResponsible, WorkflowRunOutcome};
 use crate::transport::relay_peer::RelayPeerRequest;
 use sha2::{Digest, Sha256};
 
-// Local 1012 / relay peer 449: a workflow has a responsible, a run has a number, an outcome and an attention flag.
+// Local 1013 / relay peer 450: workspace waits can name a holding run.
 #[test]
 fn workflow_responsible_run_outcome_and_requests_are_bound_to_protocol1011() {
     let bytes = include_bytes!("workflow-responsible-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "27e54d2c445f487e710e594a0eb50561d7023f081b4639fcbe4006d569c67237"
+        "13d927c541389c86098730ff23551693c9f81c8dc69fc10c322f23b3f38da4bd"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(
@@ -28,7 +28,11 @@ fn workflow_responsible_run_outcome_and_requests_are_bound_to_protocol1011() {
         serde_json::to_value(responsible).unwrap(),
         fixture["workflow"]["responsible"]
     );
-    for key in ["failed_outcome", "waiting_outcome"] {
+    for key in [
+        "failed_outcome",
+        "waiting_outcome",
+        "workspace_wait_outcome",
+    ] {
         let outcome: WorkflowRunOutcome = serde_json::from_value(fixture[key].clone()).unwrap();
         assert_eq!(serde_json::to_value(outcome).unwrap(), fixture[key]);
     }

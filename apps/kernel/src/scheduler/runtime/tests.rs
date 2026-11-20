@@ -563,10 +563,7 @@ fn workflow_notice_uses_current_run_after_dispatch_failure() {
 
     assert_eq!(stale_workflow_run.status(), WorkflowRunStatus::Running);
     assert_eq!(current.status(), WorkflowRunStatus::Failed);
-    assert_eq!(
-        super::lifecycle::workflow_run_status_notice_suffix(current.status()),
-        "failed"
-    );
+    assert_eq!(current.status_notice_suffix(), "failed");
 }
 
 #[test]
