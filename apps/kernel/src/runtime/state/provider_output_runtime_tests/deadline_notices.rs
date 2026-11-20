@@ -1,7 +1,6 @@
 //! TL1 / TL2 / TL4: a time limit is announced before and after it ends, and what it does not
 //! stop is said: a sub-agent keeps working and is told who hears it now.
 use super::child_finished::team_with;
-use super::*;
 
 async fn set_deadline(team: &super::child_finished::Team, agent: &str, deadline_ms: u64) {
     let owner = team

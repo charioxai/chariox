@@ -321,15 +321,17 @@ type UncertainLeasedTasks = Arc<
     std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>,
 >;
 
+/// The (room, agent, deadline, level) time-limit warnings this kernel already sent.
+type DeadlineWarningsSent =
+    Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String, u64, u64)>>>;
+
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     agent_deadline_edit: Arc<tokio::sync::Mutex<()>>,
     /// Held across the worker requests of a rearm pass, and by every deadline edit before
     /// `agent_deadline_edit`, so a worker never ends on the older of two values.
     agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
-    /// The (room, agent, deadline, level) warnings this kernel already sent.
-    deadline_warnings_sent: Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String, u64, u64)>>>,
-    app_control: crate::runtime::app_control::AppControlService,
+    deadline_warnings_sent: DeadlineWarningsSent,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
