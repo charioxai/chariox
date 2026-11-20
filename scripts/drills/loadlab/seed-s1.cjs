@@ -3,8 +3,6 @@
 const { setTimeout: delay } = require('node:timers/promises')
 const { parseTrace, filler } = require('../../../apps/kernel/src/provider/registry/dev_stub_adapter/trace_format.cjs')
 
-const entryCount = turn => 1 + Number(Boolean(turn.summary)) + turn.blobs.reduce((count, blob) => count + blob.entry_count, 0)
-
 async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSignal.timeout(480_000) }) {
   const plans = new Map([...traces].map(([file, contents]) => {
     const plan = parseTrace(contents, file)
@@ -24,12 +22,14 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
   })).AgentTree.tree
 
   async function until(read, ready, description) {
+    let value
     while (!signal.aborted) {
-      const value = await read()
+      value = await read()
       if (ready(value)) return value
       await delay(100)
     }
-    throw new Error(`S1 timed out waiting for ${description}`)
+    const states = value?.nodes?.map(({ alias, state, outcome }) => `${alias}=${state}/${outcome ?? ""}`)
+    throw new Error(`S1 timed out waiting for ${description}${states ? ` (${states.join(", ")})` : ""}`)
   }
 
   const tree = await until(readTree, tree => tree.nodes.length === 40, '40 real sub-agents')
@@ -44,7 +44,6 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     })).SessionHistoryOutline.agents
   }
 
-  const counts = new Map()
   async function collect(ids, expectedIds) {
     const results = await until(() => readTurns(ids), rows => rows.length === ids.length && rows.every(row => {
       const turn = row.turns[0]
@@ -52,7 +51,6 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     }), 'the current history turns to settle')
     for (const { agent_id, turns: [turn] } of results) {
       if (turn.lifecycle !== 'completed') throw new Error(`S1 history turn ended ${turn.lifecycle}: ${agent_id}`)
-      counts.set(agent_id, (counts.get(agent_id) ?? 0) + entryCount(turn))
     }
   }
 
@@ -74,8 +72,21 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     await collect([...submitted.keys()], submitted)
   }
 
-  for (const [id, count] of counts) {
-    if (count < 200 || count > 2_000) throw new Error(`S1 history for ${id} has ${count} entries`)
+  const counts = new Map()
+  for (const { agent_id, alias } of histories) {
+    let before
+    let count = 0
+    do {
+      signal.throwIfAborted()
+      const { AgentTranscriptPeek: { peek } } = await rpc({
+        PeekAgentTranscript: { session_id: sessionId, agent_id, limit: 50, before },
+      })
+      count += peek.entries.length
+      before = peek.before
+      if (count > 2_000) throw new Error(`S1 history for ${alias} exceeds 2,000 entries`)
+    } while (before)
+    if (count < 200) throw new Error(`S1 history for ${alias} has ${count} entries`)
+    counts.set(agent_id, count)
   }
   const settled = await until(readTree, ({ nodes }) =>
     nodes.filter(node => node.state === 'running').length === 12 &&

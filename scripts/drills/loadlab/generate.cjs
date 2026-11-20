@@ -56,7 +56,7 @@ function s1(random, add) {
     } else {
       // Twelve text and reasoning pairs per turn keep the seed fast while
       // exercising histories with many turns and up to 2,000 entries.
-      add(name, 'done', history(random, 8 + random(65)))
+      add(name, 'done', history(random, 18 + random(55)))
     }
   }
 }

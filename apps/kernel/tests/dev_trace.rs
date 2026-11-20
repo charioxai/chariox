@@ -242,14 +242,15 @@ async fn trace_uses_real_permission_terminal_and_inbox() {
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let interaction = loop {
-        let response = request(&mut socket, json!({"ListOwnerInteractions": {}}))
+        let response = request(&mut socket, json!({"GetPersonInbox": null}))
             .await
             .unwrap();
-        let cards = response["OwnerInteractionsListed"]["interactions"]
-            .as_array()
-            .unwrap();
-        if let Some(card) = cards.iter().find(|card| card["session_id"] == room) {
-            break card["interaction_id"].as_str().unwrap().to_owned();
+        let cards = response["PersonInbox"]["cards"].as_array().unwrap();
+        if let Some(card) = cards
+            .iter()
+            .find(|card| card["session_id"] == room && card["body"]["needs_you"].is_object())
+        {
+            break card["card_id"].as_str().unwrap().to_owned();
         }
         assert!(
             Instant::now() < deadline,
