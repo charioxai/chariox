@@ -618,7 +618,11 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Regular => "regular",
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
-        "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
+        "state": crate::runtime::projection::agent_state_label(
+            agent,
+            activity.get(agent.id()),
+            session.active_prompt_for_agent(agent.id()).is_some(),
+        ),
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session

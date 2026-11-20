@@ -162,16 +162,19 @@ pub enum AgentWaitKind {
 
 /// The state `agent children` and the session agent inspection name for an
 /// agent. One that yielded on a job, timer or source is waiting, not idle: its
-/// `liveness.waiting_on` says on what and since when.
+/// `liveness.waiting_on` says on what and since when. An agent with an active prompt is working
+/// whatever its stored state says: a turn the owner resumed runs before anything stores that.
 pub(crate) fn agent_state_label(
     agent: &crate::agent::AgentInstance,
     activity: Option<&AgentRuntimeActivity>,
+    has_active_prompt: bool,
 ) -> &'static str {
     use crate::agent::AgentState;
     let yielded = activity.is_some_and(|activity| {
         activity.status == AgentRuntimeStatus::Idle && activity.liveness.waiting_on.is_some()
     });
     match agent.state() {
+        AgentState::Idle | AgentState::Focused if has_active_prompt => "working",
         AgentState::Idle | AgentState::Focused if yielded => "waiting",
         AgentState::Idle => "idle",
         AgentState::Working => "working",
@@ -470,6 +473,33 @@ mod tests {
             "active_prompt_count":1,"queued_prompt_count":0
         }))
         .unwrap()
+    }
+
+    fn stored_idle_agent() -> crate::agent::AgentInstance {
+        crate::agent::AgentInstance::new(
+            "agent",
+            "agent",
+            "room",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    // A turn the owner resumed runs before anything stores the agent as working: the label
+    // follows the prompt, so a watcher never reads a running agent as idle.
+    #[test]
+    fn an_agent_with_an_active_prompt_is_working_whatever_its_stored_state() {
+        let agent = stored_idle_agent();
+        assert_eq!(agent_state_label(&agent, None, false), "idle");
+        assert_eq!(agent_state_label(&agent, None, true), "working");
+        assert_eq!(
+            agent_state_label(&agent, Some(&idle_activity()), true),
+            "working"
+        );
     }
 
     fn row(agent: &str, state: SessionProcessState) -> SessionProcess {

@@ -12,6 +12,7 @@
 //! `totals.live` counts the nodes that are starting, running, waiting or unreachable: an idle node (finished,
 //! or not started) is done to a client, which closes its Sub-agents view when none is live.
 use crate::agent::AgentInstance;
+use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
 use crate::session::{
@@ -24,6 +25,29 @@ pub(crate) struct NodeTurn {
     pub(crate) live: bool,
     pub(crate) blocked: bool,
     pub(crate) outcome: Option<TurnOutcomeKind>,
+}
+
+/// What the tasks of one agent say about its turn. A task that has not ended speaks for the agent
+/// even when a newer task already ended: a task the owner resumed keeps its older place in the list,
+/// and the agent must not read as idle while that turn runs.
+pub(crate) fn node_turn(
+    tasks: &[AgentTaskExecution],
+    agent_id: &str,
+    outcome_of: &dyn Fn(&AgentTaskExecution) -> TurnOutcomeKind,
+) -> Option<NodeTurn> {
+    let ended = |task: &AgentTaskExecution| {
+        matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+    };
+    let mut mine = tasks.iter().rev().filter(|task| task.agent_id == agent_id);
+    let task = mine
+        .clone()
+        .find(|task| !ended(task))
+        .or_else(|| mine.next())?;
+    Some(NodeTurn {
+        live: !ended(task) && task.state != ExecutionState::Blocked,
+        blocked: task.state == ExecutionState::Blocked,
+        outcome: ended(task).then(|| outcome_of(task)),
+    })
 }
 
 fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<NodeTurn>) -> AgentTreeState {
@@ -295,6 +319,60 @@ mod tests {
         );
         session.set_agents(agents);
         session
+    }
+
+    fn task(id: &str, state: &str) -> AgentTaskExecution {
+        serde_json::from_value(serde_json::json!({
+            "task_id": id, "room_id": "room", "owner_user_id": "local", "agent_id": "child",
+            "prompt_id": id, "provider_run_id": null, "revision": 1, "blocked_revision": 0,
+            "state": state, "reason": "", "obligations": [], "wait": null,
+            "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
+        }))
+        .unwrap()
+    }
+
+    // A task the owner resumed keeps its older place in the list: a newer task that already
+    // ended must not make the agent read as idle while the resumed turn runs.
+    #[test]
+    fn a_resumed_task_older_than_an_ended_one_keeps_the_node_running() {
+        let tasks = vec![task("resumed", "working"), task("later", "done")];
+        let turn = node_turn(&tasks, "child", &|_| TurnOutcomeKind::Completed).unwrap();
+        assert!(turn.live && !turn.blocked, "{turn:?}");
+        assert_eq!(turn.outcome, None, "no outcome while a turn runs");
+
+        let session = session(vec![
+            agent("root", None, 1),
+            agent("child", Some("root"), 2),
+        ]);
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| Some(turn),
+        )
+        .unwrap();
+        assert_eq!(tree.nodes[0].state, AgentTreeState::Running);
+    }
+
+    #[test]
+    fn the_latest_ended_task_speaks_only_when_no_task_is_open() {
+        let tasks = vec![task("first", "done"), task("second", "cancelled")];
+        let turn = node_turn(&tasks, "child", &|task| {
+            assert_eq!(task.task_id, "second");
+            TurnOutcomeKind::Completed
+        })
+        .unwrap();
+        assert!(!turn.live && !turn.blocked);
+        assert_eq!(turn.outcome, Some(TurnOutcomeKind::Completed));
+        let blocked_last = vec![task("a", "working"), task("b", "blocked")];
+        assert!(
+            node_turn(&blocked_last, "child", &|_| TurnOutcomeKind::Completed)
+                .unwrap()
+                .blocked
+        );
+        assert!(node_turn(&[], "child", &|_| TurnOutcomeKind::Completed).is_none());
     }
 
     #[test]

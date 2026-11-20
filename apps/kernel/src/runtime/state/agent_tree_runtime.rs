@@ -2,11 +2,10 @@
 //! the tree change event followers get when what that read returns differs.
 use super::*;
 use crate::agent::tree_rev;
-use crate::durable_state::agent_lifecycle::ExecutionState;
 use crate::local::{
     AgentTree, EventRefs, ListDescendantsRequest, LocalDaemonResponse, OutsideEventValue,
 };
-use crate::runtime::agent_tree_projection::{project_agent_tree, tree_for_viewer, NodeTurn};
+use crate::runtime::agent_tree_projection::{node_turn, project_agent_tree, tree_for_viewer};
 use std::hash::{Hash, Hasher};
 
 impl KernelRuntimeState {
@@ -81,16 +80,8 @@ impl KernelRuntimeState {
                         .ok()?;
                     &other_tasks
                 };
-                let task = tasks
-                    .iter()
-                    .rev()
-                    .find(|task| task.agent_id == agent.id())?;
-                let finished =
-                    matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled);
-                Some(NodeTurn {
-                    live: !finished && task.state != ExecutionState::Blocked,
-                    blocked: task.state == ExecutionState::Blocked,
-                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None).kind),
+                node_turn(tasks, agent.id(), &|task| {
+                    self.owned.finished_task_outcome(task, None).kind
                 })
             },
             &|room| self.owned.session_store.get_session(room).ok(),
