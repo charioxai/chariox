@@ -465,16 +465,34 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
-        // The inbox owns queued messages. Older Room checkpoints sometimes
-        // included the live projection, whose shape changed independently.
+        // The inbox owns queued messages. Strip the derived projection before
+        // any checkpoint format can supply Rooms to startup restore.
         connection
-            .execute(
-                "UPDATE durable_state_owner_checkpoint_entities
-                 SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
-                 WHERE entity_kind='sessions'
-                 AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL",
-                [],
-            )
+            .transaction()
+            .and_then(|transaction| {
+                transaction.execute_batch(
+                    "UPDATE durable_state_owner_checkpoint_entities
+                     SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
+                     WHERE entity_kind='sessions'
+                       AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL;
+                     UPDATE durable_state_checkpoint_entities
+                     SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
+                     WHERE entity_kind='sessions'
+                       AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL;
+                     UPDATE durable_state_snapshots AS snapshot
+                     SET payload_json=json_set(payload_json,'$.sessions',json((
+                         SELECT json_group_array(json_remove(room.value,'$.queued_agent_messages')
+                                                 ORDER BY room.key)
+                         FROM json_each(snapshot.payload_json,'$.sessions') AS room
+                     )))
+                     WHERE json_type(payload_json,'$.sessions')='array'
+                       AND EXISTS (
+                           SELECT 1 FROM json_each(snapshot.payload_json,'$.sessions') AS room
+                           WHERE json_type(room.value,'$.queued_agent_messages') IS NOT NULL
+                       );",
+                )?;
+                transaction.commit()
+            })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.migrate_room_checkpoint",
                 message: error.to_string(),

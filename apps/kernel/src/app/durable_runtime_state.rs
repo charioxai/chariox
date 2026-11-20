@@ -2228,6 +2228,50 @@ mod tests {
     }
 
     #[test]
+    fn cutover_boot_reads_newer_legacy_room_checkpoint_with_queued_message_projection() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let room = RuntimeSession::new(
+            "retired-room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "workspace",
+            &config.host_machine_id,
+            &config.daemon_id,
+        );
+        let mut stored_room = serde_json::to_value(&room).unwrap();
+        stored_room["status"] = serde_json::json!(crate::session::SessionStatus::Ended);
+        let store = DurableKernelStateStore::open(config.durable_state_path()).unwrap();
+        store
+            .save_entity_checkpoint(
+                &config.daemon_id,
+                1,
+                vec![crate::durable_state::DurableCheckpointEntity {
+                    kind: "sessions".into(),
+                    id: room.id().into(),
+                    payload_json: stored_room.to_string(),
+                }],
+            )
+            .unwrap();
+        stored_room["queued_agent_messages"] = serde_json::json!([{
+            "id": "agent-message-1", "agent_id": "agent", "sender": "peer",
+            "prompt": "fixture message",
+        }]);
+        store
+            .save_snapshot(
+                2,
+                serde_json::json!({"sessions": [stored_room], "agents": [], "slices": []}),
+            )
+            .unwrap();
+        drop(store);
+
+        let app = DaemonApp::bootstrap(config).expect("legacy checkpoint must boot");
+        let restored = app.sessions().get_session(room.id()).unwrap();
+        assert_eq!(restored.status(), crate::session::SessionStatus::Ended);
+        assert!(restored.queued_agent_messages().is_empty());
+    }
+
+    #[test]
     fn a_room_created_through_create_session_keeps_its_project_across_restart() {
         let config = crate::config::DaemonConfig::for_tests();
         let (session_id, project_id) = {
