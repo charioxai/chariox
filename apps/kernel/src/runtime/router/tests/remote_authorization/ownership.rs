@@ -543,14 +543,15 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         queue_ref: None,
         publication_invocation: None,
     });
-    assert_ownership_denied(
-        router
-            .dispatch(remote_command_for_request(&invoke, Some("user-2")), invoke)
-            .await
-            .expect_err("other user should not invoke local endpoint"),
-        "user-2",
-        DEFAULT_LOCAL_USER_ID,
-    );
+    let refusal = router
+        .dispatch(remote_command_for_request(&invoke, Some("user-2")), invoke)
+        .await
+        .expect_err("other user should not invoke local endpoint");
+    let DaemonError::WorkflowStartRefused { source, action } = refusal else {
+        panic!("expected workflow start refusal with a next step, got {refusal:?}");
+    };
+    assert!(action.contains("endpoint owner’s account"));
+    assert_ownership_denied(*source, "user-2", DEFAULT_LOCAL_USER_ID);
 
     let spawn_user_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         initial_task: None,
