@@ -99,13 +99,22 @@ impl KernelRuntimeState {
             .ok_or_else(|| ledger::error("job arguments must be an object"))?;
         object.remove("task_id");
         object.remove("origin_prompt_id");
-        let request: RunJobRequest = serde_json::from_value(arguments)
+        let mut request: RunJobRequest = serde_json::from_value(arguments)
             .map_err(|e| ledger::error(format!("Invalid job request: {e}")))?;
         let command = validate(&request)?;
-        // The agent already holds the machine, so naming it asks the owner nothing more. It is
-        // checked now so a machine that is gone or unreachable is refused at once, not as a failed job.
-        let held = match &request.machine {
-            Some(allocation_ref) => Some(self.held_machine_for_run(&run, allocation_ref).await?),
+        let machine = match &mut request.machine {
+            Some(JobMachineTarget::Allocation(allocation)) => {
+                Some(self.held_machine_for_run(&run, allocation).await?)
+            }
+            Some(JobMachineTarget::Enrolled { kernel, .. }) => {
+                self.check_enrolled_job_agent(&task.agent_id, kernel)?;
+                let harness = self
+                    .agent_harness_name(&task.room_id, &task.agent_id)
+                    .unwrap_or_else(|| "Chariox".into());
+                let machine = self.enrolled_job_machine(kernel, &harness).await?;
+                *kernel = machine.kernel_id.clone();
+                Some(machine)
+            }
             None => None,
         };
         let workspace = run
@@ -113,7 +122,10 @@ impl KernelRuntimeState {
             .ok_or_else(|| ledger::error("job workspace missing"))?
             .canonicalize()
             .map_err(|e| ledger::error(e.to_string()))?;
-        let cwd = super::agent_process_watch::workspace_cwd(&run, request.cwd.as_deref())?;
+        let cwd = match request.target_directory() {
+            Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
+            None => super::agent_process_watch::workspace_cwd(&run, request.cwd.as_deref())?,
+        };
         let mut wake = super::tool_dispatch::agent_wakes::new_wake(
             task,
             KIND,
@@ -160,12 +172,12 @@ impl KernelRuntimeState {
             memory_mib: None,
             remote: RemoteStage::Idle,
         };
-        if let Some(machine) = &held {
+        if let Some(machine) = &machine {
             record.placement = JobPlacement::Remote;
             record.machine_label = Some(machine.machine_label.clone());
             record.address = machine.address.clone();
         }
-        if let Some(reach) = (self.remote_jobs_enabled() && held.is_none())
+        if let Some(reach) = (self.remote_jobs_enabled() && machine.is_none())
             .then(|| self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id())))
             .flatten()
         {
@@ -244,14 +256,40 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
     for output in &request.outputs {
         crate::jobs::relative(output)?;
     }
-    if request.machine.as_ref().is_some_and(|machine| {
-        machine.is_empty()
-            || machine.len() > 200
-            || machine.chars().any(|c| c.is_whitespace() || c.is_control())
-    }) {
-        return Err(ledger::error(
-            "machine is the allocation_ref chariox.machines.acquire returned",
-        ));
+    match &request.machine {
+        Some(JobMachineTarget::Allocation(allocation))
+            if allocation.is_empty()
+                || allocation.len() > 200
+                || allocation
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control()) =>
+        {
+            return Err(ledger::error(
+                "Use the allocation_ref chariox.machines.acquire returned.",
+            ));
+        }
+        Some(JobMachineTarget::Enrolled { kernel, .. })
+            if kernel.trim().is_empty()
+                || kernel.len() > 200
+                || kernel.chars().any(char::is_control) =>
+        {
+            return Err(ledger::error(
+                "Name the enrolled machine by kernel ID or name.",
+            ));
+        }
+        _ => {}
+    }
+    if let Some(directory) = request.target_directory() {
+        if !Path::new(directory).is_absolute() || directory.contains('\0') {
+            return Err(ledger::error(
+                "Use an absolute directory on the enrolled machine.",
+            ));
+        }
+        if !request.outputs.is_empty() {
+            return Err(ledger::error(
+                "Jobs in an existing machine directory leave their files there. Use chariox.files.copy to bring them back.",
+            ));
+        }
     }
     if request.env.len() > 128
         || request.env.iter().any(|name| {

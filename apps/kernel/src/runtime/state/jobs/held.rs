@@ -125,7 +125,6 @@ impl KernelRuntimeState {
             )
         })?;
         Ok(JobMachine {
-            allocation_ref: allocation_ref.into(),
             machine_label: machine_label.unwrap_or_else(|| "held machine".into()),
             address,
             kernel_id: target.kernel_id,
@@ -138,10 +137,10 @@ impl KernelRuntimeState {
 impl KernelRuntimeState {
     /// Runs the job on the machine its request names. Nothing is allocated, so there is no capacity
     /// fallback: a machine that is gone fails the job with the reason.
-    pub(super) async fn run_job_on_held_machine(
+    pub(super) async fn run_job_on_named_machine(
         &self,
         record: &mut Record,
-        allocation_ref: &str,
+        target: &JobMachineTarget,
         environment: &BTreeMap<String, Zeroizing<String>>,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
@@ -156,10 +155,27 @@ impl KernelRuntimeState {
                 .agent_harness_name(&record.room_id, &record.agent_id)
                 .unwrap_or_else(|| "Chariox".into()),
         };
+        let resolve = async {
+            match target {
+                JobMachineTarget::Allocation(allocation) => {
+                    self.job_held_machine(allocation, &origin, &record.job_id)
+                        .await
+                }
+                JobMachineTarget::Enrolled { kernel, .. } => {
+                    self.check_enrolled_job_agent(&record.agent_id, kernel)?;
+                    let machine = self.enrolled_job_machine(kernel, &origin.harness).await?;
+                    if machine.kernel_id != *kernel {
+                        return Err(ledger::error("The enrolled kernel changed. Run the job again with its current kernel ID."));
+                    }
+                    Ok(machine)
+                }
+            }
+        };
         let machine = tokio::select! {
-            machine = self.job_held_machine(allocation_ref, &origin, &record.job_id) => machine?,
+            machine = resolve => machine?,
             _ = cancelled.changed() => return Ok(cancelled_result(record)),
         };
+        record.placement = JobPlacement::Remote;
         record.machine_label = Some(machine.machine_label.clone());
         record.address = machine.address.clone();
         save_record(self, record)?;
@@ -171,24 +187,24 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// A held machine is never deleted, so a command whose end was never read keeps running there
+    /// A named machine is never deleted, so a command whose end was never read keeps running there
     /// until it is stopped by name. Returns what to tell the agent when it could not be stopped.
-    pub(super) async fn stop_held_command(&self, record: &Record) -> Option<&'static str> {
+    pub(super) async fn stop_named_command(&self, record: &Record) -> Option<&'static str> {
         let (RemoteStage::Running { room, exec_id }, Some(_)) =
             (&record.remote, &record.request.machine)
         else {
             return None;
         };
         let stopped = async {
-            let plan = PendingReturn::load(self, &record.job_id)?;
-            let grant = self.return_grant(record, &plan.kernel_id).await?;
+            let plan = PendingReturn::load_saved(self, &record.job_id)?;
+            let grant = self.return_grant(record, plan.as_ref()).await?;
             Remote::new(grant, room.clone(), record.job_id.clone())
                 .cancel(exec_id)
                 .await
         };
         match tokio::time::timeout(Duration::from_secs(30), stopped).await {
             Ok(Ok(())) => None,
-            _ => Some(super::execute::HELD_COMMAND_MAY_RUN),
+            _ => Some(super::execute::NAMED_COMMAND_MAY_RUN),
         }
     }
 }
@@ -201,11 +217,9 @@ impl KernelRuntimeState {
         record: &Record,
         kernel_id: &str,
     ) -> Result<Arc<dyn crate::room_exec::gateway_placement::GrantedSend>, DaemonError> {
-        let allocation_ref = record
-            .request
-            .machine
-            .as_deref()
-            .ok_or_else(|| ledger::error("The job has no held machine"))?;
+        let Some(JobMachineTarget::Allocation(allocation_ref)) = &record.request.machine else {
+            return Err(ledger::error("The job has no held machine"));
+        };
         let origin = Origin {
             grant_id: format!(
                 "{}{}",

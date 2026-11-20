@@ -94,7 +94,7 @@ impl KernelRuntimeState {
         if record.request.machine.is_some() {
             if let Some(plan) = PendingReturn::load_saved(self, &record.job_id)? {
                 let removed = tokio::time::timeout(Duration::from_secs(60), async {
-                    let grant = self.return_grant(record, &plan.kernel_id).await?;
+                    let grant = self.return_grant(record, Some(&plan)).await?;
                     Remote::new(grant, String::new(), record.job_id.clone())
                         .remove_workspace(&plan.root)
                         .await
@@ -134,7 +134,7 @@ impl KernelRuntimeState {
             ));
         };
         let plan = PendingReturn::load(self, &record.job_id)?;
-        let grant = self.return_grant(record, &plan.kernel_id).await?;
+        let grant = self.return_grant(record, Some(&plan)).await?;
         let remote = Remote::new(grant, String::new(), record.job_id.clone());
         let (files, conflicts) = remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
@@ -158,7 +158,7 @@ impl KernelRuntimeState {
     pub(super) async fn return_grant(
         &self,
         record: &Record,
-        kernel_id: &str,
+        plan: Option<&PendingReturn>,
     ) -> Result<Arc<dyn crate::room_exec::gateway_placement::GrantedSend>, DaemonError> {
         let driver = self
             .job_wake_driver
@@ -170,25 +170,37 @@ impl KernelRuntimeState {
             .expect("job return grants")
             .get(&record.job_id)
             .cloned();
-        match live {
-            Some(grant) => Ok(grant),
-            None if record.request.machine.is_some() => {
-                self.held_machine_reattach(record, kernel_id).await
-            }
-            None => {
-                self.job_machine_reattach(
-                    &record.job_id,
-                    record
-                        .allocation_ref
-                        .as_deref()
-                        .ok_or_else(|| ledger::error("The kept job has no allocation"))?,
-                    kernel_id,
-                    &self
-                        .agent_harness_name(&record.room_id, &record.agent_id)
-                        .unwrap_or_else(|| "Chariox".into()),
-                )
-                .await
-            }
+        if let Some(grant) = live {
+            return Ok(grant);
         }
+        let harness = self
+            .agent_harness_name(&record.room_id, &record.agent_id)
+            .unwrap_or_else(|| "Chariox".into());
+        if let Some(JobMachineTarget::Enrolled { kernel, .. }) = &record.request.machine {
+            self.check_enrolled_job_agent(&record.agent_id, kernel)?;
+            let machine = self.enrolled_job_machine(kernel, &harness).await?;
+            if machine.kernel_id != *kernel {
+                return Err(ledger::error(
+                    "The enrolled kernel changed; the saved job belongs to its original kernel.",
+                ));
+            }
+            return Ok(machine.grant);
+        }
+        let kernel_id = &plan
+            .ok_or_else(|| ledger::error("The job's file return plan is missing"))?
+            .kernel_id;
+        if record.request.machine.is_some() {
+            return self.held_machine_reattach(record, kernel_id).await;
+        }
+        self.job_machine_reattach(
+            &record.job_id,
+            record
+                .allocation_ref
+                .as_deref()
+                .ok_or_else(|| ledger::error("The kept job has no allocation"))?,
+            kernel_id,
+            &harness,
+        )
+        .await
     }
 }
