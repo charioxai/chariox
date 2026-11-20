@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: issuer expiry through the real renewal entry point.
 use super::*;
+use crate::local::LocalDaemonRequest;
 use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -57,5 +58,119 @@ async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() 
     );
     assert!(
         crate::runtime::cloud_relay_control::cloud_relay_token_refresh_due(&saved, expiry - 60_000)
+    );
+}
+
+#[tokio::test]
+async fn removed_cloud_kernel_keeps_its_owner_identity_on_renewal() {
+    let root = crate::test_support::TestWorktree::new("relay-unlinked-owner");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: format!("http://{}", listener.local_addr().unwrap()),
+        relay_url: "wss://relay.example.test".into(),
+        user_id: "cloud-owner".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        ..Default::default()
+    });
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = vec![0; 16_384];
+        let read = stream.read(&mut request).await.unwrap();
+        assert!(String::from_utf8_lossy(&request[..read]).starts_with("POST /relay/token "));
+        let body = r#"{"error":{"code":"kernel_unlinked","message":"Kernel was removed"}}"#;
+        let header = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes()).await.unwrap();
+        stream.write_all(body.as_bytes()).await.unwrap();
+    });
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(root.session_request().with_owner_user_id("cloud-owner"))
+        .unwrap();
+    let (workflow, endpoint) = {
+        let mut sessions = app.sessions_mut();
+        let workflow = sessions
+            .create_workflow_controlled_by_metaagent(session.id(), None, Some(agent.id().into()))
+            .unwrap();
+        let node = sessions
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .unwrap();
+        let endpoint = sessions
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+            .unwrap();
+        let endpoint = sessions
+            .set_workflow_endpoint_owner(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                "cloud-owner".into(),
+            )
+            .unwrap();
+        (workflow, endpoint)
+    };
+    let projection = app.config_projection_store();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let result = ensure_cloud_relay_connection(&router.runtime_state(), &projection).await;
+    server.await.unwrap();
+    assert!(
+        result.is_err(),
+        "a removed enrollment cannot renew relay access"
+    );
+    assert!(
+        projection.snapshot().cloud_relay.is_some(),
+        "the owner identity must not disappear when Cloud removes the kernel"
+    );
+    assert!(
+        result.unwrap_err().to_string().contains("/cloud link"),
+        "the refusal should tell the owner how to re-link"
+    );
+    let saved = projection.snapshot();
+    let profile = saved.cloud_relay.as_ref().unwrap();
+    assert!(profile.kernel_unlinked);
+    assert!(profile.kernel_credential.is_none());
+    assert!(saved.relay_token.is_none());
+    assert_eq!(
+        crate::runtime::self_host_terminal_grants::owner_user_id(&saved),
+        "cloud-owner"
+    );
+    let second = ensure_cloud_relay_connection(&router.runtime_state(), &projection).await;
+    assert!(second.unwrap_err().to_string().contains("/cloud link"));
+    let (invoked, _) = router
+        .runtime_state()
+        .execute_workflow_request(
+            LocalDaemonRequest::InvokeWorkflowEndpoint(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: session.id().into(),
+                    workflow_ref: workflow.id().into(),
+                    endpoint_ref: endpoint.id().into(),
+                    queue_ref: None,
+                    prompt: Some("owner workflow".into()),
+                    publication_invocation: None,
+                },
+            ),
+            "cloud-owner".into(),
+            None,
+        )
+        .await;
+    assert!(invoked.unwrap_err().to_string().contains("/cloud link"));
+    let log = app
+        .lock()
+        .await
+        .load_session_history_entries(&session, None)
+        .unwrap();
+    assert_eq!(
+        log.iter()
+            .filter(
+                |entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice
+                    && entry.text.contains("/cloud link")
+            )
+            .count(),
+        1,
     );
 }

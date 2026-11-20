@@ -5,6 +5,15 @@ use chariox_relay::protocol::DaemonRegistration;
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
+pub(crate) const CLOUD_KERNEL_UNLINKED_MESSAGE: &str =
+    "This kernel was removed from the account. Run /cloud link on that machine to reconnect.";
+
+pub(crate) fn cloud_kernel_unlinked_error(operation: &'static str) -> crate::error::DaemonError {
+    crate::error::DaemonError::LocalTransport {
+        operation,
+        message: CLOUD_KERNEL_UNLINKED_MESSAGE.into(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CloudRuntimeTokenSubject {
@@ -263,6 +272,7 @@ mod tests {
             machine_credential: Some("machine-secret".to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
             token_expires_at_ms: Some(200_000),
         }
     }
