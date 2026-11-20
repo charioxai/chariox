@@ -56,7 +56,7 @@ impl KernelRuntimeState {
         let owner = self.provider_account_authority_owner_user_id(caller);
         let installed = self
             .provider_account_profile_registry()
-            .list(&owner, Some("claude"))?
+            .list(&owner, None)?
             .into_iter()
             .map(|profile| profile.profile_id)
             .collect::<std::collections::BTreeSet<_>>();
@@ -77,6 +77,41 @@ impl KernelRuntimeState {
         caller: &str,
     ) -> Result<Vec<ProviderAccountCopyOffer>, DaemonError> {
         let config = self.config_snapshot().await;
+        if caller != crate::session::DEFAULT_LOCAL_USER_ID
+            && config
+                .cloud_relay
+                .as_ref()
+                .is_none_or(|profile| profile.user_id != caller)
+        {
+            return Err(failure("provider_account_copy_unauthorized"));
+        }
+        let owner = self.provider_account_authority_owner_user_id(caller);
+        let own_key =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+        let mut offers = self
+            .provider_account_profile_registry()
+            .list(&owner, None)?
+            .into_iter()
+            .filter(|profile| {
+                profile.auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated
+            })
+            .map(|profile| ProviderAccountCopyOffer {
+                source_kernel_id: config.daemon_id.clone(),
+                source_machine_id: config.host_machine_id.clone(),
+                source_label: config
+                    .machine_name()
+                    .unwrap_or_else(|| config.host_machine_id.clone()),
+                source_key_thumbprint: own_key.clone(),
+                target_kernel_id: config.daemon_id.clone(),
+                provider: profile.provider,
+                account_profile: profile.profile_id,
+                label: profile.label,
+            })
+            .collect::<Vec<_>>();
+        if config.cloud_relay.is_none() || !self.owned.relay_state.read().await.connected() {
+            return Ok(offers);
+        }
         enrolled_owner(&config, caller)?;
         let peers = crate::managed_context::owner_authority::account_copy_peers(&config).await?;
         let discovery = crate::transport::relay_discovery::metadata_discovery_config(&config)
@@ -85,7 +120,6 @@ impl KernelRuntimeState {
         let machines = crate::transport::relay_discovery::list_live_machines(&discovery)
             .await
             .map_err(|_| failure("provider_account_copy_unavailable"))?;
-        let mut offers = Vec::new();
         for machine in machines {
             if !peers.iter().any(|peer| {
                 peer.machine_id == machine.machine_id && peer.kernel_id != config.daemon_id
@@ -126,7 +160,7 @@ impl KernelRuntimeState {
                     else {
                         continue;
                     };
-                    if profile.provider != "claude"
+                    if !["claude", "codex"].contains(&profile.provider.as_str())
                         || profile.state != "authenticated"
                         || !profile.copyable
                     {
@@ -177,6 +211,26 @@ impl KernelRuntimeState {
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
         let caller = &command_caller_user_id(command);
         let config = self.config_snapshot().await;
+        if request.source_kernel_id == config.daemon_id {
+            let own_key =
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+            if request.source_key_thumbprint != own_key {
+                return Err(failure("provider_account_copy_unauthorized"));
+            }
+            return self
+                .copy_provider_account_to_kernel(
+                    caller,
+                    crate::local::CopyProviderAccountToKernelRequest {
+                        provider: request.provider,
+                        account_profile: request.account_profile,
+                        operation_id: request.operation_id,
+                        target_kernel_id: config.daemon_id,
+                        target_key_thumbprint: own_key,
+                        replace: request.replace,
+                    },
+                )
+                .await;
+        }
         let owner = enrolled_owner(&config, caller)?;
         let binding = ProviderAccountCopyBinding {
             operation_id: request.operation_id,

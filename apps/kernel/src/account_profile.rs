@@ -695,6 +695,9 @@ pub struct ProviderAccountProfile {
     pub origin: ProviderAccountProfileOrigin,
     pub is_default: bool,
     pub auth_state: ProviderAccountAuthState,
+    /// Actionable native sign-in failure, without provider output or credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_error: Option<String>,
     /// Versioned credential-kind contract (v1). `None` on records written
     /// before the contract existed; readers must treat it as not-reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1009,6 +1012,9 @@ struct StoredProviderAccountProfile {
     /// Which account of which kernel a managed-context transfer or an account copy installed here, so a lease from that kernel can use it instead of making a second copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transferred_from: Option<TransferredAccountOrigin>,
+    /// Only same-kernel copies depend on another registration; remote provenance is independent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1033,6 +1039,8 @@ struct ManagedContextReplicaBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ReplacedProviderAccountProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1271,6 +1279,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: None,
             });
             changed = true;
         }
@@ -1479,6 +1488,9 @@ impl ProviderAccountProfileRegistry {
                             (index != profile_index
                                 && candidate.public.owner_user_id == owner_user_id
                                 && candidate.public.provider == provider
+                                && !candidate.locator.same_credential_scope(
+                                    &document.profiles[profile_index].locator,
+                                )
                                 && candidate.public.auth_state
                                     == ProviderAccountAuthState::Authenticated
                                 && normalized_account_identity(
@@ -1520,6 +1532,11 @@ impl ProviderAccountProfileRegistry {
         let profile = &mut document.profiles[profile_index];
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
+        profile.public.auth_error = matches!(
+            auth_state,
+            ProviderAccountAuthState::Error | ProviderAccountAuthState::Expired
+        )
+        .then(|| native_sign_in_advice(&profile.public));
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
         profile.public.detected_provider_version = detected_provider_version;
@@ -1531,6 +1548,25 @@ impl ProviderAccountProfileRegistry {
             refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         }
         let result = document.profiles[profile_index].public.clone();
+        let scope = document.profiles[profile_index].locator.clone();
+        for (index, peer) in document.profiles.iter_mut().enumerate() {
+            if index == profile_index
+                || peer.public.provider != provider
+                || !peer.locator.same_credential_scope(&scope)
+            {
+                continue;
+            }
+            // One native credential has one authentication state, including across aliases.
+            peer.public.auth_state = result.auth_state;
+            peer.public.auth_error = result
+                .auth_error
+                .as_ref()
+                .map(|_| native_sign_in_advice(&peer.public));
+            peer.public.identity_summary = result.identity_summary.clone();
+            peer.public.plan = result.plan.clone();
+            peer.public.detected_provider_version = result.detected_provider_version.clone();
+            peer.public.last_validated_at_ms = result.last_validated_at_ms;
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1546,12 +1582,26 @@ impl ProviderAccountProfileRegistry {
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
+        profile.public.auth_error = None;
         profile.public.identity_summary = None;
         profile.public.plan = None;
         profile.public.services.clear();
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
         let result = profile.public.clone();
+        let locator = profile.locator.clone();
+        for peer in &mut document.profiles {
+            if peer.public.provider == provider && peer.locator.same_credential_scope(&locator) {
+                peer.public.auth_state = result.auth_state;
+                peer.public.auth_error = None;
+                peer.public.identity_summary = None;
+                peer.public.plan = None;
+                peer.public.services.clear();
+                peer.public.last_validated_at_ms = result.last_validated_at_ms;
+                peer.public.usage =
+                    ProviderAccountUsageSnapshot::unavailable(&peer.public.profile_id, provider);
+            }
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1733,9 +1783,12 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<BTreeMap<String, String>, DaemonError> {
         let provider = normalize_provider(provider)?;
+        let source_profile_id =
+            self.credential_source_profile_id(owner_user_id, provider, profile_id)?;
         let (origin, locator, materialized_replica) = {
             let document = self.read_document()?;
-            let profile = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+            let profile =
+                resolve_stored_profile(&document, owner_user_id, provider, &source_profile_id)?;
             (
                 profile.public.origin,
                 profile.locator.clone(),
@@ -1866,6 +1919,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1928,6 +1982,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1987,6 +2042,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -2037,6 +2093,19 @@ impl ProviderAccountProfileRegistry {
         Ok(project_usage_freshness(result))
     }
 
+    pub(crate) fn ensure_profile_removable(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        deletes_data: bool,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, deletes_data)
+    }
+
     pub fn remove_registration(
         &self,
         owner_user_id: &str,
@@ -2046,6 +2115,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, false)?;
         let removed = take_registration(&mut document, owner_user_id, provider, index);
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(removed.public))
@@ -2074,6 +2144,7 @@ impl ProviderAccountProfileRegistry {
                 "only Chariox-created profile data can be deleted",
             ));
         }
+        ensure_no_credential_dependents(&document, index, true)?;
         let managed_root = self
             .path
             .parent()
@@ -3476,6 +3547,7 @@ impl ProviderAccountProfileRegistry {
                 .map(|stored| ReplacedProviderAccountProfile {
                     public: stored.public.clone(),
                     locator: stored.locator.clone(),
+                    local_credential_source: stored.local_credential_source.clone(),
                     label_source: stored.label_source,
                 })
         });
@@ -3533,6 +3605,7 @@ impl ProviderAccountProfileRegistry {
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
             existing.transferred_from = None;
+            existing.local_credential_source = None;
             existing.public.clone()
         } else {
             let public = new_public_profile(
@@ -3554,6 +3627,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
                 transferred_from: None,
+                local_credential_source: None,
             });
             public
         };
@@ -3676,6 +3750,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: replaced.local_credential_source,
             };
         } else {
             document.profiles.remove(index);
@@ -4128,6 +4203,7 @@ fn new_public_profile(
         origin,
         is_default,
         auth_state: ProviderAccountAuthState::Unknown,
+        auth_error: None,
         credential_kind,
         credential_kind_not_reported_reason,
         identity_summary: None,
@@ -4139,6 +4215,13 @@ fn new_public_profile(
         materializations: Vec::new(),
         context_transfer: ProviderAccountContextTransfer::Available,
     }
+}
+
+pub(crate) fn native_sign_in_advice(profile: &ProviderAccountProfile) -> String {
+    format!(
+        "{} could not use the sign-in for `{}`; sign in again in Provider Accounts on this machine",
+        profile.provider, profile.label,
+    )
 }
 
 fn normalize_provider(provider: &str) -> Result<&'static str, DaemonError> {
@@ -4536,6 +4619,33 @@ fn resolve_stored_profile_mut<'a>(
 ) -> Result<&'a mut StoredProviderAccountProfile, DaemonError> {
     let index = resolved_profile_index(document, owner_user_id, provider, profile_id)?;
     Ok(&mut document.profiles[index])
+}
+
+fn ensure_no_credential_dependents(
+    document: &RegistryDocument,
+    index: usize,
+    deletes_data: bool,
+) -> Result<(), DaemonError> {
+    let source = &document.profiles[index];
+    let dependent = document
+        .profiles
+        .iter()
+        .enumerate()
+        .any(|(other_index, other)| {
+            other_index != index
+                && other.public.provider == source.public.provider
+                && ((other.public.owner_user_id == source.public.owner_user_id
+                    && other.local_credential_source.as_deref()
+                        == Some(source.public.profile_id.as_str()))
+                    || (deletes_data && other.locator.same_credential_scope(&source.locator)))
+        });
+    if dependent {
+        return Err(registry_error("mutate provider account profile", format!(
+            "account profile `{}` supplies credentials to linked profiles; remove those links in Provider Accounts before removing the source or deleting its data",
+            source.public.label,
+        )));
+    }
+    Ok(())
 }
 
 fn take_registration(

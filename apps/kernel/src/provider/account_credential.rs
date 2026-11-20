@@ -37,6 +37,11 @@ pub(crate) fn resolve_provider_account_credentials(
     provider: &str,
     profile_id: &str,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    // Codex owns its native auth file and refresh. A transfer's Vault receipt
+    // must never be injected or replayed over the provider's newer credentials.
+    if crate::provider::canonical_provider_family(provider) == Some("codex") {
+        return Ok(ProviderCredentialEnvironment::default());
+    }
     let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
     let credentials = crate::credential::load_user_credentials()?;
     if !credentials
@@ -75,6 +80,12 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     profile_id: &str,
     client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    let source_profile_id = if crate::provider::canonical_provider_family(provider).is_some() {
+        profiles.credential_source_profile_id(owner_user_id, provider, profile_id)?
+    } else {
+        profile_id.to_string()
+    };
+    let profile_id = source_profile_id.as_str();
     if crate::provider::canonical_provider_family(provider) != Some("claude")
         || client_interface == crate::provider::ProviderClientInterface::NativeTui
         || provider_account_credential_registered(owner_user_id, provider, profile_id)?
@@ -112,13 +123,21 @@ fn claude_login_runs_agents(
 /// rule as `resolve_provider_account_credentials_for_launch`: an enrolled
 /// credential is resolved first, including when a native login is available.
 pub(crate) fn launch_uses_vault_credential(
-    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     profile_id: &str,
     _client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<bool, DaemonError> {
-    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
+    if crate::provider::canonical_provider_family(provider) != Some("claude") {
+        return Ok(false);
+    }
+    let source_profile_id = if crate::provider::canonical_provider_family(provider).is_some() {
+        profiles.credential_source_profile_id(owner_user_id, provider, profile_id)?
+    } else {
+        profile_id.to_string()
+    };
+    provider_account_credential_uses_vault(owner_user_id, provider, &source_profile_id)
 }
 
 /// Whether a Chariox-held launch credential is registered for the account.
@@ -160,7 +179,44 @@ pub(crate) fn store_provider_account_credential(
     overwrite: bool,
 ) -> Result<StoredProviderAccountCredential, DaemonError> {
     let provider = validate_provider_account_credential_input(provider, secret)?;
-    let secret = secret.trim();
+    store_account_secret(
+        config,
+        owner_user_id,
+        provider,
+        profile_id,
+        secret.trim(),
+        overwrite,
+    )
+}
+
+pub(crate) fn store_provider_account_copy_credential(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
+    if provider != "codex" {
+        return store_provider_account_credential(
+            config,
+            owner_user_id,
+            provider,
+            profile_id,
+            secret,
+            true,
+        );
+    }
+    store_account_secret(config, owner_user_id, provider, profile_id, secret, true)
+}
+
+fn store_account_secret(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+    overwrite: bool,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
     let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
     let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let existing = registry.get(&credential_id)?;

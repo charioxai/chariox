@@ -10,6 +10,9 @@ const CHILD: &str =
 #[test]
 #[ignore = "explicitly executed by automatic_refresh_keeps_pending_login_server"]
 fn account_endpoint_child() {
+    let authenticated = std::env::var_os("CODEX_HOME")
+        .and_then(|home| std::fs::read_to_string(PathBuf::from(home).join("auth.json")).ok())
+        .is_some_and(|auth| auth.contains("synthetic-accepted-login"));
     let endpoint = std::env::var("CTXFIX_ACCOUNT_LISTEN").unwrap();
     let listener = std::net::TcpListener::bind(endpoint.trim_start_matches("ws://")).unwrap();
     let mut log = std::fs::OpenOptions::new()
@@ -49,8 +52,16 @@ fn account_endpoint_child() {
                     continue;
                 };
                 let result = match request["method"].as_str() {
+                    Some("model/list") => serde_json::json!({"data":[{
+                        "id":"gpt-5.6", "model":"gpt-5.6", "isDefault":true,
+                        "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
+                    }]}),
                     Some("account/read") => {
-                        serde_json::json!({"account":null,"requiresOpenaiAuth":true})
+                        if authenticated {
+                            serde_json::json!({"account":{"email":"accepted@example.invalid"},"requiresOpenaiAuth":true})
+                        } else {
+                            serde_json::json!({"account":null,"requiresOpenaiAuth":true})
+                        }
                     }
                     Some("account/login/start") => {
                         serde_json::json!({"type":"chatgptDeviceCode","loginId":"synthetic-pending","verificationUrl":"https://example.invalid/device","userCode":"SYNTHETIC"})
@@ -66,6 +77,33 @@ fn account_endpoint_child() {
                     .is_err()
                 {
                     break;
+                }
+                if request["method"] == "account/login/start" {
+                    if let Some(approval) = std::env::var_os("CTXFIX_ACCOUNT_LOGIN_COMPLETE") {
+                        let _ = socket.send(tokio_tungstenite::tungstenite::Message::Text(
+                            serde_json::json!({"method":"account/login/completed", "params":{
+                                "loginId":"another-attempt", "success":true
+                            }})
+                            .to_string()
+                            .into(),
+                        ));
+                        while !PathBuf::from(&approval).exists() {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        std::fs::write(
+                            PathBuf::from(std::env::var_os("CODEX_HOME").unwrap())
+                                .join("auth.json"),
+                            r#"{"tokens":{"access_token":"synthetic-accepted-login-new-device"}}"#,
+                        )
+                        .unwrap();
+                        let _ = socket.send(tokio_tungstenite::tungstenite::Message::Text(
+                            serde_json::json!({"method":"account/login/completed", "params":{
+                                "loginId":"synthetic-pending", "success":true
+                            }})
+                            .to_string()
+                            .into(),
+                        ));
+                    }
                 }
             }
         });
@@ -110,20 +148,18 @@ fn automatic_refresh_keeps_pending_login_server() {
     )).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::env::set_var("CHARIOX_CODEX_BIN", executable);
-    let login = start_provider_login_response(
-        &registry,
-        "local",
-        StartProviderLoginRequest {
-            provider: "codex".into(),
-            account_profile: profile.profile_id.clone(),
-            method: Some("device_code".into()),
-        },
-    )
-    .unwrap();
-    assert!(matches!(
-        login,
-        LocalDaemonResponse::ProviderLoginStarted { .. }
-    ));
+    let environment = registry
+        .resolve_environment("local", "codex", &profile.profile_id)
+        .unwrap();
+    let endpoint =
+        crate::provider::ensure_codex_account_endpoint("local", &profile.profile_id, environment)
+            .unwrap();
+    let helper = crate::provider::retain_codex_account_login("local", &profile.profile_id).unwrap();
+    let login = CodexClient::new("provider-login-fixture", endpoint)
+        .unwrap()
+        .start_device_login(&profile.profile_id, helper)
+        .unwrap();
+    assert_eq!(login.start.login_kind, "chatgptDeviceCode");
     let original = std::fs::read_to_string(&log).unwrap();
     let config = DaemonConfig::for_tests();
     for _ in 0..2 {
@@ -158,4 +194,148 @@ fn automatic_refresh_keeps_pending_login_server() {
         2,
         "explicit refresh must still reload the scoped native utility after external login/import"
     );
+
+    // A linked home can retain credential bytes after the provider stops
+    // accepting its login. Status must explain recovery instead of erasing it.
+    let linked_home = root.join("linked-codex");
+    std::fs::create_dir_all(&linked_home).unwrap();
+    std::fs::set_permissions(&linked_home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(
+        linked_home.join("auth.json"),
+        r#"{"tokens":{"access_token":"synthetic-rejected-login"}}"#,
+    )
+    .unwrap();
+    let linked = registry
+        .link_existing("local", "codex", "linked", &linked_home)
+        .unwrap();
+    let _linked_cleanup = Cleanup(root.join("unused"), linked.profile_id.clone());
+    for restart in [false, true] {
+        if restart {
+            crate::provider::invalidate_codex_account_endpoint("local", &linked.profile_id);
+        }
+        let reopened = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let response = provider_auth_status_response(
+            &reopened,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "codex".into(),
+                account_profile: linked.profile_id.clone(),
+            },
+            &config,
+        )
+        .unwrap();
+        let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
+            panic!("expected auth status")
+        };
+        assert_eq!(
+            status.auth_state, "error",
+            "a retained login needs an actionable failure"
+        );
+        assert!(status.login_hint.unwrap().contains("sign in"));
+        let saved =
+            serde_json::to_value(reopened.get("local", "codex", &linked.profile_id).unwrap())
+                .unwrap();
+        assert_eq!(saved["auth_state"], "error");
+        assert!(saved["auth_error"].as_str().unwrap().contains("sign in"));
+    }
+    std::fs::write(
+        linked_home.join("auth.json"),
+        r#"{"tokens":{"access_token":"synthetic-accepted-login"}}"#,
+    )
+    .unwrap();
+    let response = provider_auth_status_response(
+        &registry,
+        "local",
+        GetProviderAuthStatusRequest {
+            provider: "codex".into(),
+            account_profile: linked.profile_id.clone(),
+        },
+        &config,
+    )
+    .unwrap();
+    let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
+        panic!("expected auth status")
+    };
+    assert_eq!(
+        status.auth_state, "authenticated",
+        "external credential changes must retire the stale cache"
+    );
+    let saved =
+        serde_json::to_value(registry.get("local", "codex", &linked.profile_id).unwrap()).unwrap();
+    assert!(
+        saved.get("auth_error").is_none(),
+        "successful validation clears the failure"
+    );
+    let binding = crate::provider_account_copy::ProviderAccountCopyBinding {
+        operation_id: "cache-alias".into(),
+        provider: "codex".into(),
+        source_profile_id: linked.profile_id.clone(),
+        source_kernel_id: "local-kernel".into(),
+        target_kernel_id: "local-kernel".into(),
+        source_key_thumbprint: "a".repeat(64),
+        target_key_thumbprint: "a".repeat(64),
+        replace: false,
+    };
+    let receipt = registry.install_account_link("local", &binding).unwrap();
+    let _alias_cleanup = Cleanup(root.join("unused-alias"), receipt.account_profile.clone());
+    let launches = std::fs::read_to_string(&log).unwrap().lines().count();
+    for account_profile in [&receipt.account_profile, &linked.profile_id] {
+        provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "codex".into(),
+                account_profile: account_profile.clone(),
+            },
+            &config,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        launches,
+        "two linked profiles reuse one app-server for the same native credential"
+    );
+    std::fs::write(
+        linked_home.join("auth.json"),
+        r#"{"tokens":{"access_token":"synthetic-accepted-login-rotated"}}"#,
+    )
+    .unwrap();
+    for account_profile in [&linked.profile_id, &receipt.account_profile] {
+        let response = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "codex".into(),
+                account_profile: account_profile.clone(),
+            },
+            &config,
+        )
+        .unwrap();
+        assert!(
+            matches!(response, LocalDaemonResponse::ProviderAuthStatus { status } if status.auth_state == "authenticated")
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        launches + 1,
+        "rotation retires the shared cached helper once, not once per linked profile"
+    );
+    registry
+        .mark_logged_out("local", "codex", &receipt.account_profile)
+        .unwrap();
+    for account_profile in [&linked.profile_id, &receipt.account_profile] {
+        let profile = registry.get("local", "codex", account_profile).unwrap();
+        assert_eq!(
+            profile.auth_state,
+            crate::account_profile::ProviderAccountAuthState::NotConfigured
+        );
+        assert!(serde_json::to_value(profile)
+            .unwrap()
+            .get("auth_error")
+            .is_none());
+    }
 }

@@ -113,7 +113,11 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 
 ## Explicit account copy to another kernel
 
-MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Claude or Codex account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. Claude uses its provider-only Vault handle. Codex exports the current native credential through the credential-only account materialization path; the target checks a private staging profile with the official CLI, stores the transfer in the Vault and publishes its own native auth file. Later launches use that file, and completed retries never replay the original transfer over a refreshed target.
+
+A copy works immediately. Copies of one Codex login initially share a refresh lineage, so the target notification advises signing in there once through its own device sign-in. That creates a separate login. If a copy later expires, the Inbox says **Sign in again on <machine>** and starts sign-in on that target kernel. Kernels have no refresh dependency on each other.
+
+On the same kernel, a copy request creates a linked profile sharing the source credential scope. Codex aliases share one catalog helper; a change to the native auth file retires the cached helper. A retained login that the provider cannot use saves an actionable `auth_error`, instead of silently becoming unconfigured. Local link offers are available while relay is disconnected. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
 
 ## Signing in from a Vault entry
 

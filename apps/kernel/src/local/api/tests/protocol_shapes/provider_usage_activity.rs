@@ -174,6 +174,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
     );
     let response = LocalDaemonResponse::ProviderAccountProfile {
         profile: crate::account_profile::ProviderAccountProfile {
+            auth_error: None,
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
             profile_id: "work".to_string(),

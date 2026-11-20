@@ -236,6 +236,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// A peer spawn carries the starter's display name.
 /// Peer 497 includes kernels refused as too old on their machine entry, with the protocol each
 /// reported, so clients show them as Update needed.
+/// Peer 451 carries native Codex credentials in encrypted provider account copy packages.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 497;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

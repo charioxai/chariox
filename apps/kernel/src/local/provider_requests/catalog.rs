@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use super::super::api::{
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, LocalDaemonResponse,
-    LogoutProviderRequest, StartProviderLoginRequest,
+    LogoutProviderRequest,
 };
 use super::blocking::block_on_relay_query;
 
@@ -296,13 +296,18 @@ pub(crate) fn observe_provider_auth_status(
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     match crate::provider::canonical_provider_family(provider) {
         Some("codex") => {
+            let retained_login = codex_has_retained_login(&environment);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
                 environment,
             )?;
             let client = CodexClient::new("provider-auth", &endpoint)?;
-            let status = client.auth_status(&profile.profile_id)?;
+            let status = explain_missing_codex_login(
+                client.auth_status(&profile.profile_id)?,
+                &profile,
+                retained_login,
+            );
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -364,11 +369,13 @@ fn saved_claude_token_observation(
     account_profile: &str,
 ) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
+    let source_profile_id =
+        registry.credential_source_profile_id(owner_user_id, provider, &profile.profile_id)?;
     if crate::provider::canonical_provider_family(provider) == Some("claude")
         && crate::provider::provider_account_credential_registered(
             owner_user_id,
             provider,
-            &profile.profile_id,
+            &source_profile_id,
         )?
     {
         return Ok(Some(profile));
@@ -435,16 +442,27 @@ fn refresh_provider_account_profile_observation(
                     &profile.profile_id,
                 );
             }
+            let retained_login = codex_has_retained_login(&environment);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
                 environment,
             )?;
             let client = CodexClient::new("provider-account-refresh", endpoint)?;
-            (
+            let status = explain_missing_codex_login(
                 client.auth_status(&profile.profile_id)?,
-                client.usage_snapshot(&profile.profile_id)?,
-            )
+                &profile,
+                retained_login,
+            );
+            let usage = if status.auth_state == "authenticated" {
+                client.usage_snapshot(&profile.profile_id)?
+            } else {
+                crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    &profile.profile_id,
+                    "codex",
+                )
+            };
+            (status, usage)
         }
         Some("claude") => {
             let status = claude_profile_auth_status(
@@ -508,10 +526,12 @@ fn claude_profile_auth_status(
     profile_environment: &BTreeMap<String, String>,
     config: &DaemonConfig,
 ) -> Result<ProviderAuthStatus, DaemonError> {
+    let source_profile_id =
+        registry.credential_source_profile_id(owner_user_id, provider, &profile.profile_id)?;
     if !crate::provider::provider_account_credential_registered(
         owner_user_id,
         provider,
-        &profile.profile_id,
+        &source_profile_id,
     )? {
         return claude_auth_status(provider, &profile.profile_id, profile_environment);
     }
@@ -533,7 +553,7 @@ fn claude_profile_auth_status(
         config,
         owner_user_id,
         provider,
-        &profile.profile_id,
+        &source_profile_id,
     )?;
     let executable = resolve_claude_executable()?;
     let mut environment = profile_environment.clone();
@@ -558,7 +578,7 @@ fn claude_profile_auth_status(
                 config,
                 owner_user_id,
                 provider,
-                &profile.profile_id,
+                &source_profile_id,
             )?;
             if current.iter().eq(secrets.iter()) {
                 checked.map_err(|error| error.into_daemon_error())
@@ -1247,36 +1267,6 @@ fn claude_auth_status_from_value(
     }
 }
 
-pub(crate) fn start_provider_login_response(
-    registry: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    request: StartProviderLoginRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let profile = registry.get(owner_user_id, &request.provider, &request.account_profile)?;
-    let environment =
-        registry.resolve_environment(owner_user_id, &request.provider, &profile.profile_id)?;
-    match crate::provider::canonical_provider_family(&request.provider) {
-        Some("codex") => {
-            let endpoint = crate::provider::ensure_codex_account_endpoint(
-                owner_user_id,
-                &profile.profile_id,
-                environment,
-            )?;
-            let client = CodexClient::new("provider-login", endpoint)?;
-            Ok(LocalDaemonResponse::ProviderLoginStarted {
-                login: client.start_login(&profile.profile_id)?,
-            })
-        }
-        _ => Err(DaemonError::LocalTransport {
-            operation: "start_provider_login",
-            message: format!(
-                "provider `{}` does not expose a structured login API",
-                request.provider
-            ),
-        }),
-    }
-}
-
 pub(crate) fn logout_provider_response(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
@@ -1336,6 +1326,27 @@ pub(crate) fn logout_provider_response(
             ),
         }),
     }
+}
+
+fn codex_has_retained_login(environment: &BTreeMap<String, String>) -> bool {
+    environment
+        .get("CODEX_HOME")
+        .is_some_and(|home| std::path::Path::new(home).join("auth.json").is_file())
+}
+
+fn explain_missing_codex_login(
+    mut status: ProviderAuthStatus,
+    profile: &crate::account_profile::ProviderAccountProfile,
+    retained_login: bool,
+) -> ProviderAuthStatus {
+    if status.auth_state == "not_logged_in"
+        && (retained_login
+            || profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Linked)
+    {
+        status.auth_state = "error".into();
+        status.login_hint = Some(crate::account_profile::native_sign_in_advice(profile));
+    }
+    status
 }
 
 fn update_profile_auth_observation(

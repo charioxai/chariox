@@ -621,4 +621,5 @@ pub use workspace::*;
 /// `PreflightProviderAccountPortability` carries the launch's `kernelContext`, so a copy of this
 /// kernel holds its Vault unlock for the export that follows.
 /// 1013 allows a remote-job policy request to name the Room project with `project: true`.
+/// Provider account profiles carry recovery errors and Inbox notices can offer sign-in on the target kernel.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1066;

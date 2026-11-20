@@ -3,7 +3,7 @@ import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
 import { beginMutableLocalIpcClientPivot, type MutableLocalIpcClient, type MutableLocalIpcClientPivot } from "./mutable-local-ipc-client.js"
-import { getWaitingRoomInventory, type WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import { getKernelInventory, type KernelInventory } from "./kernel-inventory-api.js"
 
 type KernelClientTarget = {
   kernelRef: string
@@ -64,8 +64,8 @@ export async function withWaitingRoomWorkspaceClient<T>(
 export async function browseWaitingRoomKernelWorkspace(
   controlClient: LocalIpcClient,
   target: KernelClientTarget,
-  applyInventory: (inventory: WaitingRoomInventory, client: LocalIpcClient) => Promise<void>,
-  getInventory: (client: LocalIpcClient) => Promise<WaitingRoomInventory> = getWaitingRoomInventory,
+  applyInventory: (inventory: KernelInventory, client: LocalIpcClient) => Promise<void>,
+  getInventory: (client: LocalIpcClient) => Promise<KernelInventory> = getKernelInventory,
 ) {
   const connection = await openWaitingRoomKernelClient(controlClient, target)
   if (!connection) return
@@ -87,7 +87,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
   client: MutableLocalIpcClient
   cloudClient?: CloudClient | undefined
   kernelConnected?: () => boolean
-  getInventory?: (client: LocalIpcClient) => Promise<WaitingRoomInventory>
+  getInventory?: (client: LocalIpcClient) => Promise<KernelInventory>
   clientId: string
   initialTargetKernelId?: string | null
   homeKernelId(): string | null
@@ -104,7 +104,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     kernelRef: string | null | undefined,
     machineRef: string | null | undefined,
     isActive: () => boolean = () => true,
-    connected?: (inventory: WaitingRoomInventory) => void,
+    connected?: (inventory: KernelInventory) => void,
     retainPrevious?: (pivot: MutableLocalIpcClientPivot) => void,
   ): Promise<boolean> => {
     if (!isActive()) return false
@@ -117,7 +117,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     const sourceMachineId = connectedMachineId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
-        const inventory = await (deps.getInventory ?? getWaitingRoomInventory)(deps.client)
+        const inventory = await (deps.getInventory ?? getKernelInventory)(deps.client)
         if (!isCurrent()) return false
         connected(inventory)
       }
@@ -136,9 +136,9 @@ export function createWaitingRoomKernelConnectionController(deps: {
       await nextClient.close()
       throw new Error("kernel client pivot is unavailable in this build")
     }
-    let targetInventory: WaitingRoomInventory
+    let targetInventory: KernelInventory
     try {
-      targetInventory = await (deps.getInventory ?? getWaitingRoomInventory)(nextClient)
+      targetInventory = await (deps.getInventory ?? getKernelInventory)(nextClient)
     } catch (error) {
       await nextClient.close()
       if (!isCurrent()) return false

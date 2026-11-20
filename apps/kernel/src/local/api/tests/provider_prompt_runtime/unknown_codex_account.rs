@@ -248,20 +248,17 @@ fn unknown_codex_first_prompt_keeps_pending_device_login_server() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = CodexPromptFixture::new("unknown-codex-pending-login", true);
-    let registry = fixture
-        .harness
-        .with_app(|app| app.provider_account_profile_registry().clone());
     assert!(matches!(
-        crate::local::provider_requests::start_provider_login_response(
-            &registry,
-            "local",
-            StartProviderLoginRequest {
-                provider: "codex".into(),
-                account_profile: fixture.profile_id.clone(),
-                method: Some("device_code".into()),
-            },
-        )
-        .unwrap(),
+        fixture
+            .harness
+            .dispatch(LocalDaemonRequest::StartProviderLogin(
+                StartProviderLoginRequest {
+                    provider: "codex".into(),
+                    account_profile: fixture.profile_id.clone(),
+                    method: Some("device_code".into()),
+                }
+            ))
+            .unwrap(),
         LocalDaemonResponse::ProviderLoginStarted { .. }
     ));
     assert_eq!(CodexPromptFixture::count(&fixture.launches), 1);

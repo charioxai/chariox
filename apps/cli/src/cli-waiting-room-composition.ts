@@ -48,8 +48,8 @@ import {
 } from "./waiting-room-activation-controller.js"
 import { cliWaitingRoomSliceApiOptions } from "./waiting-room-slice-api-options.js"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
-import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
-import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import { getKernelInventory } from "./kernel-inventory-api.js"
+import type { KernelInventory } from "./kernel-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import {
   createWaitingRoomInventoryCache,
@@ -287,7 +287,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
 
-  const getInventoryForClient = (client: LocalIpcClient) => getWaitingRoomInventory(client, async () => {
+  const getInventoryForClient = (client: LocalIpcClient) => getKernelInventory(client, async () => {
     try { return await machineAllocationCapability(client) }
     catch (error) {
       deps.appLogger?.warn("failed to read machine allocation capability", { error: deps.formatError(error) })
@@ -459,7 +459,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       const target = machine.kernel_target
       await approveRemoteMachine(deps.client.currentClient(), target.machine_id)
       assertActive()
-      let inventory: WaitingRoomInventory | undefined
+      let inventory: KernelInventory | undefined
       const connected = await replaceClientForKernel(target.kernel_id, target.machine_id, () => {
         try { assertActive(); return true } catch { return false }
       }, next => {
@@ -572,7 +572,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     prepareSessionOwnerClient: async (launch) => {
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
-      const inventory = await waitingRoomWorkspaceController.readInventory(() => getWaitingRoomInventory(deps.client.currentClient()))
+      const inventory = await waitingRoomWorkspaceController.readInventory(() => getKernelInventory(deps.client.currentClient()))
       await waitingRoomWorkspaceController.applyInventory(inventory)
       // MP-08/MP-11: workspace previews retain home account state. Admission
       // after the owner pivot must use the destination's fresh inventory.

@@ -69,6 +69,9 @@ pub struct PersonInboxNotice {
     pub body: Option<String>,
     /// A URL or a Chariox target the person can open.
     pub link: Option<String>,
+    /// A kernel-owned action; ordinary agent notices cannot create one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<PersonInboxNoticeAction>,
     pub priority: PersonInboxPriority,
     pub created_at_ms: u64,
     pub read: bool,
@@ -76,6 +79,17 @@ pub struct PersonInboxNotice {
     /// card stands for the n notices past it: Noisy. `title` then reads "<agent> sent n more
     /// notifications" and `body` names the latest one.
     pub folded: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PersonInboxNoticeAction {
+    ProviderSignIn {
+        kernel_id: String,
+        provider: String,
+        account_profile: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

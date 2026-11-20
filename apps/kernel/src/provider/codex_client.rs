@@ -9,7 +9,9 @@ use super::resolve_codex_executable;
 
 mod approval_bodies;
 mod auth;
+mod device_login;
 pub(crate) use auth::codex_version;
+pub(crate) use device_login::CodexDeviceLogin;
 mod catalog;
 mod health;
 mod interrupt_cleanup;

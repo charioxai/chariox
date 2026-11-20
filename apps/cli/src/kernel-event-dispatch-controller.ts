@@ -14,7 +14,7 @@ import type { RemoteMachineRecord as KernelRemoteMachineRecord, WorkflowDesignOp
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView } from "./relay-api.js"
 import { remoteMachineView } from "./remote-machine-api.js"
-import type { RemoteMachineView } from "./waiting-room-inventory-api.js"
+import type { RemoteMachineView } from "./kernel-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 type AssistantMessageCompletedEvent = Extract<KernelEvent, { event: "assistant_message_completed" }>

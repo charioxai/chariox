@@ -246,6 +246,7 @@ export type ProviderAccountProfile = {
   origin: "default" | "chariox_created" | "linked"
   is_default: boolean
   auth_state: "unknown" | "not_configured" | "authenticated" | "expired" | "error"
+  auth_error?: string | null
   credential_kind?: ProviderCredentialKind | null
   credential_kind_not_reported_reason?: string | null
   identity_summary?: string | null
@@ -354,4 +355,13 @@ export type AgentUsageSnapshot = {
   context?: { used_tokens: number; limit_tokens?: number }
   models: AgentModelUsage[]
   route: { target: string; target_kernel_id: string; via?: string; via_kernel_id?: string }
+}
+
+/** A kernel-owned Inbox action. Start the existing sign-in flow on kernel_id. */
+export type PersonInboxNoticeAction = {
+  kind: "provider_sign_in"
+  kernel_id: string
+  provider: string
+  account_profile: string
+  label: string
 }

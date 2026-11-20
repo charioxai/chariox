@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const NOTICE: &str = "person_inbox.notice";
+const REPLACE_NOTICE: &str = "person_inbox.notice_replaced";
+const REMOVE_NOTICE: &str = "person_inbox.notice_removed";
 const CARD_STATE: &str = "person_inbox.card_state";
 const MUTE: &str = "person_inbox.mute";
 /// The kernel's existing retention for finished records.
@@ -93,7 +95,7 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     let decode =
         |error: serde_json::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(error));
     match kind {
-        NOTICE => {
+        NOTICE | REPLACE_NOTICE => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
             if notice.folded > 0 {
                 let updated = tx.execute(
@@ -117,9 +119,13 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                 }
             }
             tx.execute(
-                "INSERT OR IGNORE INTO person_inbox_notices (card_id, owner_user_id, session_id,
+                "INSERT INTO person_inbox_notices (card_id, owner_user_id, session_id,
                     agent_id, title, body, link, priority, created_at_ms, read, folded)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ON CONFLICT(card_id) DO UPDATE SET title = excluded.title, body = excluded.body,
+                    link = excluded.link, priority = excluded.priority, created_at_ms = excluded.created_at_ms,
+                    read = excluded.read, folded = excluded.folded
+                WHERE ?12 AND person_inbox_notices.owner_user_id = excluded.owner_user_id",
                 params![
                     notice.card_id,
                     notice.owner_user_id,
@@ -131,10 +137,30 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                     priority_text(notice.priority),
                     notice.created_at_ms as i64,
                     notice.read,
-                    notice.folded
+                    notice.folded,
+                    kind == REPLACE_NOTICE
                 ],
             )?;
+            if kind == REPLACE_NOTICE {
+                tx.execute(
+                    "DELETE FROM person_inbox_snoozes WHERE owner_user_id = ?1 AND card_id = ?2",
+                    params![notice.owner_user_id, notice.card_id],
+                )?;
+            }
             prune(tx, &notice.owner_user_id, notice.created_at_ms)
+        }
+        REMOVE_NOTICE => {
+            let (owner, card_id): (String, String) =
+                serde_json::from_str(payload).map_err(decode)?;
+            tx.execute(
+                "DELETE FROM person_inbox_notices WHERE owner_user_id = ?1 AND card_id = ?2",
+                params![owner, card_id],
+            )?;
+            tx.execute(
+                "DELETE FROM person_inbox_snoozes WHERE owner_user_id = ?1 AND card_id = ?2",
+                params![owner, card_id],
+            )?;
+            Ok(())
         }
         CARD_STATE => {
             let state: CardState = serde_json::from_str(payload).map_err(decode)?;
@@ -211,6 +237,28 @@ fn priority_text(priority: PersonInboxPriority) -> &'static str {
 }
 
 impl DurableKernelStateStore {
+    /// Kernel-owned notices may change when the account's recovery action changes.
+    pub(crate) fn replace_person_notice(&self, notice: StoredNotice) -> Result<(), DaemonError> {
+        self.append_event(
+            REPLACE_NOTICE,
+            Some(notice.card_id.clone()),
+            to_payload(&notice)?,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_person_notice(
+        &self,
+        owner: &str,
+        card_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.append_event(
+            REMOVE_NOTICE,
+            Some(card_id.to_string()),
+            to_payload(&(owner, card_id))?,
+        )?;
+        Ok(())
+    }
     /// Stores a notice; a muted origin's notice arrives read. Past the origin's rate limit the
     /// notice folds into the origin's Noisy card, and the returned notice carries that card's id.
     pub(crate) fn record_person_notice(

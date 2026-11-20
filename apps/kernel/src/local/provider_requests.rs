@@ -20,7 +20,7 @@ pub(crate) use catalog::{
     prepare_opencode_model_cache, provider_auth_status_response,
     provider_command_catalogs_response, refresh_provider_account_auth_with_config,
     refresh_provider_account_profile_explicitly, refresh_provider_account_profile_with_config,
-    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
+    PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_name, record_for_machine_id, remote_machine_records,

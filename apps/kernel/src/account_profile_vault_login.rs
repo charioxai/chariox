@@ -310,6 +310,7 @@ impl ProviderAccountProfileRegistry {
                     vault_login: true,
                 }),
                 transferred_from: None,
+                local_credential_source: None,
             });
             self.persist_locked(&next)?;
             *document = next;

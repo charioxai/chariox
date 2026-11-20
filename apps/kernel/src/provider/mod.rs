@@ -79,8 +79,8 @@ pub(crate) use account_credential::{
     launch_uses_vault_credential, provider_account_credential_id,
     provider_account_credential_registered, remove_provider_account_credential,
     resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
+    store_provider_account_copy_credential, store_provider_account_credential,
+    validate_provider_account_credential_input, verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
@@ -121,11 +121,12 @@ pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
 pub(crate) use codex::{
-    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, retain_codex_account_login,
     shutdown_codex_account_endpoints,
 };
 #[cfg(test)]
 pub(crate) use codex_client::test_codex_connect;
+pub(crate) use codex_client::CodexDeviceLogin;
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,

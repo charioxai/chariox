@@ -1,12 +1,10 @@
 import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import { listProviderAccountCopyOffers } from "./provider-api.js"
-import type { ProviderAccountCopyOffer } from "@chariox/kernel-client"
+import type { ProviderAccountCopyOffer, RelayKernelPresence, RoomListProjectSummary } from "@chariox/kernel-client"
 import { externalProviderSessionPage } from "@chariox/kernel-client/external-provider-sessions"
 import type {
   SliceRecord,
   ExternalProviderSessionRecord,
-  WaitingRoomRemoteKernelView,
-  WaitingRoomRemoteMachineView,
   RoomListSessionSummary,
   RoomListSnapshot,
   ProviderAccountProfile,
@@ -18,13 +16,12 @@ import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { remoteMachineView } from "./remote-machine-api.js"
 import { listSlices } from "./slice-api.js"
-import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
-export type RemoteMachineView = WaitingRoomRemoteMachineView & { displayFreshness?: "cached/refreshing" | "reconnecting" }
+export type RemoteMachineView = ReturnType<typeof remoteMachineView> & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
-export type RemoteKernelView = WaitingRoomRemoteKernelView & { displayFreshness?: "cached/refreshing" | "reconnecting" }
+export type RemoteKernelView = RelayKernelPresence & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
-export type WaitingRoomInventory = {
+export type KernelInventory = {
   schemaVersion: number
   inventoryVersion: string
   structuralVersion: string
@@ -41,7 +38,7 @@ export type WaitingRoomInventory = {
   recentSessionIds?: string[]
   sessionsTotal?: number
   sessionsNextCursor?: string | null
-  projects?: WaitingRoomProjectSummary[]
+  projects?: RoomListProjectSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
@@ -57,7 +54,7 @@ export type WaitingRoomInventory = {
   machineAllocationCapability?: MachineAllocationCapability | null
 }
 
-export async function getWaitingRoomInventory(client: LocalIpcClient, getMachineCapability?: () => Promise<MachineAllocationCapability | null | undefined>): Promise<WaitingRoomInventory> {
+export async function getKernelInventory(client: LocalIpcClient, getMachineCapability?: () => Promise<MachineAllocationCapability | null | undefined>): Promise<KernelInventory> {
   const response = await client.send<Record<string, unknown>>(getRoomListSnapshotRequest())
   const payload = expectVariant<{
     snapshot: RoomListSnapshot
@@ -65,7 +62,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getMachine
   const [slices, machineAllocationCapability, accountCopy] = await Promise.all([
     listSlices(client).catch(() => []),
     getMachineCapability?.(),
-    payload.relay_status.connected && payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
+    payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
       ? listProviderAccountCopyOffers(client).then(offers => ({ offers, unavailable: false }), () => ({ offers: [], unavailable: true }))
       : Promise.resolve({ offers: [], unavailable: false }),
   ])

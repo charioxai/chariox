@@ -12,7 +12,7 @@ import {
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import type { KernelInventory } from "./kernel-inventory-api.js"
 
 const cacheSchemaVersion = 2
 const inventorySchemaVersion = 13
@@ -24,7 +24,7 @@ type CachedWaitingRoomInventory = {
   readonly cacheSchemaVersion: number
   readonly scopeFingerprint: string
   readonly savedAtMs: number
-  readonly inventory: WaitingRoomInventory
+  readonly inventory: KernelInventory
 }
 
 export type WaitingRoomInventoryCloudScope = {
@@ -35,8 +35,8 @@ export type WaitingRoomInventoryCloudScope = {
 }
 
 export type WaitingRoomInventoryCache = {
-  load(): WaitingRoomInventory[]
-  persist(inventory: WaitingRoomInventory): void
+  load(): KernelInventory[]
+  persist(inventory: KernelInventory): void
 }
 
 type WaitingRoomInventoryCacheTimers = {
@@ -54,7 +54,7 @@ export function createWaitingRoomInventoryCache(
   const cancelTimeout = timers.clearTimeout ?? clearTimeout
   const versions = new Map<string, string>()
   const structuralVersions = new Map<string, string>()
-  const pendingActivity = new Map<string, { inventory: WaitingRoomInventory; scopeFingerprint: string }>()
+  const pendingActivity = new Map<string, { inventory: KernelInventory; scopeFingerprint: string }>()
   const activityTimers = new Map<string, NodeJS.Timeout>()
   const trackedKernelIds = new Set<string>()
 
@@ -78,7 +78,7 @@ export function createWaitingRoomInventoryCache(
     }
   }
 
-  function load(): WaitingRoomInventory[] {
+  function load(): KernelInventory[] {
     const now = nowMs()
     const currentScopeFingerprint = resolveScopeFingerprint(scopeKey)
     const files = cacheFileRecords(directory)
@@ -115,7 +115,7 @@ export function createWaitingRoomInventoryCache(
     return inventories.sort((left, right) => newestSessionAt(right) - newestSessionAt(left))
   }
 
-  function persist(inventory: WaitingRoomInventory): void {
+  function persist(inventory: KernelInventory): void {
     if (!validInventory(inventory)) {
       return
     }
@@ -150,7 +150,7 @@ export function createWaitingRoomInventoryCache(
     writeNow(inventory, currentScopeFingerprint)
   }
 
-  function writeNow(inventory: WaitingRoomInventory, currentScopeFingerprint: string): void {
+  function writeNow(inventory: KernelInventory, currentScopeFingerprint: string): void {
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
       chmodSync(directory, 0o700)
@@ -204,7 +204,7 @@ function scopedKernelKey(scopeFingerprint: string, kernelId: string): string {
   return `${scopeFingerprint}:${kernelId}`
 }
 
-function validInventory(inventory: WaitingRoomInventory | null | undefined): inventory is WaitingRoomInventory {
+function validInventory(inventory: KernelInventory | null | undefined): inventory is KernelInventory {
   return inventory?.schemaVersion === inventorySchemaVersion
     && Boolean(inventory.kernelId?.trim())
     && Boolean(inventory.machineId?.trim())
@@ -213,7 +213,7 @@ function validInventory(inventory: WaitingRoomInventory | null | undefined): inv
     && Array.isArray(inventory.sessions)
 }
 
-function versionKey(inventory: WaitingRoomInventory): string {
+function versionKey(inventory: KernelInventory): string {
   return `${inventory.structuralVersion}:${inventory.activityRevision}`
 }
 
@@ -221,7 +221,7 @@ function safeKernelId(kernelId: string): string {
   return kernelId.replace(/[^a-zA-Z0-9._-]/g, "_")
 }
 
-function newestSessionAt(inventory: WaitingRoomInventory): number {
+function newestSessionAt(inventory: KernelInventory): number {
   return Math.max(0, ...inventory.sessions.map((session) => session.last_activity_at_ms ?? session.created_at_ms ?? 0))
 }
 
