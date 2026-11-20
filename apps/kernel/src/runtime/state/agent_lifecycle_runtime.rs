@@ -1479,6 +1479,10 @@ impl KernelRuntimeState {
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
         let step = &self.owned.agent_wakes.sweep_step;
+        step.enter("provider stall notices");
+        if let Err(error) = self.reconcile_provider_stalls(now).await {
+            tracing::warn!(%error, "provider stall notices will be reconciled in the next pass");
+        }
         step.enter("the lost-workspace check");
         Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {

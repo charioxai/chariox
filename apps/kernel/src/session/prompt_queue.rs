@@ -1244,7 +1244,10 @@ impl PromptQueueItem {
     }
 
     pub fn set_status(&mut self, status: PromptStatus) {
-        self.status = status;
+        if self.status != status {
+            self.status = status;
+            self.updated_at_ms = crate::session::unix_epoch_ms();
+        }
         if status != PromptStatus::Queued {
             self.launch_wait = None;
         }

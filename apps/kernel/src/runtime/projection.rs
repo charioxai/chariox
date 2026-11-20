@@ -20,6 +20,7 @@ mod transport_health;
 
 pub(crate) use agent_liveness::{
     agent_state_label, annotate_waits, silent_agents, SourceLabels, YieldedSources,
+    STALLED_AFTER_MS,
 };
 pub use agent_liveness::{
     AgentLiveness, AgentWaitEvent, AgentWaitKind, AgentWaitingOn, SilentAgentHealth,
