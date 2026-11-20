@@ -46,18 +46,25 @@ pub(crate) fn describe_start_error(error: &str, now: u64) -> String {
     text
 }
 
-/// Records one more failed start of the delivery and when to try again.
+/// Records one more failed start of the delivery and when to try again. A start that waits on a
+/// person spends no attempt and is tried again after the first pause.
 pub(super) fn record(
     tx: &Transaction<'_>,
     sequence: u64,
     error: &str,
+    waits_on_owner: bool,
     now: u64,
 ) -> Result<StartFailure, DaemonError> {
-    let attempts = get(tx, sequence)?.map_or(0, |f| f.attempts) + 1;
+    let kept = get(tx, sequence)?.map_or(0, |f| f.attempts);
+    let attempts = if waits_on_owner { kept } else { kept + 1 };
     let failure = StartFailure {
         attempts,
         error: describe_start_error(error, now),
-        retry_at_ms: now.saturating_add(retry_pause_ms(attempts)),
+        retry_at_ms: now.saturating_add(if waits_on_owner {
+            FIRST_RETRY_MS
+        } else {
+            retry_pause_ms(attempts)
+        }),
     };
     tx.execute(
         "INSERT INTO agent_inbox_start_failures VALUES(?1,?2,?3,?4)

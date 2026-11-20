@@ -52,6 +52,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 room,
                 agent,
                 error,
+                waits_on_owner,
                 now,
                 ..
             } => Operation::StartFailed {
@@ -59,6 +60,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 agent,
                 sequence: member,
                 error,
+                waits_on_owner,
                 now,
             },
             Operation::BindSubmission {
@@ -499,6 +501,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             agent,
             sequence,
             error,
+            waits_on_owner,
             now,
         } => {
             let Outcome::Event(e) = apply_row(
@@ -515,7 +518,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 unreachable!()
             };
             if e.state == "pending" {
-                super::start_failures::record(tx, e.sequence, &error, now)?;
+                super::start_failures::record(tx, e.sequence, &error, waits_on_owner, now)?;
             }
             Ok(Outcome::Event(e))
         }
