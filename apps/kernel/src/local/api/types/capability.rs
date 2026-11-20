@@ -1,16 +1,6 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunShellCapabilityRequest {
-    pub session_id: String,
-    pub attachment_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub working_directory: Option<PathBuf>,
-    pub timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadDirectoryTreeCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,

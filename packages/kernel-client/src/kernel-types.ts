@@ -57,3 +57,5 @@ export type OutsideEvent = {
 )
 export type EventsBatch = { events: OutsideEvent[]; next_cursor: number; oldest_cursor: number; timed_out: boolean }
 export type * from "./kernel-types-skills-v2.js"
+
+export type * from "./kernel-types-run-command.js"

@@ -1,7 +1,7 @@
 # Binary Room exec drill (MP-08 / MP-09 / MP-10 / MP-11)
 
 Build the matching kernel, relay, native `chariox-cli`, kernel-client and CLI.
-The kernel must advertise `room_exec_v1` (local 995 / peer 434). Run with a
+The kernel must advertise `run_command_v1`. Run with a
 memory bound and a finite timeout, using a new state directory outside the repo:
 
 ```sh
@@ -126,3 +126,9 @@ Add `--liveness` to the MP-08 / MP-09 / MP-10 / MP-11 memory case to reserve
 768 MiB. Both descendants must finish growing while the parent retains its
 reservation and waits for them. Pressure uses actual headroom; unused launch
 predictions gate admission and must never strand a paused descendant.
+
+`unified-command.mjs` uses the same binary, home and evidence arguments. It starts
+the relay and both kernels in separate systemd scopes with clean environments.
+It reports byte parity, binary stdin, EOF, deadline, a kernel with no Projects,
+external grant enforcement, and execution through the relay in
+`unified-command-results.json`.

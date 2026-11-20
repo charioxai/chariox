@@ -982,7 +982,7 @@ pub(super) fn result_from_exit(
         ExecOutcome::Exited { code } => Some(code),
         ExecOutcome::Signaled { signal } => Some(128 + signal),
         ExecOutcome::MemoryLimit { .. } => Some(137),
-        ExecOutcome::Failed { .. } => None,
+        ExecOutcome::Failed { .. } | ExecOutcome::TimedOut { .. } => None,
     };
     result.outcome = stopped.unwrap_or(if memory_limited {
         JobOutcome::MemoryLimit

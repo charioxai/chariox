@@ -5,7 +5,6 @@ import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
-import { runKernelExec } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -203,20 +202,16 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         runExecPlace({ session, execId: positionals[0]!, kernel: target, directory: flags.get("--directory") as string | undefined }, send))
       console.log(JSON.stringify(placed))
     } else if (command === "exec") {
-      const inRoom = flags.has("--session") || flags.has("--workspace")
-      if (positionals.length || program.length === 0 || (flags.has("--session") && flags.has("--workspace")) || (flags.has("--host-agent") && !flags.has("--session")) || (inRoom && flags.has("--directory"))) {
-        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] [--directory PATH] -- argv...   (a command on the kernel, no Room)\n       chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
+      if (positionals.length || program.length === 0 || (flags.has("--session") && flags.has("--workspace")) || (flags.has("--host-agent") && !flags.has("--session"))) {
+        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] [--session ROOM [--host-agent AGENT] | --workspace PATH] [--timeout SECONDS] -- argv...")
       }
       kernel = (flags.get("--kernel") as string | undefined) ?? null
-      if (!inRoom) {
-        process.exitCode = await withKernel({ socket, timeoutSeconds: parseTimeout(flags.get("--timeout")), kernel: kernel ?? undefined }, send =>
-          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")), signals: process }, send, process.stdout))
-        return true
-      }
+      const timeoutSeconds = parseTimeout(flags.get("--timeout"))
+      if (timeoutSeconds > 86_400) throw new CommandFailure("usage", "--timeout cannot exceed 86400 seconds")
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
-          hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
-          { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+          hostAgent: flags.get("--host-agent") as string | undefined, command: program, timeoutSeconds }, send,
+          { stdin: process.stdin.isTTY ? undefined : process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
     } else if (command === "guide") {
       console.log(guideText())
     } else if (command === "kernels") {

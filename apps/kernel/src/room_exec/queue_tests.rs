@@ -66,6 +66,35 @@ async fn queue_has_no_side_effect_and_cancel_never_spawns() {
 }
 
 #[tokio::test]
+async fn command_deadline_expires_while_waiting_for_admission() {
+    let directory = TempDir::new();
+    let service = limited(0, u64::MAX / 2);
+    let id = service
+        .open_launch(
+            "room",
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            directory.path(),
+            &["/bin/sh".into(), "-c".into(), "touch started".into()],
+            None,
+            None,
+            false,
+            0,
+            Some(100),
+        )
+        .unwrap();
+    let (_, _, outcome) = tests::collect(&service, &id).await;
+    assert_eq!(
+        outcome,
+        ExecOutcome::TimedOut {
+            timeout_ms: 100,
+            exit: CommandExit::NotStarted,
+        }
+    );
+    assert!(!directory.path().join("started").exists());
+}
+
+#[tokio::test]
 async fn start_now_keeps_binary_input_offsets_streams_and_one_execution() {
     let directory = TempDir::new();
     let marker = directory.path().join("marker");

@@ -69,6 +69,10 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     ) {
         return ReachNeed::Sudo;
     }
+    if matches!(request, LocalDaemonRequest::RunCommand(command) if command.target.session_id().is_some())
+    {
+        return ReachNeed::Room;
+    }
     // The room tools: discover and read sessions, agents and history, create a room, attach, message
     // and steer agents, a room's own terminals and workspace files, and machines under
     // the acquisition setting. Kernel-wide file access and every other kernel mutation need /sudo.
@@ -96,7 +100,6 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::SteerQueuedPrompt(_)
             | LocalDaemonRequest::SteerActivePrompt(_)
             | LocalDaemonRequest::RoomTerminal(_)
-            | LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)
             | LocalDaemonRequest::ReadFile(_)
             | LocalDaemonRequest::EditFile(_)

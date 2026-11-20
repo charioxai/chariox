@@ -1,43 +1,6 @@
 use super::*;
 
 #[test]
-fn shell_command_capability_runs_through_capability_boundary() {
-    let _tmp = crate::test_support::TestTempDir::new("shell-app-test");
-    let worktree_root = _tmp.join("chariox-shell-app-test");
-    std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new(
-            "workspace-1",
-            worktree_root.display().to_string(),
-        ))
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(AttachRequest::new(
-            session.id(),
-            "client-shell",
-            ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-
-    let result = crate::capability::ShellCommandService::new()
-        .run(crate::capability::RunShellCommandRequest::new(
-            session.id(),
-            attachment.id(),
-            "/bin/sh",
-            vec!["-lc".to_string(), "printf shell-app".to_string()],
-            std::path::PathBuf::from(session.worktree_id()),
-            None,
-        ))
-        .expect("shell capability should succeed");
-
-    assert_eq!(result.exit_code, 0);
-    assert_eq!(result.stdout, "shell-app");
-}
-
-#[test]
 fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
     let _tmp = crate::test_support::TestTempDir::new("kernel-app-capability-test");
     let worktree_root = _tmp.join("chariox-kernel-app-capability-test");

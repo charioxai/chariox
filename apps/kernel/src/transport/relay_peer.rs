@@ -1269,6 +1269,11 @@ pub enum RelayPeerRequest {
         actor: crate::room_terminal::TerminalActor,
         operation: crate::local::RoomTerminalOperation,
     },
+    RunAgentCommand {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RunCommandOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -1794,6 +1799,9 @@ pub enum RelayPeerResponse {
     },
     RoomTerminal {
         result: crate::local::RoomTerminalResult,
+    },
+    RunAgentCommand {
+        result: crate::local::RunCommandResult,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,

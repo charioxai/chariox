@@ -50,7 +50,7 @@ print(json.dumps({'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}),
   let received = ''
   consumer.stdout.on('data', bytes => { received += bytes.toString() })
   consumer.stderr.on('data', () => undefined)
-  const cli = launch(fixture.cliBinary, ['exec', '--socket', fixture.envs.A.CHARIOX_DAEMON_SOCKET,
+  const cli = launch(fixture.cliBinary, ['exec', '--timeout', '600', '--socket', fixture.envs.A.CHARIOX_DAEMON_SOCKET,
     '--kernel', fixture.target, '--session', session, '--', '/usr/bin/python3', '-c',
     'import sys; sys.stderr.buffer.write(bytes(range(256))*4096); sys.stderr.buffer.flush(); sys.stdout.buffer.write(bytes(range(256))*32768); sys.stdout.buffer.flush(); sys.exit(23)'], fixture.envs.A)
   const errors = []

@@ -56,6 +56,35 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(super) async fn send_leased_worker_operation(
+        &self,
+        binding: &crate::agent::RemoteAgentBinding,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+        wait_ms: u64,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        use std::time::Duration;
+        let mut config = self.owned.config_projection.snapshot();
+        if let (Some(url), Some(token)) = (&binding.relay_url, &binding.relay_token) {
+            config.apply_remote_relay_override(url.clone(), token.clone());
+        }
+        let wait = Duration::from_millis(wait_ms).min(crate::room_terminal::MAX_WAIT);
+        let timeout = Duration::from_millis(config.relay_request_timeout_ms)
+            .max(wait + Duration::from_secs(20));
+        self.enqueue_leased_worker_request_authorized(
+            &config,
+            chariox_relay::protocol::ClientTarget {
+                daemon_id: Some(binding.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            request,
+            timeout,
+            || self.authorize_current_external_command(),
+        )
+        .await?
+        .wait()
+        .await
+    }
+
     pub(crate) fn spawn_remote_prompt_dispatch(
         &self,
         dispatch: crate::app::KernelRemotePromptDispatch,

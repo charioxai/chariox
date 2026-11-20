@@ -18,7 +18,6 @@ pub(super) struct CapabilityContext {
     pub(super) operational_artifact_root: PathBuf,
     pub(super) operational_artifact_index_path: PathBuf,
     pub(super) history_archive_enabled: bool,
-    pub(super) environment: crate::provider::ProviderCredentialEnvironment,
 }
 
 impl CapabilityContext {
@@ -58,13 +57,7 @@ impl CapabilityRuntimeStore {
             .state
             .capability_context(session_id, attachment_id, capability)
             .await?;
-        let environment = if capability == "shell" {
-            self.state.project_environment_for_shell(session_id)?
-        } else {
-            Default::default()
-        };
         Ok(CapabilityContext {
-            environment,
             state: self.state.clone(),
             session_id: session_id.to_string(),
             attachment_id: attachment_id.to_string(),

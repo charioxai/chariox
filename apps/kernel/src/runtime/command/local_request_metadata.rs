@@ -154,6 +154,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::RoomTerminal(request) => {
             LocalRequestMetadata::new("terminal.room", Normal).session(&request.session_id)
         }
+        LocalDaemonRequest::RunCommand(request) => {
+            let metadata = LocalRequestMetadata::new("command.run", Normal);
+            match request.target.session_id() {
+                Some(id) => metadata.session(id),
+                None => metadata,
+            }
+        }
         LocalDaemonRequest::KernelTerminal(_) => {
             LocalRequestMetadata::new("terminal.kernel", Normal)
         }
@@ -1045,7 +1052,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => {
             "terminal.output.append_native_batch"
         }
-        LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
+        LocalDaemonRequest::RunCommand(_) => "command.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
         LocalDaemonRequest::ReadFile(_) => "capability.file.read",
         LocalDaemonRequest::EditFile(_) => "capability.file.edit",

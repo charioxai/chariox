@@ -18,8 +18,8 @@ const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
-  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, SOCKET],
-    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait); with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
+  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, HOST_AGENT, TIMEOUT, SOCKET],
+    summary: "run argv after -- on the selected kernel, in --workspace PATH or the kernel user's home. Use --session ROOM for its workspace and add --host-agent AGENT for the agent's slice. Pipes binary stdin, stdout and stderr separately and returns the exit code. At --timeout SECONDS (default 30) the kernel stops the command and reports its exit state." },
   {
     name: "exec place",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
@@ -57,7 +57,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "request",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
-    summary: "send the one JSON request on stdin; prints the JSON response. --timeout SECONDS (default 30) is how long to wait: a RunShellCommand with timeout_ms needs timeout_ms/1000 + 30",
+    summary: "send the one JSON request on stdin; prints the JSON response. --timeout SECONDS (default 30) is how long to wait for the response",
   },
   {
     name: "watch",
@@ -116,8 +116,8 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
   { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent from the Room; AgentDestroyed" },
   {
-    body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
-    note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
+    body: { RunCommand: { target: { kind: "kernel" }, operation: { operation: "exec_open", command: ["ls", "-la"], timeout_ms: 60000 } } },
+    note: "starts one command and returns its exec_id. Use exec_read for output and exec_stdin_close for EOF, or use chariox exec to handle the pipes.",
   },
   { body: endSessionRequest("SESSION_ID"), note: "SessionEnded" },
   {
@@ -127,9 +127,9 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"), note: "InteractionResponded; set custom_reply to the person's text when question.text_reply is present" },
 ]
 
-const REFUSED = ["events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_sub_agent", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["exec_access_denied", "events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_sub_agent", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"]
-const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"]
+const TIMEOUT_OR_UNKNOWN = ["exec_timed_out", "kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
@@ -231,7 +231,7 @@ export function guideText(): string {
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
-    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, DestroyAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
+    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, DestroyAgent, SubmitPrompt, RunCommand exec_open, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Other commands print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",

@@ -294,7 +294,7 @@ impl GrantedSend for Outage {
         request: &'a LocalDaemonRequest,
     ) -> crate::room_exec::gateway_placement::SendFuture<'a> {
         if self.open_down.load(std::sync::atomic::Ordering::SeqCst)
-            && matches!(request, LocalDaemonRequest::RoomTerminal(room) if matches!(room.operation, crate::local::RoomTerminalOperation::ExecOpenJob { .. }))
+            && matches!(request, LocalDaemonRequest::RunCommand(room) if matches!(room.operation, crate::local::RunCommandOperation::ExecOpenJob { .. }))
         {
             return Box::pin(async {
                 Err(crate::runtime::kernel_gateway::GatewayError::Remote {

@@ -42,9 +42,9 @@ try {
   }, 60_000)
   await until(() => output === 'ready\n', 'target user program executed once')
   assert.equal((await readFile(marker)).toString(), 'x')
-  const list = await fixture.B.send({RoomTerminal: {session_id: session, operation: {operation: 'exec_list'}}})
-  assert.equal(list.RoomTerminal.result.execs.length, 1)
-  const id = list.RoomTerminal.result.execs[0].exec_id
+  const list = await fixture.B.send({RunCommand: { target: { kind: 'room_workspace', session_id: session }, operation: {operation: 'exec_list'}}})
+  assert.equal(list.RunCommand.result.execs.length, 1)
+  const id = list.RunCommand.result.execs[0].exec_id
   result.exec_id = id
   const target = fixture.children.find(row => row.name === 'kernel-B').child
   signal(target, 'SIGKILL')
@@ -60,14 +60,14 @@ try {
   assert.equal(result.marker_after_restart, 'x', 'the launch must not be replayed')
   let response
   try {
-    response = await restored.send({RoomTerminal: {session_id: session, operation: {operation: 'exec_read', exec_id: id, after_cursor: 0, wait_ms: 0}}})
+    response = await restored.send({RunCommand: { target: { kind: 'room_workspace', session_id: session }, operation: {operation: 'exec_read', exec_id: id, after_cursor: 0, wait_ms: 0}}})
   } catch (error) {
     result.receipt_error_code = typeof error.code === 'string' ? error.code : error.name
   }
   native.stdin.end()
   result.native_exit = await native.done
   try { result.native_error_code = JSON.parse(Buffer.concat(errors).toString().trim()).error.code } catch {}
-  const outcome = response?.RoomTerminal?.result?.output?.outcome
+  const outcome = response?.RunCommand?.result?.output?.outcome
   if (outcome) result.receipt_outcome = outcome
   const unknown = outcome?.kind === 'unknown' || (outcome?.kind === 'failed' && /unknown|incomplete|not confirmed/i.test(outcome.message))
   assert.ok(unknown, `target restart lost the durable launch receipt (${result.receipt_error_code ?? 'no explicit unknown outcome'})`)

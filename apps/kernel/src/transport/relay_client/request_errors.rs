@@ -249,6 +249,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::KernelTerminal(_) => "terminal.kernel",
+        LocalDaemonRequest::RunCommand(_) => "command.run",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command:

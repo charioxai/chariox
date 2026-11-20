@@ -41,6 +41,10 @@ pub(super) fn start(
                 );
                 return;
             }
+            if let Some(outcome) = record.expired_before_start() {
+                service.finish(&record, outcome);
+                return;
+            }
             let intent = &record.intent;
             if let Some(authority) = &authority {
                 if let Err(failure) = authority.authorize_queued_exec(intent) {
@@ -97,22 +101,37 @@ pub(super) fn start(
                                 "command canceled before start",
                             ));
                         }
-                        let spawn = if launch.job {
-                            process::spawn_job
+                        let environment = if launch.job {
+                            None
                         } else {
-                            process::spawn
+                            authority
+                                .as_ref()
+                                .filter(|_| launch.intent.session_id != super::KERNEL_SCOPE)
+                                .map(|state| {
+                                    state.project_environment_for_shell(&launch.intent.session_id)
+                                })
+                                .transpose()?
                         };
-                        spawn(
-                            &launch.intent.cwd,
-                            &launch.launch_command,
-                            &permit,
-                            &launch.intent,
-                        )
-                        .map(|child| (child, permit))
+                        if launch.expired_before_start().is_some() {
+                            return Ok(None);
+                        }
+                        let intent = &launch.intent;
+                        if launch.job {
+                            process::spawn_job(&intent.cwd, &launch.launch_command, &permit, intent)
+                        } else {
+                            process::spawn_command(
+                                &intent.cwd,
+                                &launch.launch_command,
+                                &permit,
+                                intent,
+                                environment.as_ref(),
+                            )
+                        }
+                        .map(|child| Some((child, permit)))
                     })
                     .await;
                     match spawned {
-                        Ok(Ok((child, permit))) => {
+                        Ok(Ok(Some((child, permit)))) => {
                             *record.state.lock().expect("exec state poisoned") = ExecState::Running;
                             record.changed.notify_waiters();
                             #[cfg(unix)]
@@ -123,6 +142,14 @@ pub(super) fn start(
                                 return;
                             }
                             process::run(child, record, input, cancel, service, permit);
+                        }
+                        Ok(Ok(None)) => {
+                            service.finish(
+                                &record,
+                                record
+                                    .expired_before_start()
+                                    .expect("launch deadline elapsed"),
+                            );
                         }
                         failure => {
                             let message = match failure {
