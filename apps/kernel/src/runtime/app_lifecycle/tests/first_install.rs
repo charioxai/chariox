@@ -314,6 +314,41 @@ fn failed_actual_health_never_acknowledges_ready_or_runs_postcommit_startup() {
 }
 
 #[test]
+fn first_install_claim_deadline_persists_a_failure_receipt() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let bytes = enrolled(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    service.0.fixture.lock().unwrap().as_mut().unwrap().budget = Some(Duration::ZERO);
+    let (_, operation) = prepare(&control, &runtime, &bytes);
+    approve(&store, &operation);
+
+    service
+        .start_first_blocking("alice", "first_request", runtime.handle().clone())
+        .unwrap();
+    let key = ("alice".into(), operation.token.installation_id);
+    let entry = service.0.entries.lock().unwrap()[&key].clone();
+    wait(|| entry.control.finished());
+
+    let receipt = store
+        .first_app_install_status("alice", "first_request")
+        .unwrap();
+    assert_eq!(receipt.phase, InstallPhase::Failed);
+    assert_eq!(
+        receipt.failure.as_deref(),
+        Some("app_lifecycle_deadline_claim")
+    );
+    assert!(store
+        .first_app_install_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+    assert!(observations.lock().unwrap().is_empty());
+    service.shutdown_blocking().unwrap();
+}
+
+#[test]
 fn one_saturated_stop_before_first_claim_cancels_both_recovery_paths() {
     let scratch = Scratch::new();
     let runtime = runtime();
