@@ -14,6 +14,37 @@ fn cloud_request_body(
     serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
 }
 
+/// An enrolled kernel's own request to the connected service, such as the proof that its Vault
+/// holds a key the service asked about. The enrollment is the credential, as for any request.
+pub(crate) async fn post_enrolled<T>(
+    config: &DaemonConfig,
+    request: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    let profile = crate::runtime::cloud_relay_control::active_cloud_profile(config);
+    let credential = profile
+        .and_then(|p| p.kernel_credential.as_deref())
+        .filter(|c| !c.is_empty());
+    let (Some(profile), Some(credential)) = (profile, credential) else {
+        return Err(unavailable(
+            "control_plane_unavailable",
+            "This kernel has no connected machine service",
+        ));
+    };
+    crate::runtime::cloud_api_client::post_cloud_json(
+        profile.api_url.clone(),
+        "/control-plane",
+        serde_json::json!({
+            "accountId": profile.account_id,
+            "kernelCredential": credential,
+            "request": request,
+        }),
+    )
+    .await
+}
+
 pub(crate) async fn execute(
     config: &DaemonConfig,
     state: &KernelRuntimeState,

@@ -194,6 +194,11 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
         LocalDaemonRequest::SealCredentialVaultKey(request) => serde_json::json!({
             "SealCredentialVaultKey": { "targetKernelId": request.target_kernel_id }
         }),
+        LocalDaemonRequest::AnswerStateBundleKeyChallenge(request) => serde_json::json!({
+            "AnswerStateBundleKeyChallenge": {
+                "key_id": request.key_id, "recovery_id": request.recovery_id, "ciphertext": "[redacted]"
+            }
+        }),
         LocalDaemonRequest::SetProviderAccountCredential(request) => serde_json::json!({
             "SetProviderAccountCredential": {
                 "session_id": request.session_id,

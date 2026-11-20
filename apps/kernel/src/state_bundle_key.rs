@@ -147,6 +147,82 @@ pub fn open(
     Ok(identity)
 }
 
+/// The Vault slot of one owner's bundle key. Handle-less: no agent can name or read it.
+fn vault_slot(owner_user_id: &str, key_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{owner_user_id}\0{key_id}").as_bytes());
+    format!("state-bundle-key-{digest:x}")
+}
+
+pub fn validate_key_id(key_id: &str) -> Result<(), DaemonError> {
+    if (1..=160).contains(&key_id.len())
+        && key_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        Ok(())
+    } else {
+        Err(error("the bundle key id is invalid"))
+    }
+}
+
+/// Stores a new identity, or returns the recipient of the one already stored under this id,
+/// so a repeated request does not replace a key that saved bundles depend on.
+pub(crate) fn create_in_vault(
+    secrets: &crate::secret::RuntimeSecretService,
+    owner_user_id: &str,
+    key_id: &str,
+) -> Result<String, DaemonError> {
+    validate_key_id(key_id)?;
+    let slot = vault_slot(owner_user_id, key_id);
+    if let Some(existing) = secrets.internal_vault_secret(&slot)? {
+        return recipient_of(&existing);
+    }
+    let key = generate();
+    secrets.set_vault_secret(&slot, &key.identity)?;
+    Ok(key.recipient)
+}
+
+pub(crate) fn read_from_vault(
+    secrets: &crate::secret::RuntimeSecretService,
+    owner_user_id: &str,
+    key_id: &str,
+) -> Result<Zeroizing<String>, DaemonError> {
+    validate_key_id(key_id)?;
+    secrets
+        .internal_vault_secret(&vault_slot(owner_user_id, key_id))?
+        .ok_or_else(|| error("this Vault does not hold the bundle key"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VerifiedRecovery {
+    pub(crate) recovery_id: String,
+    pub(crate) verified_at: String,
+}
+
+/// Decrypts Cloud's challenge with the stored key and presents the answer with this kernel's own
+/// enrollment. Cloud accepts it only from a kernel independent of the machine being saved.
+pub(crate) async fn answer_to_cloud(
+    config: &crate::config::DaemonConfig,
+    secrets: &crate::secret::RuntimeSecretService,
+    owner_user_id: &str,
+    key_id: &str,
+    recovery_id: &str,
+    ciphertext: &str,
+) -> Result<VerifiedRecovery, DaemonError> {
+    let identity = read_from_vault(secrets, owner_user_id, key_id)?;
+    let answer = answer_challenge(&identity, ciphertext)?;
+    crate::runtime::control_plane::post_enrolled(
+        config,
+        serde_json::json!({
+            "action": "verify_state_bundle_key",
+            "recovery_id": recovery_id,
+            "answer": &*answer,
+        }),
+    )
+    .await
+}
+
 fn parse_identity(identity: &str) -> Result<Identity, DaemonError> {
     Identity::from_str(identity.trim()).map_err(|_| error("the bundle key is not an age identity"))
 }

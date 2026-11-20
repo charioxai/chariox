@@ -220,6 +220,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .optional_session(request.session_id.as_deref())
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::CreateStateBundleKey(_) => {
+            LocalRequestMetadata::new("state_bundle_key.create", Normal)
+        }
+        LocalDaemonRequest::AnswerStateBundleKeyChallenge(_) => {
+            LocalRequestMetadata::new("state_bundle_key.answer", Normal)
+        }
         LocalDaemonRequest::ListProviderAccountCopyOffers(_) => {
             LocalRequestMetadata::new("provider_account.copy_offers", Normal)
         }
@@ -906,6 +912,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
+        LocalDaemonRequest::CreateStateBundleKey(_) => "state_bundle_key.create",
+        LocalDaemonRequest::AnswerStateBundleKeyChallenge(_) => "state_bundle_key.answer",
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => "provider_account.copy",
         LocalDaemonRequest::ListProviderAccountCopyOffers(_) => "provider_account.copy_offers",
         LocalDaemonRequest::CopyProviderAccountFromKernel(_) => "provider_account.copy_from",

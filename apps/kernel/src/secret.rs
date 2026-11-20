@@ -920,6 +920,17 @@ impl RuntimeSecretService {
             .map(|value| value.map(Zeroizing::new))
     }
 
+    /// A kernel-internal Vault slot with no credential handle: only kernel code reads it.
+    pub(crate) fn internal_vault_secret(
+        &self,
+        key: &str,
+    ) -> Result<Option<Zeroizing<String>>, DaemonError> {
+        validate_vault_key(key)?;
+        self.vault_store
+            .find_secret(self.vault_service_name()?, key.trim())
+            .map(|value| value.map(Zeroizing::new))
+    }
+
     /// Internal signing only. Neither the key nor a Vault handle is returned to a client.
     pub(crate) fn app_dev_signing_key(
         &self,

@@ -1,0 +1,32 @@
+{
+  "local": 1013,
+  "relayPeer": 450,
+  "requests": [
+    {
+      "CreateStateBundleKey": {
+        "key_id": "key-1"
+      }
+    },
+    {
+      "AnswerStateBundleKeyChallenge": {
+        "key_id": "key-1",
+        "recovery_id": "recovery-1",
+        "ciphertext": "Y2lwaGVydGV4dA"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "StateBundleKeyCreated": {
+        "key_id": "key-1",
+        "recipient": "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      }
+    },
+    {
+      "StateBundleKeyChallengeAnswered": {
+        "recovery_id": "recovery-1",
+        "verified_at": "2026-11-20T15:00:00.000Z"
+      }
+    }
+  ]
+}

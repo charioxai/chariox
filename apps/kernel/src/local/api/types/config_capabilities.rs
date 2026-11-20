@@ -60,6 +60,22 @@ pub struct DeleteCredentialSecretRequest {
     pub key: String,
 }
 
+/// Makes the age identity that decrypts one kernel's saved state bundles, kept in this
+/// kernel's Vault. The reply carries only the public recipient.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateStateBundleKeyRequest {
+    pub key_id: String,
+}
+
+/// Answers Cloud's recovery challenge with a stored bundle key, proving this kernel's Vault
+/// holds it. The kernel presents its own Cloud credential; the answer never reaches a client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerStateBundleKeyChallengeRequest {
+    pub key_id: String,
+    pub recovery_id: String,
+    pub ciphertext: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetCredentialVaultStatusRequest;
 

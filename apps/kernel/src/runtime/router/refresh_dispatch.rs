@@ -68,6 +68,8 @@ impl CommandRouter {
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
+            | LocalDaemonRequest::CreateStateBundleKey(_)
+            | LocalDaemonRequest::AnswerStateBundleKeyChallenge(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)

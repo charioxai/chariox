@@ -256,6 +256,8 @@ pub enum LocalDaemonRequest {
     OwnerVault(OwnerVaultRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
+    CreateStateBundleKey(CreateStateBundleKeyRequest),
+    AnswerStateBundleKeyChallenge(AnswerStateBundleKeyChallengeRequest),
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
     LockCredentialVault(LockCredentialVaultRequest),
     UnlockCredentialVault(UnlockCredentialVaultRequest),

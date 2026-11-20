@@ -1,6 +1,7 @@
 use super::claude_setup_token_login;
 use crate::error::DaemonError;
 use crate::local::{
+    AnswerStateBundleKeyChallengeRequest, CreateStateBundleKeyRequest,
     DeleteCredentialSecretRequest, GetCredentialVaultStatusRequest, GetUserConfigRequest,
     GetUserConfigSchemaRequest, LocalDaemonRequest, LocalDaemonResponse,
     LockCredentialVaultRequest, ManageCredentialVaultRequest, SetCredentialSecretRequest,
@@ -53,6 +54,24 @@ pub(crate) async fn execute_user_config_request(
         }
         LocalDaemonRequest::DeleteCredentialSecret(request) => {
             execute_delete_credential_secret_request(
+                config_projection,
+                runtime_state,
+                command,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::CreateStateBundleKey(request) => {
+            execute_create_state_bundle_key_request(
+                config_projection,
+                runtime_state,
+                command,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::AnswerStateBundleKeyChallenge(request) => {
+            execute_answer_state_bundle_key_challenge_request(
                 config_projection,
                 runtime_state,
                 command,
@@ -185,6 +204,58 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         account_profile: profile.profile_id,
         credential_id: stored.credential_id,
         replaced: stored.replaced,
+    })
+}
+
+async fn execute_create_state_bundle_key_request(
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: CreateStateBundleKeyRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner = runtime_state.owner_client_user_id(command)?;
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(command, None, None, "state_bundle_key_create")
+        .await?;
+    let config = config_projection.snapshot();
+    let secrets = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &config.user_config.credential_vault,
+    )?;
+    let recipient = crate::state_bundle_key::create_in_vault(&secrets, &owner, &request.key_id)?;
+    Ok(LocalDaemonResponse::StateBundleKeyCreated {
+        key_id: request.key_id,
+        recipient,
+    })
+}
+
+async fn execute_answer_state_bundle_key_challenge_request(
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: AnswerStateBundleKeyChallengeRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner = runtime_state.owner_client_user_id(command)?;
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(command, None, None, "state_bundle_key_answer")
+        .await?;
+    let config = config_projection.snapshot();
+    let secrets = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &config.user_config.credential_vault,
+    )?;
+    let verified = crate::state_bundle_key::answer_to_cloud(
+        &config,
+        &secrets,
+        &owner,
+        &request.key_id,
+        &request.recovery_id,
+        &request.ciphertext,
+    )
+    .await?;
+    Ok(LocalDaemonResponse::StateBundleKeyChallengeAnswered {
+        recovery_id: verified.recovery_id,
+        verified_at: verified.verified_at,
     })
 }
 
