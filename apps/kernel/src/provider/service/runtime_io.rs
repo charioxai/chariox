@@ -118,7 +118,7 @@ impl ProviderProcessService {
                 .map(ProviderRuntimeBinding::Claude)
                 .map(Some);
         }
-        if run.adapter_key() == "opencode" {
+        if crate::provider::provider_run_uses_opencode_io(run) {
             return initialize_opencode_runtime(run)
                 .map(ProviderRuntimeBinding::OpenCode)
                 .map(Some);

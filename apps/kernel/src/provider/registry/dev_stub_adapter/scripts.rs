@@ -45,7 +45,11 @@ exit 17"#.to_string(),
         ),
         "runtime-mcp-fixture" => Some(format!(
             "stty -echo -icanon 2>/dev/null || true; exec node -e {}",
-            shell_single_quote(include_str!("runtime_mcp_fixture.cjs"))
+            shell_single_quote(concat!(
+                include_str!("runtime_mcp_client.cjs"),
+                "\n",
+                include_str!("runtime_mcp_fixture.cjs"),
+            ))
         )),
         _ => None,
     }
@@ -82,6 +86,7 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
     if matches!(
         request.model.as_str(),
         "runtime-mcp-fixture"
+            | "trace"
             | "workflow-intermediate-node"
             | "workflow-delayed-output"
             | "workflow-dashboard-producer-node"

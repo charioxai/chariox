@@ -349,12 +349,20 @@ pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProvi
             || run.permission_level() == AgentPermissionLevel::Required)
 }
 
+pub(crate) fn is_dev_trace(adapter: &str, model: &str) -> bool {
+    adapter == "dev-stub" && model == "trace"
+}
+
+pub(crate) fn provider_run_uses_opencode_io(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "opencode" || is_dev_trace(run.adapter_key(), run.model())
+}
+
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "codex"
         || (run.adapter_key() == "claude"
             && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
-        || run.adapter_key() == "opencode"
+        || provider_run_uses_opencode_io(run)
         || (run.adapter_key() == "dev-stub"
             && matches!(run.provider(), "slow-structured" | "lost-ack-structured"))
 }
