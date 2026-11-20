@@ -19,12 +19,12 @@ test("AO-UI-01 no sub-agents, no stripe", () => {
 })
 
 test("AO-UI-01 one agent running reads singular, six over three depths read plain counts", () => {
-  assert.equal(subAgentStripe(tree([node("a1", null, "running")]))!.text, "1 agent running")
+  assert.equal(subAgentStripe(tree([node("a1", null, "running")]))!.text, "1 sub-agent running")
   const six = tree([
     node("a1", null, "running"), node("a2", null, "running"), node("a3", "a1", "running", { depth: 2 }),
     node("a4", "a1", "running", { depth: 2 }), node("a5", "a3", "running", { depth: 3 }), node("a6", "a2", "starting", { depth: 2 }),
   ])
-  assert.equal(subAgentStripe(six)!.text, "6 agents running")
+  assert.equal(subAgentStripe(six)!.text, "6 sub-agents running")
   assert.equal(subAgentStripe(six)!.needsYou, false)
 })
 
@@ -33,16 +33,16 @@ test("AO-UI-01 needs you leads, then running, waiting and done; plural of need",
     node("a1", null, "running"), node("a2", null, "running"), node("a3", null, "waiting", { needs_user: true }),
     node("a4", null, "waiting"), node("a5", null, "ended"), node("a6", null, "idle"),
   ])
-  assert.deepEqual(subAgentStripe(mixed), { text: "1 agent needs you · 2 running · 1 waiting · 2 done", needsYou: true })
+  assert.deepEqual(subAgentStripe(mixed), { text: "1 sub-agent needs you · 2 running · 1 waiting · 2 done", needsYou: true })
   const two = tree([node("a1", null, "waiting", { needs_user: true }), node("a2", null, "waiting", { needs_user: true })])
-  assert.equal(subAgentStripe(two)!.text, "2 agents need you")
-  assert.equal(subAgentStripe(tree([node("a1", null, "ended"), node("a2", null, "error"), node("a3", null, "idle")]))!.text, "3 agents done")
+  assert.equal(subAgentStripe(two)!.text, "2 sub-agents need you")
+  assert.equal(subAgentStripe(tree([node("a1", null, "ended"), node("a2", null, "error"), node("a3", null, "idle")]))!.text, "3 sub-agents done")
 })
 
 test("AO-UI-01 needs you comes from the node flag only: an ancestor-held wait reads waiting", () => {
   const t = tree([node("a1", null, "waiting", { needs_user: true }), node("a2", "a1", "waiting", { depth: 2 }), node("a3", null, "waiting")])
   assert.deepEqual(subAgentRows(t).flatMap(function walk(row): string[] { return [`${row.id}:${row.word}`, ...row.children.flatMap(walk)] }), ["a1:needs you", "a2:waiting", "a3:waiting"])
-  assert.equal(subAgentStripe(t)!.text, "1 agent needs you · 2 waiting")
+  assert.equal(subAgentStripe(t)!.text, "1 sub-agent needs you · 2 waiting")
 })
 
 test("AO-UI-02 rows nest under their parent at every depth, in creation order, finished dimmed", () => {

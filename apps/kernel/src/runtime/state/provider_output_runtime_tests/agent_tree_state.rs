@@ -10,6 +10,92 @@ use crate::provider::TurnOutcomeKind;
 
 const USER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
 
+#[tokio::test]
+async fn a_restarted_tree_counts_the_same_live_turns_as_agent_activity() {
+    use crate::agent::{AgentState, CreateAgentRequest};
+    use crate::app::{DaemonApp, KernelSessionService};
+    use crate::test_support::{admit_room_test_turn, TestWorktree};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let worktree = TestWorktree::new("tree-restart-activity");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (room, parent, working, processing, live) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let (session, parent) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let mut spawn = |alias| {
+            let child = KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias(alias))
+                .unwrap();
+            app.agents()
+                .set_parent_agent(child.id(), Some(crate::agent::AgentRef::local(parent.id())))
+                .unwrap();
+            child.id().to_owned()
+        };
+        let working = spawn("was-working");
+        let processing = spawn("was-processing");
+        let live = spawn("new-turn");
+        app.agents()
+            .set_agent_state(&working, AgentState::Working)
+            .unwrap();
+        app.agents()
+            .set_agent_processing(&processing, true)
+            .unwrap();
+        app.save_durable_state_snapshot().unwrap();
+        (
+            session.id().to_owned(),
+            parent.id().to_owned(),
+            working,
+            processing,
+            live,
+        )
+    };
+
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    admit_room_test_turn(&mut app, &room, &live);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = super::owned_runtime_state(&app).await;
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    let activity = runtime.agent_activity_for_session(&session);
+    let LocalDaemonResponse::AgentTree { tree } = runtime
+        .list_descendants(
+            USER,
+            ListDescendantsRequest {
+                session_id: room,
+                agent_id: parent,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected the restarted agent tree");
+    };
+
+    let results = [&working, &processing, &live].map(|id| {
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == id)
+            .unwrap();
+        let row = tree.nodes.iter().find(|row| &row.agent_id == id).unwrap();
+        let listed = crate::runtime::room_list_activity::room_list_agent_activity_summary(
+            &session, agent, USER,
+        );
+        (row.state, listed.working, activity[id].busy)
+    });
+    assert_eq!(
+        results,
+        [
+            (AgentTreeState::Idle, false, false),
+            (AgentTreeState::Idle, false, false),
+            (AgentTreeState::Running, true, true),
+        ]
+    );
+    assert_eq!(tree.totals.running, 1);
+}
+
 fn read(team: &Team) -> AgentTree {
     let request = ListDescendantsRequest {
         session_id: team.room.clone(),
