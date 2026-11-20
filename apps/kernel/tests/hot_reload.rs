@@ -3,6 +3,9 @@
 //! running agent turn continues in the same provider process.
 #![cfg(unix)]
 
+#[path = "hot_reload/content_policy.rs"]
+mod content_policy;
+
 #[path = "hot_reload/local_jobs.rs"]
 mod local_jobs;
 

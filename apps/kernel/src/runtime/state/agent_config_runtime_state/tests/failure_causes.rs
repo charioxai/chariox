@@ -81,6 +81,113 @@ fn provider_error_outputs(turn: &FailingTurn) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn a_content_policy_decline_reaches_the_owner_and_agent_with_recovery() {
+    use crate::durable_state::agent_lifecycle::Operation;
+
+    const DIAGNOSTIC: &str = "The provider's private decline detail";
+    const REASON: &str = "The provider declined this request under its content policy.";
+    const RECOVERY: &str =
+        "Reword the request and retry, or switch this agent to another provider.";
+    let notice = format!("{REASON} {RECOVERY}");
+    let turn = follow(super::automatic_substitutes::failing_task_turn_on("codex").await);
+    let store = &turn.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt_id.clone(),
+            run: Some(turn.failed_run_id.clone()),
+            id: "review".into(),
+            kind: "message".into(),
+            resource: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let logs = crate::logging::capture::start();
+
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(format!("Codex error [cyber_policy]: {DIAGNOSTIC}")),
+                explicit_provider_error: true,
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let task = store
+        .agent_turn_task(&turn.session_id, &turn.agent_id, &turn.prompt_id)
+        .unwrap()
+        .unwrap();
+    turn.runtime
+        .ensure_task_owner_interaction(task)
+        .await
+        .unwrap();
+    let session = turn
+        .runtime
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id().starts_with("task-blocked-"))
+        .expect("the task needs an owner decision");
+    assert!(card.message().contains(&notice), "{}", card.message());
+    assert!(!card.message().contains(DIAGNOSTIC));
+    assert!(!card.message().contains("provider account"));
+    assert_eq!(
+        card.choices()
+            .iter()
+            .map(|choice| choice.label())
+            .collect::<Vec<_>>(),
+        ["Cancel", "Resume"]
+    );
+
+    let outcome = followed_error_failure(&turn).expect("typed decline");
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap()["kind"],
+        "content_policy"
+    );
+    assert_eq!(outcome.reason, REASON);
+    assert!(!outcome.retryable);
+    assert_eq!(settled_history_failure(&turn), Some(outcome));
+    assert!(provider_error_outputs(&turn).contains(&notice));
+    assert!(owner_visible_history_texts(&turn)
+        .iter()
+        .all(|text| !text.contains(DIAGNOSTIC) && !text.contains("provider account")));
+    assert!(logs.records().iter().any(|line| {
+        line.contains(DIAGNOSTIC)
+            && line.contains(&format!(r#""agent_id":"{}""#, turn.agent_id))
+            && line.contains(&format!(r#""provider_run_id":"{}""#, turn.failed_run_id))
+    }));
+}
+
+#[tokio::test]
+async fn a_content_policy_decline_does_not_retry_the_same_request_on_a_substitute() {
+    let turn = follow(failing_turn(&[("dev-stub", "substitute-model", None)]).await);
+    turn.fail_run(
+        &turn.failed_run_id,
+        "Codex error [cyber_policy]: The provider's private decline detail",
+    )
+    .await;
+
+    turn.assert_turn_failed();
+    assert!(turn.rerun_notices().is_empty());
+    assert_eq!(
+        followed_error_failure(&turn).unwrap().kind,
+        TurnOutcomeKind::ContentPolicy
+    );
+}
+
+#[tokio::test]
 async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause() {
     let turn = subscribed_failing_turn().await;
 

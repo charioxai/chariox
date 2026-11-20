@@ -9,7 +9,7 @@ impl KernelRuntimeState {
     /// none is left. The list is read at each failure, so edits made during the
     /// turn apply and no substitute runs twice. The substitute serves only this
     /// turn. A user cancel or a stop from Health is not a provider failure; remote, external and
-    /// provider-native turns are not rerun.
+    /// provider-native turns are not rerun. A policy decline needs an explicit decision.
     pub(super) async fn rerun_failed_turn_on_substitute(
         &self,
         attempt: &FailedProviderAttempt<'_>,
@@ -18,6 +18,7 @@ impl KernelRuntimeState {
         let failed_run = attempt.provider_run;
         if active_prompt.status() == crate::session::PromptStatus::Cancelling
             || !attempt.failure.is_error()
+            || attempt.failure.kind == crate::provider::TurnOutcomeKind::ContentPolicy
             || active_prompt.is_external()
             || failed_run
                 .resume_state()

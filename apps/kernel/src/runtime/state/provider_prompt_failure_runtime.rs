@@ -141,6 +141,7 @@ impl KernelRuntimeState {
             .unwrap_or_else(|| {
                 crate::provider::TurnOutcome::classify(provider_run.adapter_key(), message)
             });
+        failure.log_policy_decline(&agent_id, provider_run_id, message);
         if self
             .try_provider_auth_recovery(&provider_run, message, failure.clone(), expected_prompt_id)
             .await?

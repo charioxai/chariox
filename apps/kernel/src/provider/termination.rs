@@ -69,12 +69,21 @@ impl ProviderRunTermination {
     /// `reason` is the harness's own error; its words and the code its adapter
     /// framed give the typed cause.
     pub fn explicit_provider_error(adapter_key: &str, reason: &str, timestamp_ms: u64) -> Self {
+        let failure = TurnOutcome::classify(adapter_key, reason);
+        if failure.kind == TurnOutcomeKind::ContentPolicy {
+            return Self {
+                category: ProviderRunTerminationCategory::ExplicitProviderError,
+                reason: failure.reason.clone(),
+                timestamp_ms,
+                failure: Some(failure),
+            };
+        }
         Self::bounded(
             ProviderRunTerminationCategory::ExplicitProviderError,
             reason,
             "provider reported an explicit error",
             timestamp_ms,
-            TurnOutcome::classify(adapter_key, reason),
+            failure,
         )
     }
 

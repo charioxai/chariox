@@ -287,22 +287,27 @@ pub(crate) fn provider_turn_failure_reason(
 }
 
 pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
-    ["Codex error [", "Claude StopFailure [", "OpenCode error ["]
-        .into_iter()
-        .find_map(|prefix| {
-            let (info, message) = detail.strip_prefix(prefix)?.split_once("]: ")?;
-            let (code, retryable) = match info.split_once("; retryable=") {
-                Some((code, "true")) => (code, Some(true)),
-                Some((code, "false")) => (code, Some(false)),
-                Some(_) => return None,
-                None => (info, None),
-            };
-            (!code.is_empty()
-                && code
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-            .then_some((code, message, retryable))
-        })
+    [
+        "Codex error [",
+        "Claude error [",
+        "Claude StopFailure [",
+        "OpenCode error [",
+    ]
+    .into_iter()
+    .find_map(|prefix| {
+        let (info, message) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+        let (code, retryable) = match info.split_once("; retryable=") {
+            Some((code, "true")) => (code, Some(true)),
+            Some((code, "false")) => (code, Some(false)),
+            Some(_) => return None,
+            None => (info, None),
+        };
+        (!code.is_empty()
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+        .then_some((code, message, retryable))
+    })
 }
 
 /// A usage, quota, credit or rate limit in a provider's own words, including

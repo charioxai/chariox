@@ -499,7 +499,19 @@ fn apply_result_message(
         .get("is_error")
         .and_then(Value::as_bool)
         .unwrap_or(subtype != "success");
-    if is_error {
+    if value.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+        let detail = value
+            .pointer("/stop_details/explanation")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("result").and_then(Value::as_str))
+            .or_else(|| value.pointer("/errors/0").and_then(Value::as_str))
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or("Claude Code reported stop_reason: refusal");
+        batch.explicit_provider_error = true;
+        batch.terminal_failure = Some(crate::provider::provider_coded_failure_text(
+            "Claude", "refusal", detail,
+        ));
+    } else if is_error {
         batch.explicit_provider_error = true;
         batch.terminal_failure = Some(
             value

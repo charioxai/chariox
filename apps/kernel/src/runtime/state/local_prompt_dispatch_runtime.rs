@@ -1075,27 +1075,10 @@ impl KernelRuntimeState {
         let advance_queued_prompt_after_failure;
         {
             let owned = &self.owned;
-            owned.update_metaagent_event_prompt_delivery_for_prompt(
-                &dispatch.prompt_id,
-                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
-                Some(error.to_string()),
-            );
             let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
                 &owned.session_store.get_session(&dispatch.session_id)?,
                 &dispatch.agent_id,
             );
-            if let Some(failed_prompt) = failed_prompt
-                .as_ref()
-                .filter(|prompt| prompt.id() == dispatch.prompt_id)
-            {
-                let _ = self.inject_metaagent_turn_failure_event(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    failed_prompt,
-                    Some(&dispatch.provider_run_id),
-                    &error.to_string(),
-                );
-            }
             // A dispatch completion can arrive after the prompt has already been
             // settled and the next queued prompt has become active.  Only the
             // exact dispatch prompt may be failed or cancelled; treating any
@@ -1121,6 +1104,28 @@ impl KernelRuntimeState {
             } else {
                 None
             };
+            let policy_notice = failure
+                .as_ref()
+                .filter(|failure| failure.kind == crate::provider::TurnOutcomeKind::ContentPolicy)
+                .map(crate::provider::TurnOutcome::notice);
+            let detail = policy_notice.clone().unwrap_or_else(|| error.to_string());
+            owned.update_metaagent_event_prompt_delivery_for_prompt(
+                &dispatch.prompt_id,
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
+                Some(detail.clone()),
+            );
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|prompt| prompt.id() == dispatch.prompt_id)
+            {
+                let _ = self.inject_metaagent_turn_failure_event(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    Some(&dispatch.provider_run_id),
+                    &detail,
+                );
+            }
             let (should_advance, released_claim) = match owned
                 .settle_failed_local_prompt_without_advance(
                     &dispatch.session_id,
@@ -1171,15 +1176,17 @@ impl KernelRuntimeState {
             }
             advance_queued_prompt_after_failure = should_advance;
             let _ = owned.session_snapshot(&dispatch.session_id);
-            let recipients = owned
-                .attachment_store
-                .list_session_attachment_ids(&dispatch.session_id);
-            owned.record_notice(
-                &dispatch.session_id,
-                Some(&dispatch.provider_run_id),
-                recipients,
-                format!("Prompt dispatch failed after acknowledgement: {error}"),
-            );
+            if policy_notice.is_none() {
+                let recipients = owned
+                    .attachment_store
+                    .list_session_attachment_ids(&dispatch.session_id);
+                owned.record_notice(
+                    &dispatch.session_id,
+                    Some(&dispatch.provider_run_id),
+                    recipients,
+                    format!("Prompt dispatch failed after acknowledgement: {error}"),
+                );
+            }
             if released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
@@ -4664,6 +4671,28 @@ pub(in crate::runtime::state) mod tests {
             .iter()
             .all(|text| !text.contains("Selected model is at capacity")));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_content_policy_dispatch_refusal_keeps_the_diagnostic_in_the_log() {
+        const DIAGNOSTIC: &str = "Private policy diagnostics from turn start";
+        const NOTICE: &str = "The provider declined this request under its content policy. Reword the request and retry, or switch this agent to another provider.";
+        let logs = crate::logging::capture::start();
+
+        let (_, visible, outcome) = owner_view_of_failed_dispatch(DaemonError::ProviderRefusal {
+            message: format!("Codex error [cyber_policy]: {DIAGNOSTIC}"),
+        })
+        .await;
+
+        assert!(visible.iter().any(|text| text == NOTICE));
+        assert!(visible.iter().all(|text| !text.contains(DIAGNOSTIC)));
+        assert_eq!(outcome.unwrap()["kind"], "content_policy");
+        assert!(logs.records().iter().any(|line| {
+            line.contains("provider declined a turn under its content policy")
+                && line.contains(DIAGNOSTIC)
+                && line.contains(r#""agent_id":"#)
+                && line.contains(r#""provider_run_id":"#)
+        }));
     }
 
     #[tokio::test]
