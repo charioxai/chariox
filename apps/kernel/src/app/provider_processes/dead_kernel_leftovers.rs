@@ -1,164 +1,303 @@
-//! Processes a dead kernel left behind.
-//!
-//! A provider run that outlives its kernel is debris: its pipes died with the kernel, so nothing
-//! can read its output again. Its tool processes are worse. The restored kernel resumes the
-//! interrupted turn, the provider notices the missing result and runs the command again, and two
-//! copies of a build or a commit run at once.
-//!
-//! Every process a kernel launches for a provider run names that kernel's pid in its
-//! environment, and the processes the run starts inherit it. The processes whose kernel pid is
-//! gone are the ones to end. A run started by a kernel that predates the variable names its
-//! kernel in its Claude runtime files directory instead
-//! (`<temp dir>/chariox-claude-remote-native-<kernel pid>-<random>`).
+//! End abandoned provider work only when its launching kernel instance is gone.
 
-use std::path::Path;
+#[cfg(target_os = "linux")]
+use crate::provider::process_owner::{boot_id, home_identity, OWNER_ENV};
+#[cfg(target_os = "linux")]
+use crate::runtime::owned_process_signals::{linux_ancestors, linux_start, FrozenLinuxProcess};
 
-use crate::provider::{CLAUDE_RUNTIME_FILES_PREFIX, PROVIDER_OWNER_PID_ENV};
+#[cfg(target_os = "linux")]
+fn owner<'a>(environ: &'a [u8], boot: &str, namespace: &str, home: &str) -> Option<(u32, &'a str)> {
+    let marker = environ.split(|byte| *byte == 0).find_map(|entry| {
+        let (key, value) = std::str::from_utf8(entry).ok()?.split_once('=')?;
+        (key == OWNER_ENV).then_some(value)
+    })?;
+    let (pid, identity) = marker.split_once(':')?;
+    let (start, scope) = identity.split_once(':')?;
+    let (owner_boot, scope) = scope.split_once(':')?;
+    let (owner_namespace, owner_home) = scope.rsplit_once(':')?;
+    let pid = pid.parse().ok()?;
+    (pid > 1
+        && start.parse::<u64>().ok()? > 0
+        && owner_boot == boot
+        && owner_namespace == namespace
+        && owner_home == home)
+        .then_some((pid, start))
+}
 
-const CLAUDE_EVENTS_FILE_ENV: &str = "CHARIOX_CLAUDE_NATIVE_EVENTS";
+#[cfg(target_os = "linux")]
+struct Candidate {
+    pid: u32,
+    start: String,
+    owner_pid: u32,
+}
 
-/// The kernel pid a process's environment (`NAME=value` entries separated by NUL) names.
-pub(super) fn owner_pid_of(environ: &[u8], temp_dir: &Path) -> Option<u32> {
-    let runtime_files = format!("{}/{CLAUDE_RUNTIME_FILES_PREFIX}", temp_dir.display());
-    let mut from_runtime_files = None;
-    for entry in environ.split(|byte| *byte == 0) {
-        let Ok(entry) = std::str::from_utf8(entry) else {
-            continue;
-        };
-        match entry.split_once('=') {
-            Some((PROVIDER_OWNER_PID_ENV, pid)) => return pid.parse().ok(),
-            Some((CLAUDE_EVENTS_FILE_ENV, events_file)) => {
-                from_runtime_files = events_file
-                    .strip_prefix(&runtime_files)
-                    .and_then(|rest| rest.split('-').next()?.parse().ok());
+#[cfg(target_os = "linux")]
+pub(super) fn stop() -> usize {
+    use std::os::unix::fs::MetadataExt as _;
+    let (Ok(namespace), Ok(me), Some(boot), Some(home), Ok(ancestors)) = (
+        std::fs::read_link("/proc/self/ns/pid"),
+        std::fs::metadata("/proc/self"),
+        boot_id(),
+        home_identity(),
+        linux_ancestors(),
+    ) else {
+        return 0;
+    };
+    let Some(namespace_name) = namespace.to_str() else {
+        return 0;
+    };
+    let result = reap(&namespace, || {
+        let candidates = std::fs::read_dir("/proc")?
+            .flatten()
+            .filter_map(|entry| {
+                let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+                if pid <= 1
+                    || ancestors.contains(&pid)
+                    || !entry.metadata().is_ok_and(|m| m.uid() == me.uid())
+                {
+                    return None;
+                }
+                let path = entry.path();
+                // The launch PID has meaning only in the owner's PID namespace.
+                // A restarted systemd service may have a new mount namespace.
+                if std::fs::read_link(path.join("ns/pid")).ok()? != namespace {
+                    return None;
+                }
+                let start = linux_start(pid).ok()??;
+                let environ = std::fs::read(path.join("environ")).ok()?;
+                let (owner_pid, owner_start) = owner(&environ, boot, namespace_name, &home)?;
+                if linux_start(owner_pid).ok()?.as_deref() == Some(owner_start) {
+                    return None;
+                }
+                Some(Candidate {
+                    pid,
+                    start,
+                    owner_pid,
+                })
+            })
+            .collect();
+        Ok(candidates)
+    });
+    result.unwrap_or_else(|error| {
+        crate::logging::warn_with_fields(
+            "daemon.provider_process_gc",
+            "could not finish reaping processes left by dead kernels",
+            serde_json::json!({"error": error.to_string()}),
+        );
+        0
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn reap(
+    namespace: &std::path::Path,
+    mut discover: impl FnMut() -> std::io::Result<Vec<Candidate>>,
+) -> std::io::Result<usize> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut frozen = Vec::new();
+    loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(
+                "orphan provider processes did not settle",
+            ));
+        }
+        let mut new = false;
+        for Candidate {
+            pid,
+            start,
+            owner_pid,
+        } in discover()?
+        {
+            if !seen.insert((pid, start.clone())) {
+                continue;
             }
-            _ => {}
+            new = true;
+            if let Some(process) = FrozenLinuxProcess::stop(pid, &start)? {
+                frozen.push((pid, owner_pid, process));
+            }
+        }
+        if !new {
+            break;
+        }
+        // A waiting shell must stop before any owned child is killed. Once all
+        // threads are stopped, rescan for work they forked during the sweep.
+        loop {
+            let mut quiescent = true;
+            for (_, _, process) in &frozen {
+                quiescent &= process.is_quiescent(namespace)?;
+            }
+            if quiescent {
+                break;
+            }
+            if Instant::now() >= deadline {
+                // Another sweep can finish these processes. Resuming a shell
+                // here could race with another kernel reaping the same owner.
+                return Err(std::io::Error::other(
+                    "orphan provider processes did not freeze",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
-    from_runtime_files
-}
-
-/// The processes of `(pid, kernel pid)` launches whose kernel is neither this one nor alive.
-pub(super) fn left_by_dead_kernels(
-    launches: impl IntoIterator<Item = (u32, u32)>,
-    current_pid: u32,
-    is_alive: impl Fn(u32) -> bool,
-) -> Vec<u32> {
-    launches
-        .into_iter()
-        .filter(|(pid, owner)| {
-            *pid > 1
-                && *pid != current_pid
-                && *owner > 1
-                && *owner != current_pid
-                && !is_alive(*owner)
-        })
-        .map(|(pid, _)| pid)
-        .collect()
-}
-
-/// Every process this kernel may signal that a kernel launched, with that kernel's pid. A pid is
-/// only considered when it shares this kernel's pid and mount namespaces and its user: otherwise
-/// the kernel pid in its environment may belong to a kernel this one cannot see.
-#[cfg(target_os = "linux")]
-pub(super) fn launches_in_this_scope(temp_dir: &Path) -> Vec<(u32, u32)> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
-        .filter_map(|pid| {
-            let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-            Some((pid, owner_pid_of(&environ, temp_dir)?))
-        })
-        .filter(|(pid, _)| shares_scope_with_this_kernel(*pid))
-        .collect()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn launches_in_this_scope(_temp_dir: &Path) -> Vec<(u32, u32)> {
-    Vec::new()
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn is_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn is_alive(_pid: u32) -> bool {
-    true
-}
-
-#[cfg(target_os = "linux")]
-fn shares_scope_with_this_kernel(pid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let same = |name: &str| {
-        matches!(
-            (
-                std::fs::read_link(format!("/proc/self/ns/{name}")),
-                std::fs::read_link(format!("/proc/{pid}/ns/{name}")),
+    let mut killed = 0;
+    for (pid, owner_pid, process) in frozen {
+        match process.kill() {
+            Ok(()) => {
+                killed += 1;
+                crate::logging::warn_with_fields(
+                    "daemon.provider_process_gc",
+                    "reaped provider process left by a dead kernel",
+                    serde_json::json!({"pid": pid, "owner_pid": owner_pid}),
+                );
+            }
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.provider_process_gc",
+                "could not reap provider process left by a dead kernel",
+                serde_json::json!({"pid": pid, "owner_pid": owner_pid, "error": error.to_string()}),
             ),
-            (Ok(mine), Ok(theirs)) if mine == theirs
-        )
-    };
-    let same_user = matches!(
-        (std::fs::metadata("/proc/self"), std::fs::metadata(format!("/proc/{pid}"))),
-        (Ok(mine), Ok(theirs)) if mine.uid() == theirs.uid()
-    );
-    same("pid") && same("mnt") && same_user
+        }
+    }
+    Ok(killed)
 }
 
-#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
+pub(super) fn stop() -> usize {
+    0
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    fn environ(entries: &[&str]) -> Vec<u8> {
-        entries.join("\0").into_bytes()
-    }
-
     #[test]
-    fn a_process_names_its_kernel_in_the_launch_variable() {
-        let environ = environ(&[
-            "PATH=/bin",
-            &format!("{PROVIDER_OWNER_PID_ENV}=4242"),
-            "HOME=/x",
-        ]);
-        assert_eq!(owner_pid_of(&environ, Path::new("/tmp")), Some(4242));
-    }
-
-    #[test]
-    fn a_run_from_before_the_variable_names_its_kernel_in_its_runtime_files_directory() {
-        let environ = environ(&[&format!(
-            "{CLAUDE_EVENTS_FILE_ENV}=/tmp/{CLAUDE_RUNTIME_FILES_PREFIX}77-00ab/events.jsonl"
-        )]);
-        assert_eq!(owner_pid_of(&environ, Path::new("/tmp")), Some(77));
+    fn provider_owner_must_include_start_time_and_current_boot() {
         assert_eq!(
-            owner_pid_of(&environ, Path::new("/elsewhere")),
-            None,
-            "another temp dir is not this kernel's"
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_INSTANCE=42:123:boot:pid:[123]:home-a",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            Some((42, "123"))
+        );
+        assert_eq!(
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_PID=42",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            None
+        );
+        assert_eq!(
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_INSTANCE=42:123:old_boot:pid:[123]:home-a",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            None
+        );
+        assert_eq!(
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_INSTANCE=42:0:boot:pid:[123]:home-a",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            None
+        );
+        assert_eq!(
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_INSTANCE=42:123:boot:pid:[999]:home-a",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            None
+        );
+        assert_eq!(
+            owner(
+                b"CHARIOX_PROVIDER_OWNER_INSTANCE=42:123:boot:pid:[123]:home-b",
+                "boot",
+                "pid:[123]",
+                "home-a"
+            ),
+            None
         );
     }
 
     #[test]
-    fn a_process_that_no_kernel_launched_has_no_owner() {
-        let environ = environ(&["PATH=/bin", "CHARIOX_PROVIDER_OWNER_PID=not-a-pid"]);
-        assert_eq!(owner_pid_of(&environ, Path::new("/tmp")), None);
-        assert_eq!(owner_pid_of(b"", Path::new("/tmp")), None);
-    }
+    fn child_first_reap_never_releases_a_waiting_shell_to_fork_again() {
+        use crate::runtime::bounded_process::BoundedChildExt as _;
+        use crate::runtime::owned_process_signals::OwnedProcessSignals;
+        use std::io::{BufRead, BufReader};
+        use std::process::{Child, Stdio};
 
-    #[test]
-    fn only_processes_of_a_dead_kernel_are_left_behind() {
-        let launches = [
-            (100, 40),
-            (101, 50),
-            (102, 60),
-            (103, 40),
-            (1, 40),
-            (104, 1),
-        ];
-        // 40 is gone, 50 is alive, 60 is this kernel, pid 1 and kernel 1 are never touched.
-        let left = left_by_dead_kernels(launches, 60, |kernel| kernel == 50);
-        assert_eq!(left, [100, 103]);
+        struct Fixture {
+            child: Child,
+            cleanup: OwnedProcessSignals,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self.cleanup.kill_owned_processes();
+                let _ = self.child.bounded_wait();
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let child = crate::process_spawn::command("sh")
+            .args([
+                "-c",
+                r#"sleep 600 & child=$!; echo "$child"; wait "$child"; touch MARKER; sleep 600 & echo "$!" > FORK; wait"#,
+            ])
+            .current_dir(root.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let cleanup = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut fixture = Fixture { child, cleanup };
+        let parent_pid = fixture.child.id();
+        let mut line = String::new();
+        BufReader::new(fixture.child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let child_pid: u32 = line.trim().parse().unwrap();
+        let birth = |pid| linux_start(pid).unwrap().unwrap();
+        let parent_start = birth(parent_pid);
+        let child_start = birth(child_pid);
+        let namespace = std::fs::read_link("/proc/self/ns/pid").unwrap();
+
+        let mut scan = 0;
+        let killed = reap(&namespace, || {
+            scan += 1;
+            Ok(match scan {
+                1 => vec![Candidate {
+                    pid: child_pid,
+                    start: child_start.clone(),
+                    owner_pid: 2,
+                }],
+                2 => {
+                    // The parent is discovered on a subsequent scan. A child
+                    // killed eagerly would release the shell during this gap.
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    vec![Candidate {
+                        pid: parent_pid,
+                        start: parent_start.clone(),
+                        owner_pid: 2,
+                    }]
+                }
+                _ => Vec::new(),
+            })
+        })
+        .unwrap();
+
+        assert_eq!(killed, 2);
+        assert!(scan >= 3);
+        assert!(!fixture.child.bounded_wait().unwrap().success());
+        assert!(!root.path().join("MARKER").exists());
+        assert!(!root.path().join("FORK").exists());
     }
 }

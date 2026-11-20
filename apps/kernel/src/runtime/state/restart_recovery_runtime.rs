@@ -4611,11 +4611,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     impl FixtureProcess {
-        fn sleeping(owner: Option<u32>) -> Self {
+        fn sleeping(owner: Option<&str>) -> Self {
             let mut command = crate::process_spawn::command("sleep");
             command.arg("300");
             if let Some(owner) = owner {
-                command.env(crate::provider::PROVIDER_OWNER_PID_ENV, owner.to_string());
+                command.env(crate::provider::process_owner::OWNER_ENV, owner);
             }
             Self(command.spawn().expect("fixture process should start"))
         }
@@ -4654,20 +4654,22 @@ mod tests {
     #[tokio::test]
     async fn restart_recovery_ends_only_the_processes_a_dead_kernel_launched() {
         crate::test_support::isolated_env_test!();
-        let mut dead_kernel = crate::process_spawn::command("true")
-            .spawn()
-            .expect("fixture kernel should start");
-        let dead_kernel_pid = dead_kernel.id();
-        dead_kernel.wait().expect("fixture kernel should exit");
+        let mut dead_kernel = FixtureProcess::sleeping(None);
+        let dead_owner = crate::provider::process_owner::marker_for_pid(dead_kernel.id()).unwrap();
         // The interrupted turn's tool process, and a copy from a second tool call of the same run.
-        let mut tool = FixtureProcess::sleeping(Some(dead_kernel_pid));
-        let mut second_tool = FixtureProcess::sleeping(Some(dead_kernel_pid));
+        let mut tool = FixtureProcess::sleeping(Some(&dead_owner));
+        let mut second_tool = FixtureProcess::sleeping(Some(&dead_owner));
+        dead_kernel.0.kill().unwrap();
+        dead_kernel.0.wait().unwrap();
         // Another kernel that is still alive, and a tool process it launched.
         let live_kernel = FixtureProcess::sleeping(None);
-        let mut live_kernel_tool = FixtureProcess::sleeping(Some(live_kernel.id()));
+        let mut live_kernel_tool = FixtureProcess::sleeping(
+            crate::provider::process_owner::marker_for_pid(live_kernel.id()).as_deref(),
+        );
         // A process no kernel launched, and one this kernel launched in this life.
         let mut unrelated = FixtureProcess::sleeping(None);
-        let mut own_tool = FixtureProcess::sleeping(Some(std::process::id()));
+        let mut own_tool =
+            FixtureProcess::sleeping(crate::provider::process_owner::current_marker().as_deref());
         let (runtime, _session_id, _agent_id, _prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
         let targets = runtime.durable_restart_recovery_targets();
