@@ -4,6 +4,13 @@ use super::{
 use crate::error::DaemonError;
 
 impl DaemonConfig {
+    pub(crate) fn enrolled_cloud_kernel_id(&self) -> Option<&str> {
+        self.cloud_relay
+            .as_ref()
+            .and_then(PersistedCloudRelayProfile::enrolled_kernel_id)
+            .or(self.persisted_cloud_kernel_id.as_deref())
+    }
+
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
         if self.cloud_relay.is_some() {
             return self.persist_kernel_cloud_state();
@@ -32,8 +39,18 @@ impl DaemonConfig {
         &mut self,
         profile: Option<PersistedCloudRelayProfile>,
     ) -> Result<(), DaemonError> {
+        if profile.is_none() {
+            if let Some(kernel_id) = self.enrolled_cloud_kernel_id() {
+                self.former_cloud_kernel_id = Some(kernel_id.to_owned());
+            }
+        }
         self.cloud_relay = profile.map(PersistedCloudRelayProfile::canonicalized);
         self.persist_kernel_cloud_state()?;
+        self.persisted_cloud_kernel_id = self
+            .cloud_relay
+            .as_ref()
+            .and_then(PersistedCloudRelayProfile::enrolled_kernel_id)
+            .map(str::to_owned);
         // Keep a predecessor machine credential only as a pinned migration source
         // for existing sibling kernels; never retain the human Cloud session.
         update_persisted_daemon_config("retire shared Cloud session", |persisted| {

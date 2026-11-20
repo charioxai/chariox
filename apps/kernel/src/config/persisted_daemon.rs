@@ -66,6 +66,13 @@ pub struct PersistedCloudRelayProfile {
 }
 
 impl PersistedCloudRelayProfile {
+    pub(super) fn enrolled_kernel_id(&self) -> Option<&str> {
+        self.kernel_credential
+            .as_deref()
+            .filter(|credential| !credential.is_empty())?;
+        self.kernel_id.as_deref()
+    }
+
     pub(super) fn canonicalized(mut self) -> Self {
         self.api_url = normalize_url_without_trailing_slash(&self.api_url);
         self

@@ -270,6 +270,17 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) fn kernel_identity(
+        &self,
+        relay: &RelayStatus,
+    ) -> crate::runtime_transport::machine_kernel_presence::KernelIdentity {
+        crate::runtime_transport::machine_kernel_presence::KernelIdentity::new(
+            &self.config_projection.snapshot(),
+            relay,
+            self.session_projection.list_shared().as_deref(),
+        )
+    }
+
     pub(crate) fn relay_owner_directory_allowed(
         &self,
         caller: &crate::runtime::command::KernelCaller,
