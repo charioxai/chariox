@@ -1553,7 +1553,6 @@ fn deadline_refuses_later_messages_and_settles_the_queued_message_once() {
                 room: room.id().into(),
                 agent: target.id().into(),
                 deadline: Some(deadline),
-                inherited: vec![],
             })
             .unwrap();
 
@@ -1599,9 +1598,14 @@ fn deadline_refuses_later_messages_and_settles_the_queued_message_once() {
                 .unwrap();
             assert!(!refused.ok);
             assert_eq!(refused.payload["code"], "agent_deadline_reached");
-            assert_eq!(
-                refused.payload["error"],
-                format!("This agent’s time limit ended at {time}. The owner, or a parent whose own time limit has not ended, can extend it with `agent deadline <agent> <duration|none>`; or start a new agent.")
+            // TL5: the refusal says when the limit ended, who can change it and with what.
+            let error = refused.payload["error"].as_str().unwrap();
+            assert!(
+                error.starts_with(&format!("This agent’s time limit ended at {time}."))
+                    && error.contains("The owner, or its parent")
+                    && error.contains("`agent deadline <agent> <duration|none>`")
+                    && error.contains("prompt it again"),
+                "{error}"
             );
         }
         let app = app.lock().await;

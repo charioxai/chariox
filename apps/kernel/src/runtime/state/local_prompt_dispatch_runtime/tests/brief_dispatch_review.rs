@@ -930,7 +930,6 @@ async fn final_handoff_envelope_rechecks_the_agent_deadline_after_the_brief() {
                 room: fixture.session_id.clone(),
                 agent: fixture.agent_id.clone(),
                 deadline: Some(deadline_ms),
-                inherited: Vec::new(),
             },
         )
         .unwrap();

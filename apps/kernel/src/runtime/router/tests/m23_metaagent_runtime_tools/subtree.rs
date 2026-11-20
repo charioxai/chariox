@@ -895,7 +895,7 @@ async fn remote_refusal() {
 }
 
 #[test]
-fn deadline_edits_recompute_inheritance_and_bound_peer_authority() {
+fn deadline_edits_keep_each_limit_and_bound_peer_authority() {
     run_large_stack_async_test("deadline-edit-authority", deadline_edit_authority);
 }
 
@@ -929,8 +929,8 @@ async fn deadline_edit_authority() {
         read("d").await["deadline_ms"].is_u64(),
         "child's independent limit survives"
     );
-    let inherited = room_command(&world, "a", "agent deadline s 20m").await;
-    assert!(inherited.ok, "{inherited:?}");
+    let sibling = room_command(&world, "a", "agent deadline s 20m").await;
+    assert!(sibling.ok, "{sibling:?}");
     let peer = room_command(
         &world,
         "peer",

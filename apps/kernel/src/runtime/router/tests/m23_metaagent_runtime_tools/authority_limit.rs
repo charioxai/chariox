@@ -376,7 +376,7 @@ async fn folders_by_config() {
 }
 
 #[test]
-fn a_deadline_is_never_later_than_the_parents_and_follows_it_down() {
+fn a_limit_bounds_only_the_agent_that_carries_it() {
     run_large_stack_async_test("authority-deadline", deadline);
 }
 
@@ -394,22 +394,31 @@ async fn deadline() {
         )
     };
     set("a", 10 * 60_000).await.unwrap();
+    // TL4: the parent's limit caps no child. A child may be given a later limit, or none.
     let later = room_command(&world, "a", "agent deadline b 2h").await;
-    assert!(
-        !later.ok && error_text(&later).contains("parent"),
-        "{later:?}"
-    );
+    assert!(later.ok, "{later:?}");
     let sooner = room_command(&world, "a", "agent deadline b 5m").await;
     assert!(sooner.ok, "{sooner:?}");
-    // The user shortens the parent: the child and the grandchild end with it.
+    // Shortening the parent moves nothing below it.
+    let before = room_command(&world, "a", "agent deadline get b").await;
     set("a", 60_000).await.unwrap();
-    for agent in ["b", "d"] {
-        let got = room_command(&world, "a", &format!("agent deadline get {agent}")).await;
-        let deadline_ms = got.payload["response"]["deadline"]["deadline_ms"]
-            .as_u64()
-            .unwrap_or(u64::MAX);
-        assert!(deadline_ms <= now + 60_000, "{agent}: {deadline_ms}");
-    }
+    let after = room_command(&world, "a", "agent deadline get b").await;
+    assert_eq!(
+        before.payload["response"]["deadline"], after.payload["response"]["deadline"],
+        "the child keeps its own limit"
+    );
+    let grandchild = room_command(&world, "a", "agent deadline get d").await;
+    assert!(
+        grandchild.payload["response"]["deadline"].is_null(),
+        "a limit set above a child is not copied onto it: {grandchild:?}"
+    );
+    let spawned = room_command(&world, "a", "agent spawn kid --provider dev-stub").await;
+    assert!(spawned.ok, "{spawned:?}");
+    let kid = room_command(&world, "a", "agent deadline get kid").await;
+    assert!(
+        kid.payload["response"]["deadline"].is_null(),
+        "a new child under a limited parent starts with no limit: {kid:?}"
+    );
 }
 
 #[test]
@@ -470,19 +479,15 @@ async fn finished_deadline() {
         "the reached deadline ends b's run"
     );
 
-    // D2: a refusal names the limit that binds and who can move it.
+    // The parent's limit does not bound b: the parent may give a later time, or none.
     let later = room_command(&world, "a", "agent deadline b 2h").await;
-    assert!(!later.ok, "{later:?}");
-    let text = error_text(&later);
-    assert!(
-        text.contains("at or before") && text.contains("UTC") && text.contains("agent deadline"),
-        "{text}"
-    );
-    let cleared = room_command(&world, "a", "agent deadline b none").await;
-    assert!(
-        !cleared.ok && error_text(&cleared).contains("'s deadline ("),
-        "{cleared:?}"
-    );
+    assert!(later.ok, "{later:?}");
+    assert!(runs(&world, "b").await, "the new limit revived b");
+    finish(&world, "b").await;
+    assert!(!runs(&world, "b").await);
+    // D2: a refusal names who can change the limit.
+    let refused = room_command(&world, "peer", "agent deadline b 1h").await;
+    assert!(!refused.ok, "{refused:?}");
     assert!(!runs(&world, "b").await, "a refused edit changes nothing");
 
     // D1: the parent gives the finished child a new deadline, and b runs again.
@@ -518,45 +523,6 @@ async fn finished_deadline() {
         set("b", 60_000).await.unwrap();
         finish(&world, "b").await;
     }
-}
-
-#[test]
-fn an_agent_under_an_ended_subtree_cannot_extend_a_finished_agent() {
-    run_large_stack_async_test("authority-ended-subtree", ended_subtree);
-}
-
-async fn ended_subtree() {
-    let world = world("authority-ended-subtree").await;
-    let now = crate::session::unix_epoch_ms();
-    for (agent, after_ms) in [("a", 10 * 60_000), ("b", 5 * 60_000), ("d", 4 * 60_000)] {
-        world
-            .router
-            .runtime_state
-            .set_agent_deadline(
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                crate::local::SetAgentDeadlineRequest {
-                    session_id: world.room.clone(),
-                    agent_id: world.ids[agent].clone(),
-                    deadline_ms: Some(now + after_ms),
-                },
-            )
-            .await
-            .unwrap();
-    }
-    finish(&world, "d").await;
-    finish(&world, "b").await;
-    // D4: b's own limit ended, so b cannot give its child d a new one.
-    let refused = room_command(&world, "b", "agent deadline d 1m").await;
-    let text = error_text(&refused);
-    assert!(
-        !refused.ok && text.contains("owner") && text.contains("still running"),
-        "{refused:?}"
-    );
-    assert!(!runs(&world, "d").await);
-    // a is still running and bounds d now that b's limit has ended.
-    let revived = room_command(&world, "a", "agent deadline d 1m").await;
-    assert!(revived.ok, "{revived:?}");
-    assert!(runs(&world, "d").await);
 }
 
 /// G and its child P start at Build/Yolo; P keeps those preferences after its tree limit drops.

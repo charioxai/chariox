@@ -11,10 +11,10 @@ executing kernel before submitting its first prompt:
 extend or shorten, or JSON `null` to clear. An omitted field is refused.
 One `SetAgentDeadline` request returns the resulting durable receipt;
 `deadline:null` confirms there is no deadline. A reached deadline ended that
-run, not the agent: once its cleanup has finished (`stopped_at_ms` is set), the
-owner, or a parent whose own limit has not ended, sets a new time or `none`, and
-the agent takes prompts again. An agent under an ended subtree cannot extend a
-finished agent; the refusal names who can. Edits during pending cleanup are refused
+run, not the agent: once its cleanup has finished (`stopped_at_ms` is set), the owner, or a parent that
+may edit it, sets a new time or `none`, and the agent takes prompts again with its context. A deadline
+bounds only the agent that carries it: its sub-agents are neither stopped nor limited by it, so they
+keep working. A refused edit names who can make it. Edits during pending cleanup are refused
 with `agent_deadline_cleanup_pending`; retry shortly.
 
 The owner can use `chariox agent deadline <agent> <90s|30m|2h|1d|none>`
@@ -25,14 +25,11 @@ at the time of the request. Agents use the Room command
 coordinator can edit a peer of the same owner when its authority covers the
 peer, including an ordinary agent in another room. An agent cannot edit its own
 deadline, an ancestor's, a hidden sub-agent in another room, or another owner's
-agent. A child cannot outlive the nearest ancestor limit that is still running
-(an ancestor whose deadline was reached bounds nothing), and cannot clear
-that inherited limit; the refusal names the ancestor, its limit and who can extend it.
+agent. A new sub-agent starts with no limit unless `agent spawn --deadline` gives it its own.
 
 An edit is serialized with deadline cleanup, so an old scheduler snapshot
-cannot stop a run after an accepted extension or clear. Children inherit the
-new parent limit immediately, while their separate explicit limits remain.
-Deadline records and explicit limits commit in one durable transaction.
+cannot stop a run after an accepted extension or clear.
+Deadline records commit in one durable transaction.
 `GetAgentDeadline {session_id,agent_id}` returns `AgentDeadline {deadline}`;
 `deadline:null` means none was armed. A record contains the Room and agent ids,
 the deadline, `state:"armed"|"reached"`, `reached_at_ms` and `stopped_at_ms`.
@@ -49,7 +46,7 @@ late scheduler cannot admit another prompt. Cleanup stops the kernel-owned
 provider process/connector, cancels the active and queued prompts, retires
 wakes/tasks and releases normal prompt claims. Unfinished cleanup is retried;
 `stopped_at_ms` appears only after cleanup succeeds. The same transaction publishes one agent event
-with `reason:"deadline_reached"` to its outside followers. Completed idle agent runs do
+with `reason:"deadline_reached"` to its outside followers, and the Room shows a notice that says what stopped and which sub-agents go on. Ten minutes and one minute before a deadline, the Room shows a warning and the agent, if it has work, receives one too. Completed idle agent runs do
 not cause repeated deadline writes. No process that armed the deadline or open watch is
 needed. After a kernel restart, an overdue stored deadline is enforced during
 the first scheduler tick; the original reached/stop receipts are retained.
@@ -61,10 +58,9 @@ answer leaves no deadline on the home, and a spawn that cannot be armed removes
 the child it created. The worker arms the deadline on the agent that carries the
 leased work, so its own scheduler tick stops the provider run even when the home
 is offline; the home also cancels the leased turn when its own tick reaches the
-deadline. Changes to a parent deadline recompute the effective deadlines of its remote
-descendants and send the resulting time or clear through the same worker request. Moving a deadline-bound agent to a worker stays refused with
+deadline. Moving a deadline-bound agent to a worker stays refused with
 `agent_deadline_requires_executor`: move the agent first, then arm the deadline.
-A prompt that reaches the worker after the deadline is rejected before any provider run
+A leased agent that ended at its worker's deadline stays ended there: neither an edit nor the shift a home restart gives back revives it (`agent_deadline_reached`); start a new agent for new work. A prompt that reaches the worker after the deadline is rejected before any provider run
 starts or prompt input is taken (`agent_deadline_reached`).
 This is an optional general facility for managing an agent. It does not replace
 managed-host automatic shutdown policy (MP-09).

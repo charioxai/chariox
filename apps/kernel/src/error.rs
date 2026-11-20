@@ -20,7 +20,7 @@ pub(crate) fn agent_deadline_refusal(deadline_ms: u64) -> DaemonError {
             || external_request_failure_message(AGENT_DEADLINE_REACHED).into(),
             |deadline| {
                 let time = deadline.format("%Y-%m-%d %H:%M:%S UTC");
-                format!("This agent’s time limit ended at {time}. The owner, or a parent whose own time limit has not ended, can extend it with `agent deadline <agent> <duration|none>`; or start a new agent.")
+                format!("This agent’s time limit ended at {time}. The owner, or its parent, can extend or clear it with `agent deadline <agent> <duration|none>` and then prompt it again; the same agent continues with its context. Or start a new agent for new work.")
             },
         );
     DaemonError::MachineRequest {
