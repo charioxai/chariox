@@ -262,19 +262,15 @@ async fn historical_workflows_inner() {
         else {
             panic!("snapshot");
         };
+        assert!(
+            session.workflow_runs().is_empty(),
+            "Room state omits workflow history"
+        );
         if user == "kernel-owner" {
-            assert_eq!(session.workflow_runs().len(), 3);
-            assert!(session
-                .workflow_runs()
-                .iter()
-                .all(|run| serde_json::to_value(run).unwrap()
-                    ["created_before_ownership_tracking"]
-                    == true));
             assert_eq!(room_workflows.workflows[0].runs.len(), 2);
             let run = &room_workflows.workflows[0].runs[0];
             assert!(!run.can_pause && !run.can_resume && run.can_stop);
         } else {
-            assert!(session.workflow_runs().is_empty());
             assert!(room_workflows.workflows[0].runs.is_empty());
         }
         for name in ["old-active", "old-archive"] {
