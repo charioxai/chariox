@@ -120,3 +120,22 @@ MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenti
 An API-key provider sign-in (OpenCode Go and Zen) takes a Vault entry instead of a pasted key. `provider login <provider> [account-profile] --method opencode_go_api_key --vault <credential_id>` starts the sign-in and sends the entry; Web Provider Accounts offers **Use a Vault entry** next to the paste field, listing the owner's entries for the provider's site. The kernel reads the value, types it into the provider's own login terminal and lets `opencode auth login` finish; the value never reaches a model, the status, history, a log or a tool result, and the login screen stays masked.
 
 The provider-to-site map is one function, `provider_enrollment_vault_origin` (OpenCode: `https://opencode.ai`). The entry must be a secret bound to exactly that site for browser or HTTP use, so an entry the owner created for the site and one `chariox.vault.copy_for_use` made for it both work, with no copy step. An entry for another site is refused with the site it must be bound to. No other Vault use widens: the entry is read only for this sign-in.
+
+### Run a private Linux drill kernel
+
+An agent shell already runs inside Bubblewrap. A drill kernel started in that
+shell inherits the Linux confinement even if its environment is cleared. If
+Bubblewrap cannot create a nested mount namespace, provider startup stops at
+the confinement check.
+
+Use an authorized host operator session or a dedicated lab machine to start the
+drill. On a systemd host, the operator can run the drill command as a dedicated,
+time-bounded transient service with `systemd-run`. Give it a fresh environment,
+its own `CHARIOX_HOME`, separate local ports and sockets, and fixture accounts.
+Use the host's normal service account and Bubblewrap policy. Run the provider
+through the drill kernel and stop the dedicated service after the drill.
+
+If the same check fails from the host service, have the operator check the
+AppArmor policy for Bubblewrap's user namespaces and the service's effective
+namespace restrictions and capabilities. Keep the production provider
+confinement policy in place.
