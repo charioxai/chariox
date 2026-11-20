@@ -547,37 +547,6 @@ mod platform {
         })
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn namespace_probe_names_nested_confinement_and_the_supported_drill_path() {
-            assert!(in_bubblewrap_profile("bwrap//&unpriv_bwrap (enforce)"));
-            assert!(!in_bubblewrap_profile("unconfined"));
-            let reason = namespace_probe_refusal(
-                "bwrap: Creating new namespace failed: Operation not permitted",
-                true,
-            )
-            .unwrap();
-            assert!(reason.contains("nested confinement"));
-            assert!(reason.contains("dedicated drill kernel as a host service"));
-        }
-
-        #[test]
-        fn namespace_probe_distinguishes_host_policy_from_other_startup_failures() {
-            let reason =
-                namespace_probe_refusal("bwrap: No permissions to create a new namespace", false)
-                    .unwrap();
-            assert!(reason.contains("AppArmor") && reason.contains("capabilities"));
-            assert!(namespace_probe_refusal("env: unrecognized option", false).is_none());
-            assert!(
-                namespace_probe_refusal("bwrap: Can't bind mount: Permission denied", true)
-                    .is_none()
-            );
-        }
-    }
-
     /// Bubblewrap, setpriv and env from PATH, once they have run a program in
     /// a namespace on this machine.
     fn working_sandbox() -> Result<&'static Sandbox, DaemonError> {
@@ -634,6 +603,37 @@ mod platform {
             setpriv,
             env,
         }))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn namespace_probe_names_nested_confinement_and_the_supported_drill_path() {
+            assert!(in_bubblewrap_profile("bwrap//&unpriv_bwrap (enforce)"));
+            assert!(!in_bubblewrap_profile("unconfined"));
+            let reason = namespace_probe_refusal(
+                "bwrap: Creating new namespace failed: Operation not permitted",
+                true,
+            )
+            .unwrap();
+            assert!(reason.contains("nested confinement"));
+            assert!(reason.contains("dedicated drill kernel as a host service"));
+        }
+
+        #[test]
+        fn namespace_probe_distinguishes_host_policy_from_other_startup_failures() {
+            let reason =
+                namespace_probe_refusal("bwrap: No permissions to create a new namespace", false)
+                    .unwrap();
+            assert!(reason.contains("AppArmor") && reason.contains("capabilities"));
+            assert!(namespace_probe_refusal("env: unrecognized option", false).is_none());
+            assert!(
+                namespace_probe_refusal("bwrap: Can't bind mount: Permission denied", true)
+                    .is_none()
+            );
+        }
     }
 }
 
