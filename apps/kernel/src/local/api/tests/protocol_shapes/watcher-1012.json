@@ -1,5 +1,5 @@
 {
-  "local": 1012,
+  "local": 1016,
   "relayPeer": 449,
   "requests": [
     {"Watcher": {"create": {"session_id": "room-1", "manifest": {"name": "Build status", "sentence": "Tells you when the nightly build fails.", "mode": {"poll": {"every_s": 1800}}, "command": ["python3", "watch.py"], "events": [{"name": "failed", "keyed": true}], "coalesce": "latest_per_key", "debounce_s": 0}, "script": {"file_name": "watch.py", "text": "print('{}')"}}}},

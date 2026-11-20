@@ -618,4 +618,5 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// An agent's kernel access request can carry a reason for the owner's card.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
