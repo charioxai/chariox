@@ -1821,6 +1821,19 @@ mod tests {
         }
     }
 
+    /// A helper's answer is read back by the orchestrator and often becomes part of the
+    /// final answer: its brief asks for one deliverable and a short answer.
+    #[test]
+    fn worker_brief_asks_for_one_deliverable_and_a_short_answer() {
+        let spec = crate::transport::runtime_tools::agent_run_tool_specs().remove(0);
+        let brief = spec.input_schema["properties"]["workers"]["items"]["properties"]["brief"]
+            ["description"]
+            .as_str()
+            .unwrap();
+        assert!(brief.contains("One deliverable"), "{brief}");
+        assert!(brief.contains("at most 30 lines"), "{brief}");
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let _dir = temp_prompt_root("materializes");
