@@ -23,6 +23,7 @@ mod support;
 #[cfg(test)]
 mod tests;
 mod token_refusal;
+mod update_needed;
 mod writer;
 
 use support::*;
@@ -471,9 +472,29 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     first_message_received = true;
-                    let envelope: RelayEnvelope = serde_json::from_str(&text).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                    })?;
+                    let envelope: RelayEnvelope = match serde_json::from_str(&text) {
+                        Ok(envelope) => envelope,
+                        Err(error) => {
+                            if registered_daemon_key.is_none() {
+                                if let Some(reason) = update_needed::refuse_old_registration(
+                                    &text,
+                                    &auth_verifier,
+                                    &registry,
+                                    peer_addr,
+                                )
+                                .await?
+                                {
+                                    send_close(&outgoing_tx, reason);
+                                    end_reason = "update_needed";
+                                    break;
+                                }
+                            }
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                error.to_string(),
+                            ));
+                        }
+                    };
                     let scope = match &envelope {
                         RelayEnvelope::DaemonEvent { subscription_id, .. } => routes
                             .subscription(subscription_id)
@@ -580,6 +601,7 @@ pub(crate) async fn handle_connection(
                                     client_daemon_key: None,
                                 },
                             );
+                            guard.clear_update_needed_kernel(&daemon_key);
                             guard.daemons.insert(daemon_key.clone(), registration);
                             guard.daemon_peers.insert(daemon_key.clone(), peer_addr);
                             routes.set_daemon_sender(daemon_key, outgoing_tx.clone());

@@ -28,6 +28,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                                 alias: Some("remote-codex".to_string()),
                             },
                         ],
+                        update_needed_kernels: Vec::new(),
                     }],
                     &host_machine_id,
                 ),
@@ -121,6 +122,7 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
                         kernel_count: 1,
                         available_providers: vec!["opencode".to_string()],
                         provider_accounts: vec![],
+                        update_needed_kernels: Vec::new(),
                     }],
                     &host_machine_id,
                 ),
@@ -186,6 +188,7 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
                         kernel_count: 2,
                         available_providers: Vec::new(),
                         provider_accounts: Vec::new(),
+                        update_needed_kernels: Vec::new(),
                     }],
                     &host_machine_id,
                 ),
@@ -284,6 +287,7 @@ fn local_request_api_removing_a_machine_deletes_its_registry_entry_and_it_return
         kernel_count: 1,
         available_providers: Vec::new(),
         provider_accounts: Vec::new(),
+        update_needed_kernels: Vec::new(),
     };
     harness.with_app_mut(|app| {
         app.remote_relay_inventory_projection_store().update(
