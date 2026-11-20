@@ -34,9 +34,24 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
-### Agent reach (retired)
+### Room agent access
 
-Room agents no longer get a second runtime MCP server: the `chariox-reach` server (`/mcp/reach`) and its passthrough of kernel requests to other rooms and kernels are retired (`docs/design/sub-agents.md` 7.2). A Room agent reaches a peer in another room or on another kernel of the same owner only with the room commands `agent message`, `agent steer`, `agent cancel` and `agent spawn --room [--kernel | --machine]`, and follows it with `chariox.events.subscribe`; nobody reads another room's history. A `chariox` room tool given a `kernel` argument is still refused, since it would run in the agent's own room. Acting as the user on other kernels stays with external agents (above).
+A Room agent, including a sub-agent, can ask the kernel owner for access. The kernel identifies the
+agent from its running provider process. The provider shell gets the matching installed CLI as
+`CHARIOX_CLI` and the Unix socket address as `CHARIOX_DAEMON_SOCKET`. In a source installation,
+start the kernel with `CHARIOX_CLI_BIN` set to the absolute path of the CLI built from the same revision
+if the CLI is installed separately.
+
+```sh
+"$CHARIOX_CLI" access request --no-wait --reason "Check the target kernel OS"
+"$CHARIOX_CLI" access status
+"$CHARIOX_CLI" exec --kernel <other-kernel> -- uname -a
+```
+
+The owner sees one card with the requester, Room and reason. They can grant timed access, grant
+access until the agent's provider exits, or deny the request. Only run the command after status
+reports `granted`. While pending, status gives the time the request will expire. A denial and an
+unanswered expiry have distinct outcomes. Standing external grants do not apply to Room agents.
 
 ### Development standing grants
 
@@ -59,9 +74,9 @@ Exit codes and the error codes behind them:
 | 0 | ok | |
 | 1 | request failed: the kernel answered with an error code of its own; read `code` and `message` | any code not listed below, for example `session_not_found`, `file_not_found`, `ledger_unavailable`, `kernel_response_too_large` |
 | 2 | usage | `usage`, `file_path_invalid` |
-| 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_sub_agent`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
+| 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_agent_unavailable`, `kernel_access_denied`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_access_request_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |
 | 7 | event cursor expired: resync followed targets | `cursor_expired` |
 

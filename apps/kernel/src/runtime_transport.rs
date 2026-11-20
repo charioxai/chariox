@@ -1,3 +1,5 @@
+const KERNEL_ROUTING_ACCESS_REQUIRED: &str = "Run `chariox access request --no-wait` on your local kernel, then retry after the owner approves.";
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{Read, Write};
@@ -1444,7 +1446,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
                                     code: "kernel_not_available".into(),
-                                    message: "kernel routing is only available to a local access grant holder".into(),
+                                    message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                                     retryable: false,
                                 }),
                             },
@@ -1794,8 +1796,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let Some(caller) = external_caller.as_ref() else {
                     refuse(KernelTransportError {
                         code: "kernel_not_available".into(),
-                        message: "kernel routing is only available to a local access grant holder"
-                            .into(),
+                        message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                         retryable: false,
                     });
                     return;
