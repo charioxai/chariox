@@ -1772,7 +1772,19 @@ impl KernelRuntimeState {
                 .owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &task.agent_id)
-                .is_some();
+                .is_some()
+                // Local completion clears the queue's active prompt before
+                // writing its outcome. The exact active turn spans that gap.
+                || (task.wait.is_some()
+                    && task
+                        .provider_run_id
+                        .as_deref()
+                        .and_then(|run| self.owned.active_turns.get(run))
+                        .is_some_and(|turn| {
+                            turn.session_id == task.room_id
+                                && turn.agent_id == task.agent_id
+                                && turn.prompt_id == task.prompt_id
+                        }));
             let queued = session
                 .queued_prompts_for_agent(&task.agent_id)
                 .is_some_and(|q| {
