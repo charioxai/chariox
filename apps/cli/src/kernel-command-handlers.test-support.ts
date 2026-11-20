@@ -26,6 +26,7 @@ export {
 
 export function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthProjection {
   return {
+    build_toolchain_version: null,
     metadata: { projection_version: 1, last_event_id: 7, generated_at_ms: 100 },
     session_command_lanes: [{ lane_id: "session-1", queue_limit: 128, queued_commands: 1 }],
     agent_command_lanes: [{ lane_id: "agent-1", queue_limit: 128, queued_commands: 2 }],

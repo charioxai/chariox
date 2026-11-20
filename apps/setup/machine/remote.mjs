@@ -41,7 +41,7 @@ export async function tree(home, relative, create = true) {
   for (const part of relative.split("/")) { p = join(p, part); await directory(p, create) }
   return p
 }
-async function existingTree(home, relative) {
+export async function existingTree(home, relative) {
   let p = home
   for (const part of relative.split("/")) {
     p = join(p, part)

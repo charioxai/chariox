@@ -331,6 +331,7 @@ export type DaemonHealthProjection = {
   projection_invariants: ProjectionInvariantHealthSnapshot
   request_timings: RequestKindTiming[]
   sample_counts: Record<string, number>
+  build_toolchain_version: string | null
 }
 
 export type DaemonHealthResponse = {
