@@ -888,7 +888,7 @@ async fn pending_catalog_continuation_is_not_an_unsettled_turn() {
     assert!(fixture
         .runtime
         .owned
-        .settle_answered_unsettled_turn(&task)
+        .recover_unsettled_turn(&task)
         .unwrap()
         .is_none());
 }
