@@ -1363,7 +1363,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!video) {
           const data = g.getImageData(0, 0, W, H).data; let clear = true, black = true;
           for (let i = 0; i < data.length && (clear || black); i += 4) { clear &&= !data[i + 3]; black &&= !data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] === 255; }
-          if (clear) return null;
+          // Nothing drawn (or cleared to transparent): the page shows through, as natively. The kernel decides the still.
+          if (clear) return { clear: true };
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }
         for (let still = canvas; ;) {
