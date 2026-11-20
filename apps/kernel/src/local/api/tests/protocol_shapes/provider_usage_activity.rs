@@ -1245,6 +1245,11 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
         crate::provider::ProviderRunTermination::runtime_failure("runtime unavailable", 1_237),
         crate::provider::ProviderRunTermination::transport_failure("relay closed", 1_238),
         crate::provider::ProviderRunTermination::unknown_process_exit(1_239),
+        crate::provider::ProviderRunTermination::explicit_provider_error(
+            "codex",
+            "Codex error [cyber_policy]: native refusal detail",
+            1_240,
+        ),
     ]
     .into_iter()
     .map(|provider_termination| {
@@ -1316,6 +1321,16 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                     "reason": "provider process exited without an available status",
                 },
             },
+            {
+                "category": "explicit_provider_error",
+                "reason": "The provider declined this request under its content policy.",
+                "timestamp_ms": 1_240,
+                "failure": {
+                    "kind": "content_policy",
+                    "retryable": false,
+                    "reason": "The provider declined this request under its content policy.",
+                },
+            },
         ])
         .as_array()
         .expect("provider termination snapshot should be an array")
@@ -1327,7 +1342,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6dd3a05a435f59762d5d346abced5950e28d916aede5491e00ac697c45ac3383"
+        "4ed2f3f97bb4f72dd9d945ec57dd784333ddc9f902dd786d84cdba043918f62f"
     );
 }
 
