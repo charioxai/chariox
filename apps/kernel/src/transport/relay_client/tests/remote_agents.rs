@@ -1702,6 +1702,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
 
 #[test]
 fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agent-message-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             true, true, false, false, false, false, false,
@@ -1711,6 +1712,7 @@ fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_w
 
 #[test]
 fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             true, true, false, true, false, false, false,
@@ -1721,6 +1723,7 @@ fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_stee
 #[test]
 fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits(
 ) {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, false, false,
@@ -1730,6 +1733,7 @@ fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_
 
 #[test]
 fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-failed-advance", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, true, false, false,
@@ -1739,6 +1743,7 @@ fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
 
 #[test]
 fn ambiguous_remote_queued_steer_reply_reconciles_exact_receipt_without_replay() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-uncertain", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, true, false,

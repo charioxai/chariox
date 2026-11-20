@@ -1846,6 +1846,7 @@ else:
 #[cfg(unix)]
 #[test]
 fn existing_slice_runtime_forwards_managed_workspace_roots() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("existing-slice-workspace-roots");
@@ -1953,6 +1954,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn failed_save_recovery_starts_only_the_existing_container() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("failed-save-recovery");
@@ -2054,6 +2056,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("backup-restore-order");

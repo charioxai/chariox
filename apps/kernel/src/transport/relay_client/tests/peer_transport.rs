@@ -1400,6 +1400,7 @@ async fn execution_leases_are_managed_through_peer_transport() {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

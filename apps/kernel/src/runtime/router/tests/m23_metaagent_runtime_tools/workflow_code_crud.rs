@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code() {
+    crate::test_support::isolated_env_test!();
     run_large_stack_async_test(
         "metaagent-runtime-tools-create-validate-apply-and-delete-workflow-code",
         metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_inner,

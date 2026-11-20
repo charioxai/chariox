@@ -840,6 +840,7 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
 // MP-08/MP-11 A01: binding a peer is not implicit capability administration.
 #[test]
 fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
+    crate::test_support::isolated_env_test!();
     let env = TestMetaRuntimeEnv::new("room-peer-capability");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
