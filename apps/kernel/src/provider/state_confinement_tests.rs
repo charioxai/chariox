@@ -397,7 +397,10 @@ fn a_managed_agent_rereads_its_workflow_node_instructions() {
     std::fs::create_dir_all(&provider_home).unwrap();
     std::env::set_var("CHARIOX_HOME", &home);
     std::env::set_var(super::super::MANAGED_PROVIDER_ISOLATION_ENV, "1");
-    std::env::set_var(super::super::MANAGED_PROVIDER_HOME_ENV, &provider_home);
+    std::env::set_var(
+        super::super::managed_isolation::MANAGED_PROVIDER_HOME_ENV,
+        &provider_home,
+    );
     let private = home.join("state/witness");
     write(&private, SECRET);
     let config = crate::config::DaemonConfig::for_tests();
