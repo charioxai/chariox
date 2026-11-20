@@ -84,6 +84,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
+// B3: a viewer's hover move (no button) is the person's pointer, not the person acting in the Tab.
+const hoverMove = command => command.op === 'input' && command.input?.kind === 'mirror' && command.input.action?.kind === 'move';
 const SHOW_TAB_WAIT_MS = 1000;
 // The answer to a Show tab carries the state read if it finishes in time; a busy renderer of another Tab never holds it.
 const SHOW_TAB_OBSERVE_MS = 500;
@@ -960,6 +962,8 @@ export class KernelBrowserHost {
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
   async request(command, options) {
     const person = !command._agent_input && !command.focused_agent;
+    // B3e: an agent acting in the Tab keeps the pointer; a hover then changes nothing the agent sees.
+    if (person && hoverMove(command) && this.agentBusy.has(command.tab_id)) return this.tabState();
     if (person) this.notePersonInput(command);
     const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'save', 'wait', 'resize'].includes(command.op) ? command.tab_id : null;
     if (acting) this.noteAgentBusy(acting, 1);
@@ -975,10 +979,10 @@ export class KernelBrowserHost {
       }
     }
   }
-  // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
+  // The person's typing, click or scroll in a Tab (not a hover) keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
   notePersonInput(command) {
     if (!['input', 'mirror_input', 'display_input'].includes(command.op) || typeof command.tab_id !== 'string') return;
-    if (command.action?.kind === 'selection') return;
+    if (command.action?.kind === 'selection' || hoverMove(command)) return;
     this.personInputAt.set(command.tab_id, Date.now());
   }
   async personQuiet(tabId, signal) {
@@ -1415,6 +1419,8 @@ export class KernelBrowserHost {
       // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
       // A viewer's key is the same: no input-lane reconcile (the lane serializes the next key behind it).
       if (['scroll', 'key'].includes(command.input.kind) && command._display_input === true) return this.observe(this.tabState(), null, scope);
+      // B3-perf: a hover move cannot open, close or retarget a Tab either (up to one per frame while the pointer moves).
+      if (hoverMove(command)) return this.observe(this.tabState(), null, scope);
       // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
       // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
       // The observation is bounded too: it goes on in the background and a later state read has its result.

@@ -3186,6 +3186,34 @@ test('an agent action on a Tab the person is typing in waits for the person to b
   assert.ok(keys() > afterPerson + 1);
 }, { personIdleMs: 150 }));
 
+// B3e: a hover is not the person acting. It never holds an agent back, and an agent acting in the Tab keeps the pointer.
+test('B3e: a person\'s hover move does not make an agent wait, and is dropped while an agent acts in the Tab', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  let resolved = 0; host.mirror.resolveInput = async () => { resolved++; return { perform: async () => {}, fenced: false }; };
+  const move = x => host.request({ op: 'input', ...base, input: { kind: 'mirror', action: { kind: 'move', node_id: 'n1', x, y: 1 } } });
+  await move(1);
+  assert.equal(resolved, 1, 'a quiet Tab hovers');
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, ...base, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 1000, 'the agent did not wait for a hovering person');
+  await move(2);
+  assert.equal(resolved, 1, 'a hover while the agent acts in the Tab is dropped');
+}, { personIdleMs: 5000 }));
+// B3-perf: a viewer sends up to one move per frame; a move answers without the full post-input Tab observation (as a viewer's key).
+test('B3-perf: a hover move answers without a post-input Tab observation', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  host.mirror.resolveInput = async () => ({ perform: async () => {}, fenced: false });
+  const reconcile = host.reconcile.bind(host); let observations = 0;
+  host.reconcile = (...args) => { observations++; return reconcile(...args); };
+  const reads = () => observations;
+  for (const [action, observed] of [[{ kind: 'click', node_id: 'n1', x: 1, y: 1 }, true], [{ kind: 'move', node_id: 'n1', x: 1, y: 1 }, false]]) {
+    const before = reads();
+    await host.request({ op: 'input', ...base, input: { kind: 'mirror', action } });
+    assert.equal(reads() > before, observed, `${action.kind}: post-input observation`);
+  }
+}));
 test('an agent action on another Tab does not wait for the person', { timeout: 5000 }, () => using(async ({ host }) => {
   const first = await host.request({ op: 'open', url: 'https://example.com/a' });
   const second = await host.request({ op: 'open', url: 'https://example.com/b' });
