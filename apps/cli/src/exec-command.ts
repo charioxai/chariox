@@ -1,7 +1,8 @@
 import timers from "node:timers/promises"
 import type { Readable, Writable } from "node:stream"
 import type { CommandTarget, ExecOutcome, RunCommandOperation, RunCommandResult } from "@chariox/kernel-client/kernel-types"
-import { runCommandRequest } from "@chariox/kernel-client/ipc-requests"
+import { runCommandMinimumProtocolVersion, runCommandRequest } from "@chariox/kernel-client/ipc-requests"
+import { KernelProtocolMinimumError, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { failureOf, lostInFlight } from "./kernel-command-failure.js"
 import { CommandFailure } from "./agent-command-table.js"
@@ -52,8 +53,17 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
       : { kind: "room_workspace", session_id: options.session }
     : { kind: "kernel" }
   const request = async (operation: RunCommandOperation) => {
-    const response = await send(runCommandRequest(target, operation)) as Reply
-    return response.RunCommand.result
+    const body = runCommandRequest(target, operation)
+    try {
+      const response = await withProtocolMinimum(() => send(body), {
+        capability: "Command execution", requestVariant: "RunCommand",
+        minimumProtocolVersion: runCommandMinimumProtocolVersion,
+      }) as Reply
+      return response.RunCommand.result
+    } catch (error) {
+      if (error instanceof KernelProtocolMinimumError) throw new CommandFailure("kernel_incompatible", error.message)
+      throw error
+    }
   }
   let execId: string | undefined
   let offset = 0
@@ -183,7 +193,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     const uncertainOpen = ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"].includes(codeOf(error) ?? "")
     const definiteRefusal = !uncertainOpen && (error instanceof LocalIpcError
       ? error.operation === "handle kernel response" && !lostInFlight(error)
-      : /^(exec_|terminal_)/.test(codeOf(error) ?? ""))
+      : /^(exec_|kernel_incompatible$)/.test(codeOf(error) ?? ""))
     if (!execId && definiteRefusal) completed = true
     if (execId && codeOf(error) === "exec_interrupted" && interrupted !== undefined) {
       try {

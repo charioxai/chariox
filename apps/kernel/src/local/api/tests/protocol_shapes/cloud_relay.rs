@@ -39,7 +39,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "kernel_gateway_v1",
             "room_terminal_v1",
             "kernel_terminal_v1",
-            "room_exec_v1",
+            "run_command_v1",
             "agent_deadline_v1",
             "outside_steer_events_v1",
             "framed_plaintext_v1",
@@ -52,7 +52,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "992631bf1ec07ab29133df83f6853144cfe394c346e4eee97eb49d4c5500d13d"
+        "09c120512e3eff0f08f707c8a92ccaf65572a5908efc7e7ea0adbfd19652ca06"
     );
 }
 
