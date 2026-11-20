@@ -372,7 +372,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
         } => {
             if !matches!(
                 state.as_str(),
-                "accepted" | "rejected" | "uncertain" | "recovered"
+                "accepted" | "rejected" | "uncertain" | "recovered" | "failed"
             ) {
                 return Err(error("invalid delivery receipt"));
             }
@@ -396,6 +396,15 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                         save(tx, &task)?;
                     }
                 }
+            }
+            if state == "failed" {
+                super::delivery_failure::fail_undelivered(
+                    tx,
+                    &mut e,
+                    DelegateGoneReason::FailedStart,
+                    now,
+                )?;
+                return Ok(Outcome::Event(e));
             }
             // "recovered": the kernel's own restart, not the agent, spent the time since an
             // earlier busy refusal, so the retry starts with a full refusal budget.

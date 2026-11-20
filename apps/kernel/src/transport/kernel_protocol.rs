@@ -1242,7 +1242,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
         DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
         DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),
-        DaemonError::ProviderPromptSteerRejected { .. } => {
+        DaemonError::ProviderPromptSteerRejected { .. } | DaemonError::OpenCodeSteerConflict => {
             kernel_error("prompt_steer_rejected", error, false)
         }
         DaemonError::LocalTransport {

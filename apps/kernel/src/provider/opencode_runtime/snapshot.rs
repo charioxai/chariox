@@ -22,7 +22,7 @@ pub(super) fn opencode_message_completes_active_prompt(
     };
     info.session_id == state.session_id
         && info.role == "assistant"
-        && info.parent_id.as_deref() == Some(active_user_message_id)
+        && state.matches_prompt_parent(Some(active_user_message_id), info.parent_id.as_deref())
         && info.is_terminal_assistant_completion()
 }
 
@@ -44,7 +44,10 @@ pub(super) fn opencode_messages_active_prompt_failure(
     messages.iter().rev().find_map(|message| {
         (message.info.role == "assistant"
             && message.info.session_id == state.session_id
-            && message.info.parent_id.as_deref() == Some(active_user_message_id))
+            && state.matches_prompt_parent(
+                Some(active_user_message_id),
+                message.info.parent_id.as_deref(),
+            ))
         .then(|| message.info.terminal_error_message())
         .flatten()
     })
@@ -60,7 +63,10 @@ pub(super) fn opencode_messages_have_empty_active_assistant(
     messages.iter().any(|message| {
         message.info.role == "assistant"
             && message.info.session_id == state.session_id
-            && message.info.parent_id.as_deref() == Some(active_user_message_id)
+            && state.matches_prompt_parent(
+                Some(active_user_message_id),
+                message.info.parent_id.as_deref(),
+            )
             && message.info.time.completed.is_none()
             && message.info.error.is_none()
             && message.parts.is_empty()

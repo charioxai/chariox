@@ -920,7 +920,11 @@ impl KernelRuntimeState {
             self.owned
                 .attachment_store
                 .list_session_attachment_ids(room),
-            ledger::receipt_notice(&event),
+            if state == "failed" {
+                ledger::opencode_steer_conflict_notice(event.sequence)
+            } else {
+                ledger::receipt_notice(&event)
+            },
         );
         Ok(())
     }
