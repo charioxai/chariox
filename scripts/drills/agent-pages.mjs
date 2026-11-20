@@ -152,7 +152,9 @@ async function main() {
   check("R3a-page", report.rows >= 1 && report.rows < expectedTotal && report.next_cursor_present === true, { rows: report.rows })
   check("R3a-compact-keys", JSON.stringify(report.keys) === JSON.stringify(["alias", "id", "model", "parent", "provider", "state", "turn"].filter(key => report.keys.includes(key))) && !report.keys.includes("agent_tasks"), { keys: report.keys })
   check("R3a-alias-filter", Array.isArray(report.filtered) && report.filtered.length === 11 && report.filtered.every(alias => alias.startsWith("lane8")), { filtered: report.filtered })
-  check("R3b-overview-page", report.overview_rows === 5 && report.overview_total === expectedTotal && report.overview_has_agent_tasks === false, { rows: report.overview_rows, total: report.overview_total })
+  // The overview lists the Room's visible agents: the boss and the lanes that have no parent (60 lanes are parented).
+  const visibleTotal = lanes - Math.min(lanes, 60) + 1
+  check("R3b-overview-page", report.overview_rows === 5 && report.overview_total === visibleTotal && report.overview_has_agent_tasks === false, { rows: report.overview_rows, total: report.overview_total, visibleTotal })
   // The size the provider received, from the kernel's own record of the tool results.
   const historyDb = k.attached ? join(k.dir, "history/operational.db") : join(k.dir, "chariox/history/operational.db")
   const events = JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", historyDb, "SELECT event_json FROM history_events WHERE kind='provider_tool' ORDER BY sequence"], { maxBuffer: 64e6 }).toString() || "[]")
