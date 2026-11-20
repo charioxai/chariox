@@ -539,6 +539,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             DelegateGoneReason::FailedStart,
                             now,
                         )?;
+                        settle_refused_wake(tx, &e, &mut changed)?;
                         continue;
                     }
                     let reason = format!(
@@ -956,6 +957,44 @@ fn delivery_belongs_to_task(
         }
     }
     Ok(false)
+}
+
+/// A terminal receipt cannot leave its source outcome waiting for a turn.
+fn settle_refused_wake(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    changed: &mut Vec<AgentTaskExecution>,
+) -> Result<(), DaemonError> {
+    if !event.is_source_outcome() {
+        return Ok(());
+    }
+    for mut task in live_tasks(tx, &event.room_id, &event.agent_id)? {
+        if task.state != ExecutionState::Waiting || !delivery_belongs_to_task(tx, event, &task)? {
+            continue;
+        }
+        let mut released = false;
+        for obligation in &mut task.obligations {
+            if matches!(obligation.status.as_str(), "settling" | "failed")
+                && obligation
+                    .completion_source()
+                    .is_some_and(|source| event.reports_source(source))
+            {
+                obligation.status = "cancelled".into();
+                released = true;
+            }
+        }
+        let finished = super::settled_waits::finish(tx, &mut task)?;
+        if finished {
+            task.state = ExecutionState::Cancelled;
+            task.reason = "Wake delivery failed: the agent could not start.".into();
+        }
+        if released || finished {
+            task.revision += 1;
+            save(tx, &task)?;
+            changed.push(task);
+        }
+    }
+    Ok(())
 }
 
 fn refused_wake(event: &InboxEvent) -> bool {

@@ -355,37 +355,7 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
 
     let store = &f.runtime.owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
-    let Outcome::Task(task) = store
-        .agent_lifecycle(Operation::Begin {
-            owner: "local".into(),
-            room: f.room.clone(),
-            agent: f.child.clone(),
-            prompt: "timer-turn".into(),
-            run: None,
-            now,
-        })
-        .unwrap()
-    else {
-        panic!("task")
-    };
-    let timer: AgentWake = serde_json::from_value(serde_json::json!({
-        "id": "timer-after-failed-start", "task_id": task.task_id, "room_id": f.room,
-        "agent_id": f.child, "registration_id": "completion-timer-after-failed-start",
-        "kind": "timer", "label": "backup check", "state": "scheduled", "created_at_ms": now,
-        "verified_at_ms": null, "next_due_ms": now + 1_000, "interval_ms": null,
-        "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
-        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
-        "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
-        "last_acknowledged_at_ms": null, "alerted_sequence": null
-    }))
-    .unwrap();
-    store
-        .agent_lifecycle(Operation::CreateWake {
-            task: task.task_id.clone(),
-            prompt: task.prompt_id.clone(),
-            wake: timer,
-        })
-        .unwrap();
+    f.create_one_shot_timer("timer-after-failed-start", now);
 
     // The timer firing is the only trigger: no lifecycle sweep runs.
     f.runtime.sweep_agent_wakes(now + 70_000).await.unwrap();
@@ -402,6 +372,124 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
     }
     assert_eq!(f.state_of(sequence), "handled");
     assert!(f.child_is_running());
+}
+
+impl Fixture {
+    fn create_one_shot_timer(
+        &self,
+        id: &str,
+        now: u64,
+    ) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+        let store = &self.runtime.owned.durable_state_store;
+        let Outcome::Task(task) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: self.room.clone(),
+                agent: self.child.clone(),
+                prompt: format!("{id}-turn"),
+                run: None,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("task")
+        };
+        let timer: AgentWake = serde_json::from_value(serde_json::json!({
+        "id": id, "task_id": task.task_id, "room_id": self.room,
+        "agent_id": self.child, "registration_id": format!("completion-{id}"),
+        "kind": "timer", "label": "backup check", "state": "scheduled", "created_at_ms": now,
+        "verified_at_ms": null, "next_due_ms": now + 1_000, "interval_ms": null,
+        "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
+        "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
+        "last_acknowledged_at_ms": null, "alerted_sequence": null
+    }))
+    .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+
+        task
+    }
+}
+
+#[tokio::test]
+async fn refused_one_shot_wake_settles_its_waiting_task_at_exhaustion() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    let f = Fixture::with_child_provider("dev-stub");
+    let store = &f.runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let task = f.create_one_shot_timer("exhausted-timer", now);
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec!["completion-exhausted-timer".into()],
+            cursor: 0,
+            deadline: Some(now + 600_000),
+            reason: "wait for the one-shot timer".into(),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.child.clone(),
+            prompt: task.prompt_id.clone(),
+            run: "timer-setup-run".into(),
+            has_answer: false,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    assert_eq!(
+        store.agent_task(&task.task_id).unwrap().unwrap().state,
+        ExecutionState::Waiting
+    );
+    store
+        .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+        .unwrap();
+    let wake = store.agent_wake("exhausted-timer").unwrap().unwrap();
+    let sequence = wake.last_sequence.expect("the one-shot timer fired");
+
+    let moved = f.remove_workspace();
+    for _ in 0..2 {
+        let error = f
+            .runtime
+            .deliver_agent_inbox(&f.room, &f.child)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("does not exist"), "{error}");
+    }
+    std::fs::rename(&moved, f._worktree.path()).unwrap();
+    assert_eq!(f.state_of(sequence), "pending");
+    assert_eq!(
+        store.agent_task(&task.task_id).unwrap().unwrap().state,
+        ExecutionState::Waiting
+    );
+
+    f.sweep_after_delivery_window();
+
+    assert_eq!(f.state_of(sequence), "failed");
+    let settled = store.agent_task(&task.task_id).unwrap().unwrap();
+    assert!(
+        matches!(
+            settled.state,
+            ExecutionState::Done | ExecutionState::Cancelled
+        ),
+        "an exhausted wake stranded the task in {:?}",
+        settled.state
+    );
+    assert!(
+        settled.reason.contains("could not start"),
+        "{}",
+        settled.reason
+    );
+    assert!(settled.wait.is_none());
 }
 
 impl Fixture {
