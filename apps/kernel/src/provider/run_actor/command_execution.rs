@@ -389,10 +389,17 @@ pub(super) fn execute_terminate_command(
             }
         }
     }
-    if crate::provider::provider_run_uses_opencode_io(&run)
-        && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
-    {
-        return Ok(());
+    if crate::provider::provider_run_uses_opencode_io(&run) {
+        if runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id) {
+            return Ok(());
+        }
+        let (_, state) = runtime_registry.take_opencode_runtime(&run_id)?;
+        // A retired run will never accept a follow-up prompt. The worker
+        // clears its runtime, so it only needs the provider's abort receipt.
+        let result = crate::provider::OpenCodeClient::new(&run_id, state.base_url())
+            .and_then(|client| client.abort_session(state.session_id()));
+        state.stop();
+        return result;
     }
     execute_abort_command(runtime_registry, run)
 }
