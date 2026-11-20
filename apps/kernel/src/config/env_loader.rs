@@ -193,6 +193,7 @@ impl DaemonConfig {
             } else {
                 env_cloud_relay.or(persisted_cloud_relay)
             },
+            persisted_cloud_kernel_id: None,
             former_cloud_kernel_id: None,
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
@@ -227,9 +228,7 @@ impl DaemonConfig {
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
         };
-        if !env_relay_configured {
-            loaded.load_kernel_cloud_state();
-        }
+        loaded.load_kernel_cloud_state(env_relay_configured);
         loaded
     }
 }
