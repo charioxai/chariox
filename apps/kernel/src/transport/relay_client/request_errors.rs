@@ -40,7 +40,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::NoActivePrompt { .. }
         | DaemonError::ProviderPromptSteerRejected { .. }
         | DaemonError::LocalTransport {
-            operation: "steer active prompt" | "resolve account profile",
+            operation: "steer active prompt"
+                | "resolve account profile"
+                | crate::runtime::state::INTERACTION_CLOSED,
             ..
         } => {
             let mapped = crate::transport::kernel_protocol::map_kernel_error(error);
@@ -828,4 +830,21 @@ mod tests {
         assert_eq!(mapped.message, "Public history changed; retry the query");
         assert!(mapped.retryable);
     }
+}
+#[test]
+fn closed_interaction_reply_keeps_its_code_across_the_relay() {
+    let code = crate::runtime::state::INTERACTION_CLOSED;
+    let error = DaemonError::LocalTransport {
+        operation: code,
+        message: "someone else answered or it expired".into(),
+    };
+
+    let reply = map_relay_error(&error);
+
+    assert_eq!(reply.code, code);
+    assert_eq!(
+        reply.message,
+        crate::error::external_request_failure_message(code)
+    );
+    assert!(!reply.retryable);
 }
