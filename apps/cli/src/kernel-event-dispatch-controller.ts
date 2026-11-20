@@ -1,6 +1,6 @@
 import { invalidateClientInventories } from "./client-inventory-cache.js"
 import {
-  normalizeRuntimeSessionWithAgentActivity,
+  normalizeRoomState,
   type RuntimeNoticeRecord,
   type RuntimeProviderRun,
   type RuntimeSession,
@@ -116,7 +116,7 @@ export function createKernelEventDispatchController(
     deps.recordDaemonActivity("kernel_session_snapshot")
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
-      normalizeRuntimeSessionWithAgentActivity({
+      normalizeRoomState({
         session: { ...event.session, room_workflows: event.room_workflows } as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]
