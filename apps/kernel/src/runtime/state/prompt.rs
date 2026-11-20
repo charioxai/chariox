@@ -663,6 +663,7 @@ impl KernelRuntimeOwnedState {
                     false,
                 ),
                 false,
+                None,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
                 let _ = self.clear_prompt_activity(&provider_run_id);

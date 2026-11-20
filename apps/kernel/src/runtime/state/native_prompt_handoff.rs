@@ -10,6 +10,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         prompt_id: &str,
         steering: bool,
         base: String,
+        handoff_room: Option<usize>,
     ) -> Result<String, DaemonError> {
         self.room_secret_observations.require(session_id, false)?;
         // SessionStart updates the store before UserPromptSubmit; the pump's
@@ -28,8 +29,11 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
             Some(handoff) => {
                 let handoff =
                     self.revalidate_context_handoff(handoff, session_id, agent_id, prompt_id)?;
-                let rendered = handoff
-                    .render_hidden(crate::provider::claude_native_hidden_context_room(&base));
+                let room = crate::provider::claude_native_hidden_context_room(&base);
+                let rendered = match handoff_room {
+                    Some(prepared) => handoff.render_switch_hidden(room.min(prepared)),
+                    None => handoff.render_hidden(room),
+                };
                 if rendered.is_empty() {
                     return Err(DaemonError::ProviderProtocol {
                         provider_run_id: run_id.into(),
