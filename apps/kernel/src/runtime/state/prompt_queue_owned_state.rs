@@ -531,33 +531,6 @@ impl KernelRuntimeOwnedState {
         Ok(prompt)
     }
 
-    pub(super) fn mirror_prompt_owner_session_state(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DaemonError> {
-        let mut agent_ids = self
-            .agent_store
-            .get_session_agents(session_id)
-            .into_iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        let session = self.session_store.get_session(session_id)?;
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        for agent_id in agent_ids {
-            let (active_prompt, queued_prompts) =
-                self.prompt_state_owner.state_parts(&session, &agent_id);
-            self.mirror_prompt_owner_agent_state(
-                session_id,
-                &agent_id,
-                active_prompt,
-                queued_prompts,
-            )?;
-        }
-        Ok(())
-    }
-
     pub(super) fn remove_queued_prompts_for_agent(
         &self,
         session_id: &str,
@@ -618,6 +591,7 @@ impl KernelRuntimeOwnedState {
         Ok(removed)
     }
 
+    #[cfg(test)]
     pub(super) fn activate_next_queued_prompt_for_agent(
         &self,
         session_id: &str,

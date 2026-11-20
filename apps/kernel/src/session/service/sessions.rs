@@ -163,7 +163,8 @@ impl SessionService {
         &mut self,
         session_id: &str,
         attachment_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
+        owner_user_id: &str,
+    ) -> Result<(), DaemonError> {
         self.ensure_resident_session(session_id)?;
         let session =
             self.store
@@ -187,20 +188,33 @@ impl SessionService {
             });
         }
 
+        self.room_environments
+            .connect_actor(
+                session_id,
+                crate::session::EnvironmentActor::new(
+                    crate::session::human_environment_actor_id(owner_user_id),
+                    crate::session::EnvironmentActorKind::Human,
+                    crate::session::human_environment_actor_label(owner_user_id),
+                ),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "attach Room Environment actor",
+                message: format!("{}: {error:?}", error.code()),
+            })?;
         if session.status() == SessionStatus::Ended {
             let _ = session.transition_to(SessionStatus::Parked);
         }
 
         session.add_attachment(attachment_id);
         session.touch();
-        Ok(session.clone())
+        Ok(())
     }
 
     pub fn remove_attachment_from_session(
         &mut self,
         session_id: &str,
         attachment_id: &str,
-    ) -> Result<(RuntimeSession, PromptDetachEffect), DaemonError> {
+    ) -> Result<&RuntimeSession, DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "detach")?;
 
         if !session.remove_attachment(attachment_id) {
@@ -210,15 +224,7 @@ impl SessionService {
             });
         }
 
-        session.touch();
-
-        Ok((
-            session.clone(),
-            PromptDetachEffect {
-                removed_active_prompt: false,
-                removed_queued_prompt_count: 0,
-            },
-        ))
+        Ok(session)
     }
 
     pub fn set_active_provider_run(

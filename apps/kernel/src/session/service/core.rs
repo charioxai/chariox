@@ -262,6 +262,7 @@ impl SessionService {
     pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
         if let Some(held) = self.store.get(session.id()) {
             session.note_activity_at(held.last_activity_at_ms());
+            session.preserve_newer_attachment_membership(held);
         }
         session.purge_unsupported_workflow_publications();
         if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {

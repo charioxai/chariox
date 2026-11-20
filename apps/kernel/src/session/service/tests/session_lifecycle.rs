@@ -1333,10 +1333,10 @@ fn prompt_queue_starts_then_queues_then_advances() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, first) = service
@@ -1411,10 +1411,10 @@ fn activating_expected_queued_prompt_validates_queue_front() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1470,7 +1470,7 @@ fn config_updates_are_versioned() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let mut changes = BTreeMap::new();
@@ -1494,7 +1494,7 @@ fn config_update_idle_admission_is_not_owned_by_session_service() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1520,7 +1520,7 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, outcome) = service
@@ -1537,12 +1537,9 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         other => panic!("expected running prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert!(!effect.removed_active_prompt);
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert!(session.attachment_ids().is_empty());
     assert_eq!(
         session.active_prompt().map(|prompt| prompt.id()),
@@ -1558,7 +1555,7 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, active) = service
@@ -1585,11 +1582,9 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         other => panic!("expected queued prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert_eq!(session.queued_prompts().len(), 1);
     assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
     assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");

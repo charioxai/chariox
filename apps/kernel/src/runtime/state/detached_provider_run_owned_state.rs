@@ -7,16 +7,10 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<bool, DaemonError> {
-        if !self
-            .attachment_store
-            .list_session_attachment_ids(session_id)
-            .is_empty()
-        {
-            return Ok(false);
-        }
-
         let session = self.session_store.get_session(session_id)?;
-        if self.prompt_state_owner.has_any_active_prompt(&session) {
+        if !session.attachment_ids().is_empty()
+            || self.prompt_state_owner.has_any_active_prompt(&session)
+        {
             return Ok(false);
         }
         let Some(active_provider_run_id) = session.active_provider_run_id().map(str::to_string)
@@ -70,12 +64,13 @@ impl KernelRuntimeOwnedState {
             Err(error) => return Err(error),
         }
 
-        for run in self.provider_store.list_runs() {
-            if run.session_id() == session_id {
-                self.clear_prompt_activity(run.id());
-            }
+        // Settlement owns turn activity even if the last window closed while it was committing.
+        if self
+            .session_projection
+            .clear_parked_provider_run(session_id, &active_provider_run_id)
+        {
+            self.runtime_projection_changes.record_change();
         }
-        self.session_snapshot(session_id)?;
         Ok(true)
     }
 

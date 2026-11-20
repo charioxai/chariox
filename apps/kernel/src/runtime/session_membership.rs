@@ -228,13 +228,9 @@ async fn scope_sessions(
                 .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
                 .await?,
         ],
-        SessionMembershipScope::AttachmentId(attachment_id) => vec![if let Some(session_id) =
-            session_projection.session_id_for_attachment(&attachment_id)
-        {
-            session_id
-        } else {
-            runtime_state.attachment_session_id(&attachment_id).await?
-        }],
+        SessionMembershipScope::AttachmentId(attachment_id) => {
+            vec![runtime_state.attachment_session_id(&attachment_id).await?]
+        }
     };
     let mut sessions = Vec::with_capacity(session_ids.len());
     for session_id in session_ids {
