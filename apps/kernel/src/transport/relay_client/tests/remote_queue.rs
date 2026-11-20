@@ -284,6 +284,7 @@ impl RemoteQueueFixture {
 
 #[test]
 fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queue-completion", || async {
         let _relay_test_guard = relay_client_test_guard().await;
         let _test_home = RelayTestHome::new();
@@ -363,6 +364,7 @@ fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
 
 #[test]
 fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queue-cancel", || async {
         let _relay_test_guard = relay_client_test_guard().await;
         let _test_home = RelayTestHome::new();

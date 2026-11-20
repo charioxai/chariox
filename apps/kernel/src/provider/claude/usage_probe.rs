@@ -633,6 +633,7 @@ mod tests {
 
     #[test]
     fn model_probe_preserves_profile_scope_and_scrubs_ambient_credentials() {
+        crate::test_support::isolated_env_test!();
         if crate::process_spawn::command("node")
             .arg("--version")
             .output()

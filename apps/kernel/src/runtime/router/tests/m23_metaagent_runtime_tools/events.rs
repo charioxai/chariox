@@ -237,6 +237,7 @@ async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
 
 #[test]
 fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
+    crate::test_support::isolated_env_test!();
     run_large_stack_async_test(
         "metaagent-run-command-denials",
         metaagent_run_command_returns_structured_denials_for_forbidden_commands_inner,
