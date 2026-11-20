@@ -1,4 +1,4 @@
-//! MP-08/MP-09/MP-10/MP-11: explicit, independent copies of Vault-backed accounts.
+//! Explicit, independent copies of provider accounts.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -6,6 +6,19 @@ use zeroize::Zeroize;
 pub const PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY: &str = "provider_account_copy_pull_v1";
 
 pub const PROVIDER_ACCOUNT_COPY_CAPABILITY: &str = "provider_account_copy_v1";
+pub const PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY: &str = "provider_account_native_copy_v1";
+
+pub(crate) fn native_copy_credential_path(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" => Some("auth.json"),
+        "opencode" => Some("data/opencode/auth.json"),
+        _ => None,
+    }
+}
+
+pub(crate) fn copy_provider_supported(provider: &str) -> bool {
+    provider == "claude" || native_copy_credential_path(provider).is_some()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +35,7 @@ pub struct ProviderAccountCopyBinding {
 
 impl ProviderAccountCopyBinding {
     pub(crate) fn validate(&self) -> Result<(), crate::error::DaemonError> {
-        if self.provider != "claude"
+        if !copy_provider_supported(&self.provider)
             || ![
                 &self.operation_id,
                 &self.source_profile_id,
@@ -81,7 +94,8 @@ impl ProviderAccountCopyReceipt {
     }
 }
 
-/// Serialized only inside the encrypted kernel-to-kernel request.
+/// Serialized only inside the encrypted kernel-to-kernel request. The binding's
+/// provider identifies a Claude setup token or a base64-encoded native auth file.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderAccountCopyCredential(String);
@@ -122,7 +136,7 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
 pub(crate) fn failure_message(code: &str) -> &'static str {
     match code {
         "provider_account_copy_unauthorized" => "Account copy requires enrolled kernels with the same owner, realm and pinned keys.",
-        "provider_account_copy_profile" => "Select an exact authenticated Claude profile with a Vault-backed credential on the source kernel.",
+        "provider_account_copy_profile" => "Select an authenticated OpenCode or Codex profile with its native login, or a Claude profile with a Vault-backed setup token, on the source kernel.",
         "provider_account_copy_unavailable" => "The target kernel is unavailable; reconnect it and retry the same operation.",
         "provider_account_copy_unsupported" => "Upgrade the target kernel to support provider account copy before retrying.",
         "provider_account_copy_vault_locked" => "Unlock the kernel Vault through Chariox, then retry the same account copy.",

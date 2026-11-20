@@ -14,15 +14,19 @@ impl DaemonApp {
             .unwrap_or_default()
             .into_iter()
             .map(|account| {
-                let copyable = account.provider == "claude"
-                    && account.auth_state
-                        == crate::account_profile::ProviderAccountAuthState::Authenticated
-                    && crate::provider::provider_account_credential_uses_vault(
-                        crate::session::DEFAULT_LOCAL_USER_ID,
+                let copyable = account.auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated
+                    && (crate::provider_account_copy::native_copy_credential_path(
                         &account.provider,
-                        &account.profile_id,
                     )
-                    .unwrap_or(false);
+                    .is_some()
+                        || (account.provider == "claude"
+                            && crate::provider::provider_account_credential_uses_vault(
+                                crate::session::DEFAULT_LOCAL_USER_ID,
+                                &account.provider,
+                                &account.profile_id,
+                            )
+                            .unwrap_or(false)));
                 RelayProviderAccountSummary {
                     provider: account.provider,
                     state: serde_json::to_value(account.auth_state)
@@ -55,6 +59,7 @@ impl DaemonApp {
                 "relay_request_proxy".to_string(),
                 "relay_peer_transport".to_string(),
                 "execution_lease_management".to_string(),
+                crate::provider_account_copy::PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY.to_string(),
             ]
             .into_iter()
             .chain(crate::runtime::state::control_capabilities(

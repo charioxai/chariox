@@ -2,8 +2,9 @@
 use super::*;
 use crate::local::CopyProviderAccountFromKernelRequest;
 use crate::provider_account_copy::{
-    failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyReceipt,
-    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    copy_provider_supported, failure, native_copy_credential_path, ProviderAccountCopyBinding,
+    ProviderAccountCopyOffer, ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -56,7 +57,7 @@ impl KernelRuntimeState {
         let owner = self.provider_account_authority_owner_user_id(caller);
         let installed = self
             .provider_account_profile_registry()
-            .list(&owner, Some("claude"))?
+            .list(&owner, None)?
             .into_iter()
             .map(|profile| profile.profile_id)
             .collect::<std::collections::BTreeSet<_>>();
@@ -126,9 +127,14 @@ impl KernelRuntimeState {
                     else {
                         continue;
                     };
-                    if profile.provider != "claude"
+                    if !copy_provider_supported(&profile.provider)
                         || profile.state != "authenticated"
                         || !profile.copyable
+                        || (native_copy_credential_path(&profile.provider).is_some()
+                            && !kernel
+                                .capabilities
+                                .iter()
+                                .any(|cap| cap == PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY))
                     {
                         continue;
                     }
