@@ -112,6 +112,16 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     match kind {
         NOTICE | REPLACE_NOTICE | WORKFLOW_START_REFUSED => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
+            let read = if kind == WORKFLOW_START_REFUSED && !notice.is_workflow_relink() {
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM person_inbox_mutes
+                     WHERE owner_user_id = ?1 AND session_id = ?2 AND agent_id = ?3)",
+                    params![notice.owner_user_id, notice.session_id, notice.agent_id],
+                    |row| row.get(0),
+                )?
+            } else {
+                notice.read
+            };
             let repeat = if kind == WORKFLOW_START_REFUSED {
                 1
             } else {
@@ -130,7 +140,7 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                         notice.body,
                         notice.link,
                         notice.created_at_ms as i64,
-                        notice.read,
+                        read,
                         priority_text(notice.priority)
                     ],
                 )?;
@@ -156,7 +166,7 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                     notice.link,
                     priority_text(notice.priority),
                     notice.created_at_ms as i64,
-                    notice.read,
+                    read,
                     notice.folded,
                     kind == REPLACE_NOTICE
                 ],
