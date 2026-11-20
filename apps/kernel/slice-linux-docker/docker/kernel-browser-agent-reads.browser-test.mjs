@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
-import { encodePng } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
 
 const sizeOf = data => { const header = Buffer.from(data.slice(0, 44), 'base64'); return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }; };
 const LOGO = encodePng(40, 30, Buffer.alloc(40 * 30 * 4, 200));
@@ -98,6 +98,63 @@ test('native region screenshot, save, scroll to node and wait on a real page', a
     const never = await host.request({ op: 'wait', ...binding, ...agent, text: 'never on this page', timeout_ms: 700 });
     assert.equal(never.matched, false);
     console.log('agent reads native:', JSON.stringify({ scale, clip: sizeOf(clip.data_base64), element: element.clip, page: { width: page.width, height: page.height, page_height: page.page_height, mime: page.mime_type }, saved: [byNode.bytes, byUrl.bytes], waited: [later.waited_ms, pushed.waited_ms, never.waited_ms] }));
+  } finally {
+    await host.stop();
+    if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
+    await new Promise(resolve => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// MP-11: the display audience decides only what a person's view shows. An agent's element, region and whole-page
+// screenshots are model captures, so a Vault-filled field stays masked even when only its owner watches the display.
+test('agent region screenshots mask a Vault-filled field when only the owner watches', async () => {
+  assert(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE, 'explicit installed Chromium required');
+  const root = await mkdtemp(path.join(tmpdir(), 'kernel-reads-masks-'));
+  const value = 'whsec_RegionMaskCanary42';
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<!doctype html><title>fill</title><body style="margin:0;background:#fff">
+<input id="v" value="${value}" style="position:absolute;left:20px;top:20px;width:300px;height:40px;margin:0;padding:0 8px;border:0;font-size:24px;background:#fff;color:#000"></body>`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const appStorageRoot = path.join(root, 'app-storage'); await mkdir(appStorageRoot);
+  const host = new KernelBrowserHost(path.join(root, 'browser'), { appStorageRoot });
+  // The marker the kernel sets on every agent tool call.
+  const agent = { _agent_input: true, observed_by: 'agent:reads-masks' };
+  // The field's interior (CSS box 20,20 300x40, inset past antialiased edges) is one colour only when masked.
+  const fieldMasked = (data, left, top, scale) => {
+    const { width, pixels } = decodePng(data);
+    const at = (x, y) => pixels.readUInt32BE(((Math.round(y * scale)) * width + Math.round(x * scale)) * 4);
+    const first = at(left + 4, top + 4);
+    for (let y = top + 4; y < top + 36; y += 2) for (let x = left + 4; x < left + 296; x += 2) if (at(x, y) !== first) return false;
+    return true;
+  };
+  try {
+    const opened = await host.request({ op: 'open', url: `${origin}/`, ...agent });
+    const binding = { tab_id: opened.tab_id, generation: opened.generation };
+    let snapshot;
+    for (let count = 0; count < 40; count++) {
+      snapshot = (await host.request({ op: 'snapshot', ...binding, ...agent })).snapshot;
+      if (snapshot.dom_nodes.some(node => node.attributes?.id === 'v')) break;
+      await delay(100);
+    }
+    const node_ref = snapshot.dom_nodes.find(candidate => candidate.attributes?.id === 'v').node_ref;
+    const tab = host.tabs.get(opened.tab_id);
+    await host.protect({ values: [value], unknown: false, display_masked: false, targets: [{ kind: 'browser', target_id: tab.target_id,
+      document_id: tab.document_id, node_ref, value_hash: createHash('sha256').update(value).digest('hex'), fill_revision: 1 }] });
+    const scale = (await host.request({ op: 'state', ...agent })).viewport?.device_scale_factor ?? 1;
+    const shots = {
+      viewport: [await host.request({ op: 'screenshot', ...binding, ...agent }), 20, 20],
+      element: [await host.request({ op: 'screenshot', ...binding, ...agent, node_ref }), 0, 0],
+      region: [await host.request({ op: 'screenshot', ...binding, ...agent, clip: { x: 0, y: 0, width: 400, height: 100 } }), 20, 20],
+      page: [await host.request({ op: 'screenshot', ...binding, ...agent, full_page: true }), 20, 20],
+    };
+    // The whole page is one image pixel per CSS pixel unless it was scaled down to fit.
+    const shown = Object.entries(shots).filter(([kind, [shot, left, top]]) =>
+      !fieldMasked(shot.data_base64, left, top, kind === 'page' ? shot.scale ?? 1 : scale)).map(([kind]) => kind);
+    assert.deepEqual(shown, [], 'every agent screenshot masks the Vault-filled field');
   } finally {
     await host.stop();
     if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
