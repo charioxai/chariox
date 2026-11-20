@@ -491,11 +491,17 @@ impl KernelRuntimeState {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(_) => return Err(Refusal::Unconfirmed),
         };
-        // Kernel-launched agents never inherit external authority.
+        // A managed process can use only the grant bound to its own dedicated provider.
+        // This also prevents an outside grant held above the kernel from reaching its agents.
         let (kernel, _) = process::inspect(std::process::id()).map_err(|_| Refusal::Unconfirmed)?;
-        if chain.contains(&kernel) {
-            return Ok(Vec::new());
-        }
+        let agent_holder = if chain.contains(&kernel) {
+            let Some((holder, _)) = self.access_agent_of_chain(&chain) else {
+                return Ok(Vec::new());
+            };
+            Some(holder)
+        } else {
+            None
+        };
         let mut grants: Vec<_> = self
             .owned
             .kernel_access
@@ -503,6 +509,7 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .values()
+            .filter(|grant| agent_holder.is_none_or(|holder| &grant.holder == holder))
             .filter_map(|grant| {
                 let distance = grant.covering(&chain)?;
                 (!grant.holder.gone()).then(|| (distance, grant.clone()))
@@ -648,7 +655,7 @@ impl KernelRuntimeState {
             let name = agent.alias().unwrap_or_else(|| agent.agent_ref());
             let purpose = purpose.unwrap_or("Run commands on another of your kernels");
             let purpose = crate::secret_redaction::redact_secrets(purpose);
-            Some(format!("{name} in {lane} asks for access to this kernel and your other kernels. Reason: {purpose}"))
+            Some(format!("{name} in {lane} asks for access to this kernel and your other kernels. Their reason is “{purpose}”."))
         } else {
             None
         };
