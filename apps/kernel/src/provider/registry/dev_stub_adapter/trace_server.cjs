@@ -1,7 +1,7 @@
 // Minimal OpenCode server surface used by the kernel's managed runtime.
 const { createServer } = require('node:http')
 const { readFileSync } = require('node:fs')
-const { join } = require('node:path')
+const { join, matchesGlob } = require('node:path')
 
 const traceAgent = process.env.CHARIOX_LOADLAB_TRACE_AGENT
 const traceRoot = process.env.CHARIOX_LOADLAB_TRACE_DIR
@@ -70,19 +70,29 @@ function projectTurn(session, parentID) {
       this.update(part, { time: { end: Date.now() } })
     },
     async permission(name, signal) {
+      const permission = name.toLowerCase()
+      const pattern = 'generated sample'
+      const action = session.permission.findLast(rule =>
+        matchesGlob(permission, rule.permission) && matchesGlob(pattern, rule.pattern),
+      )?.action ?? 'ask'
+      // A replayed permission step has no tool side effect. Only an ask pauses the trace.
+      if (action !== 'ask' || session.grants.has(permission)) return
       const id = randomUUID()
+      let abort
       const answered = new Promise((resolve, reject) => {
-        permissions.set(id, resolve)
-        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        permissions.set(id, { session, resolve })
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
       })
       event('permission.asked', {
-        id, sessionID: session.id, permission: name.toLowerCase(), patterns: ['generated sample'],
+        id, sessionID: session.id, permission, patterns: [pattern],
         metadata: { command: 'printf generated-sample' },
         tool: { name, messageID: info.id },
       })
       try {
-        await answered
+        if (await answered === 'always') session.grants.add(permission)
       } finally {
+        signal.removeEventListener('abort', abort)
         permissions.delete(id)
       }
     },
@@ -160,14 +170,19 @@ async function route(request, response) {
     return json(response, Object.fromEntries([...sessions].map(([id, session]) => [id, session.status])))
   }
   if (method === 'POST' && path === '/session') {
+    const { permission = [] } = await body(request)
     const id = randomUUID()
-    sessions.set(id, { id, status: { type: 'idle' }, messages: [] })
+    sessions.set(id, { id, status: { type: 'idle' }, messages: [], permission, grants: new Set() })
     return json(response, { id })
   }
   const [, base, sessionId, operation, permission] = path.split('/')
   const session = base === 'session' && sessions.get(sessionId)
   if (!session) return json(response, { error: 'unknown load lab route' }, 404)
-  if (method === 'PATCH' && !operation) return json(response, { id: session.id })
+  if (method === 'PATCH' && !operation) {
+    const { permission } = await body(request)
+    if (permission !== undefined) session.permission = permission
+    return json(response, { id: session.id })
+  }
   if (method === 'GET' && operation === 'message') {
     return json(response, session.messages.slice(-Number(url.searchParams.get('limit') || 50)))
   }
@@ -175,8 +190,12 @@ async function route(request, response) {
     session.active?.abort()
     return json(response, true)
   }
-  if (method === 'POST' && operation === 'permissions' && permissions.has(permission)) {
-    permissions.get(permission)((await body(request)).response)
+  if (method === 'POST' && operation === 'permissions') {
+    const pending = permissions.get(permission)
+    if (pending?.session !== session) return json(response, { error: 'unknown permission request' }, 404)
+    const decision = (await body(request)).response
+    if (!['once', 'always', 'reject'].includes(decision)) return json(response, { error: 'invalid permission response' }, 400)
+    pending.resolve(decision)
     return json(response, true)
   }
   if (method === 'POST' && operation === 'prompt_async') {

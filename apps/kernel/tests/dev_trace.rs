@@ -13,10 +13,19 @@ use real_kernel::{connect, create_session, request, Socket};
 const FIXTURE: &str = include_str!("../../../scripts/drills/loadlab/fixtures/orch.jsonl");
 
 async fn spawn(socket: &mut Socket, room: &str, alias: &str) -> String {
+    spawn_with_permission(socket, room, alias, "required").await
+}
+
+async fn spawn_with_permission(
+    socket: &mut Socket,
+    room: &str,
+    alias: &str,
+    permission: &str,
+) -> String {
     let response = request(
         socket,
         json!({"SpawnAgent": {"session_id": room, "alias": alias,
-            "provider": "dev-stub", "model": "trace", "permission_level": "required",
+            "provider": "dev-stub", "model": "trace", "permission_level": permission,
             "no_subscribe": true}}),
     )
     .await
@@ -345,6 +354,82 @@ async fn trace_uses_real_permission_terminal_and_inbox() {
         })
         .count();
     assert_eq!(notices, 2, "{inbox}");
+}
+
+#[tokio::test]
+async fn trace_applies_session_permissions_before_asking() {
+    let scratch = std::env::temp_dir().join(format!("loadlab-permissions-{}", std::process::id()));
+    let kernel = start(&scratch);
+    let mut socket = connect(&kernel).await;
+    let room = create_session(&mut socket, &scratch).await;
+
+    for (alias, permission, expected_cards) in [("allowed", "yolo", 0), ("granted", "required", 1)]
+    {
+        let prompt = r#"{"t":0,"kind":"prompt","chars":30}"#;
+        let ask = r#"{"t":0,"kind":"permission","tool":"Bash"}"#;
+        let fixture = FIXTURE
+            .replace(r#""agent":"orch""#, &format!(r#""agent":"{alias}""#))
+            .replace(prompt, &format!("{prompt}\n{ask}\n{ask}"));
+        std::fs::write(scratch.join(format!("{alias}.jsonl")), fixture).unwrap();
+        let agent = spawn_with_permission(&mut socket, &room, alias, permission).await;
+        submit(&mut socket, &room, &agent).await.unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = std::collections::BTreeSet::new();
+        loop {
+            let inbox = request(&mut socket, json!({"GetPersonInbox": null}))
+                .await
+                .unwrap();
+            for card in inbox["PersonInbox"]["cards"].as_array().unwrap() {
+                if card["session_id"] != room {
+                    continue;
+                }
+                let interaction = &card["body"]["needs_you"]["interaction"];
+                let Some(choices) = interaction["choices"].as_array() else {
+                    continue;
+                };
+                if !choices.iter().any(|choice| choice["id"] == "allow_session") {
+                    continue;
+                }
+                let id = card["card_id"].as_str().unwrap();
+                if !answered.insert(id.to_owned()) {
+                    continue;
+                }
+                assert_eq!(
+                    answered.len(),
+                    expected_cards,
+                    "unexpected permission request: {interaction}"
+                );
+                request(
+                    &mut socket,
+                    json!({"RespondToInteraction": {
+                        "session_id": room, "interaction_id": id, "choice_id": "allow_session",
+                    }}),
+                )
+                .await
+                .unwrap();
+            }
+            let history = request(
+                &mut socket,
+                json!({"GetSessionHistoryOutline": {
+                    "session_id": room, "agent_ids": [agent],
+                }}),
+            )
+            .await
+            .unwrap();
+            let turn = &history["SessionHistoryOutline"]["agents"][0]["turns"][0];
+            if let Some("completed" | "cancelled" | "failed") = turn["lifecycle"].as_str() {
+                assert_eq!(turn["lifecycle"], "completed", "{turn}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "permission replay did not settle: {inbox}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(answered.len(), expected_cards);
+    }
 }
 
 #[tokio::test]

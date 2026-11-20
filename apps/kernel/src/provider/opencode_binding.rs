@@ -67,17 +67,7 @@ pub(crate) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
-    let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if run.read_only_discovery() {
-        Some(opencode_read_only_permission_rules())
-    } else if run.requires_workspace_live_sync() {
-        Some(opencode_workspace_live_sync_permission_rules(
-            allow_native_writes,
-            run.permission_level(),
-        ))
-    } else {
-        Some(opencode_permission_rules(run.permission_level()))
-    };
+    let session_permission = Some(opencode_session_permission_rules(run));
     let resumable_session_id = run.resume_state().opencode_session_id().map(str::to_string);
     let (session_id, preexisting_messages) = match resumable_session_id {
         Some(previous_session_id) => match client.snapshot(&previous_session_id) {
@@ -198,6 +188,27 @@ fn ensure_configured_mcp_servers_connected(
         );
     }
     Ok(())
+}
+
+fn opencode_session_permission_rules(run: &RuntimeProviderRun) -> serde_json::Value {
+    if run.read_only_discovery() {
+        return opencode_read_only_permission_rules();
+    }
+    if run.requires_workspace_live_sync() {
+        return opencode_workspace_live_sync_permission_rules(
+            opencode_workspace_live_sync_native_writes_allowed(run),
+            run.permission_level(),
+        );
+    }
+    if super::is_dev_trace(run.adapter_key(), run.model()) {
+        // Generated permission steps exercise Bash without OpenCode's native rules.
+        return serde_json::json!([{
+            "permission": "*",
+            "pattern": "*",
+            "action": opencode_permission_action(run.permission_level()),
+        }]);
+    }
+    opencode_permission_rules(run.permission_level())
 }
 
 fn opencode_workspace_live_sync_permission_rules(
@@ -494,18 +505,8 @@ pub(super) fn submit_opencode_prompt(
 ) -> Result<(), DaemonError> {
     // A resumed native session can still carry an earlier permission policy.
     // Sync it before execution while preserving the session and transcript.
-    let permission = if run.read_only_discovery() {
-        opencode_read_only_permission_rules()
-    } else if run.requires_workspace_live_sync() {
-        opencode_workspace_live_sync_permission_rules(
-            opencode_workspace_live_sync_native_writes_allowed(run),
-            run.permission_level(),
-        )
-    } else {
-        opencode_permission_rules(run.permission_level())
-    };
     OpenCodeClient::new(run.id(), state.base_url())?
-        .update_session_permissions(state.session_id(), permission)?;
+        .update_session_permissions(state.session_id(), opencode_session_permission_rules(run))?;
     submit_opencode_prompt_with_policy(
         run,
         state,
