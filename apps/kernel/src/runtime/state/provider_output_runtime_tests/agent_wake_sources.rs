@@ -2682,6 +2682,71 @@ async fn sweep_commits_the_yield_of_a_completed_turn_that_did_not_answer() {
     assert_eq!(f.wake_state(&wake.id), "running");
 }
 
+#[tokio::test]
+async fn sweep_keeps_a_yield_while_its_provider_turn_is_still_settling() {
+    let f = fixture("sweep-yield-settling", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "settling-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime.start_active_turn_with_trace_id(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        &f.prompt_id,
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    // Pause the ordinary completion path between removing its prompt and
+    // recording the completed outcome. The provider turn still owns settlement.
+    let completed = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(&session, &f.agent, Some(&f.prompt_id))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let settling = f.task(&task.task_id);
+    assert_eq!(
+        settling.state,
+        ExecutionState::Working,
+        "{}",
+        settling.reason
+    );
+    assert!(settling.wait.is_some());
+
+    let settled = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &completed, &f.run, false)
+        .unwrap();
+    f.runtime.owned.clear_prompt_activity(&f.run);
+    assert_eq!(settled.unwrap().0.state, ExecutionState::Waiting);
+    assert_eq!(f.wake_state(&wake.id), "running");
+}
+
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
 // A yield without an explicit deadline reports the kernel's default deadline in its wait row.
 #[tokio::test]
