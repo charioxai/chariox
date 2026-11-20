@@ -32,6 +32,15 @@ pub struct SkillFileManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SkillFileChange {
+    pub skill_id: String,
+    pub path: String,
+    pub before: Option<SkillFileManifest>,
+    pub after: Option<SkillFileManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillProvenance {
     pub kind: String,
     pub source_machine: Option<String>,
@@ -207,6 +216,8 @@ pub enum SkillInstallSource {
     Folder {
         path: String,
     },
+    /// Only for updating a folder-backed skill. The home catalog supplies the path.
+    RecordedFolder {},
     Content {
         skill_md: String,
     },
@@ -400,6 +411,8 @@ pub enum SkillsV2Response {
         expected_revision: u64,
         affected: Vec<SkillRecord>,
         collisions: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        file_changes: Vec<SkillFileChange>,
         review_receipt: SkillReviewReceipt,
     },
     Repository {

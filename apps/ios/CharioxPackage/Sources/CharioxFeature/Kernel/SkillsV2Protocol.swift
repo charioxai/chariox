@@ -43,6 +43,13 @@ public struct SkillFileManifest: Codable, Equatable, Sendable {
     public var executable: Bool
 }
 
+public struct SkillFileChange: Codable, Equatable, Sendable {
+    public var skill_id: String
+    public var path: String
+    public var before: SkillFileManifest?
+    public var after: SkillFileManifest?
+}
+
 public struct SkillProvenance: Codable, Equatable, Sendable {
     public var kind: String
     public var source_machine: String?
@@ -238,6 +245,7 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
     public struct FolderPayload: Codable, Equatable, Sendable {
         public var path: String
     }
+    case recordedFolder
     case content(ContentPayload)
     public struct ContentPayload: Codable, Equatable, Sendable {
         public var skill_md: String
@@ -262,6 +270,7 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
         case "folder": self = .folder(try FolderPayload(from: decoder))
+        case "recorded_folder": self = .recordedFolder
         case "content": self = .content(try ContentPayload(from: decoder))
         case "url": self = .url(try UrlPayload(from: decoder))
         case "native": self = .native(try NativePayload(from: decoder))
@@ -275,6 +284,8 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
         case let .folder(payload):
             try container.encode("folder", forKey: .kind)
             try payload.encode(to: encoder)
+        case .recordedFolder:
+            try container.encode("recorded_folder", forKey: .kind)
         case let .content(payload):
             try container.encode("content", forKey: .kind)
             try payload.encode(to: encoder)
@@ -623,6 +634,7 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
         public var expected_revision: UInt64
         public var affected: [SkillRecord]
         public var collisions: [String]
+        public var file_changes: [SkillFileChange]?
         public var review_receipt: SkillReviewReceipt
     }
     case repository(RepositoryPayload)
