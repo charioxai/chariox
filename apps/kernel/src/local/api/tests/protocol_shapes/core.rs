@@ -11,6 +11,7 @@ fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
         attachment_id: "attachment".into(),
         target_agent_id: "agent".into(),
         expected_active_prompt_id: "home-prompt".into(),
+        require_exact_turn: false,
         prompt: "change direction".into(),
         attachments: vec![],
     });
@@ -25,6 +26,10 @@ fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
         format!("{hash:x}"),
         "98c8cd14cd20061709d76b8aa2e2094b715e96044df6842a40189ca978f915b1"
     );
+    let mut exact = expected.clone();
+    exact["SteerActivePrompt"]["require_exact_turn"] = serde_json::json!(true);
+    let exact_request = serde_json::from_value::<LocalDaemonRequest>(exact.clone()).unwrap();
+    assert_eq!(serde_json::to_value(exact_request).unwrap(), exact);
     let mut missing_expected = expected;
     missing_expected["SteerActivePrompt"]
         .as_object_mut()

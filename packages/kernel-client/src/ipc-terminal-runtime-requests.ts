@@ -299,8 +299,7 @@ export function steerQueuedPromptRequest(
   }
 }
 
-// MP-08 / MP-10: Admission targets one home turn and never queues or starts
-// a replacement turn if it has already settled.
+// Native turn controls opt into exact admission. Ordinary steering follows the active turn.
 export const promptControlReceiptMinimumProtocolVersion = 1091
 export const activePromptSteeringMinimumProtocolVersion = promptControlReceiptMinimumProtocolVersion
 
@@ -311,12 +310,14 @@ export function steerActivePromptRequest(
   expectedActivePromptId: string,
   prompt: string,
   attachments: PromptAttachmentPart[],
+  requireExactTurn = false,
 ) {
   return { SteerActivePrompt: {
     session_id: sessionId,
     attachment_id: attachmentId,
     target_agent_id: targetAgentId,
     expected_active_prompt_id: expectedActivePromptId,
+    ...(requireExactTurn ? { require_exact_turn: true } : {}),
     prompt,
     attachments,
   } }

@@ -159,8 +159,8 @@ impl AgentPromptCommandService {
 
     pub(crate) async fn steer_active_prompt(
         &self,
-        request: crate::local::SteerActivePromptRequest,
-    ) -> Result<PromptQueueItem, DaemonError> {
+        request: &crate::local::SteerActivePromptRequest,
+    ) -> Result<Option<(String, PromptQueueItem)>, DaemonError> {
         self.state
             .with_external_command_authority(self.request_authority())
             .steer_active_prompt(request)

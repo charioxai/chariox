@@ -39,7 +39,7 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
   } }, opts, (m) => responses.push(m))
   assert.deepEqual(requests, [{ SteerActivePrompt: {
     session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-    expected_active_prompt_id: "projected-home-prompt", prompt: "new direction", attachments: [],
+    expected_active_prompt_id: "projected-home-prompt", require_exact_turn: true, prompt: "new direction", attachments: [],
   } }])
   assert.deepEqual(responses.filter((value: any) => value.id !== undefined), [{ id: "steer", result: { turnId } }])
 })

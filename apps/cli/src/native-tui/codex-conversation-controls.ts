@@ -43,7 +43,7 @@ export async function handleCodexNativeTurnSteer(
     })
     const response = await sendWithRecoveredAttachment(() => options.client.send<Record<string, unknown>>(steerActivePromptRequest(
       options.sessionId, options.attachmentId, options.agentId, bound.promptId,
-      extractCodexSteeringPrompt(message.params), attachments,
+      extractCodexSteeringPrompt(message.params), attachments, true,
     )), options.recovery)
     if (!("ActivePromptSteered" in response)) throw new Error("kernel did not admit active prompt steering")
     // MP-08 / MP-10 / MP-11: The kernel echoes steering to other attachments.

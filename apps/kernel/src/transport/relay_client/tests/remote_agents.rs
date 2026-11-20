@@ -2075,6 +2075,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 attachment_id: steering_attachment_id.clone(),
                 target_agent_id: remote_agent_id.clone(),
                 expected_active_prompt_id: expected.into(),
+                require_exact_turn: true,
                 prompt: "MP08_MP10_NATIVE_ACTIVE_STEER".into(),
                 attachments: vec![],
             })

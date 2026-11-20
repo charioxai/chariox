@@ -53,6 +53,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
             "SteerActivePrompt": {
                 "session_id": session.id(), "attachment_id": attachment.id(),
                 "target_agent_id": agent.id(), "expected_active_prompt_id": expected,
+                "require_exact_turn": true,
                 "prompt": "change direction", "attachments": []
             }
         }))
@@ -176,6 +177,54 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
             .unwrap()
             .is_none());
     });
+
+    let successor = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            target_agent_id: Some(agent.id().into()),
+            prompt: "successor turn".into(),
+            attachments: vec![],
+        }))
+        .unwrap()
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let LocalDaemonRequest::SteerActivePrompt(mut ordinary_steer) = request(active.id()) else {
+        unreachable!();
+    };
+    ordinary_steer.require_exact_turn = false;
+    let result = harness
+        .dispatch(LocalDaemonRequest::SteerActivePrompt(
+            ordinary_steer.clone(),
+        ))
+        .unwrap();
+    assert!(
+        matches!(result, LocalDaemonResponse::ActivePromptSteered { active_prompt_id, .. }
+        if active_prompt_id == successor.id())
+    );
+    assert_eq!(steer_events().len(), 2);
+
+    harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().into(),
+        }))
+        .unwrap();
+    let result = harness
+        .dispatch(LocalDaemonRequest::SteerActivePrompt(ordinary_steer))
+        .unwrap();
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            ..
+        }
+    ));
+    assert_eq!(steer_events().len(), 2, "the next prompt is a submission");
 }
 
 // MP-08 / MP-10 / MP-11 R1080-5: a grant holder whose steer reached the provider but whose

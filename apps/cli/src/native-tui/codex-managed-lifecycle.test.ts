@@ -108,7 +108,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       case "SteerActivePrompt":
         assert.deepEqual(payload, {
           session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-          expected_active_prompt_id: "home-prompt", prompt: "change direction", attachments: [],
+          expected_active_prompt_id: "home-prompt", require_exact_turn: true, prompt: "change direction", attachments: [],
         })
         await managedRequest("turn/steer", { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: payload.prompt }] })
         return { ActivePromptSteered: { steer_id: "home-steer" } }

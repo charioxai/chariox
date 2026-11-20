@@ -381,11 +381,17 @@ impl AgentRuntime {
                 "steer active prompt",
             )
             .await?;
+        let command_trace = CommandTrace::from_command(command);
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
-            CommandTrace::from_command(command),
+            command_trace.clone(),
             command,
-            AgentCommand::SteerActivePrompt { request },
+            AgentCommand::SteerActivePrompt {
+                request,
+                trace_id: command_trace.trace_id().to_string(),
+                operation_id: command.durable_operation_id(None),
+                operation_fingerprint: command.durable_request_fingerprint(),
+            },
         )
         .await
     }
