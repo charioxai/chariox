@@ -28,6 +28,7 @@ fn workflow_with_endpoint(
     TestWorkflowEndpoint { workflow, endpoint }
 }
 
+mod archive;
 mod attention;
 mod console;
 mod endpoint_instances;

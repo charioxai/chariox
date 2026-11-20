@@ -78,7 +78,7 @@ export async function executeWorkflowCommand(
   switch (action) {
     case "list":
     case "ls": {
-      const response = await deps.client.send(listWorkflowsRequest(sessionId))
+      const response = await deps.client.send(listWorkflowsRequest(sessionId, args.includes("--archived")))
       const workflows = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed").workflows
       return { ok: true, message: formatWorkflowList(workflows, context.workflowId), data: { workflows } }
     }
@@ -146,6 +146,29 @@ export async function executeWorkflowCommand(
       const response = await deps.client.send(aliasWorkflowRequest(sessionId, workflowRef, alias))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowAliased")
       return { ok: true, message: `workflow ${payload.workflow.id} aliased as ${payload.workflow.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id } }
+    }
+    case "archive":
+    case "unarchive": {
+      const workflowRef = args[0] ?? context.workflowId
+      if (!workflowRef) {
+        return { ok: false, message: `usage: workflow ${action} <workflow-ref>` }
+      }
+      if (!deps.clientId) {
+        return { ok: false, message: `workflow ${action} requires a connected client id` }
+      }
+      const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+      const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "workflow_archive", workflow_id: workflow.id, archived: action === "archive" },
+      )
+      return {
+        ok: true,
+        message: `${action}d workflow ${formatWorkflowLabel(workflow)}`,
+        data: payload,
+        contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+      }
     }
     case "delete":
     case "remove":
@@ -361,7 +384,7 @@ export async function executeWorkflowCommand(
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|trigger|schedule|queue|registry|code" }
+      return { ok: false, message: "usage: workflow list [--archived]|new|show|alias|archive|unarchive|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|trigger|schedule|queue|registry|code" }
   }
 }
 

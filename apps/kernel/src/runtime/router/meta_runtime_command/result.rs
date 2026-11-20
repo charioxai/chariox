@@ -9,6 +9,10 @@ pub(super) fn meta_command_requires_task_plan(tokens: &[String]) -> bool {
             tokens.get(1).map(String::as_str),
             Some("new")
                 | Some("alias")
+                | Some("archive")
+                | Some("unarchive")
+                | Some("delete")
+                | Some("remove")
                 | Some("node")
                 | Some("endpoint")
                 | Some("edge")
@@ -307,6 +311,10 @@ fn summarize_meta_command_response(
         LocalDaemonResponse::AgentTriggerDeleted { trigger, .. } => serde_json::json!({
             "type": "AgentTriggerDeleted",
             "trigger_id": trigger.id(),
+        }),
+        LocalDaemonResponse::WorkflowDesignOpAccepted { event, .. } => serde_json::json!({
+            "type": "WorkflowDesignOpAccepted",
+            "op": &event.op,
         }),
         _ => serde_json::json!({
             "type": "CommandAccepted",

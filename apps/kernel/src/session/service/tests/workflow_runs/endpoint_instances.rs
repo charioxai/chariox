@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-fn register_primary_instance(
+pub(super) fn register_primary_instance(
     service: &mut SessionService,
     session_id: &str,
     workflow: &crate::session::WorkflowDefinition,

@@ -270,6 +270,7 @@ pub(crate) fn projected_session_inspection_response(
                 workflows: session
                     .workflows()
                     .iter()
+                    .filter(|workflow| request.include_archived || !workflow.is_archived())
                     .filter(|workflow| {
                         caller_metaagent_id.is_none_or(|metaagent_id| {
                             workflow.controlled_by_metaagent_id() == Some(metaagent_id)
