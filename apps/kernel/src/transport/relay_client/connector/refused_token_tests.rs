@@ -197,11 +197,11 @@ async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
             let (stream, _) = listener.accept().await.unwrap();
             let registered = registered_tx.clone();
             peers.spawn(async move {
-                use futures_util::StreamExt;
                 let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
                     .await
                     .unwrap();
-                let _ = socket.next().await;
+                crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket)
+                    .await;
                 let _ = registered.send(());
                 // Retain both halves without reading or replying, like a half-open link.
                 std::future::pending::<()>().await;
