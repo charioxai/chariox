@@ -199,7 +199,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
             .get(1)
             .map(|subcommand| format!("session {}", subcommand.to_lowercase()))
             .unwrap_or_else(|| "session".to_string())
-    } else if matches!(first.as_str(), "agent" | "workflow") {
+    } else if matches!(first.as_str(), "agent" | "workflow" | "kernel") {
         tokens
             .get(1)
             .map(|subcommand| format!("{first} {}", subcommand.to_lowercase()))
