@@ -10,9 +10,6 @@ const CHILD: &str =
 #[test]
 #[ignore = "explicitly executed by automatic_refresh_keeps_pending_login_server"]
 fn account_endpoint_child() {
-    let authenticated = std::env::var_os("CODEX_HOME")
-        .and_then(|home| std::fs::read_to_string(PathBuf::from(home).join("auth.json")).ok())
-        .is_some_and(|auth| auth.contains("synthetic-accepted-login"));
     let endpoint = std::env::var("CTXFIX_ACCOUNT_LISTEN").unwrap();
     let listener = std::net::TcpListener::bind(endpoint.trim_start_matches("ws://")).unwrap();
     let mut log = std::fs::OpenOptions::new()
@@ -57,6 +54,12 @@ fn account_endpoint_child() {
                         "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
                     }]}),
                     Some("account/read") => {
+                        // The running app server must see device sign-in write new state.
+                        let authenticated = std::env::var_os("CODEX_HOME")
+                            .and_then(|home| {
+                                std::fs::read_to_string(PathBuf::from(home).join("auth.json")).ok()
+                            })
+                            .is_some_and(|auth| auth.contains("synthetic-accepted-login"));
                         if authenticated {
                             serde_json::json!({"account":{"email":"accepted@example.invalid"},"requiresOpenaiAuth":true})
                         } else {
