@@ -51,7 +51,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "interaction answer", brief: "Answer a card for the owner",
     flags: [{ name: "--reply", value: "TEXT" }, KERNEL, SOCKET],
     args: ["INTERACTION_ID", "CHOICE_ID"],
-    summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and payments stay the person's own"
+    summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and external payments (such as payment cards in a browser) stay the person's own"
   },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },

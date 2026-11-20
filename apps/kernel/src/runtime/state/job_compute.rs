@@ -264,7 +264,7 @@ impl KernelRuntimeState {
             .await
         {
             Ok(first) => first,
-            Err(error) if matches!(&error, DaemonError::MachineRequest { code, .. } if matches!(code.as_str(), "acquisition_denied" | "approval_required" | "control_plane_unavailable")) => {
+            Err(error) if matches!(&error, DaemonError::MachineRequest { code, .. } if matches!(code.as_str(), "acquisition_denied" | "acquisition_expired" | "acquisition_unavailable" | "acquisition_offer_changed" | "approval_required" | "control_plane_unavailable")) => {
                 return Err(error)
             }
             Err(error) => return Err(self.reconcile_failed_job_acquisition(job_id, error).await),

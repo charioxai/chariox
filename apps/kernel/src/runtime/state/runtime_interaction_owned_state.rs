@@ -688,6 +688,22 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        let decision_at = (std::time::Instant::now(), crate::session::unix_epoch_ms());
+        let machine_answerer = match agent_answer {
+            Some(AgentInteractionAnswer::Owner(id)) => self
+                .agent_store
+                .get_agent(id)
+                .ok()
+                .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned()),
+            _ => None,
+        };
+        let machine_decision = self.machine_decision_at(
+            &interaction,
+            "answered",
+            Some(choice_id),
+            machine_answerer.as_deref().or(caller_user_id),
+            decision_at.1,
+        );
         self.record_async_question_resolution(
             &interaction,
             &super::PendingInteractionResolution {
@@ -697,7 +713,15 @@ impl KernelRuntimeOwnedState {
             },
             caller_user_id,
             answerer,
+            machine_decision
+                .as_ref()
+                .zip(session.as_ref())
+                .map(|(decision, session)| (session.owner_user_id(), decision)),
+            decision_at.1,
         )?;
+        if let (Some(session), Some(decision)) = (session.as_mut(), machine_decision) {
+            self.save_machine_decision(session, &interaction, decision)?;
+        }
         if let Some(terminal) = authorizing_terminal {
             self.sudo_turns
                 .lock()
@@ -706,7 +730,6 @@ impl KernelRuntimeOwnedState {
                 .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?
                 .terminal_id = terminal.into();
         }
-        let decision_at = (std::time::Instant::now(), crate::session::unix_epoch_ms());
         // Keep the decision and its responder available if the event commit fails.
         if session.is_some() && !holds_card {
             self.publish_outside_interaction(
@@ -985,6 +1008,7 @@ impl KernelRuntimeOwnedState {
         if !self.agent_interaction_is_live(&pending) {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
+        let now = crate::session::unix_epoch_ms();
         if pending.async_task_id.is_some() {
             let session = self.session_store.get_session(session_id)?;
             let interaction = session
@@ -992,11 +1016,18 @@ impl KernelRuntimeOwnedState {
                 .iter()
                 .find(|i| i.id() == interaction_id)
                 .ok_or_else(|| interaction_error("question is not active"))?;
+            let resolution = settlement.resolution(interaction);
+            let decision =
+                self.machine_decision_at(interaction, resolution.status, None, None, now);
             self.record_async_question_resolution(
                 interaction,
-                &settlement.resolution(interaction),
+                &resolution,
                 None,
                 None,
+                decision
+                    .as_ref()
+                    .map(|decision| (session.owner_user_id(), decision)),
+                now,
             )?;
         }
         let consume = || {
@@ -1050,6 +1081,11 @@ impl KernelRuntimeOwnedState {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         };
         let resolution = settlement.resolution(&interaction);
+        if let Some(decision) =
+            self.machine_decision_at(&interaction, resolution.status, None, None, now)
+        {
+            self.save_machine_decision(&mut session, &interaction, decision)?;
+        }
         self.publish_outside_interaction(
             session_id,
             &interaction,

@@ -1,217 +1,9 @@
-//! One owner decision before an agent can start charged work.
+//! Machine options and the agent's allocation workflow.
 use super::*;
 use crate::durable_state::acquire_choices::AcquireOption;
 use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
-use crate::runtime::command::KernelCommand;
-use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
-use sha2::Digest;
+use approval::{decision_error, direct_approval_id, MachineDecision};
 
-impl KernelRuntimeState {
-    pub(crate) async fn approve_machine_acquisition(
-        &self,
-        command: &KernelCommand,
-        request: &ControlPlaneRequest,
-        capability: Option<&MachineAllocationCapability>,
-    ) -> Result<(), DaemonError> {
-        if !matches!(
-            request,
-            ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
-        ) {
-            return Ok(());
-        }
-        let agent_request = command.external_grant_id().is_some()
-            || command.reach_caller_id().is_some()
-            || command.caller.metaagent_id.is_some()
-            || command.caller.connection_class
-                == Some(crate::local::KernelConnectionClass::KernelAgent);
-        if !agent_request
-            || self
-                .owned
-                .config_projection
-                .snapshot()
-                .user_config
-                .agents
-                .offload_without_asking
-                == Some(true)
-        {
-            return Ok(());
-        }
-        let reach = command
-            .reach_caller_id()
-            .and_then(|id| self.reach_for_id(&id));
-        let agent = reach
-            .as_ref()
-            .map(|r| r.agent_id.as_str())
-            .or(command.agent_id.as_deref())
-            .or(command.caller.metaagent_id.as_deref());
-        let room = agent.and_then(|agent| self.owned.agent_store.get_agent(agent).ok()).map(|a| a.session_id().to_owned())
-            .or_else(|| command.session_id.clone())
-            .ok_or_else(|| acquisition_error("approval_required", "An agent allocation needs an active Room for the owner's approval; request it from your Room"))?;
-        // The owner authorized this agent's task with /sudo; its remote work needs no second decision.
-        if let Some(agent) = agent {
-            if self.sudo_task_authorizes_agent(&room, agent).await {
-                return Ok(());
-            }
-        }
-        let session = self.owned.session_store.get_session(&room)?;
-        let request_id = match request {
-            ControlPlaneRequest::Acquire { request_id, .. }
-            | ControlPlaneRequest::AcquireJob { request_id, .. } => request_id,
-            _ => unreachable!(),
-        };
-        let digest = crate::runtime::command::KernelCommand::from_local_request(
-            request_id,
-            None,
-            None,
-            &LocalDaemonRequest::ControlPlane(request.clone()),
-        )
-        .durable_request_fingerprint();
-        let id = format!(
-            "machine-acquisition-{:x}",
-            sha2::Sha256::digest(format!("{digest}:{}", agent.unwrap_or_default()).as_bytes())
-        );
-        if self
-            .owned
-            .durable_state_store
-            .load_subject_events_by_kind(&id, "compute.acquisition_approved", 1)?
-            .iter()
-            .any(|event| event.payload["owner"] == session.owner_user_id())
-        {
-            return Ok(());
-        }
-        let description = match (request, capability) {
-            (
-                ControlPlaneRequest::AcquireJob {
-                    needs, timeout_s, ..
-                },
-                Some(capability),
-            ) => {
-                let class = super::job_compute::select_job_class(capability, needs)?;
-                let minutes = timeout_s.saturating_add(59) / 60;
-                format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute? The command limit is {minutes} minutes; charges continue through startup and until deletion.", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency)
-            }
-            (
-                ControlPlaneRequest::Acquire {
-                    class_id: Some(class_id),
-                    region,
-                    ..
-                },
-                Some(capability),
-            ) => {
-                // The service validates the choice; the card names what it lists, or the bare request.
-                match capability.offers.iter().find(|option| {
-                    &option.class_id == class_id
-                        && region.as_ref().is_none_or(|region| &option.region == region)
-                }) {
-                    Some(option) => format!(
-                        "Acquire {} in {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
-                        option.class_id, option.region, option.vcpu, option.ram_gb,
-                        money(option.rate_per_minute.amount_micros), option.rate_per_minute.currency
-                    ),
-                    None => format!(
-                        "Acquire {class_id}{} at the connected service's quoted rate?",
-                        region.as_ref().map(|region| format!(" in {region}")).unwrap_or_default()
-                    ),
-                }
-            }
-            (_, Some(capability)) => capability
-                .offer
-                .as_ref()
-                .map(|offer| {
-                    if let Some(rate) = &offer.rate_per_minute {
-                        return format!(
-                            "Acquire {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
-                            offer.machine_type, offer.vcpu, offer.ram_gb,
-                            money(rate.amount_micros), rate.currency
-                        );
-                    }
-                    format!(
-                        "Acquire {} ({} CPUs, {} GB) for {} {} per {:?}?",
-                        offer.machine_type,
-                        offer.vcpu,
-                        offer.ram_gb,
-                        offer.terms.amount,
-                        offer.terms.currency,
-                        offer.terms.period
-                    )
-                })
-                .unwrap_or_else(|| {
-                    "Acquire a machine at the connected service's quoted rate?".into()
-                }),
-            _ => {
-                return Err(acquisition_error(
-                    "capacity_unavailable",
-                    "The connected service has no machine offer, so this try was not sent",
-                ))
-            }
-        };
-        let mut interaction = RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            "",
-            description,
-            vec![
-                RuntimeInteractionChoice::new(
-                    "approve",
-                    "Approve",
-                    "approve",
-                    Some(RuntimeInteractionChoiceStyle::Primary),
-                ),
-                RuntimeInteractionChoice::new(
-                    "deny",
-                    "Deny",
-                    "deny",
-                    Some(RuntimeInteractionChoiceStyle::Danger),
-                ),
-            ],
-        );
-        if let Some(agent) = agent {
-            interaction = interaction.with_related_agent_id(agent.into());
-        }
-        let receiver = self
-            .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
-            .await?;
-        let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
-        let answer = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
-            Ok(Ok(answer)) => answer,
-            _ => {
-                self.timeout_runtime_interaction(&room, &id).await?;
-                return Err(acquisition_error(
-                    "acquisition_denied",
-                    "The owner did not approve this request, so it was not sent to the service",
-                ));
-            }
-        };
-        pending.0 = None;
-        if answer.status != "answered" || answer.choice_id.as_deref() != Some("approve") {
-            return Err(acquisition_error(
-                "acquisition_denied",
-                "The owner denied this request, so it was not sent to the service",
-            ));
-        }
-        self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id), serde_json::json!({"owner":session.owner_user_id(),"approved_at_ms":crate::session::unix_epoch_ms()}))?;
-        Ok(())
-    }
-}
-/// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
-struct PendingAcquisition(Option<(KernelRuntimeState, String, String)>);
-impl Drop for PendingAcquisition {
-    fn drop(&mut self) {
-        if let Some((state, room, id)) = self.0.take() {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = state.timeout_runtime_interaction(&room, &id).await;
-                });
-            }
-        }
-    }
-}
-fn money(amount_micros: u64) -> String {
-    format!("{:.6}", amount_micros as f64 / 1_000_000.0)
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_owned()
-}
 pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -223,8 +15,8 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     use crate::transport::runtime_tools::RuntimeToolSpec;
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
-        ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, decimal rate per minute and per hour in the account's currency, and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. When the person needs to approve, returns status waiting, the request_id and registration_id. Yield on the registration_id. After approval, call acquire with that same request_id to send the request. After denial or expiry, ask again with a new request_id. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id when the approval ended or the service closed the old one.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -268,6 +60,24 @@ impl KernelRuntimeState {
                     "Only a running agent of the kernel owner may acquire machines",
                 )
             })?;
+        if let ("chariox.machines.acquire", Some(request_id)) = (tool, args.request_id.as_deref()) {
+            let session = self.owned.session_store.get_session(run.session_id())?;
+            let id = direct_approval_id(
+                session.id(),
+                &reach.agent_id,
+                &choice::service_request_id(
+                    &self.owned.config_projection.snapshot().daemon_id,
+                    &reach.agent_id,
+                    request_id,
+                ),
+            );
+            if let Some(
+                decision @ (MachineDecision::Denied { .. } | MachineDecision::Expired { .. }),
+            ) = self.owned.machine_decision(&id, session.owner_user_id())?
+            {
+                return Err(decision_error(&decision));
+            }
+        }
         let origin = reach.origin();
         let caps = self
             .job_control_plane(
@@ -286,9 +96,7 @@ impl KernelRuntimeState {
             ));
         };
         let result = match tool {
-            "chariox.machines.options" => {
-                serde_json::json!({"options":capability.offers,"default":capability.offer})
-            }
+            "chariox.machines.options" => quote::machine_options(&capability),
             "chariox.machines.acquire" => {
                 let request_id = args
                     .request_id
@@ -319,6 +127,21 @@ impl KernelRuntimeState {
                     )
                     .await
                 {
+                    Ok(crate::local::ControlPlaneResponse::AcquisitionWaiting {
+                        registration_id,
+                        expires_at_ms,
+                    }) => {
+                        return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "status":"waiting",
+                                "message":"No answer yet. Yield on registration_id for the decision. If approved, use this request_id to acquire the machine.",
+                                "request_id":request_id,
+                                "registration_id":registration_id,
+                                "expires_at_ms":expires_at_ms,
+                            }),
+                        })
+                    }
                     Ok(result) => result,
                     Err(error) => {
                         self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
@@ -431,7 +254,9 @@ impl KernelRuntimeState {
 }
 
 mod build_toolchain;
+pub(super) mod approval;
 mod choice;
+mod quote;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

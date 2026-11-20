@@ -131,7 +131,8 @@ impl KernelRuntimeOwnedState {
             if wake.kind != super::super::interaction_wake::KIND
                 || wake.task_id != task_id
                 || wake.room_id != session_id
-                || interaction.agent_id() != Some(wake.agent_id.as_str())
+                || super::super::interaction_wake::question_agent(&interaction)
+                    != Some(wake.agent_id.as_str())
                 || !matches!(wake.state.as_str(), "starting" | "running")
                 || serde_json::to_value(&interaction).ok().as_ref() != Some(&wake.detail)
             {
@@ -142,11 +143,15 @@ impl KernelRuntimeOwnedState {
         }
         // Kernel action cards keep their human authority and also belong to
         // the requesting agent's exact prompt/run.
-        let lifetime_agent = interaction.agent_id().or_else(|| {
-            interaction
-                .native_origin()
-                .and(interaction.related_agent_id())
-        });
+        let lifetime_agent = if interaction.asking_task_id().is_some() {
+            super::super::interaction_wake::question_agent(&interaction)
+        } else {
+            interaction.agent_id().or_else(|| {
+                interaction
+                    .native_origin()
+                    .and(interaction.related_agent_id())
+            })
+        };
         // The agent a card brings back is whichever one it concerns, with or without prompt-lifetime authority.
         let concerned_agent = interaction
             .agent_id()
@@ -463,7 +468,9 @@ impl KernelRuntimeOwnedState {
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             // A card payment ends at its own deadline like a kernel operation; its popup lives as
             // long as the card.
-            kernel_operation_deadline: (kernel_operation_owner.is_some() || payment)
+            kernel_operation_deadline: ((kernel_operation_owner.is_some()
+                && interaction.asking_task_id().is_none())
+                || payment)
                 .then(|| interaction.timeout_sec())
                 .flatten()
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),

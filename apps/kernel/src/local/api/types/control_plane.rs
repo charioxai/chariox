@@ -74,6 +74,10 @@ pub enum ControlPlaneRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
+    AcquisitionWaiting {
+        registration_id: String,
+        expires_at_ms: u64,
+    },
     JobCancelled {
         job_ref: String,
     },
