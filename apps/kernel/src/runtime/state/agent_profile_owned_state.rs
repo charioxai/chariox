@@ -41,6 +41,7 @@ pub(super) struct AgentProfileSelections {
     pub(super) account_profile: Option<String>,
     pub(super) model: Option<String>,
     pub(super) effort: Option<Option<String>>,
+    pub(super) continue_limit: Option<crate::agent::UsageLimitStop>,
 }
 
 pub(super) struct ValidatedAgentProfile {
@@ -103,6 +104,7 @@ impl KernelRuntimeOwnedState {
             account_profile,
             model,
             effort,
+            ..
         } = selections;
         let provider = provider
             .map(|value| value.trim().to_string())
@@ -188,6 +190,7 @@ impl KernelRuntimeOwnedState {
         selections: AgentProfileSelections,
     ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
         let account_requested = selections.account_profile.is_some();
+        let continue_limit = selections.continue_limit.clone();
         let validated =
             self.validate_agent_profile_update(session_id, agent_id, caller_user_id, selections)?;
         let agent = validated.agent;
@@ -274,20 +277,38 @@ impl KernelRuntimeOwnedState {
                 // so their read and write must also be atomic with confirmation.
                 let mut agents = self.agent_store.write();
                 let current = agents.get_agent(agent_id)?;
+                if continue_limit.is_some() && current.usage_limit_stop() != continue_limit.as_ref()
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "usage limit",
+                        message: "the stop changed while choosing another account; read it again"
+                            .into(),
+                    });
+                }
                 let resume_state = current.provider_resume_state().after_profile_change(
                     current.provider(),
                     &source_account,
                     &target_provider,
                     &target_account_profile,
                 );
-                agents.set_agent_runtime_profile_with_account_profile(
+                let profile_changed = current.provider() != target_provider
+                    || source_account != target_account_profile;
+                let updated = agents.set_agent_runtime_profile_with_account_profile(
                     agent_id,
                     &target_provider,
                     target_model,
                     target_effort.map(str::to_string),
                     Some(target_account_profile),
                     resume_state,
-                )?
+                )?;
+                // Continue on another account takes this exact stopped turn with the new profile.
+                if profile_changed && continue_limit.is_none() {
+                    agents
+                        .change_usage_limit_stop(agent_id, |held| held.map(|_| None))?
+                        .unwrap_or(updated)
+                } else {
+                    updated
+                }
             };
             let _ = self.session_snapshot(session_id)?;
             agent

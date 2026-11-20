@@ -171,6 +171,10 @@ pub struct UsageLimitStop {
     pub state: UsageLimitStopState,
 }
 
+impl UsageLimitStop {
+    pub(crate) const DECISION_PREFIX: &str = "usage-limit-";
+}
+
 fn is_zero(value: &u32) -> bool {
     *value == 0
 }
@@ -629,6 +633,33 @@ impl AgentInstance {
 
     pub fn usage_limit_stop(&self) -> Option<&UsageLimitStop> {
         self.usage_limit_stop.as_ref()
+    }
+
+    pub(crate) fn usage_limit_wait(&self) -> Option<&UsageLimitStop> {
+        self.usage_limit_stop().filter(|stop| {
+            self.matches_usage_limit_profile(&stop.provider, &stop.account_profile)
+                && matches!(
+                    stop.state,
+                    UsageLimitStopState::Asking | UsageLimitStopState::Armed { .. }
+                )
+        })
+    }
+
+    pub(crate) fn matches_usage_limit_profile(
+        &self,
+        provider: &str,
+        account_profile: &str,
+    ) -> bool {
+        let selected = self.provider_account_profile();
+        // The default selector can resolve to a named account when the provider starts.
+        self.provider() == provider && (selected == "default" || selected == account_profile)
+    }
+
+    pub(crate) fn without_inactive_usage_limit_stop(mut self) -> Self {
+        if self.usage_limit_wait().is_none() {
+            self.usage_limit_stop = None;
+        }
+        self
     }
 
     pub fn state(&self) -> AgentState {
