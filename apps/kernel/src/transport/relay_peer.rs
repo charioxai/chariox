@@ -235,7 +235,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
 /// Provisional 452 carries the local 1015 mirror v2 header `focus_visible`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
+/// Provisional 453 carries the local 1016 mirror v2 header `page_wheel`.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 453;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
