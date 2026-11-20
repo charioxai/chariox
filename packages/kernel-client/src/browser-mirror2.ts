@@ -27,9 +27,11 @@ export function kernelScriptingMedia(media: string): string {
   return media.replace(scriptingFeature, (_match, value?: string) => value?.toLowerCase() === 'none' ? '(scripting: enabled)' : '(scripting: none)')
 }
 // CSS text from the kernel is CSSOM-serialized: a condition sits in an `@media ... {` prelude (imports and adopted media lists
-// arrive wrapped as one); selectors and declarations are left alone.
+// arrive wrapped as one); selectors and declarations are left alone. Quoted strings (content, attribute selector values) and
+// comments are matched first and kept as they are, so @media-like text inside them is the page's text.
+const mediaPreludes = /"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|\/\*[\s\S]*?\*\/|@media\b[^{};"']*\{/g
 export function kernelScriptingCss(css: string): string {
-  return css.includes('scripting') ? css.replace(/@media\b[^{};]*\{/g, prelude => prelude.includes('scripting') ? kernelScriptingMedia(prelude) : prelude) : css
+  return css.includes('scripting') ? css.replace(mediaPreludes, token => token.startsWith('@') && token.includes('scripting') ? kernelScriptingMedia(token) : token) : css
 }
 const attrValue = (element: Element, name: string, value: string): string => name === 'popover' ? 'manual' : name === 'media' && element.localName === 'style' ? kernelScriptingMedia(value) : value
 // One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to

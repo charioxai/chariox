@@ -51,6 +51,9 @@ test('F17: scripting media tests evaluate as in the kernel page (scripts on), no
   assert.equal(kernelScriptingCss(other), other)
   const plain = '.a { color: red; }'
   assert.equal(kernelScriptingCss(plain), plain)
+  // #1514 review 5994946228: @media-like text inside quoted content and attribute selector values stays the page's text.
+  const quoted = '.a::after { content: "@media (scripting: none) {"; }\n[data-q=\'@media (scripting) {\'] { color: red; }\n.b::before { content: "x\\" @media (scripting: none) {"; }\n@media (scripting: none) { .c { color: blue; } }'
+  assert.equal(kernelScriptingCss(quoted), '.a::after { content: "@media (scripting: none) {"; }\n[data-q=\'@media (scripting) {\'] { color: red; }\n.b::before { content: "x\\" @media (scripting: none) {"; }\n@media (scripting: enabled) { .c { color: blue; } }')
 })
 
 test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
