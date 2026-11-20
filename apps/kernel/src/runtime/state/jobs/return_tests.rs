@@ -346,12 +346,12 @@ pub(super) struct Prepared {
 
 pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::JobMachine {
     super::super::job_compute::JobMachine {
-        allocation_ref: "cleanup-test".into(),
         machine_label: "offload-test".into(),
         address: None,
         kernel_id: "worker".into(),
         grant,
         class: Some(super::super::job_compute::JobClass {
+            allocation_ref: "cleanup-test".into(),
             capability_revision: "v1".into(),
             class_id: "test-class".into(),
             rate_per_minute: crate::local::JobMachineRate {
