@@ -26,6 +26,7 @@
     "start:shell": "pnpm --filter @chariox/shell run start",
     "test:review-regressions": "node --test --test-concurrency=1 apps/cli/scripts/lib/drill-turn-admission.test.mjs apps/cli/scripts/lib/native-permission-workspace.test.mjs",
     "protocol:generate": "node scripts/generate-protocol-versions.mjs",
+    "protocol:rehash": "node scripts/rehash-protocol-snapshots.mjs",
     "protocol:check": "node scripts/generate-protocol-versions.mjs --check"
   },
   "devDependencies": {
