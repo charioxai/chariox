@@ -63,6 +63,8 @@ use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
 
+const KERNEL_ROUTING_ACCESS_REQUIRED: &str = "Run `chariox access request --no-wait` on your local kernel, then retry after the owner approves.";
+
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const ROOM_LIST_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
@@ -1444,7 +1446,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
                                     code: "kernel_not_available".into(),
-                                    message: "kernel routing is only available to a local access grant holder".into(),
+                                    message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                                     retryable: false,
                                 }),
                             },
@@ -1794,8 +1796,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let Some(caller) = external_caller.as_ref() else {
                     refuse(KernelTransportError {
                         code: "kernel_not_available".into(),
-                        message: "kernel routing is only available to a local access grant holder"
-                            .into(),
+                        message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                         retryable: false,
                     });
                     return;

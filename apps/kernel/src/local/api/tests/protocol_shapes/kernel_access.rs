@@ -286,16 +286,19 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: Some(crate::local::KernelAccessTerm::Minutes(30)),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: None,
@@ -565,16 +568,27 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
         GetKernelAccessStatusRequest, KernelAccessHolderState, KernelAccessStatus,
         KernelAccessStatusReason, RequestKernelAccessRequest,
     };
+    use sha2::{Digest, Sha256};
+
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("agent-kernel-access.json")).unwrap();
+    assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    let request = serde_json::to_value(LocalDaemonRequest::RequestKernelAccess(
+        RequestKernelAccessRequest {
+            reason: Some("Check the test kernel".into()),
+            holder_pid: None,
+            term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
+            no_wait: true,
+        },
+    ))
+    .unwrap();
+    assert_eq!(request, snapshot["request"]);
     assert_eq!(
-        serde_json::to_value(LocalDaemonRequest::RequestKernelAccess(
-            RequestKernelAccessRequest {
-                holder_pid: None,
-                term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
-                no_wait: true,
-            }
-        ))
-        .unwrap(),
-        serde_json::json!({"RequestKernelAccess": {"term": "until_holder_exits", "no_wait": true}})
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&request).unwrap())
+        ),
+        "b898a2e61dfcc5812330219bc691e213d6e53eda67e4770b15e67e7a2825acf3"
     );
     assert_eq!(
         serde_json::from_value::<LocalDaemonRequest>(
@@ -582,6 +596,7 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
         )
         .unwrap(),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            reason: None,
             holder_pid: None,
             term: None,
             no_wait: false,
