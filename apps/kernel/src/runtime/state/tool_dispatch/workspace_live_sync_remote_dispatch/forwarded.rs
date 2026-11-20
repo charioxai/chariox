@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 mod mutation;
 mod read;
 mod text;
+mod workspace;
 
 pub(super) type ForwardedWorkspaceLiveSyncResult = Result<
     (
@@ -32,25 +33,9 @@ impl KernelRuntimeState {
     ) -> ForwardedWorkspaceLiveSyncResult {
         self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
             .await?;
-        let session = self
-            .owned
-            .session_store
-            .get_session(&context.home_session_id)?;
-        let home_root = PathBuf::from(session.worktree_id());
-        let home_identity = workspace_identity_for_root_off_thread(home_root.clone()).await?;
-        let home_identity = workspace_live_sync_identity_for_session_workspace_link(
-            home_identity,
-            &session,
-            &home_root,
-        );
-        let worker_identity = workspace_live_sync_identity_for_session_workspace_link(
-            context.worker_workspace_identity.clone(),
-            &session,
-            std::path::Path::new(&context.worker_worktree_path),
-        );
-        if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
+        let Some(workspace_context) = self.forwarded_workspace_context(&context).await? else {
             return Ok(remote_workspace_not_coordinated_result());
-        }
+        };
         let permission_level = self
             .effective_permission_level_for_agent(&context.home_session_id, &context.home_agent_id)
             .await?;
@@ -72,13 +57,6 @@ impl KernelRuntimeState {
                     .await;
             }
         }
-        let workspace_context = WorkspaceLiveSyncWorkspaceContext {
-            root: home_root,
-            identity: worker_identity,
-            generation: 0,
-            identity_changed: false,
-            valid: true,
-        };
         let permission_result = self
             .maybe_gate_workspace_live_sync_mutation(
                 &context.home_session_id,
@@ -211,31 +189,8 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
             .await?;
-        let session = self
-            .owned
-            .session_store
-            .get_session(&context.home_session_id)?;
-        let home_root = PathBuf::from(session.worktree_id());
-        let home_identity = workspace_identity_for_root_off_thread(home_root.clone()).await?;
-        let home_identity = workspace_live_sync_identity_for_session_workspace_link(
-            home_identity,
-            &session,
-            &home_root,
-        );
-        let worker_identity = workspace_live_sync_identity_for_session_workspace_link(
-            context.worker_workspace_identity.clone(),
-            &session,
-            std::path::Path::new(&context.worker_worktree_path),
-        );
-        if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
+        let Some(workspace_context) = self.forwarded_workspace_context(&context).await? else {
             return Ok(());
-        }
-        let workspace_context = WorkspaceLiveSyncWorkspaceContext {
-            root: home_root,
-            identity: worker_identity,
-            generation: 0,
-            identity_changed: false,
-            valid: true,
         };
         if self
             .remote_workspace_live_sync_invocation_already_finalized(
@@ -318,6 +273,7 @@ impl KernelRuntimeState {
             .remote_workspace_live_sync_invocations
             .lock()
             .await;
+        self.authorize_forwarded_workspace_context(context)?;
         let Some(existing) = invocations.get(&key) else {
             let (completion_tx, _) = tokio::sync::watch::channel(None);
             invocations.insert(
