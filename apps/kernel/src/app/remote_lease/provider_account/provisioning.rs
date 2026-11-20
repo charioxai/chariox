@@ -165,7 +165,7 @@ impl RemoteProviderAccountProvisioning {
             } else {
                 self.validate_remote_provider_account(profile)?
             };
-            if profile.provider == "opencode" {
+            if profile.provider == "opencode" && !credentialless {
                 let environment = self.registry.resolve_environment(
                     &profile.owner_user_id,
                     &profile.provider,

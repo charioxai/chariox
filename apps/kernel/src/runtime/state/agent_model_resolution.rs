@@ -234,7 +234,8 @@ impl KernelRuntimeState {
             &self.owned.provider_account_profiles,
             owner_user_id,
             request,
-            true,
+            // OpenCode can replace its bundled list after the native catalog refresh.
+            family != "opencode",
         )
         .await
         .map_err(|error| DaemonError::LocalTransport {
