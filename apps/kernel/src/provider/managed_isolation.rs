@@ -673,6 +673,7 @@ fn managed_configured_slice_publication_root() -> Result<Option<PathBuf>, Daemon
 #[cfg(target_os = "linux")]
 fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Result<Vec<PathBuf>, DaemonError> {
     let mut paths = vec![PathBuf::from("/run")];
+    paths.extend(crate::agent_temp::private_root());
     let chariox_home = if let Some(raw) = std::env::var_os("CHARIOX_HOME") {
         if raw.is_empty() {
             return Err(isolation_error("CHARIOX_HOME must not be empty"));
@@ -1092,11 +1093,11 @@ pub(crate) fn apply_managed_provider_isolation(
     // Everything the kernel starts for the agent writes its scratch in the
     // agent's own folder; it joins the launch before the launch is confined, so
     // the confinement keeps it reachable wherever the kernel home lies.
-    crate::agent_temp::attach_environment(
+    let agent_temp = crate::agent_temp::attach_environment(
         &request.session_id,
         request.agent_id.as_deref(),
         &mut launch.pty_env,
-    );
+    )?;
     if !managed_provider_isolation_required() {
         if let Some(working_directory) = request.working_directory.as_deref() {
             crate::git_worktree_placement::preflight_working_directory(
@@ -1137,7 +1138,7 @@ pub(crate) fn apply_managed_provider_isolation(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (program, request);
+        let _ = (program, request, agent_temp);
         Err(isolation_error(
             "managed provider isolation is only supported on Linux",
         ))
@@ -1307,6 +1308,10 @@ pub(crate) fn apply_managed_provider_isolation(
                 &[workflow_instructions],
                 &mut created_directories,
             );
+        }
+
+        if let Some(directory) = agent_temp {
+            append_bind(&mut args, &directory, &directory, &mut created_directories);
         }
 
         // Runtime and late workspace binds must not re-expose the browser's

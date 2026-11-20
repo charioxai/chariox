@@ -116,7 +116,7 @@ impl KernelRuntimeState {
     }
 
     fn trim_temp(idle: Duration) -> crate::agent_temp::Trimmed {
-        let Some(root) = crate::agent_temp::root() else {
+        let Some(root) = crate::agent_temp::private_root() else {
             return Default::default();
         };
         // A new kernel has no agent scratch yet. Scanning every process's mappings

@@ -937,6 +937,7 @@ impl KernelRuntimeState {
         }
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         end_agent_processes(destroyed.session_id(), agent_id).await?;
+        crate::agent_temp::clear_agent(destroyed.session_id(), agent_id);
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
         // The workflows it answered for are the person's again.

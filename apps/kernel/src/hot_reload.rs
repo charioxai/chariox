@@ -403,6 +403,10 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
         .collect()
 }
 
+pub(crate) fn has_received_handover() -> bool {
+    lock(&RECEIVED_USER_DOMAIN).is_some()
+}
+
 pub(crate) fn take_user_domain() -> Option<crate::runtime::kernel_browser_host::LoadedHandover> {
     lock(&RECEIVED_USER_DOMAIN).take()
 }

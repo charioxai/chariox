@@ -364,6 +364,7 @@ fn secrets() -> Secrets {
     let mut folders = home_secret_folders()
         .into_iter()
         .chain(CONFIGURED_FOLDERS.get().into_iter().flatten().cloned())
+        .chain(crate::agent_temp::private_root())
         .filter_map(|folder| folder.canonicalize().ok())
         .filter(|folder| folder.is_dir())
         .collect::<Vec<_>>();
