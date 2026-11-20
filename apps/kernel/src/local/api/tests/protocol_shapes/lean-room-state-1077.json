@@ -1,6 +1,6 @@
 {
-  "protocol_version": 1077,
-  "relay_peer_protocol_version": 503,
+  "protocol_version": 1013,
+  "relay_peer_protocol_version": 450,
   "shapes": [
     {
       "ListFinishedRoomTasks": {

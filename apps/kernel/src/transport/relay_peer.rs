@@ -237,7 +237,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 450 includes kernels refused as too old on their machine entry, with the protocol each
 /// reported, so clients show them as Update needed.
 /// Peer 450 carries native Codex credentials in encrypted provider account copy packages.
-/// 503 carries the lean Room state and independently read Room history and machine samples.
+/// 450 carries the lean Room state and independently read Room history and machine samples.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
