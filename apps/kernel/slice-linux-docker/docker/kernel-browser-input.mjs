@@ -284,21 +284,30 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // An HTML5 drag-and-drop the moves start never completes from CDP mouse events: with drags intercepted, Chrome
           // hands the drag's data over (Input.dragIntercepted) and the kernel finishes it at the end point with drag
           // events, as a person's mouse would. The release stays queued with the press; a text-selection drag starts
-          // no drag-and-drop and is unchanged.
-          let dragData = null;
+          // no drag-and-drop and is unchanged. The host keeps this browser after a failed or timed-out step, so an
+          // intercepted drag that cannot complete is cancelled and interception always ends here (an enable that timed
+          // out may still have taken effect).
+          let dragData = null, enabling = null;
           const unsubscribe = typeof connection.subscribe === "function" ? connection.subscribe(message => { if (message?.method === "Input.dragIntercepted" && message.sessionId === sessionId) dragData = message.params?.data ?? null; }) : null;
           try {
-            const intercepting = unsubscribe ? connection.send("Input.setInterceptDrags", { enabled: true }, sessionId).then(() => true, () => false) : false;
+            enabling = unsubscribe ? connection.send("Input.setInterceptDrags", { enabled: true }, sessionId).catch(() => {}) : null;
             const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
             for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
             sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
-            const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
-            if (failed) throw failed.reason;
-            if (await intercepting) {
+            try {
+              const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
+              if (failed) throw failed.reason;
+              await enabling;
+              // Chrome reports an intercepted drag only while interception is on.
               if (dragData) for (const type of ["dragEnter", "dragOver", "drop"]) await connection.send("Input.dispatchDragEvent", { type, ...at(steps), data: dragData }, sessionId);
-              await connection.send("Input.setInterceptDrags", { enabled: false }, sessionId).catch(() => {});
+            } catch (error) {
+              if (dragData) await connection.send("Input.dispatchDragEvent", { type: "dragCancel", ...at(steps), data: dragData }, sessionId).catch(() => {});
+              throw error;
             }
-          } finally { unsubscribe?.(); }
+          } finally {
+            unsubscribe?.();
+            if (enabling) await connection.send("Input.setInterceptDrags", { enabled: false }, sessionId).catch(() => {});
+          }
           assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }

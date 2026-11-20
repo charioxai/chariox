@@ -397,6 +397,34 @@ test("B5: an intercepted drag-and-drop drops at the end point after the queued r
     assert.equal(listeners.size, 0, "the drag listener is removed");
   }
 });
+// #1514 review: an acknowledgement timeout must not leave drags intercepted (the host keeps the browser) or an intercepted drag open.
+test("B5: a mouse, enable or drop acknowledgement timeout still disables interception and cancels an intercepted drag", async () => {
+  const cases = [
+    { fails: p => p?.type === "mouseMoved" && p.x === 75, intercepted: false, tail: ["setInterceptDrags:false"] },
+    { fails: p => p?.type === "mouseReleased", intercepted: true, tail: ["drag:dragCancel", "setInterceptDrags:false"] },
+    { fails: p => p?.enabled === true, intercepted: false, tail: ["setInterceptDrags:false"], completes: true },
+    { fails: p => p?.type === "dragOver", intercepted: true, tail: ["drag:dragEnter", "drag:dragOver", "drag:dragCancel", "setInterceptDrags:false"] },
+  ];
+  for (const { fails, intercepted, tail, completes } of cases) {
+    const { browser, sent } = fixture(false);
+    const { connection } = await browser.resolvePageTarget();
+    const listeners = new Set(), send = connection.send; let moves = 0;
+    connection.subscribe = listener => { listeners.add(listener); return () => listeners.delete(listener); };
+    connection.send = async (method, params) => {
+      const reply = await send(method, params);
+      if (intercepted && params?.type === "mouseMoved" && ++moves === 3) for (const l of listeners) l({ method: "Input.dragIntercepted", sessionId: "s", params: { data: { items: [], dragOperationsMask: 1 } } });
+      if (fails(params)) throw new Error("CDP command timed out");
+      return reply;
+    };
+    const drag = inputHostTab(browser, tab, { kind: "drag", x: 100, y: 40, to_x: 300, to_y: 60 }, { viewScale: 0.5 });
+    // A drag whose interception could not be confirmed still completes as a plain (selection) drag.
+    if (completes) await drag; else await assert.rejects(drag, /timed out/);
+    const steps = sent.filter(x => x.method === "Input.setInterceptDrags" || x.method === "Input.dispatchDragEvent").map(x => x.method === "Input.dispatchDragEvent" ? `drag:${x.params.type}` : `setInterceptDrags:${x.params.enabled}`);
+    assert.deepEqual(steps, ["setInterceptDrags:true", ...tail]);
+    if (intercepted) { const cancel = sent.find(x => x.params?.type === "dragCancel").params; assert.deepEqual([cancel.x, cancel.y], [150, 30]); }
+    assert.equal(listeners.size, 0, "the drag listener is removed");
+  }
+});
 test("A-L24: a drag from or onto a protected field is dispatched like any other", async () => {
   const { browser, sent } = fixture(true);
   await inputHostTab(browser, tab, { kind: "drag", x: 10, y: 10, to_x: 200, to_y: 10 });
