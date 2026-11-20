@@ -91,8 +91,12 @@ impl KernelRuntimeOwnedState {
                     agent_id: parent_id.to_owned(),
                 });
             }
-            crate::agent::authority_limit::check_placement(agent, parent, &self.agent_store.list_agents())
-                .map_err(crate::runtime::room_tool_admission::denied)?;
+            crate::agent::authority_limit::check_placement(
+                agent,
+                parent,
+                &self.agent_store.list_agents(),
+            )
+            .map_err(crate::runtime::room_tool_admission::denied)?;
         }
         let agent = self.agent_store.set_parent_agent(
             &request.agent_id,

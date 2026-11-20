@@ -271,10 +271,6 @@ impl AgentRef {
     pub fn agent_id(&self) -> &str {
         &self.agent_id
     }
-
-    pub(crate) fn room_id(&self) -> Option<&str> {
-        self.room_id.as_deref()
-    }
 }
 
 /// Serialized through `AgentInstance::serialize`/`deserialize` (derived with
