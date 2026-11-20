@@ -128,8 +128,25 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
             "provider_account_copy_unavailable"
                 | "provider_account_copy_vault_locked"
                 | "provider_account_copy_target_vault_locked"
+                | "provider_account_copy_vault_unreadable"
+                | "provider_account_copy_target_vault_unreadable"
+                | "provider_account_copy_target_credential_unreadable"
+                | "provider_account_copy_cli_missing"
                 | "provider_account_copy_install_failed"
         ),
+    }
+}
+
+/// Why the Vault gave no stored login: a locked Vault is the owner's to unlock,
+/// anything else (a missing record, an unreadable file) is a different problem
+/// and must not be reported as a lock.
+pub(crate) fn credential_read_failure(
+    error: &crate::error::DaemonError,
+) -> crate::error::DaemonError {
+    if crate::secret::is_chariox_vault_locked_error(error) {
+        failure("provider_account_copy_vault_locked")
+    } else {
+        failure("provider_account_copy_credential_unreadable")
     }
 }
 
@@ -141,6 +158,12 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
         "provider_account_copy_unsupported" => "Upgrade the target kernel to support provider account copy before retrying.",
         "provider_account_copy_vault_locked" => "Unlock the kernel Vault through Chariox, then retry the same account copy.",
         "provider_account_copy_target_vault_locked" => "The receiving kernel's Vault is locked; unlock it, then retry the same account copy. Nothing was copied.",
+        "provider_account_copy_vault_unreadable" => "The kernel Vault could not be read; check that its file is present and readable, then retry the same account copy.",
+        "provider_account_copy_target_vault_unreadable" => "The receiving kernel's Vault could not be read; check that its file is present and readable, then retry the same account copy. Nothing was copied.",
+        "provider_account_copy_credential_unreadable" => "The account's stored login could not be read from the Vault; sign in to the account again, then retry.",
+        "provider_account_copy_target_credential_unreadable" => "The receiving kernel could not read the copied login back from its Vault; retry the same account copy.",
+        "provider_account_copy_cli_missing" => "The Claude CLI is not installed on the receiving kernel; install it there, then retry the same account copy. Nothing was copied.",
+        "provider_account_copy_replace_differs" => "This operation was already used with a different replace setting; start a new operation to copy with that setting.",
         "provider_account_copy_cancelled" => "Account copy was cancelled or expired; no login was transferred.",
         "provider_account_copy_conflict" => "A target profile or operation already exists; use a new operation with explicit replacement to replace the profile.",
         "provider_account_copy_rejected" => "Official Claude verification rejected the account; authorize the source account again.",
@@ -160,6 +183,12 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "provider_account_copy_unsupported"
             | "provider_account_copy_vault_locked"
             | "provider_account_copy_target_vault_locked"
+            | "provider_account_copy_vault_unreadable"
+            | "provider_account_copy_target_vault_unreadable"
+            | "provider_account_copy_credential_unreadable"
+            | "provider_account_copy_target_credential_unreadable"
+            | "provider_account_copy_cli_missing"
+            | "provider_account_copy_replace_differs"
             | "provider_account_copy_conflict"
             | "provider_account_copy_rejected"
             | "provider_account_copy_verification_failed"
