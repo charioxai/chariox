@@ -50,14 +50,10 @@ impl KernelIdentity {
         relay: &RelayStatus,
         sessions: Option<&[std::sync::Arc<RuntimeSession>]>,
     ) -> Self {
-        let cloud = match config
-            .cloud_relay
-            .as_ref()
-            .map(crate::runtime::cloud_api_client::cloud_profile_from_persisted)
-            .filter(|profile| profile.kernel_enrolled)
-            .and_then(|profile| profile.kernel_id)
-        {
-            Some(kernel_id) => CloudLink::Linked { kernel_id },
+        let cloud = match config.enrolled_cloud_kernel_id() {
+            Some(kernel_id) => CloudLink::Linked {
+                kernel_id: kernel_id.to_owned(),
+            },
             None => CloudLink::NotLinked {
                 former_kernel_id: config.former_cloud_kernel_id.clone(),
             },
