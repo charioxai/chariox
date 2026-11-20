@@ -16,7 +16,8 @@ async fn spawn(socket: &mut Socket, room: &str, alias: &str) -> String {
     let response = request(
         socket,
         json!({"SpawnAgent": {"session_id": room, "alias": alias,
-            "provider": "dev-stub", "model": "trace", "no_subscribe": true}}),
+            "provider": "dev-stub", "model": "trace", "permission_level": "required",
+            "no_subscribe": true}}),
     )
     .await
     .unwrap();
@@ -159,21 +160,27 @@ async fn trace_spawns_two_levels_of_generated_agents() {
     let room = create_session(&mut socket, &scratch).await;
     let root = spawn(&mut socket, &room, "orch").await;
     submit(&mut socket, &room, &root).await.unwrap();
-    let mut parent = root;
-    for (alias, chars) in [("orch", 51), ("child", 83), ("grandchild", 137)] {
-        let agents = request(&mut socket, json!({"ListAgents": {"session_id": room}}))
-            .await
-            .unwrap();
-        let agent = agents["AgentsListed"]["agents"]
+    let first = completed_turn(&mut socket, &room, &root).await;
+    assert_eq!(first["lifecycle"], "completed", "{first}");
+    assert_eq!(first["summary"]["total_chars"], 51, "{first}");
+
+    let mut parent = root.clone();
+    for (alias, chars, depth) in [("child", 83, 1), ("grandchild", 137, 2)] {
+        let tree = request(
+            &mut socket,
+            json!({"ListDescendants": {"session_id": room, "agent_id": root}}),
+        )
+        .await
+        .unwrap();
+        let child = tree["AgentTree"]["tree"]["nodes"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|agent| agent["alias"] == alias)
-            .unwrap_or_else(|| panic!("missing {alias}: {agents}"));
-        let id = agent["id"].as_str().unwrap();
-        if alias != "orch" {
-            assert_eq!(agent["parent_agent_id"]["agent_id"], parent);
-        }
+            .find(|child| child["alias"] == alias)
+            .unwrap_or_else(|| panic!("missing {alias}: {tree}"));
+        assert_eq!(child["parent_agent_id"], parent, "{tree}");
+        assert_eq!(child["depth"], depth, "{tree}");
+        let id = child["agent_id"].as_str().unwrap();
         let turn = completed_turn(&mut socket, &room, id).await;
         assert_eq!(turn["lifecycle"], "completed", "{turn}");
         assert_eq!(
@@ -202,6 +209,95 @@ async fn trace_refuses_to_launch_without_opt_in() {
     .await
     .unwrap_err();
     assert_eq!(error["code"], "provider_dev_stub_disabled");
+}
+
+#[tokio::test]
+async fn trace_uses_real_permission_terminal_and_inbox() {
+    let scratch = std::env::temp_dir().join(format!("loadlab-effects-{}", std::process::id()));
+    let kernel = start(&scratch);
+    std::fs::write(
+        scratch.join("orch.jsonl"),
+        concat!(
+            r#"{"v":1,"source":"generator","seed":42,"agent":"orch","notes":"side effects"}"#,
+            "\n",
+            r#"{"t":0,"kind":"prompt","chars":20}"#,
+            "\n",
+            r#"{"t":0,"kind":"permission","tool":"Bash"}"#,
+            "\n",
+            r#"{"t":0,"kind":"terminal","lines":24,"line_bytes":80,"rate_lps":4000}"#,
+            "\n",
+            r#"{"t":0,"kind":"notify","source":"lab-notice","count":2,"interval_ms":20}"#,
+            "\n",
+            r#"{"t":0,"kind":"text","chars":120,"stream_ms":0,"markdown":"plain"}"#,
+            "\n",
+            r#"{"t":0,"kind":"end","outcome":"completed"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let mut socket = connect(&kernel).await;
+    let room = create_session(&mut socket, &scratch).await;
+    let agent = spawn(&mut socket, &room, "orch").await;
+    submit(&mut socket, &room, &agent).await.unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let interaction = loop {
+        let response = request(&mut socket, json!({"ListOwnerInteractions": {}}))
+            .await
+            .unwrap();
+        let cards = response["OwnerInteractionsListed"]["interactions"]
+            .as_array()
+            .unwrap();
+        if let Some(card) = cards.iter().find(|card| card["session_id"] == room) {
+            break card["interaction_id"].as_str().unwrap().to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the permission decision did not appear"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    request(
+        &mut socket,
+        json!({"RespondToInteraction": {"session_id": room, "interaction_id": interaction, "choice_id": "allow_once"}}),
+    )
+    .await
+    .unwrap();
+    let turn = completed_turn(&mut socket, &room, &agent).await;
+    assert_eq!(turn["lifecycle"], "completed", "{turn}");
+
+    let list = real_kernel::terminal(&mut socket, &room, json!({"operation": "list"}))
+        .await
+        .unwrap();
+    let terminal = list["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["title"] == "Load lab terminal")
+        .unwrap_or_else(|| panic!("no generated Room terminal: {list}"));
+    let output = real_kernel::terminal(&mut socket, &room, json!({
+        "operation": "wait", "terminal_id": terminal["terminal_id"], "after_offset": 0,
+        "watches": [{"kind": "output_contains", "text": "Generated lab text"}], "timeout_ms": 10000,
+    })).await.unwrap();
+    assert_eq!(
+        output["waited"]["fired"]["kind"], "output_matched",
+        "{output}"
+    );
+    let inbox = request(&mut socket, json!({"GetPersonInbox": null}))
+        .await
+        .unwrap();
+    let notices = inbox["PersonInbox"]["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|card| {
+            card["session_id"] == room
+                && card["body"]["notice"]["title"]
+                    .as_str()
+                    .is_some_and(|title| title.starts_with("lab-notice "))
+        })
+        .count();
+    assert_eq!(notices, 2, "{inbox}");
 }
 
 #[tokio::test]
