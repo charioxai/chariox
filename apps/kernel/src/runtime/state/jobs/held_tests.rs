@@ -497,6 +497,37 @@ fn two_gets(kernel: &str) -> Vec<(&'static str, u16, serde_json::Value)> {
 }
 
 #[tokio::test]
+async fn a_held_machine_job_runs_through_the_targets_gateway_ledger() {
+    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-gateway-room-home");
+    let kernel_id = "held-kernel-gateway-room";
+    Machine::stand_in(kernel_id, home.path(), Fault::None);
+    let service = service(&state, two_gets(kernel_id)).await;
+
+    let value = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command": ["/bin/echo", "held machine completed"],
+            "machine": "held-1",
+            "wait_s": 50
+        }),
+    )
+    .await
+    .unwrap();
+
+    served(service).await;
+    assert_eq!(value["placement"], "remote", "{value}");
+    assert_eq!(value["result"]["outcome"], "completed", "{value}");
+    assert_eq!(value["result"]["exit_code"], 0);
+    assert_eq!(
+        value["result"]["output_tail"].as_str().unwrap().trim_end(),
+        "held machine completed"
+    );
+}
+
+#[tokio::test]
 async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_uploaded() {
     let (state, run, task, workspace) = super::tests::remote_fixture().await;
     three_files(workspace.path());
