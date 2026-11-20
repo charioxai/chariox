@@ -524,6 +524,60 @@ mod platform {
             .find(|candidate| candidate.is_file())
     }
 
+    fn in_bubblewrap_profile(profile: &str) -> bool {
+        profile.split_whitespace().next().is_some_and(|name| {
+            name.split("//&")
+                .any(|part| matches!(part, "bwrap" | "unpriv_bwrap"))
+        })
+    }
+
+    fn namespace_probe_refusal(stderr: &str, nested: bool) -> Option<&'static str> {
+        let denied = stderr.contains("bwrap:")
+            && stderr.contains("namespace")
+            && (stderr.contains("Operation not permitted")
+                || stderr.contains("Permission denied")
+                || stderr.contains("No permissions to create"));
+        if !denied {
+            return None;
+        }
+        Some(if nested {
+            "provider confinement could not start: the kernel is already inside Bubblewrap (nested confinement) and cannot create its own mount namespace. For a drill, ask the host operator to start a dedicated drill kernel as a host service with its own Chariox home, or use a dedicated lab machine"
+        } else {
+            "provider confinement could not start: Linux denied Bubblewrap a mount namespace. Ask the host operator to check the AppArmor policy for unprivileged user namespaces and the kernel service's namespace restrictions and capabilities, then retry from an authorized host service or dedicated lab machine"
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn namespace_probe_names_nested_confinement_and_the_supported_drill_path() {
+            assert!(in_bubblewrap_profile("bwrap//&unpriv_bwrap (enforce)"));
+            assert!(!in_bubblewrap_profile("unconfined"));
+            let reason = namespace_probe_refusal(
+                "bwrap: Creating new namespace failed: Operation not permitted",
+                true,
+            )
+            .unwrap();
+            assert!(reason.contains("nested confinement"));
+            assert!(reason.contains("dedicated drill kernel as a host service"));
+        }
+
+        #[test]
+        fn namespace_probe_distinguishes_host_policy_from_other_startup_failures() {
+            let reason =
+                namespace_probe_refusal("bwrap: No permissions to create a new namespace", false)
+                    .unwrap();
+            assert!(reason.contains("AppArmor") && reason.contains("capabilities"));
+            assert!(namespace_probe_refusal("env: unrecognized option", false).is_none());
+            assert!(
+                namespace_probe_refusal("bwrap: Can't bind mount: Permission denied", true)
+                    .is_none()
+            );
+        }
+    }
+
     /// Bubblewrap, setpriv and env from PATH, once they have run a program in
     /// a namespace on this machine.
     fn working_sandbox() -> Result<&'static Sandbox, DaemonError> {
@@ -560,12 +614,19 @@ mod platform {
                 confinement_error(format!("could not run {}: {error}", bubblewrap.display()))
             })?;
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let profile = std::fs::read_to_string("/proc/self/attr/current").unwrap_or_default();
+            let nested = std::env::var_os(STATE_CONFINEMENT_MARKER_ENV).is_some()
+                || in_bubblewrap_profile(&profile);
+            if let Some(reason) = namespace_probe_refusal(&stderr, nested) {
+                return Err(confinement_error(reason));
+            }
             return Err(confinement_error(format!(
-                "agents run inside Bubblewrap so they cannot read the kernel's secrets, and {} with {} and {} cannot run a program in a mount namespace here ({}); allow unprivileged user namespaces for bwrap (or run the kernel as root) and use coreutils 8.31 or later, then retry",
+                "{} with {} and {} could not run the provider confinement probe ({}); check the Bubblewrap and util-linux installation and that env is from coreutils 8.31 or later",
                 bubblewrap.display(),
                 setpriv.display(),
                 env.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                stderr.trim()
             )));
         }
         Ok(WORKING_SANDBOX.get_or_init(|| Sandbox {

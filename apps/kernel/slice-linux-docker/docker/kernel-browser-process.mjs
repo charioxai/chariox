@@ -16,7 +16,7 @@ import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 import { requireBrowserMemory } from './browser-memory.mjs';
-import { rootBrowserUser, browserUserFailure } from './linux-browser-user.mjs';
+import { rootBrowserUser } from './linux-browser-user.mjs';
 import { readBrowserMajor, headlessIdentityArguments } from './kernel-browser-identity.mjs';
 
 function platformPolicy(platform) {
@@ -161,7 +161,7 @@ export class HostChromium {
     requireBrowserMemory();
     if (!keepDesktop) { await this.display?.close(); this.display = null; }
     this.browserUser ??= this.desktop?.browserUser ?? await rootBrowserUser(this.root);
-    if(this.browserUser && !linux.rootPolicyNamespaceAvailable(this.browserUser))throw browserUserFailure();
+    if(this.browserUser)linux.requireRootPolicyNamespace(this.browserUser);
     const filesRoot = this.browserUser?.root ?? this.root;
     this.filesRoot = filesRoot;
     if (this.browserUser && this.desktop) {
