@@ -1373,7 +1373,7 @@ pub(super) fn send_envelope(
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Delivery {
     Sent,
-    /// The receiver is too far behind. The message was dropped and the receiver is being
+    /// The receiver's queue refused the message. It receives a retryable peer reply or is
     /// told to reconnect; the sender's own connection is not affected.
     ReceiverBacklogged,
     ReceiverGone,
@@ -1387,6 +1387,29 @@ pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Deliv
         Ok(()) => Delivery::Sent,
         Err(SendRefused::Backlogged) => {
             receiver.record_dropped_reply();
+            // Bulk replies can exhaust the byte budget while the receiver can still accept
+            // control traffic. Fail only this request so a retry can use the same connection.
+            if let RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id,
+                encrypted_response: Some(_),
+                ..
+            } = envelope
+            {
+                let refusal = RelayEnvelope::DaemonPeerResponse {
+                    request_id: request_id.clone(),
+                    from_daemon_id: from_daemon_id.clone(),
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "target_backpressure",
+                        "the relay queue carrying the peer reply is full",
+                        true,
+                    )),
+                };
+                if send_envelope(receiver, &refusal).is_ok() {
+                    return Delivery::ReceiverBacklogged;
+                }
+            }
             receiver.close_backlogged();
             Delivery::ReceiverBacklogged
         }
