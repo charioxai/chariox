@@ -1,5 +1,6 @@
 //! Argument admission runs before logging, identity, broker or runtime setup.
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 pub enum Command {
     Run,
@@ -7,6 +8,7 @@ pub enum Command {
     Version,
     ProtocolVersion,
     HandoverFormat,
+    CheckState(Option<PathBuf>),
     PrepareProtectedSliceIdentity(u16),
     OwnerManagedEnroll,
     OwnerManagedReady,
@@ -14,13 +16,14 @@ pub enum Command {
     OwnerManagedDeviceEnroll,
 }
 
-pub const USAGE: &str = "usage: chariox-kernel [--help | --version | --print-local-daemon-protocol-version | --prepare-protected-slice-identity PORT]
+pub const USAGE: &str = "usage: chariox-kernel [--help | --version | --print-local-daemon-protocol-version | --check-state [--home DIR] | --prepare-protected-slice-identity PORT]
 
 With no arguments, run the kernel. Configure it through CHARIOX_HOME,
 CHARIOX_KERNEL_HOST, CHARIOX_KERNEL_PORT and the Chariox configuration.
   -h, --help                            Print usage and exit
   --version                             Print the package version and exit
   --print-local-daemon-protocol-version  Print the shared protocol version and exit
+  --check-state [--home DIR]            Check startup state replay without starting the kernel
   --handover-format                     Print the hot-reload handover format and exit
   --prepare-protected-slice-identity PORT
                                         Prepare a protected slice identity";
@@ -38,6 +41,11 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ("--version", 1) => Ok(Command::Version),
         ("--print-local-daemon-protocol-version", 1) => Ok(Command::ProtocolVersion),
         ("--handover-format", 1) => Ok(Command::HandoverFormat),
+        ("--check-state", 1) => Ok(Command::CheckState(None)),
+        ("--check-state", 3) if args[1] == "--home" && !args[2].is_empty() => {
+            Ok(Command::CheckState(Some(PathBuf::from(&args[2]))))
+        }
+        ("--check-state", _) => Err("--check-state accepts only an optional --home DIR".into()),
         ("--owner-managed-enroll-stdin", 1) => Ok(Command::OwnerManagedEnroll),
         ("--owner-managed-ready", 1) => Ok(Command::OwnerManagedReady),
         ("--owner-managed-self-enroll-stdin", 1) => Ok(Command::OwnerManagedSelfEnroll),
