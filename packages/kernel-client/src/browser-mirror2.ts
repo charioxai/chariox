@@ -55,6 +55,18 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 export type Mirror2Timing = { stage: string; duration_ms: number; ended_ms: number }
 
+/**
+ * The mirror runs no scripts, so Chromium gives every video, and every audio with `controls`, its own player, even with
+ * controls=false. A mirrored media tile shows the kernel's pixels (or its poster), which already hold the page's controls:
+ * the viewer's player would cover them and take input meant for the kernel.
+ */
+function hideViewerControls(media: Element): void {
+  if (media.querySelector(':scope > style[data-chariox-region-controls]')) return
+  const style = media.ownerDocument.createElement('style')
+  style.setAttribute('data-chariox-region-controls', '')
+  style.textContent = 'video::-webkit-media-controls,audio::-webkit-media-controls{display:none!important}'
+  media.append(style)
+}
 export class BrowserMirror2Renderer {
   private navigation: Mirror2Navigation
   get frame(): HTMLIFrameElement { return this.navigation.frame }
@@ -513,6 +525,7 @@ export class BrowserMirror2Renderer {
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
     this.opaqueLayout(record, element)
+    if (record.kind === 'tile' && (record.tag === 'video' || record.tag === 'audio') && !record.ns) hideViewerControls(element)
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
     // A select's state waits for its options (the build appends children after their parent).
     if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
@@ -527,7 +540,7 @@ export class BrowserMirror2Renderer {
       if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
-      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
+      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); else if (element.localName === 'video') this.tilePoster(record, element as HTMLElement); this.paintTile(record.id, element as HTMLElement) }
     }
   }
   private uaState(element: Element): void {
@@ -585,6 +598,14 @@ export class BrowserMirror2Renderer {
     else if (element.localName === 'use') { const file = url && key ? this.sprite(key) : null; if (file) element.setAttribute('href', `${file}${this.records.get(id)?.attrs?.href ?? ''}`); else element.removeAttribute('href') }
     else if (element.namespaceURI === NS.svg) { if (url) element.setAttribute('href', url); else element.removeAttribute('href') }
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
+    if (record?.kind === 'tile' && element.localName === 'video') this.tilePoster(record, element as HTMLElement)
+  }
+  // A video tile without a still (a transformed or cross-origin video) shows its poster, what Chrome draws before playback,
+  // over the page behind it; with a still the still alone shows (a playing video never shows a frozen poster).
+  private tilePoster(record: Mirror2Record, element: HTMLElement): void {
+    const still = this.tileUrls.has(record.id), url = !still && record.res ? this.resources.get(record.res) ?? null : null
+    if (url) element.setAttribute('poster', url); else element.removeAttribute('poster')
+    if (!still) element.style.setProperty('background-color', url ? 'transparent' : 'black', 'important')
   }
   private form(element: Element, form: Mirror2Form): void {
     // An option of a multiple select carries its own selectedness (`checked`).
