@@ -246,7 +246,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             None
             | Some(
                 "list" | "ls" | "new" | "create" | "resolve" | "show" | "get" | "alias"
-                | "name" | "run" | "start" | "runs" | "get-run" | "run-status" | "cancel"
+                | "archive" | "unarchive" | "delete" | "remove" | "name" | "run" | "start" | "runs" | "get-run" | "run-status" | "cancel"
                 | "resume",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             Some("node")
@@ -292,7 +292,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                     Some(policy_for_documented_command(documented))
                 } else {
                     Some(MetaCommandExecutionPolicy::NotRouted {
-                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/wait-for-all-inputs/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
+                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow archive`, `workflow unarchive`, `workflow delete`, `workflow node add/remove/instructions/can-complete/intermediate-output/wait-for-all-inputs/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
                     })
                 }
             }

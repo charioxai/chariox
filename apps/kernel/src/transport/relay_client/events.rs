@@ -423,6 +423,7 @@ mod encoding_tests {
                 home_kernel_id: "kernel".into(),
                 revision: "1".into(),
                 workflow_count: 0,
+                archived_count: 0,
                 workflows: vec![],
             },
             session: Box::new(crate::session::RuntimeSession::new(

@@ -1077,6 +1077,15 @@ impl SessionService {
         workflow: &WorkflowDefinition,
         endpoint: &WorkflowEndpointDefinition,
     ) -> Result<(), DaemonError> {
+        if workflow.is_archived() {
+            let label = workflow.alias().unwrap_or(workflow.id());
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow.dispatch",
+                message: format!(
+                    "workflow `{label}` is archived; run `workflow unarchive {label}` to dispatch it again"
+                ),
+            });
+        }
         let entry_node_id = endpoint.entry_node_id();
         workflow
             .node(entry_node_id)

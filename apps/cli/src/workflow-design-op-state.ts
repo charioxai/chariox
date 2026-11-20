@@ -51,6 +51,12 @@ export function workflowsWithDesignOp(
       break
     case "workflow_remove":
       return workflows.filter((workflow) => workflow.id !== op.workflow_id)
+    case "workflow_archive":
+      replaceWorkflow(op.workflow_id, (workflow) => ({
+        ...workflow,
+        archived_at_ms: op.archived ? workflow.archived_at_ms ?? Date.now() : null,
+      }))
+      break
     case "schema_add":
       replaceWorkflow(op.workflow_id, (workflow) => {
         const schemas = workflow.schemas ?? []

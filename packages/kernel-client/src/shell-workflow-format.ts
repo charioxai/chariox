@@ -19,7 +19,8 @@ export function formatWorkflowList(workflows: WorkflowDefinition[], currentWorkf
   }
   return workflows.map((workflow) => {
     const current = workflow.id === currentWorkflowId ? " current" : ""
-    return `${formatWorkflowLabel(workflow)} nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}${current}`
+    const archived = workflow.archived_at_ms ? " archived" : ""
+    return `${formatWorkflowLabel(workflow)} nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}${current}${archived}`
   }).join("\n")
 }
 

@@ -61,6 +61,14 @@ test("workflow design op state applies workflow lifecycle patches", () => {
   }), [])
 })
 
+test("workflow design op state marks a workflow archived and restores it", () => {
+  const initial: WorkflowDefinition[] = [{ id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] }]
+  const archived = workflowsWithDesignOp(initial, { kind: "workflow_archive", workflow_id: "workflow-1", archived: true })
+  assert.equal(typeof archived[0]?.archived_at_ms, "number")
+  const restored = workflowsWithDesignOp(archived, { kind: "workflow_archive", workflow_id: "workflow-1", archived: false })
+  assert.equal(restored[0]?.archived_at_ms, null)
+})
+
 test("workflow design op state applies schema lifecycle patches", () => {
   const initial: WorkflowDefinition[] = [{
     id: "workflow-1",
