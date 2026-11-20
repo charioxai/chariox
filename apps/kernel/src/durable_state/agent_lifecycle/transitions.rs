@@ -834,6 +834,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelTaskByAgent { .. }
         | Operation::NoteTurnCancel { .. }
         | Operation::RetireRestartFailure { .. }
+        | Operation::AnswerTaskQuestion { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
         | Operation::ArmWake { .. }
