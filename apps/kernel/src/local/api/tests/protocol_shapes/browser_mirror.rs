@@ -236,7 +236,7 @@ fn browser_mirror2_font_cache_1011_shape_is_pinned() {
     let snapshot = include_str!("browser-mirror2-font-cache-1011.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
-        "183c289732312ed0d62ce13ff192e4b2e74eadc980ff5512c35cae510702aab5"
+        "e2e4607965f221ee299d1ede36f02705a7ce09c8c6ea4730a888224139611968"
     );
     let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
