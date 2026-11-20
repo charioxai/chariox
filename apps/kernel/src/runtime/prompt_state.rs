@@ -1673,22 +1673,29 @@ impl PromptStateOwner {
             })
     }
 
-    /// Whether the provider's own turn is the agent's running turn.
-    pub(crate) fn provider_turn_running(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+    /// The active prompt when it belongs to this run's adopted provider turn.
+    pub(crate) fn adopted_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        run_id: &str,
+    ) -> Option<PromptQueueItem> {
         let owner = self
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        owner
+        let state = owner
             .states
-            .get(&PromptStateKey::new(session.id(), agent_id))
-            .is_some_and(|state| match &state.provider_turn {
-                ProviderOwnTurn::Adopted { prompt_id, .. } => state
-                    .active_prompt
-                    .as_ref()
-                    .is_some_and(|active| active.id() == prompt_id),
-                _ => false,
-            })
+            .get(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Adopted {
+            provider_run_id,
+            prompt_id,
+        } = &state.provider_turn
+        else {
+            return None;
+        };
+        let active = state.active_prompt.as_ref()?;
+        (provider_run_id == run_id && active.id() == prompt_id).then(|| active.clone())
     }
 
     /// Whether a turn the provider started on `provider_run_id` waits for adoption.

@@ -117,6 +117,84 @@ async fn a_turn_claude_starts_on_its_own_runs_as_a_kernel_turn_with_a_task_and_s
     assert_ne!(adopted.id(), team.child_prompt.id());
     assert_eq!(task_of(&team, adopted.id()), Some(ExecutionState::Working));
 
+    let hook = crate::test_support::TestWorktree::new("own-turn-context-response");
+    let run = crate::provider::RuntimeProviderRun::new(
+        &team.child_run,
+        &crate::provider::LaunchProviderRequest::new(
+            &team.room, "claude", "claude", "default", "haiku",
+        )
+        .with_agent_id(&team.child),
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude:stream-json".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: [(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                hook.path().join("dispatched.txt").display().to_string(),
+            )]
+            .into(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    team.runtime
+        .reply_to_claude_notification_context(
+            &team.room,
+            &run,
+            &crate::provider::ClaudeNotificationContext {
+                request_id: "notification-1".into(),
+                deadline_ms: crate::session::unix_epoch_ms() + 5000,
+                ended_tool_use_id: None,
+            },
+        )
+        .unwrap();
+    let context = std::fs::read_to_string(
+        hook.path()
+            .join("hook-context-responses/notification-1.txt"),
+    )
+    .unwrap();
+    assert!(
+        context.contains(&crate::prompt_assembly::agent_message_origin_context(
+            adopted.id()
+        ))
+    );
+    assert!(context.contains(&format!(
+        "task_id `{0}` and origin_prompt_id `{0}`",
+        adopted.id()
+    )));
+    assert!(!context.contains(team.child_prompt.id()));
+
+    let token = team
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&team.child_run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    let stale = team
+        .runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.send_agent_message",
+            serde_json::json!({
+                "agent": team.parent,
+                "origin_prompt_id": team.child_prompt.id(),
+                "message": "The background command finished.",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        stale.contains(&format!("origin_prompt_id set to `{}`", adopted.id())),
+        "{stale}"
+    );
+
     apply(&team, own_turn_end()).await;
     // The pump settles a completed turn once its output has been quiet for a moment.
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -467,5 +545,6 @@ async fn an_adopted_own_turn_whose_process_exits_leaves_no_turn_behind() {
         .runtime
         .owned
         .prompt_state_owner
-        .provider_turn_running(&session, &team.child));
+        .adopted_provider_turn(&session, &team.child, &team.child_run)
+        .is_some());
 }

@@ -968,7 +968,13 @@ mod tests {
             .unwrap()
             .join("hook-handler.mjs");
         let large = format!("{}🦀END", "exact-record\n".repeat(3000));
-        for wanted in [Some(large.as_str()), Some(""), Some("next response"), None] {
+        for (wanted, notification) in [
+            (Some(large.as_str()), false),
+            (Some(""), false),
+            (Some("next response"), false),
+            (None, false),
+            (Some("current notification context"), true),
+        ] {
             fs::write(&native.context_file, "STALE PREVIOUS TURN").unwrap();
             fs::write(&native.events_file, "").unwrap();
             let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).rev().map(|index| {
@@ -978,13 +984,19 @@ mod tests {
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS", "1")
-                    // A Chariox-run Claude worker exports "dispatched"; this test needs the fresh-response path.
-                    .env_remove("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
+                    .env("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE", if notification { "dispatched" } else { "" })
                     .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
                     .spawn().expect("official hook should start");
-                child.stdin.take().unwrap().write_all(
-                    br#"{"hook_event_name":"UserPromptSubmit","session_id":"native","prompt":"same prompt"}"#,
-                ).unwrap();
+                let input = serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "native",
+                    "prompt": if notification {
+                        "<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>"
+                    } else {
+                        "same prompt"
+                    },
+                });
+                serde_json::to_writer(child.stdin.take().unwrap(), &input).unwrap();
                 (index, child)
             }).collect::<Vec<_>>();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
