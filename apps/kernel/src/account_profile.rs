@@ -161,6 +161,12 @@ pub struct ProviderAccountMaterialization {
     pub generated_at_ms: u64,
 }
 
+impl ProviderAccountMaterialization {
+    pub(crate) fn is_credentialless_opencode(&self) -> bool {
+        self.profile.provider == "opencode" && self.files.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManagedContextProviderAccountReceipt {
@@ -2753,6 +2759,8 @@ impl ProviderAccountProfileRegistry {
         }
         if provider != "claude"
             && stored.public.auth_state != ProviderAccountAuthState::Authenticated
+            && !(stored.public.auth_state == ProviderAccountAuthState::NotConfigured
+                && opencode_locator_has_no_credentials(&stored.locator)?)
         {
             return Err(registry_error(
                 "validate materialized account profile",
@@ -2822,6 +2830,16 @@ impl ProviderAccountProfileRegistry {
             resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
                 .legacy_unpinned_replica,
         )
+    }
+
+    pub(crate) fn opencode_profile_has_no_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner_user_id, "opencode", profile_id)?;
+        opencode_locator_has_no_credentials(&stored.locator)
     }
 
     #[cfg(unix)]
@@ -4602,6 +4620,17 @@ fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
         ));
     }
     Ok(profile_id)
+}
+
+fn opencode_locator_has_no_credentials(
+    locator: &ProviderAccountLocator,
+) -> Result<bool, DaemonError> {
+    match locator {
+        ProviderAccountLocator::Opencode { xdg_data_home, .. } => Ok(!path_entry_exists(
+            &xdg_data_home.join("opencode/auth.json"),
+        )?),
+        _ => Ok(false),
+    }
 }
 
 fn materialization_files(

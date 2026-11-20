@@ -325,6 +325,62 @@ exit 2
 
     #[cfg(unix)]
     #[test]
+    fn credentialless_opencode_placement_can_later_receive_a_login() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("remote-opencode-credentialless");
+        let _native = install_opencode_auth_fixture(root.path());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let mut worker = RemoteLeaseRuntime::new(&mut app);
+        let lease = worker
+            .create_execution_lease("home-kernel", "room", "agent", false, "owner-a")
+            .unwrap();
+        let context = RemoteProviderAccountSyncContext {
+            home_kernel_id: "home-kernel".into(),
+            home_session_id: "room".into(),
+            home_agent_id: "agent".into(),
+            execution_lease_id: lease.id,
+        };
+        let mut materialization = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".into(),
+                provider: "opencode".into(),
+                profile_id: "work".into(),
+                label: "Work".into(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: true,
+            },
+            files: vec![],
+            generated_at_ms: 1,
+        };
+        for _ in 0..2 {
+            let profile = worker
+                .ensure_remote_provider_account(context.clone(), materialization.clone())
+                .unwrap();
+            assert_eq!(profile.auth_state, ProviderAccountAuthState::NotConfigured);
+        }
+
+        use base64::Engine as _;
+        materialization
+            .files
+            .push(crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(br#"{"opencode":{"type":"api","key":"synthetic-home"}}"#),
+            });
+        let profile = worker
+            .ensure_remote_provider_account(context, materialization)
+            .unwrap();
+        assert_eq!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        assert_eq!(profile.profile_id, "work");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn repeated_ensure_preserves_the_worker_owned_provider_profile() {
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
