@@ -53,6 +53,7 @@ pub mod provider_account_copy;
 mod provider_discovery;
 pub(crate) mod provider_output_policy;
 pub mod provider_vault_login;
+pub mod state_bundle_key;
 pub mod pty;
 mod publication_provider_accounts;
 pub mod room_exec;
