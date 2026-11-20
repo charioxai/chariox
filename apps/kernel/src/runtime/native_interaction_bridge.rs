@@ -10,8 +10,8 @@ use crate::local::{
     RequestNativeProviderTurnInteractionRequest,
 };
 use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderProcessServiceStore,
+    CodexApprovalHandover, CodexApprovalOutcome, ProviderNativeInteractionBridge,
+    ProviderNativeInteractionResolution, ProviderProcessServiceStore,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
@@ -39,6 +39,13 @@ struct RuntimeStateNativeInteractionBridge {
     state: KernelRuntimeState,
 }
 
+pub(in crate::runtime) type CodexApprovalTransfer = Arc<Mutex<Option<CodexApprovalHandover>>>;
+
+pub(in crate::runtime) struct CodexApprovalRequest {
+    pub(in crate::runtime) adopted: Option<CodexApprovalHandover>,
+    pub(in crate::runtime) transfer: CodexApprovalTransfer,
+}
+
 impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
     fn capture_turn_origin(
         &self,
@@ -54,6 +61,39 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         &self,
         session_id: &str,
         interaction: RuntimeInteraction,
+    ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+        self.request(session_id, interaction, None)
+    }
+
+    fn request_codex_workspace_approval_blocking(
+        &self,
+        session_id: &str,
+        interaction: RuntimeInteraction,
+        adopted: Option<CodexApprovalHandover>,
+    ) -> Result<CodexApprovalOutcome, DaemonError> {
+        let request = CodexApprovalRequest {
+            adopted,
+            transfer: Default::default(),
+        };
+        let resolution = self.request(session_id, interaction, Some(&request))?;
+        let handed_over = request
+            .transfer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        Ok(match handed_over {
+            Some(handover) => CodexApprovalOutcome::HandingOver(handover),
+            None => CodexApprovalOutcome::Resolved(resolution),
+        })
+    }
+}
+
+impl RuntimeStateNativeInteractionBridge {
+    fn request(
+        &self,
+        session_id: &str,
+        interaction: RuntimeInteraction,
+        codex_approval: Option<&CodexApprovalRequest>,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
         let Some(origin) = interaction.native_origin().cloned() else {
             return Ok(ProviderNativeInteractionResolution {
@@ -86,14 +126,14 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             ));
         }
         let state = self.state.clone();
-        self.handle
-            .block_on(request_runtime_interaction_with_timeout(
-                &state,
-                &session_id,
-                interaction,
-                "provider_native_interaction_bridge",
-                None,
-            ))
+        self.handle.block_on(wait_for_runtime_interaction(
+            &state,
+            &session_id,
+            interaction,
+            "provider_native_interaction_bridge",
+            None,
+            codex_approval,
+        ))
     }
 }
 
@@ -495,6 +535,17 @@ async fn request_runtime_interaction_with_timeout(
     operation: &'static str,
     forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    wait_for_runtime_interaction(state, session_id, interaction, operation, forwarding, None).await
+}
+
+async fn wait_for_runtime_interaction(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    interaction: RuntimeInteraction,
+    operation: &'static str,
+    forwarding: Option<&RemoteNativeInteractionContext>,
+    codex_approval: Option<&CodexApprovalRequest>,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     if let Some(resolution) =
         state.sudo_native_permission_resolution(session_id, &interaction, forwarding)
     {
@@ -516,10 +567,20 @@ async fn request_runtime_interaction_with_timeout(
                 reply: None,
             });
         }
-        match state
-            .create_runtime_interaction_with_forwarding(session_id, interaction.clone(), forwarding)
-            .await
-        {
+        let receiver = if let Some(request) = codex_approval {
+            state
+                .create_codex_workspace_approval(session_id, interaction.clone(), request)
+                .await
+        } else {
+            state
+                .create_runtime_interaction_with_forwarding(
+                    session_id,
+                    interaction.clone(),
+                    forwarding,
+                )
+                .await
+        };
+        match receiver {
             Ok(receiver) => break receiver,
             Err(error) if crate::runtime::state::interaction_waits(&error) => {
                 let next = tokio::time::Instant::now() + Duration::from_millis(50);

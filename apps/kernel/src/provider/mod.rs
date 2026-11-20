@@ -198,10 +198,11 @@ pub use prompt_signals::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    run_room_commands_on_fresh_claude, setup_turn_origin, FinishedProviderOutputPollJob,
-    FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    run_room_commands_on_fresh_claude, setup_turn_origin, CodexApprovalHandover,
+    CodexApprovalOutcome, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
+    FinishedProviderPromptSubmitJob, NativeApprovalGoal, ProviderNativeInteractionBridge,
+    ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
     ProviderRunOperationPermit,
 };

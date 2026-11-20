@@ -3,6 +3,25 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::error::DaemonError;
 use crate::session::RuntimeInteraction;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct NativeApprovalGoal {
+    pub(crate) task_id: String,
+    pub(crate) prompt_id: String,
+    pub(crate) blocked_revision: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CodexApprovalHandover {
+    pub(crate) holder_agent_id: Option<String>,
+    pub(crate) holder_tenure: u32,
+    pub(crate) goal: Option<NativeApprovalGoal>,
+}
+
+pub(crate) enum CodexApprovalOutcome {
+    Resolved(ProviderNativeInteractionResolution),
+    HandingOver(CodexApprovalHandover),
+}
+
 pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
     /// Called when the provider creates the request, before any blocking handoff.
     fn capture_turn_origin(
@@ -19,6 +38,16 @@ pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
         session_id: &str,
         interaction: RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError>;
+
+    fn request_codex_workspace_approval_blocking(
+        &self,
+        session_id: &str,
+        interaction: RuntimeInteraction,
+        _adopted: Option<CodexApprovalHandover>,
+    ) -> Result<CodexApprovalOutcome, DaemonError> {
+        self.request_blocking(session_id, interaction)
+            .map(CodexApprovalOutcome::Resolved)
+    }
 }
 
 /// Where a card raised by a setup turn belongs. The turn is no queued prompt, so the card is about

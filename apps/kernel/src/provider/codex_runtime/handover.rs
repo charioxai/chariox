@@ -8,7 +8,9 @@ use std::os::fd::{FromRawFd, IntoRawFd};
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider::codex_client::continue_codex_socket;
+use crate::provider::codex_client::{
+    continue_codex_socket, UnavailableWorkspaceSandbox, WorkspaceApprovalState,
+};
 use crate::provider::CodexNotification;
 
 use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
@@ -36,6 +38,8 @@ pub(crate) struct CodexHandover {
     // The completion evidence already applied: a turn whose last item came
     // before the swap is settled from it when no `turn/completed` follows.
     turn_tracker: CodexTurnTracker,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_approval: Option<WorkspaceApprovalState>,
 }
 
 impl CodexHandover {
@@ -83,6 +87,10 @@ pub(crate) fn hand_over_codex_turn(
     let text_items = std::mem::take(&mut state.text_items);
     let tool_items = std::mem::take(&mut state.tool_items);
     let turn_tracker = std::mem::take(&mut state.turn_tracker);
+    let workspace_approval = state
+        .unavailable_workspace_sandbox
+        .take()
+        .map(|sandbox| sandbox.hand_over());
     // This program's descriptor closes; the connection stays open in `tcp`.
     drop(state);
     Ok(CodexHandover {
@@ -96,6 +104,7 @@ pub(crate) fn hand_over_codex_turn(
         text_items,
         tool_items,
         turn_tracker,
+        workspace_approval,
     })
 }
 
@@ -118,6 +127,9 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
     let socket = continue_codex_socket(tcp, turn.unread);
     let mut state =
         CodexRuntimeState::new(turn.endpoint, turn.thread_id, socket, turn.next_request_id);
+    state.unavailable_workspace_sandbox = turn
+        .workspace_approval
+        .map(UnavailableWorkspaceSandbox::adopt);
     state.adopted_turn = Some(AdoptedTurn {
         turn_id: turn.turn_id,
         buffered_notifications: turn.buffered_notifications,

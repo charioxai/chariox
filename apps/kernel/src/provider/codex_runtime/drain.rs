@@ -47,6 +47,7 @@ pub fn drain_codex_events(
     } else {
         client
     };
+    client.resume_workspace_approval(&mut state.socket)?;
     let client = if state.metadata_only_discovery || run.metadata_only_discovery() {
         client.with_metadata_only_discovery()
     } else {
@@ -129,6 +130,7 @@ pub fn drain_codex_events(
             .map(|notification| state.buffered_notifications.push(notification))
             .is_none();
     }
+    let approval_waits_for_successor = client.has_workspace_approval_for_successor();
     // Reconcile once when a turn starts, then only when provider evidence asks
     // for completion recovery. This keeps long healthy managed turns from
     // repeatedly reloading their growing rollout. Pending terminal and legacy
@@ -148,7 +150,11 @@ pub fn drain_codex_events(
     );
     // MP-08 / MP-10 / MP-11: Fresh utility threads settle from notifications;
     // ephemeral discovery threads also have no durable history to reconcile.
-    if authoritative_backfill_due && !state.ephemeral && !state.notification_only {
+    if authoritative_backfill_due
+        && !state.ephemeral
+        && !state.notification_only
+        && !approval_waits_for_successor
+    {
         backfill_completed_turn(
             &client,
             state,
@@ -165,7 +171,7 @@ pub fn drain_codex_events(
             state.authoritative_backfill_gate.reset();
         }
     }
-    if drained_to_quiet && !prompt_completed {
+    if drained_to_quiet && !prompt_completed && !approval_waits_for_successor {
         maybe_finalize_terminal_signal(
             &mut state.active_turn_id,
             &mut state.turn_tracker,
