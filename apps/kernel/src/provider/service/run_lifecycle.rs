@@ -37,6 +37,9 @@ impl ProviderProcessService {
         reserved_run_id: String,
         mut request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        if request.adapter_key == "dev-stub" && !registry.dev_stub_enabled {
+            return Err(DaemonError::ProviderDevStubDisabled);
+        }
         if let Some(checkpoint) = request.native_checkpoint.as_ref() {
             request.resume_state = Some(
                 checkpoint

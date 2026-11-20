@@ -409,7 +409,11 @@ impl DaemonApp {
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
             )?,
-            providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
+            providers: ProviderProcessServiceStore::new(if config.test_state_root.is_some() {
+                ProviderProcessService::with_test_fixtures()
+            } else {
+                ProviderProcessService::new()
+            }),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             provider_launch_failure_retries: ProviderLaunchFailureRetryStore::default(),

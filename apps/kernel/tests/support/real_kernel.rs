@@ -61,6 +61,12 @@ impl Drop for Kernel {
     }
 }
 
+impl Kernel {
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
+    }
+}
+
 pub fn free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
         .unwrap()

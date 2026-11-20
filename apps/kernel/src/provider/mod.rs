@@ -411,21 +411,13 @@ pub(crate) fn provider_batch_launch_concurrency_limit(
 }
 
 pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
-    retain_public_inventory_providers_with_dev_stub_policy(
-        providers,
-        dev_stub_public_inventory_enabled(),
-    );
+    retain_public_inventory_providers_with_dev_stub_policy(providers, dev_stub_enabled());
 }
 
-pub(crate) fn dev_stub_public_inventory_enabled() -> bool {
-    std::env::var("CHARIOX_PROVIDER_DEV_STUB")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+pub(crate) const DEV_STUB_ENV: &str = "CHARIOX_PROVIDER_DEV_STUB";
+
+pub(crate) fn dev_stub_enabled() -> bool {
+    std::env::var(DEV_STUB_ENV).as_deref() == Ok("1")
 }
 
 fn retain_public_inventory_providers_with_dev_stub_policy(
