@@ -811,6 +811,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelQueuedMessage { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
+        | Operation::StartFailed { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::WorkerResultReturned { .. }

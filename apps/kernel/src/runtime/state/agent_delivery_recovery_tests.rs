@@ -5,7 +5,7 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl Fixture {
-    fn child_inbox(&self) -> Vec<InboxEvent> {
+    pub(super) fn child_inbox(&self) -> Vec<InboxEvent> {
         self.runtime
             .owned
             .durable_state_store
@@ -83,9 +83,19 @@ async fn refused_start_ends_with_a_typed_failure_and_the_next_message_starts_a_t
     assert!(error.to_string().contains("does not exist"), "{error}");
     assert_eq!(f.state_of(first.sequence), "pending");
 
+    // The start is retried with growing pauses, not given up on after the delivery window.
     f.sweep_after_delivery_window();
-    // No provider I/O happened, so the message is definitively undelivered: it
-    // ends as failed and tells its sender, instead of fencing the recipient.
+    assert_eq!(f.state_of(first.sequence), "pending");
+    assert_eq!(
+        f.blocked_delivery_tasks(),
+        0,
+        "no card while retries remain"
+    );
+
+    // Once the attempts are spent no provider I/O ever happened, so the message is definitively
+    // undelivered: it ends as failed and tells its sender, instead of fencing the recipient.
+    f.spend_start_attempts(first.sequence).await;
+    f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     assert_eq!(
         f.blocked_delivery_tasks(),
@@ -306,6 +316,7 @@ async fn a_due_wake_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
+    f.spend_start_attempts(first.sequence).await;
     f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     std::fs::rename(&moved, f._worktree.path()).unwrap();
@@ -345,6 +356,7 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
+    f.spend_start_attempts(first.sequence).await;
     f.sweep_after_delivery_window();
     assert_eq!(f.state_of(first.sequence), "failed");
     std::fs::rename(&moved, f._worktree.path()).unwrap();
@@ -409,6 +421,7 @@ async fn resume_on_the_card_of_an_undelivered_message_sends_it_again() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
+    f.spend_start_attempts(lost.sequence).await;
     f.sweep_after_delivery_window();
     assert_eq!(f.state_of(lost.sequence), "failed");
     std::fs::rename(&moved, f._worktree.path()).unwrap();

@@ -172,6 +172,16 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        // A start that failed is tried again at the time its failure named, not at every sweep.
+        if active.is_none()
+            && self
+                .owned
+                .durable_state_store
+                .agent_start_failure(event.sequence)?
+                .is_some_and(|failure| failure.retry_at_ms > crate::session::unix_epoch_ms())
+        {
+            return Ok(());
+        }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
         // stay pending and visible until the owner prompts it again.
         if active.is_none()
@@ -451,8 +461,20 @@ impl KernelRuntimeState {
                             &e,
                         )?;
                     }
-                    let state = ledger::delivery_receipt_state(None, false);
-                    self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    if crate::error::is_agent_deadline_refusal(&e)
+                        || matches!(
+                            &e,
+                            DaemonError::VaultUnlock {
+                                code: "vault_unlock_declined",
+                                ..
+                            }
+                        )
+                    {
+                        let state = ledger::delivery_receipt_state(None, false);
+                        self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    } else {
+                        self.record_agent_start_failure(room, agent, event.sequence, &e)?;
+                    }
                     if !crate::error::is_agent_deadline_refusal(&e) {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
@@ -886,6 +908,46 @@ impl KernelRuntimeState {
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
+    }
+    /// The agent could not start for this delivery: it stays pending, says when it tries again,
+    /// and the sweep ends it only after the attempts are spent.
+    fn record_agent_start_failure(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        let Outcome::Event(event) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::StartFailed {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequence,
+                    error: error.to_string(),
+                    now: crate::session::unix_epoch_ms(),
+                })?
+        else {
+            unreachable!()
+        };
+        self.owned.record_wake_refused(&event);
+        if let Some(failure) = self
+            .owned
+            .durable_state_store
+            .agent_start_failure(sequence)?
+        {
+            self.owned.record_notice_for_agent(
+                room,
+                None,
+                Some(agent),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(room),
+                crate::durable_state::agent_lifecycle::start_failures::retry_notice(&failure),
+            );
+        }
+        Ok(())
     }
     pub(super) fn record_agent_delivery_receipt(
         &self,
