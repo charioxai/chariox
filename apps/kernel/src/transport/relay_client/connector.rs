@@ -9,11 +9,9 @@ mod binary_request;
 mod managed_slice_activation;
 mod socket_thread;
 mod writer;
+use managed_slice_activation::managed_slice_token_confirmation_matches;
 #[cfg(test)]
-use managed_slice_activation::{
-    managed_slice_token_confirmation_matches,
-    spawn_pending_managed_slice_activation_confirmation_after_connect,
-};
+use managed_slice_activation::spawn_pending_managed_slice_activation_confirmation_after_connect;
 use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationConfirmation};
 
 #[cfg(test)]
@@ -95,7 +93,6 @@ const _: () = assert!(
         < CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis()
 );
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
-const RELAY_READ_IDLE_LIMIT: Duration = Duration::from_secs(90);
 const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
 // The relay pings every 30 seconds, even while the kernel sends heartbeats.
 const RELAY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -925,13 +922,17 @@ async fn run_daemon_relay_connector_inner(
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
-                let (mut inbound, _reader_task) =
-                    socket_thread::spawn_reader(reader, pong_tx, RELAY_READ_IDLE_TIMEOUT);
                 let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (upload_receipt_tx, upload_receipt_rx) =
                     mpsc::channel::<(u32, u32)>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
+                let (mut inbound, mut reader_end, _reader_task) = socket_thread::spawn_reader(
+                    reader,
+                    pong_tx,
+                    upload_chunks.then_some(upload_receipt_tx),
+                    RELAY_READ_IDLE_TIMEOUT,
+                );
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_notes = Arc::clone(&outgoing_tx.notes);
@@ -959,6 +960,8 @@ async fn run_daemon_relay_connector_inner(
                 if static_relay.is_some() {
                     registration.auth_token = active_relay_token.clone();
                 }
+                let mut registration_template = registration.clone();
+                let mut registration_refresh = tokio::task::JoinSet::new();
                 let register = crate::transport::relay_socket_connect::daemon_register(
                     &relay_url,
                     &handshake,
@@ -1020,7 +1023,7 @@ async fn run_daemon_relay_connector_inner(
                         &active_relay_token,
                     )
                 {
-                    slice_activation.resume_pending(&router, &state).await;
+                    slice_activation.resume_pending(&router, &state);
                 }
                 if replayed_display_tunnel_count > 0 {
                     crate::logging::info_with_fields(
@@ -1054,6 +1057,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
                 let mut clients_were_attached = false;
+                let mut payload_tasks = IncomingEnvelopeTasks::default();
                 let reconnect_reason = loop {
                     tokio::select! {
                         changed = shutdown.changed() => {
@@ -1067,127 +1071,97 @@ async fn run_daemon_relay_connector_inner(
                                 sleep(Duration::from_millis(25)).await;
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                payload_tasks.shutdown().await;
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 disconnect_relay(&state, "daemon shutting down", presence).await;
                                 break 'connector;
                             }
                         }
-                        incoming = inbound.recv() => {
-                            match incoming {
-                                Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
-                                    let (payload, receipt) = match message {
-                                        Message::Text(payload) => match upload_chunks.then(|| crate::transport::relay_upload::receipt(&payload)).flatten() {
-                                            // Receipts for the kernel's own chunks free its upload window.
-                                            Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
-                                            Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),
-                                            None => relay_frames.receive(&payload).unwrap_or_else(|_| (
-                                                Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
-                                        },
-                                        binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
-                                    };
-                                    if let Some(receipt) = receipt {
-                                        if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
-                                            abort_leased_projection_pump_task(
-                                                &mut leased_projection_pump_task,
-                                            );
-                                            abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                            abort_subscription_tasks(&router, &subscription_tasks).await;
-                                            writer_task.abort();
-                                            disconnect_relay(&state, "relay receipt writer stalled", presence).await;
-                                            break "relay receipt writer stalled";
-                                        }
-                                    }
-                                    let Some(payload) = payload else { continue; };
-
-                                    if let Err(error) = timeout(RELAY_READ_IDLE_LIMIT, handle_incoming_envelope(
-                                        IncomingEnvelopeContext {
-                                            router: &router,
-                                            command_sequence: &command_sequence,
-                                            state: &state,
-                                            outgoing_tx: &outgoing_tx,
-                                            subscription_tasks: &subscription_tasks,
-                                            event_runtime: &event_runtime,
-                                            command_result_cache: &command_result_cache,
-                                            reconnect_gate: &reconnect_gate,
-                                            local_browser: &local_browser,
-                                        },
-                                        static_relay.is_none().then_some((
-                                            relay_url.as_str(),
-                                            active_relay_token.as_str(),
-                                        )),
-                                        &payload,
-                                    ))
-                                    .await
-                                    .unwrap_or_else(|_| Err(DaemonError::LocalTransport {
-                                        operation: "relay_payload",
-                                        message: "relay payload processing exceeded the read deadline".into(),
-                                    }))
-                                    {
-                                        let disconnect_reason =
-                                            format!("relay payload handling failed: {error}");
-                                        if relay_refused_token(&disconnect_reason) {
-                                            refused = Some(RefusedCredentials::new(
-                                                &relay_url,
-                                                &active_relay_token,
-                                            ));
-                                        }
-                                        abort_leased_projection_pump_task(
-                                            &mut leased_projection_pump_task,
-                                        );
-                                        abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                        abort_subscription_tasks(&router, &subscription_tasks).await;
-                                        writer_task.abort();
-                                        disconnect_relay(
-                                            &state,
-                                            &disconnect_reason,
-                                            presence,
-                                        )
-                                        .await;
-                                        break "relay payload handling failed";
-                                    }
+                        // At capacity, leave data in the wire window and withhold
+                        // its receipts. The reader still handles socket control.
+                        Some(message) = inbound.recv(), if payload_tasks.has_capacity() => {
+                            let (payload, receipt) = match message {
+                                Message::Text(payload) => relay_frames.receive(&payload).unwrap_or_else(|_| (
+                                    Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
+                                binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
+                            };
+                            if let Some(payload) = payload {
+                                if let Err(error) = payload_tasks.spawn(
+                                    IncomingEnvelopeContext {
+                                        router: &router,
+                                        command_sequence: &command_sequence,
+                                        state: &state,
+                                        outgoing_tx: &outgoing_tx,
+                                        subscription_tasks: &subscription_tasks,
+                                        event_runtime: &event_runtime,
+                                        command_result_cache: &command_result_cache,
+                                        reconnect_gate: &reconnect_gate,
+                                        local_browser: &local_browser,
+                                    },
+                                    static_relay.is_none().then_some((
+                                        relay_url.clone(),
+                                        active_relay_token.clone(),
+                                    )),
+                                    payload,
+                                ) {
+                                    break Err(error);
                                 }
-                                Some(Ok(Message::Close(frame))) => {
+                            }
+                            if let Some(receipt) = receipt {
+                                if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
+                                    abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                    payload_tasks.shutdown().await;
+                                    abort_subscription_tasks(&router, &subscription_tasks).await;
+                                    writer_task.abort();
+                                    disconnect_relay(&state, "relay receipt writer stalled", presence).await;
+                                    break Ok("relay receipt writer stalled");
+                                }
+                            }
+                        }
+                        ended = &mut reader_end => {
+                            let reason = match ended {
+                                Ok(socket_thread::ReaderEnd::SocketClose(frame)) => {
                                     if frame.as_ref().is_some_and(|frame| relay_refused_token(&frame.reason)) {
                                         refused = Some(RefusedCredentials::new(
                                             &relay_url,
                                             &active_relay_token,
                                         ));
                                     }
-                                    abort_leased_projection_pump_task(
-                                        &mut leased_projection_pump_task,
-                                    );
-                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&router, &subscription_tasks).await;
-                                    writer_task.abort();
-                                    disconnect_relay(&state, "relay close frame received", presence).await;
-                                    break "relay close frame received";
+                                    "relay close frame received"
                                 }
-                                Some(Ok(_)) => {}
-                                ended => {
-                                    let reason = match ended {
-                                        Some(Err(reason)) => reason,
-                                        _ => "relay read failed or ended",
-                                    };
-                                    abort_leased_projection_pump_task(
-                                        &mut leased_projection_pump_task,
-                                    );
-                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&router, &subscription_tasks).await;
-                                    writer_task.abort();
-                                    disconnect_relay(&state, reason, presence).await;
-                                    break reason;
+                                Ok(socket_thread::ReaderEnd::RelayClose(reason)) => {
+                                    break Err(DaemonError::LocalTransport {
+                                        operation: "relay closed connection",
+                                        message: reason,
+                                    });
                                 }
+                                Ok(socket_thread::ReaderEnd::Failed(reason)) => reason,
+                                Err(_) => "relay read failed or ended",
+                            };
+                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                            abort_inventory_refresh_task(&mut inventory_refresh_task);
+                            payload_tasks.shutdown().await;
+                            abort_subscription_tasks(&router, &subscription_tasks).await;
+                            writer_task.abort();
+                            disconnect_relay(&state, reason, presence).await;
+                            break Ok(reason);
+                        }
+                        handled = payload_tasks.next(), if !payload_tasks.is_empty() => {
+                            if let Some(Err(error)) = handled {
+                                break Err(error);
                             }
                         }
                         writer_done = &mut writer_done_rx => {
                             let _ = writer_done;
                             abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
+                            payload_tasks.shutdown().await;
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
                             disconnect_relay(&state, "relay writer ended", presence).await;
-                            break "relay writer ended";
+                            break Ok("relay writer ended");
                         }
                         _ = token_refresh_interval.tick() => {
                             if static_relay.is_some() {
@@ -1214,7 +1188,7 @@ async fn run_daemon_relay_connector_inner(
                                 &relay_url,
                                 &mut active_relay_token,
                                 &config,
-                                || router.relay_registration(),
+                                || std::future::ready(registration_template.clone()),
                             )
                             .await;
                             let reconnect_reason = match continuity {
@@ -1262,19 +1236,43 @@ async fn run_daemon_relay_connector_inner(
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
                             let accounts = router.provider_account_generation();
                             let mut heartbeat_registration = None;
+                            if let Some(refreshed) = registration_refresh.try_join_next() {
+                                match refreshed {
+                                    Ok((registration, generation, name)) => {
+                                        registration_template = registration;
+                                        published_accounts = generation;
+                                        published_machine_name = name;
+                                        heartbeat_registration = Some(registration_template.clone());
+                                    }
+                                    Err(error) => crate::logging::warn_with_fields(
+                                        "daemon.relay_client", "relay registration refresh failed; retrying",
+                                        serde_json::json!({ "error": error.to_string() }),
+                                    ),
+                                }
+                            }
+                            let current_machine_name = router.machine_name();
+                            if (accounts != published_accounts || current_machine_name != published_machine_name)
+                                && registration_refresh.is_empty()
+                            {
+                                let router = Arc::clone(&router);
+                                registration_refresh.spawn(async move {
+                                    (router.relay_registration().await, accounts, current_machine_name)
+                                });
+                            }
                             if static_relay.is_none() {
                                 let config = router.relay_config_snapshot();
                                 match dynamic_relay_heartbeat_registration(
                                     &relay_url,
                                     &mut active_relay_token,
                                     &config,
-                                    || router.relay_registration(),
+                                    || std::future::ready(registration_template.clone()),
                                 )
                                 .await
                                 {
-                                    Ok(registration) => {
-                                        heartbeat_registration = registration;
+                                    Ok(Some(registration)) => {
+                                        heartbeat_registration = Some(registration);
                                     }
+                                    Ok(None) => {}
                                     Err(reason) => {
                                         crate::logging::warn_with_fields(
                                             "daemon.relay_client",
@@ -1303,27 +1301,8 @@ async fn run_daemon_relay_connector_inner(
                                     }
                                 }
                             }
-                            // A login added after this socket registered is offered to the
-                            // owner's other kernels now, not at the next reconnect.
-                            if heartbeat_registration.is_none() && accounts != published_accounts {
-                                let mut registration = router.relay_registration().await;
+                            if let Some(registration) = heartbeat_registration.as_mut() {
                                 registration.auth_token = active_relay_token.clone();
-                                heartbeat_registration = Some(registration);
-                            }
-                            let current_machine_name = router.machine_name();
-                            if current_machine_name != published_machine_name {
-                                published_machine_name = current_machine_name;
-                                if heartbeat_registration.is_none() {
-                                    let mut registration = router.relay_registration().await;
-                                    registration.auth_token = active_relay_token.clone();
-                                    heartbeat_registration = Some(registration);
-                                }
-                                if let Some(presence) = presence {
-                                    presence.publish(true, "machine renamed");
-                                }
-                            }
-                            if heartbeat_registration.is_some() {
-                                published_accounts = accounts;
                             }
                             if refresh_remote_inventory {
                                 // Local clients and relay clients alike: either one following
@@ -1360,10 +1339,11 @@ async fn run_daemon_relay_connector_inner(
                             }) {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                payload_tasks.shutdown().await;
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 disconnect_relay(&state, "relay heartbeat send failed", presence).await;
-                                break "relay heartbeat send failed";
+                                break Ok("relay heartbeat send failed");
                             }
                             // Same-identity token installation reauthenticates in place.
                             // Its pending confirmation must run after this heartbeat too,
@@ -1377,7 +1357,7 @@ async fn run_daemon_relay_connector_inner(
                                     &active_relay_token,
                                 )
                             {
-                                slice_activation.resume_pending(&router, &state).await;
+                                slice_activation.resume_pending(&router, &state);
                             }
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),
@@ -1394,6 +1374,23 @@ async fn run_daemon_relay_connector_inner(
                                 }
                             }
                         }
+                    }
+                };
+                let reconnect_reason = match reconnect_reason {
+                    Ok(reason) => reason,
+                    Err(error) => {
+                        let reason = format!("relay payload handling failed: {error}");
+                        if relay_refused_token(&reason) {
+                            refused =
+                                Some(RefusedCredentials::new(&relay_url, &active_relay_token));
+                        }
+                        abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                        abort_inventory_refresh_task(&mut inventory_refresh_task);
+                        payload_tasks.shutdown().await;
+                        abort_subscription_tasks(&router, &subscription_tasks).await;
+                        writer_task.abort();
+                        disconnect_relay(&state, &reason, presence).await;
+                        "relay payload handling failed"
                     }
                 };
                 let cancelled_reads = reconnect_gate.cancel_reads();
