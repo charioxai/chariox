@@ -105,6 +105,7 @@ pub struct DurableKernelStateStore {
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
     skill_catalog_owner: bool,
+    workflow_instruction_root: Option<Arc<Path>>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -408,6 +409,7 @@ impl DurableKernelStateStore {
                 message: "cannot open the owned startup connection".into(),
             })?;
         store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        store.workflow_instruction_root = Some(Arc::from(config.workflow_instruction_root()));
         Ok(store)
     }
     pub(crate) fn owns_skill_catalog(&self) -> bool {
@@ -591,6 +593,7 @@ impl DurableKernelStateStore {
             workflow_history_authority: Default::default(),
             outside_followed,
             skill_catalog_owner: false,
+            workflow_instruction_root: None,
         })
     }
 

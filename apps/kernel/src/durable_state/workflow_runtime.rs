@@ -145,7 +145,8 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })?;
         let encoded = encode_workflow_session(session)?;
-        self.writer
+        let sequence = self
+            .writer
             .execute(DurableWriteOperation::WorkflowRuntimeTransition {
                 event_id,
                 event_kind,
@@ -159,7 +160,18 @@ impl DurableKernelStateStore {
                 delivery_receipts: encoded.delivery_receipts,
                 prompt_state_jsons,
                 invocation_creator,
-            })
+            })?;
+        // Keep instructions available until the terminal state actually commits.
+        if let Some(root) = &self.workflow_instruction_root {
+            for run in session
+                .workflow_runs()
+                .iter()
+                .filter(|run| run.status().is_terminal())
+            {
+                crate::workflow_node_instructions::remove_run(root, session.id(), run.id());
+            }
+        }
+        Ok(sequence)
     }
 
     pub(crate) fn migrate_legacy_workflow_runtime(

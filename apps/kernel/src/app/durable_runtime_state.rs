@@ -362,6 +362,10 @@ impl DaemonApp {
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        crate::workflow_node_instructions::remove_inactive_runs(
+            &self.config.workflow_instruction_root(),
+            &self.sessions.read().store().list(),
+        );
         self.sessions.write().restore_room_environments()?;
         if default_named_agents > 0 {
             // Later renames are saved per agent, so the names given above must

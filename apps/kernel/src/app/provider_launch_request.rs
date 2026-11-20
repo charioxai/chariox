@@ -317,6 +317,9 @@ impl DaemonApp {
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
             ));
         }
+        if request.agent_id.is_some() {
+            request.agent_cli_endpoint = Some(self.config.agent_cli_endpoint());
+        }
         if request.provider_env_remove.is_empty() {
             request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
         }

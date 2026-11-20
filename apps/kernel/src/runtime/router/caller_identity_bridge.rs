@@ -6,6 +6,14 @@ use crate::runtime::command::{KernelCaller, KernelCommandSource};
 use crate::runtime::response_redaction::redact_response_for_user;
 
 impl CommandRouter {
+    pub(crate) fn active_agent_cli_run(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::RuntimeProviderRun> {
+        let run = self.provider_run_projection.get(run_id)?;
+        (run.state() != crate::provider::ProviderRunState::Ended).then_some(run)
+    }
+
     pub(crate) fn local_popup_owner_user_id(&self) -> String {
         self.config_projection.local_owner_user_id()
     }
