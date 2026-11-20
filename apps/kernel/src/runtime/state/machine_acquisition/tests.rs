@@ -104,7 +104,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
     };
     assert!(
         !state.interaction_person_only(&answer),
-        "an external agent approves a rental for the person"
+        "authorized parent agents may answer existing offload approvals"
     );
     let owner = state
         .owned
@@ -135,8 +135,8 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .await
         .unwrap();
     let error = gate.await.unwrap().unwrap_err().to_string();
-    assert!(error.contains("denied"));
-    assert!(error.contains("it was not sent to the service"));
+    assert!(error.contains("Denied by"));
+    assert!(error.contains("The request was not sent to the service"));
 }
 
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("denied"));
+        .contains("Denied by"));
 }
 
 #[test]
@@ -267,7 +267,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("it was not sent to the service"));
+        .contains("The request was not sent to the service"));
 }
 
 pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {

@@ -83,7 +83,9 @@ pub use runtime_project::{
     ProjectCopyOrigin, RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus,
     SessionProjectSelection,
 };
-pub(crate) use runtime_session::DurableWorkflowHotState;
+pub(crate) use runtime_session::{
+    DurableWorkflowHotState, MachineApprovalReceipt, MachineApprovalReceiptState,
+};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowHandoffValidationFailure, WorkflowHandoffValidationWarning,

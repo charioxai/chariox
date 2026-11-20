@@ -18,7 +18,9 @@ impl KernelRuntimeOwnedState {
             .write()
             .iter()
             .filter(|(_, pending)| pending.belongs_to(&self.session_store))
-            .filter(|(_, pending)| pending.kernel_operation_owner.is_some())
+            .filter(|(_, pending)| {
+                pending.kernel_operation_owner.is_some() && pending.async_task_id.is_none()
+            })
             // MP-11 A07: a hand-off survives shutdown as safe metadata; the
             // agent sweep re-arms it with a revalidated target on restart.
             .filter(|(id, _)| !(shutdown && super::super::is_handoff_interaction_id(id)))
@@ -143,5 +145,6 @@ impl KernelRuntimeOwnedState {
 /// operation decisions and every vault prompt (`vault-unlock-…`,
 /// `vault-manage-…`, `vault-passphrase-…`).
 fn waits_in_memory(interaction: &crate::session::RuntimeInteraction) -> bool {
-    interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-")
+    interaction.asking_task_id().is_none()
+        && (interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-"))
 }

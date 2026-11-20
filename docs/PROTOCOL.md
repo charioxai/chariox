@@ -4202,8 +4202,11 @@ Workflow trigger and deployment direction:
   from an agent driving a Room through reach settles any open card of the person, in any of
   their Rooms and from any agent depth, except the cards the person keeps for every choice:
   secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
-  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
-  Those are refused with
+  (access grants, sudo, critical approvals), external payments such as payment cards in a
+  browser, and any card marked critical. An authorized external agent can answer a Chariox
+  machine rental approval. The person's automatic offload and allocation setting allows
+  their Room agents to rent without a card.
+  Person-only cards are refused with
   `kernel_access_human_only` and stay open; outside events carry them as pointers and every
   other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
   answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has

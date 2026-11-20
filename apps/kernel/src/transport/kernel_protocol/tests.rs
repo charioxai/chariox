@@ -660,6 +660,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
         KernelEvent::RuntimeInteractionsChanged {
             session_id,
             active_interactions,
+            ..
         } => {
             assert_eq!(session_id, "session-a");
             assert_eq!(active_interactions.len(), 1);
