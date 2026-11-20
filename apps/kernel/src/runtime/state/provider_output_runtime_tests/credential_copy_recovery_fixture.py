@@ -127,6 +127,11 @@ class Handler(socketserver.StreamRequestHandler):
                         (home / 'synthetic-official-login-invoked').write_text('account/login/start')
                         result = {'type':'chatgptDeviceCode', 'loginId':'synthetic-login', 'verificationUrl':oauth_url + '/device', 'userCode':'SYNTHETIC'}
                     elif method == 'thread/start':
+                        refusal = home / 'synthetic-thread-refusal'
+                        if refusal.exists():
+                            refusal.unlink()
+                            self.send({'id': request['id'], 'error': {'code': -32000, 'message': 'Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.'}})
+                            continue
                         if login_marker.exists(): (home / 'synthetic-ready').write_text('thread/start')
                         tid = 'native-thread-' + str(len(state['threads']) + 1)
                         state['threads'][tid] = []

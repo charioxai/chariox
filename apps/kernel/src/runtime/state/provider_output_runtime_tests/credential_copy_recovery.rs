@@ -18,6 +18,11 @@ async fn mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copied_login_recovers_when_codex_refuses_to_start_the_first_thread() {
+    isolated_case(RecoveryCase::ThreadStart).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue() {
     isolated_case(RecoveryCase::RelaunchFailure).await;
 }
@@ -32,6 +37,7 @@ enum RecoveryCase {
     Prompt,
     SudoPrompt,
     Startup,
+    ThreadStart,
     RelaunchFailure,
     RelaunchStall,
 }
@@ -48,6 +54,9 @@ async fn isolated_case(recovery: RecoveryCase) {
         }
         RecoveryCase::Startup => {
             "mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker"
+        }
+        RecoveryCase::ThreadStart => {
+            "copied_login_recovers_when_codex_refuses_to_start_the_first_thread"
         }
         RecoveryCase::RelaunchFailure => {
             "mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue"
@@ -214,6 +223,9 @@ async fn run_case(recovery: RecoveryCase) {
         Some(app.start_provider_launch(request).unwrap())
     } else {
         app.launch_provider(request).unwrap();
+        if matches!(recovery, RecoveryCase::ThreadStart) {
+            std::fs::write(target_home.join("synthetic-thread-refusal"), "").unwrap();
+        }
         app.submit_prompt(
             session.id(),
             attachments[0].id(),

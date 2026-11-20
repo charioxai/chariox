@@ -1226,6 +1226,9 @@ impl KernelRuntimeState {
             // restart. A failed writer cannot authorize new provider dispatch.
             return;
         }
+        for finished in dispatches.provider_auth_failures {
+            self.spawn_structured_prompt_auth_recovery(finished);
+        }
         for (session_id, agent_id) in dispatches.project_queue_promotions {
             let state = self.clone();
             tokio::spawn(async move {
