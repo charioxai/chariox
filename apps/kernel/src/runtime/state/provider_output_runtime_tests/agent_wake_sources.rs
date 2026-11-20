@@ -1387,6 +1387,74 @@ async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
 }
 
 #[tokio::test]
+async fn committed_timer_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_intent").await;
+}
+
+#[tokio::test]
+async fn committed_driver_wake_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_occurrence").await;
+}
+
+async fn committed_wake_delivers_after_lost_ack(operation: &str) {
+    use crate::durable_state::agent_lifecycle::faults::TestFaultDir;
+    let faults = crate::test_support::TestTempDir::new("wake-ack");
+    let f = {
+        let _faults = TestFaultDir::set(faults.path());
+        fixture("wake-ack-delivery", false).await
+    };
+    let task = f.begin("waiting-turn");
+    let scheduler = if operation == "wake_intent" {
+        let mut timer = f.wake(&task, "wake-ack");
+        timer.kind = "timer".into();
+        timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 1_000);
+        let registration = timer.registration_id.clone();
+        f.store()
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+        f.wait_on(&task, &registration);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        let runtime = f.runtime.clone();
+        Some(tokio::spawn(async move {
+            runtime.run_agent_wake_scheduler().await
+        }))
+    } else {
+        let wake = f.arm(&task, "wake-ack").unwrap();
+        f.wait_on(&task, &wake.registration_id);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        f.runtime
+            .wake_sink(KIND)
+            .occurred(f.occurrence(&wake.id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap_err();
+        None
+    };
+    let received = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let wake = f.store().agent_wake("wake-ack").unwrap().unwrap();
+            if wake.last_delivered_at_ms.is_some() {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
+    assert!(faults.path().join("drop-ack.log").exists(), "{operation}");
+    assert_eq!(
+        received
+            .expect("a committed wake delivers without a sweep")
+            .fire_count,
+        1
+    );
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");
