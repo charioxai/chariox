@@ -383,6 +383,28 @@ pub struct DurableStateEvent {
     pub payload: serde_json::Value,
 }
 
+impl DurableStateEvent {
+    /// The inbox owns queued messages. Ignore persisted copies of its Room
+    /// projection before replay decodes any session.
+    pub(crate) fn discard_queued_message_projections(&mut self) {
+        fn discard(session: &mut serde_json::Value) {
+            if let Some(session) = session.as_object_mut() {
+                session.remove("queued_agent_messages");
+            }
+        }
+        if let Some(session) = self.payload.get_mut("session") {
+            discard(session);
+        }
+        if let Some(sessions) = self
+            .payload
+            .get_mut("sessions")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            sessions.iter_mut().for_each(discard);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DurableStateSnapshot {
     pub sequence: u64,

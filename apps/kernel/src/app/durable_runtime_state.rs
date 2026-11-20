@@ -1010,8 +1010,9 @@ impl DaemonApp {
             if events.is_empty() {
                 break;
             }
-            for event in events {
+            for mut event in events {
                 replay_cursor = event.sequence;
+                event.discard_queued_message_projections();
                 attachment_state.apply_event(&event);
             }
         }
@@ -1249,9 +1250,10 @@ impl DaemonApp {
 
     fn restore_durable_state_event(
         &mut self,
-        event: DurableStateEvent,
+        mut event: DurableStateEvent,
         diagnostics: &mut DurableRestoreDiagnostics,
     ) -> Result<(), DaemonError> {
+        event.discard_queued_message_projections();
         match event.kind.as_str() {
             "project.created" | "project.updated" => {
                 let project: RuntimeProject = decode_durable_payload_field(
@@ -2079,6 +2081,80 @@ mod tests {
                 .map(|prompt| prompt.id()),
             Some("prompt-newer-than-snapshot")
         );
+    }
+
+    fn append_session_event_with_message_projection(
+        app: &mut DaemonApp,
+        predecessor: bool,
+    ) -> (String, DurableStateEvent) {
+        let (session, agent) = crate::app::KernelSessionService::new(app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "tree",
+            ))
+            .unwrap();
+        let mut payload = serde_json::to_value(&session).unwrap();
+        let mut message = serde_json::json!({
+            "id": "agent-message-1",
+            "agent_id": agent.id(),
+            "sender": "peer"
+        });
+        if predecessor {
+            message["prompt"] = "old projection".into();
+        } else {
+            message["preview"] = "current projection".into();
+            message["truncated"] = false.into();
+        }
+        payload["queued_agent_messages"] = serde_json::json!([message]);
+        let event = app
+            .durable_state_store()
+            .append_event(
+                "session.updated",
+                Some(session.id().into()),
+                serde_json::json!({"session": payload}),
+            )
+            .unwrap();
+        (session.id().into(), event)
+    }
+
+    #[test]
+    fn eventlogpreview_boots_with_predecessor_session_event() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let room = {
+            let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+            append_session_event_with_message_projection(&mut app, true).0
+        };
+        let app = DaemonApp::bootstrap(config).expect("predecessor session event should restore");
+        let session = app.sessions().get_session(&room).unwrap();
+        assert!(session.queued_agent_messages().is_empty());
+    }
+
+    #[test]
+    fn eventlogpreview_restores_predecessor_session_event_without_restart() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, event) = append_session_event_with_message_projection(&mut app, true);
+        app.restore_durable_state_event(event, &mut DurableRestoreDiagnostics::default())
+            .unwrap();
+        let session = app.sessions().get_session(&room).unwrap();
+        assert!(session.queued_agent_messages().is_empty());
+    }
+
+    #[test]
+    fn eventlogpreview_preserves_current_persisted_event_payload() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, event) = append_session_event_with_message_projection(&mut app, false);
+        app.restore_durable_state_event(event.clone(), &mut DurableRestoreDiagnostics::default())
+            .unwrap();
+        assert_eq!(
+            app.durable_state_store()
+                .load_events_after(event.sequence - 1)
+                .unwrap()[0]
+                .payload,
+            event.payload
+        );
+        let restored = app.sessions().get_session(&room).unwrap();
+        assert_eq!(restored.id(), room);
+        assert!(restored.queued_agent_messages().is_empty());
     }
 
     // MP-08/MP-10: a completed Copy creates its Named Project before the first
