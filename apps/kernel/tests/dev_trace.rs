@@ -308,12 +308,26 @@ async fn trace_uses_real_permission_terminal_and_inbox() {
         .iter()
         .find(|terminal| terminal["title"] == "Load lab terminal")
         .unwrap_or_else(|| panic!("no generated Room terminal: {list}"));
-    let output = real_kernel::terminal(&mut socket, &room, json!({
-        "operation": "wait", "terminal_id": terminal["terminal_id"], "after_offset": 0,
-        "watches": [{"kind": "output_contains", "text": "Generated lab text"}], "timeout_ms": 10000,
-    })).await.unwrap();
-    assert_eq!(
-        output["waited"]["fired"]["kind"], "output_matched",
+    let output = real_kernel::terminal(
+        &mut socket,
+        &room,
+        json!({"operation": "wait", "terminal_id": terminal["terminal_id"],
+            "watches": [{"kind": "finished"}], "timeout_ms": 10000}),
+    )
+    .await
+    .unwrap();
+    let waited = &output["waited"];
+    assert_eq!(waited["fired"]["kind"], "finished", "{output}");
+    assert_eq!(waited["fired"]["exit_code"], 0, "{output}");
+    assert!(
+        waited["screen_text"]
+            .as_str()
+            .unwrap()
+            .contains("Generated lab text"),
+        "{output}"
+    );
+    assert!(
+        waited["output_offset"].as_u64().unwrap() >= 24 * 80,
         "{output}"
     );
     let inbox = request(&mut socket, json!({"GetPersonInbox": null}))
