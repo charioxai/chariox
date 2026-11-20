@@ -578,20 +578,16 @@ impl KernelRuntimeOwnedState {
         if !self.publication_activation.is_active() {
             return WorkflowPromptDispatches::default();
         }
-        let collection = if self
-            .config_projection
-            .snapshot()
-            .publication_control_state_root
-            .is_some()
-        {
-            self.session_store
-                .write()
-                .collect_due_workflow_watchdogs_after_publication_activation(now_ms)
-        } else {
-            self.session_store
-                .write()
-                .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
-        };
+        let config = self.config_projection.snapshot();
+        let collection = self.session_store.write().collect_due_workflow_watchdogs(
+            now_ms,
+            config.publication_control_state_root.is_some(),
+            config
+                .cloud_relay
+                .as_ref()
+                .filter(|profile| profile.kernel_removal().is_some())
+                .map(|profile| profile.user_id.as_str()),
+        );
         let collection = match collection {
             Ok(collection) => collection,
             Err(error) => {
@@ -1348,6 +1344,7 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.require_linked_workflow_owner(session_id)?;
         if !self.publication_activation.is_active() {
             return Ok((None, WorkflowPromptDispatches::default()));
         }
@@ -1414,6 +1411,9 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> WorkflowPromptDispatches {
+        if self.require_linked_workflow_owner(session_id).is_err() {
+            return WorkflowPromptDispatches::default();
+        }
         if !self.publication_activation.is_active() {
             return WorkflowPromptDispatches::default();
         }

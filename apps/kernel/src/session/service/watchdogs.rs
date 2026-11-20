@@ -274,26 +274,21 @@ impl SessionService {
         &mut self,
         now_ms: u64,
     ) -> Result<WorkflowWatchdogCollection, DaemonError> {
-        self.collect_due_workflow_watchdogs(now_ms, false)
+        self.collect_due_workflow_watchdogs(now_ms, false, None)
     }
 
-    pub(crate) fn collect_due_workflow_watchdogs_after_publication_activation(
-        &mut self,
-        now_ms: u64,
-    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
-        self.collect_due_workflow_watchdogs(now_ms, true)
-    }
-
-    fn collect_due_workflow_watchdogs(
+    pub(crate) fn collect_due_workflow_watchdogs(
         &mut self,
         now_ms: u64,
         publication_runtime_prepared: bool,
+        unlinked_owner: Option<&str>,
     ) -> Result<WorkflowWatchdogCollection, DaemonError> {
         let mut plans = Vec::new();
         let mut changed_session_ids = BTreeSet::new();
         let session_ids = self
             .store
             .non_ended_sessions()
+            .filter(|session| Some(session.owner_user_id()) != unlinked_owner)
             .map(|s| s.id().to_string())
             .collect::<Vec<_>>();
         for session_id in session_ids {

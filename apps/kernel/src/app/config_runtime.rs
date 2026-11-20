@@ -3,6 +3,43 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 
 impl DaemonApp {
+    pub(crate) fn persist_cloud_relay_token(
+        &mut self,
+        profile: crate::config::PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        self.config.persist_cloud_relay_token(profile, token)?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
+    pub(crate) fn mark_cloud_kernel_removal(
+        &mut self,
+        expected: &crate::config::PersistedCloudRelayProfile,
+        removal: crate::config::CloudKernelRemoval,
+    ) -> Result<(), DaemonError> {
+        if self
+            .config
+            .persist_cloud_kernel_removal(expected, removal)?
+        {
+            self.config_projection.update(self.config.clone());
+            let sessions = self.sessions.read().list_all_sessions();
+            for session in sessions {
+                if session.host_daemon_id() == self.config.daemon_id
+                    && session.owner_user_id() == expected.user_id
+                {
+                    self.record_notice(
+                        session.id(),
+                        None,
+                        self.attachments.list_session_attachment_ids(session.id()),
+                        crate::runtime::cloud_relay_control::cloud_kernel_removal_message(removal),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn configure_relay(
         &mut self,
         relay_url: Option<String>,

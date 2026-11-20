@@ -1,9 +1,64 @@
 use super::{
-    persisted_daemon::update_persisted_daemon_config, DaemonConfig, PersistedCloudRelayProfile,
+    persisted_daemon::update_persisted_daemon_config, CloudKernelRemoval, DaemonConfig,
+    PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
 
 impl DaemonConfig {
+    pub(crate) fn persist_cloud_relay_token(
+        &mut self,
+        profile: PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        let mut updated = self.clone();
+        updated.relay_url = Some(profile.relay_url.clone());
+        updated.relay_token = Some(token);
+        updated.cloud_relay = Some(profile);
+        updated.validate()?;
+        updated.persist_kernel_cloud_state()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub(crate) fn persist_cloud_kernel_removal(
+        &mut self,
+        expected: &PersistedCloudRelayProfile,
+        removal: CloudKernelRemoval,
+    ) -> Result<bool, DaemonError> {
+        let Some(profile) = self.cloud_relay.as_ref() else {
+            return Ok(false);
+        };
+        if profile.kernel_unlinked
+            || profile.kernel_removal() == Some(removal)
+            || expected.kernel_credential.is_none()
+            || profile.kernel_credential != expected.kernel_credential
+            || profile.account_id != expected.account_id
+            || profile.realm_id != expected.realm_id
+            || profile.kernel_id != expected.kernel_id
+        {
+            return Ok(false);
+        }
+        let mut updated = self.clone();
+        if crate::runtime::cloud_relay_control::cloud_relay_transport_selected(self) {
+            updated.relay_url = None;
+            updated.relay_token = None;
+        }
+        let mut profile = profile.clone();
+        profile.token_expires_at_ms = None;
+        profile.kernel_removal_pending = removal == CloudKernelRemoval::Pending;
+        profile.kernel_unlinked = removal == CloudKernelRemoval::Permanent;
+        if profile.kernel_unlinked {
+            profile.kernel_credential = None;
+            profile.machine_credential = None;
+            profile.cloud_session_token = None;
+            profile.cloud_session_expires_at_ms = None;
+        }
+        updated.cloud_relay = Some(profile);
+        updated.persist_kernel_cloud_state()?;
+        *self = updated;
+        Ok(true)
+    }
+
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
         if self.cloud_relay.is_some() {
             return self.persist_kernel_cloud_state();

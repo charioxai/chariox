@@ -1,6 +1,6 @@
-use crate::config::PersistedCloudRelayProfile;
+use crate::config::{CloudKernelRemoval, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
-use crate::runtime::cloud_api_client::is_stale_cloud_link_error;
+use crate::runtime::cloud_api_client::{cloud_error_code, is_stale_cloud_link_error};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -35,12 +35,31 @@ pub(crate) async fn clear_cloud_profile(
 
 pub(crate) async fn clear_cloud_profile_if_stale(
     runtime_state: &KernelRuntimeState,
+    profile: PersistedCloudRelayProfile,
     error: &DaemonError,
 ) -> Result<(), DaemonError> {
-    if !is_stale_cloud_link_error(error) {
+    if profile.kernel_removal_pending || !is_stale_cloud_link_error(error) {
         return Ok(());
     }
-    clear_cloud_profile(runtime_state).await
+    runtime_state
+        .finish_cloud_relay_renewal(profile, None)
+        .await
+}
+
+pub(crate) async fn record_cloud_kernel_removal(
+    runtime_state: &KernelRuntimeState,
+    profile: &PersistedCloudRelayProfile,
+    error: &DaemonError,
+) -> Result<Option<CloudKernelRemoval>, DaemonError> {
+    let removal = match cloud_error_code(error) {
+        Some("kernel_removal_pending") => CloudKernelRemoval::Pending,
+        Some("kernel_unlinked") => CloudKernelRemoval::Permanent,
+        _ => return Ok(None),
+    };
+    runtime_state
+        .mark_cloud_kernel_removal(profile.clone(), removal)
+        .await?;
+    Ok(Some(removal))
 }
 
 /// Upgrade only a previously registered, key-pinned kernel. A shared predecessor
@@ -53,7 +72,7 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     let Some(mut profile) = config.cloud_relay.clone() else {
         return Ok(());
     };
-    if profile.kernel_credential.is_some() {
+    if profile.kernel_unlinked || profile.kernel_credential.is_some() {
         return Ok(());
     }
     // The relay-ready child runs before confirmation. Its machine credential

@@ -122,6 +122,8 @@ impl Kernel {
             machine_credential: None,
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: None,
         });
         let scratch = Scratch(
@@ -752,6 +754,8 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
         machine_credential: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
     let paired = current_authority(&config).unwrap();
