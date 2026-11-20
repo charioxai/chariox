@@ -181,20 +181,10 @@ impl AgentRuntimeCommandExecutor {
                     );
                 }
                 return Ok(LocalDaemonResponse::PromptSubmitted {
+                    session_id: request.session_id,
                     outcome: crate::session::PromptSubmissionOutcome::Queued {
-                        prompt: queued_prompt,
+                        prompt: (&queued_prompt).into(),
                     },
-                    agent_activity: if response_mode == PromptSubmitResponseMode::Full {
-                        self.prompt_commands.agent_activity_for_session(&session)
-                    } else {
-                        Default::default()
-                    },
-                    agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                        self.session_projection.change_sequence()
-                    } else {
-                        0
-                    },
-                    session,
                 });
             }
         }
@@ -269,14 +259,6 @@ impl AgentRuntimeCommandExecutor {
             );
         }
         timing.mark("active_turn");
-        let agent_activity = if response_mode == PromptSubmitResponseMode::Full {
-            self.prompt_commands
-                .agent_activity_for_session(&response_session)
-        } else {
-            Default::default()
-        };
-
-        timing.mark("activity_projection");
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
@@ -287,14 +269,8 @@ impl AgentRuntimeCommandExecutor {
         timing.mark("dispatch_spawn");
         timing.finish("prompt_submit", &trace_id);
         Ok(LocalDaemonResponse::PromptSubmitted {
-            outcome: prepared.outcome,
-            session: response_session,
-            agent_activity,
-            agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                self.session_projection.change_sequence()
-            } else {
-                0
-            },
+            session_id: request.session_id,
+            outcome: prepared.outcome.into(),
         })
     }
 
@@ -342,7 +318,7 @@ impl AgentRuntimeCommandExecutor {
         }
 
         Ok(LocalDaemonResponse::PromptCancelled {
-            cancellation: prepared.cancellation,
+            cancellation: prepared.cancellation.into(),
         })
     }
 
@@ -365,19 +341,14 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands
                 .spawn_queued_prompt_steer_dispatch(dispatch);
         }
 
         Ok(LocalDaemonResponse::QueuedPromptSteered {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
@@ -395,8 +366,16 @@ impl AgentRuntimeCommandExecutor {
             &request.target_agent_id,
             request.attachments,
         )?;
-        let prompt = self.prompt_commands.steer_active_prompt(request).await?;
-        Ok(LocalDaemonResponse::ActivePromptSteered { prompt })
+        let session_id = request.session_id.clone();
+        let active_prompt_id = request.expected_active_prompt_id.clone();
+        let steer = self.prompt_commands.steer_active_prompt(request).await?;
+        Ok(LocalDaemonResponse::ActivePromptSteered {
+            session_id,
+            agent_id: steer.target_agent_id().to_owned(),
+            active_prompt_id,
+            steer_id: steer.id().to_owned(),
+            accepted_at_ms: steer.created_at_ms(),
+        })
     }
 
     async fn cancel_queued_prompt(
@@ -418,15 +397,9 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
-
         Ok(LocalDaemonResponse::QueuedPromptCancelled {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
@@ -450,15 +423,9 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
-
         Ok(LocalDaemonResponse::QueuedPromptUpdated {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
@@ -506,7 +473,9 @@ impl AgentRuntimeCommandExecutor {
             &session,
         );
 
-        Ok(LocalDaemonResponse::PromptCompleted { completion })
+        Ok(LocalDaemonResponse::PromptCompleted {
+            completion: completion.into(),
+        })
     }
 }
 

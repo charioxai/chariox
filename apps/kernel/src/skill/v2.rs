@@ -440,7 +440,8 @@ pub enum SkillsV2Response {
         files: Vec<SkillFileManifest>,
     },
     Submitted {
-        outcome: crate::session::PromptSubmissionOutcome,
+        session_id: String,
+        outcome: crate::session::PromptSubmissionOutcome<crate::local::PromptReceipt>,
     },
 }
 

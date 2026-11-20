@@ -470,9 +470,13 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
     match response {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { prompt },
-            session,
-            ..
+            session_id,
         } => {
+            let session = harness.wait_for_session_where(
+                &session_id,
+                "started prompt in Room state",
+                |session| session.active_prompt_for_agent(prompt_agent.id()).is_some(),
+            );
             assert_eq!(prompt.status(), crate::session::PromptStatus::Running);
             assert!(session.active_provider_run_id().is_some());
             assert!(session.active_prompt_for_agent(prompt_agent.id()).is_some());

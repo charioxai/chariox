@@ -1,4 +1,72 @@
 use super::*;
+use crate::session::PromptStatus;
+
+/// Confirmation of a prompt mutation. Content belongs to the Room feed and history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptReceipt {
+    id: String,
+    target_agent_id: String,
+    status: PromptStatus,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl PromptReceipt {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn target_agent_id(&self) -> &str {
+        &self.target_agent_id
+    }
+
+    pub fn status(&self) -> PromptStatus {
+        self.status
+    }
+}
+
+impl From<&PromptQueueItem> for PromptReceipt {
+    fn from(prompt: &PromptQueueItem) -> Self {
+        Self {
+            id: prompt.id().to_owned(),
+            target_agent_id: prompt.target_agent_id().to_owned(),
+            status: prompt.status(),
+            created_at_ms: prompt.created_at_ms(),
+            updated_at_ms: prompt.updated_at_ms(),
+        }
+    }
+}
+
+impl From<PromptSubmissionOutcome> for PromptSubmissionOutcome<PromptReceipt> {
+    fn from(outcome: PromptSubmissionOutcome) -> Self {
+        match outcome {
+            PromptSubmissionOutcome::Started { prompt } => Self::Started {
+                prompt: (&prompt).into(),
+            },
+            PromptSubmissionOutcome::Queued { prompt } => Self::Queued {
+                prompt: (&prompt).into(),
+            },
+        }
+    }
+}
+
+impl From<PromptCompletion> for PromptCompletion<PromptReceipt> {
+    fn from(completion: PromptCompletion) -> Self {
+        Self {
+            completed: (&completion.completed).into(),
+            started_next: completion.started_next.as_ref().map(PromptReceipt::from),
+        }
+    }
+}
+
+impl From<PromptCancellation> for PromptCancellation<PromptReceipt> {
+    fn from(cancellation: PromptCancellation) -> Self {
+        Self {
+            prompt: (&cancellation.prompt).into(),
+            started_next: cancellation.started_next.as_ref().map(PromptReceipt::from),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitPromptRequest {
@@ -35,7 +103,7 @@ pub struct SubmitPromptsRequestItem {
 pub struct PromptBatchSubmissionResult {
     pub index: usize,
     pub agent_id: String,
-    pub outcome: PromptSubmissionOutcome,
+    pub outcome: PromptSubmissionOutcome<PromptReceipt>,
 }
 
 impl SubmitPromptsRequestItem {

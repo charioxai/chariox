@@ -294,13 +294,6 @@ impl AgentPromptCommandService {
         );
     }
 
-    pub(crate) fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
-    }
-
     pub(crate) fn inject_metaagent_turn_completion_event(
         &self,
         session_id: &str,

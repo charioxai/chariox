@@ -496,18 +496,25 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     submitGoalPrompt: async (text, targetAgentId) => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("goal needs an attached terminal")
-      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      const sessionId = sessionState().id
+      const response = await client.send<{ PromptSubmitted?: { session_id: string }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionId, attachment.id, targetAgentId, text, []))
       if (response.AgentTaskUpdated) {
         const update = response.AgentTaskUpdated
-        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        if (update.session_id !== sessionId || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
         deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
         requestRootRender()
         return
       }
-      const payload = response.PromptSubmitted ?? response.SessionState
-      if (!payload?.session) throw new Error("goal admission did not return session state")
-      deps.applySessionState(payload.session)
-      await deps.refreshAgentPanes(payload.session)
+      let updatedSession = response.SessionState?.session
+      if (response.PromptSubmitted) {
+        if (response.PromptSubmitted.session_id !== sessionId) throw new Error("foreign goal admission confirmation")
+        updatedSession = await getSessionState(client, sessionId).catch(() => undefined)
+        if (!updatedSession) return // The prompt was accepted. The Room feed will refresh the display.
+      }
+      if (!updatedSession) throw new Error("goal admission did not return a confirmation")
+      if (sessionState().id !== sessionId) return
+      deps.applySessionState(updatedSession)
+      await deps.refreshAgentPanes(updatedSession)
       deps.rebuildTranscript()
       requestRootRender()
     },

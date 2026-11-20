@@ -477,9 +477,14 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
         )
         .await
         .expect("metaagent prompt should submit");
-    let LocalDaemonResponse::PromptSubmitted { session, .. } = first else {
+    let LocalDaemonResponse::PromptSubmitted { session_id, .. } = first else {
         panic!("unexpected submit response: {first:?}");
     };
+    let session = router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(
         session
             .metaagent_task(metaagent.id())
@@ -501,9 +506,14 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
         )
         .await
         .expect("metaagent follow-up prompt should submit");
-    let LocalDaemonResponse::PromptSubmitted { session, .. } = second else {
+    let LocalDaemonResponse::PromptSubmitted { session_id, .. } = second else {
         panic!("unexpected submit response: {second:?}");
     };
+    let session = router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(
         session
             .metaagent_task(metaagent.id())
@@ -1130,7 +1140,16 @@ async fn resumed_metaagent_task_defers_private_continuation_behind_active_user_p
     else {
         panic!("user prompt should start ahead of the private continuation");
     };
-    assert_eq!(prompt.prompt(), user_text);
+    let submitted_session = router
+        .runtime_state()
+        .session_snapshot(session.id())
+        .await
+        .unwrap();
+    let active = submitted_session
+        .active_prompt_for_agent(metaagent.id())
+        .unwrap();
+    assert_eq!(active.id(), prompt.id());
+    assert_eq!(active.prompt(), user_text);
 
     let resume =
         LocalDaemonRequest::ResumeMetaagentTask(crate::local::ResumeMetaagentTaskRequest {

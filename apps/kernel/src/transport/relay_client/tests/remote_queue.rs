@@ -158,7 +158,11 @@ impl RemoteQueueFixture {
             .unwrap_or_else(|error| panic!("{command_id} should succeed: {error}"))
     }
 
-    async fn submit(&self, attachment_id: &str, prompt: &str) -> PromptSubmissionOutcome {
+    async fn submit(
+        &self,
+        attachment_id: &str,
+        prompt: &str,
+    ) -> PromptSubmissionOutcome<crate::local::PromptReceipt> {
         let request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
             session_id: self.session_id.clone(),
             attachment_id: attachment_id.to_string(),

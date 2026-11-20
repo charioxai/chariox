@@ -1,5 +1,4 @@
-import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
-import type { AgentRuntimeActivity, PromptQueueItem } from "./kernel-types-runtime.js"
+import type { ExternalProviderImportMetadata } from "./kernel-types-session.js"
 import type { SessionHistoryExternalObservation } from "./kernel-types-history.js"
 
 // MP-11 F7: public DTO; launch environment, MCP credentials and private resume data stay in the kernel.
@@ -314,33 +313,27 @@ export type TerminalOutputRecord = {
   bytes: number[]
 }
 
+export type PromptReceipt = {
+  id: string
+  target_agent_id: string
+  status: string
+  created_at_ms: number
+  updated_at_ms: number
+}
+
 export type PromptSubmittedPayload = {
+  session_id: string
   outcome: Record<string, unknown>
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
 }
 
 export type QueuedPromptSteeredPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
+  session_id: string
+  prompt: PromptReceipt
 }
 
-export type QueuedPromptCancelledPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
-}
+export type QueuedPromptCancelledPayload = QueuedPromptSteeredPayload
 
-export type QueuedPromptUpdatedPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
-}
+export type QueuedPromptUpdatedPayload = QueuedPromptSteeredPayload
 
 /** Local protocol: read-only account identity and status, with no credential/profile locations. */
 export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "identity_summary" | "auth_state" | "services" | "usage"> & { account_id: string }

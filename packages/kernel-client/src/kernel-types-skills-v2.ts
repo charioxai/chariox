@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: Skills v2 shared wire contract (533/141).
-import type { PromptAttachmentPart, PromptQueueItem } from "./kernel-types.js"
+import type { PromptAttachmentPart, PromptReceipt } from "./kernel-types.js"
 export const SKILLS_MIN_LOCAL_PROTOCOL = 533
 export const SKILLS_MIN_PEER_PROTOCOL = 141
 export type SkillScope =
@@ -205,7 +205,7 @@ export type SkillsV2Response =
   | { kind: "published"; revision: number; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }
   | { kind: "page"; revision: number; skills: (SkillProjection)[]; next_cursor: string | null }
   | { kind: "loaded"; skill_id: string; digest: string; body: string; root: string; files: (SkillFileManifest)[] }
-  | { kind: "submitted"; outcome: ({ Started: { prompt: PromptQueueItem } } | { Queued: { prompt: PromptQueueItem } }) }
+  | { kind: "submitted"; session_id: string; outcome: ({ Started: { prompt: PromptReceipt } } | { Queued: { prompt: PromptReceipt } }) }
 
 export type SkillCatalogEvent =
   | { kind: "changed"; revision: number; scope: SkillScope; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }

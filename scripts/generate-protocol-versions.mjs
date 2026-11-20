@@ -28,6 +28,7 @@ const currentSnapshots = [
   "apps/kernel/src/agent_move/protocol-639-241.json",
   "fixtures/cross-room-cards-protocol.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-list-1011.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/prompt-control-receipts.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/person-inbox-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",

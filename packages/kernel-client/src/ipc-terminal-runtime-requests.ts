@@ -301,7 +301,8 @@ export function steerQueuedPromptRequest(
 
 // MP-08 / MP-10: Admission targets one home turn and never queues or starts
 // a replacement turn if it has already settled.
-export const activePromptSteeringMinimumProtocolVersion = 491
+export const promptControlReceiptMinimumProtocolVersion = 1091
+export const activePromptSteeringMinimumProtocolVersion = promptControlReceiptMinimumProtocolVersion
 
 export function steerActivePromptRequest(
   sessionId: string,

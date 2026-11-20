@@ -432,46 +432,25 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         callback: Option<CredentialEnrollmentCallback>,
     },
-    PromptSubmitted {
-        outcome: PromptSubmissionOutcome,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    PromptSubmitted { session_id: String, outcome: PromptSubmissionOutcome<PromptReceipt>, },
     PromptsSubmitted {
+        session_id: String,
         results: Vec<PromptBatchSubmissionResult>,
         failures: Vec<BatchOperationFailure>,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
     },
-    PromptCompleted { completion: PromptCompletion, },
-    PromptCancelled { cancellation: PromptCancellation, },
+    PromptCompleted { completion: PromptCompletion<PromptReceipt>, },
+    PromptCancelled { cancellation: PromptCancellation<PromptReceipt>, },
     NothingToStop { session_id: String, agent_id: String, },
-    ActivePromptSteered { prompt: PromptQueueItem, },
-    QueuedPromptSteered {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
+    ActivePromptSteered {
+        session_id: String,
+        agent_id: String,
+        active_prompt_id: String,
+        steer_id: String,
+        accepted_at_ms: u64,
     },
-    QueuedPromptCancelled {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
-    QueuedPromptUpdated {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    QueuedPromptSteered { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptCancelled { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptUpdated { session_id: String, prompt: PromptReceipt, },
     SessionConfigUpdated { config: SessionConfigState, session: RuntimeSession, },
     AgentConfigUpdated {
         agent: AgentInstance,

@@ -417,6 +417,7 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
             )
         })
         .expect("mapped already-settled peer error must finalize the home prompt")
+        .into()
     } else {
         let LocalDaemonResponse::PromptCompleted { completion } = router
             .dispatch(completion_command, completion_request)
@@ -2153,10 +2154,11 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "a rejected receipt publishes nothing"
             );
         } else {
-            let LocalDaemonResponse::ActivePromptSteered { prompt } = response.unwrap() else {
+            let LocalDaemonResponse::ActivePromptSteered { steer_id, .. } = response.unwrap()
+            else {
                 panic!("native steer must be accepted");
             };
-            assert_eq!(steer_ids(), vec![prompt.id().to_string()]);
+            assert_eq!(steer_ids(), vec![steer_id]);
             timeout(Duration::from_secs(3), async {
                 loop {
                     let count = app_worker
@@ -2906,11 +2908,18 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             .expect("remote queued prompt should steer through the worker")
     };
     let LocalDaemonResponse::QueuedPromptSteered {
-        prompt, session, ..
+        prompt,
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected remote queued prompt steer response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(prompt.id(), queued_prompt_id);
     assert!(session
         .queued_prompts_for_agent(&remote_agent_id)
@@ -3045,14 +3054,17 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         panic!("unexpected remote completion response");
     };
     assert_eq!(completion.completed.target_agent_id(), remote_agent_id);
-    assert_eq!(
-        completion.completed.prompt(),
-        "remote prompt over home session\n"
-    );
     let promoted = completion
         .started_next
         .expect("queued prompt must be promoted");
-    assert_eq!(promoted.prompt(), "REMOTE_QUEUE_COMPLETION_DELIVERY\n");
+    let state = router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
+    let active = state.active_prompt_for_agent(&remote_agent_id).unwrap();
+    assert_eq!(active.id(), promoted.id());
+    assert_eq!(active.prompt(), "REMOTE_QUEUE_COMPLETION_DELIVERY\n");
     let promoted_echoes = app_home
         .lock()
         .await

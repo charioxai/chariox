@@ -68,6 +68,7 @@ fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+mod prompt_receipts;
 mod prompt_routing;
 mod queue_and_notices;
 mod turn_actions;

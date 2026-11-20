@@ -49,7 +49,7 @@ export async function handleCodexNativeTurnSteer(
     // MP-08 / MP-10 / MP-11: The kernel echoes steering to other attachments.
     // Codex also needs a committed receipt on the submitting display to clear
     // its pending input. Send it only to this caller, after exact-turn admission.
-    const promptId = (response.ActivePromptSteered as { prompt?: { id?: unknown } })?.prompt?.id
+    const promptId = (response.ActivePromptSteered as { steer_id?: unknown })?.steer_id
     if (typeof promptId !== "string") throw new Error("kernel did not return a steering prompt identity")
     const item = {
       type: "userMessage", id: `chariox-steering-${promptId}`,

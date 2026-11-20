@@ -31,12 +31,9 @@ fn focus_does_not_disturb_multi_agent_provider_liveness() {
     let started = LocalDaemonResponse::PromptSubmitted {
         outcome: crate::app::KernelAgentService::new(&mut app)
             .submit_prompt(session.id(), attachment.id(), None, "hello", Vec::new())
-            .expect("prompt should start"),
-        session: crate::app::KernelSessionReadService::new(&app)
-            .session_snapshot(session.id())
-            .expect("session snapshot should load"),
-        agent_activity: std::collections::BTreeMap::new(),
-        agent_activity_revision: 0,
+            .expect("prompt should start")
+            .into(),
+        session_id: session.id().to_owned(),
     };
 
     match started {

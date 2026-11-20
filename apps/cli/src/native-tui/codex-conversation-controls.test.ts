@@ -23,7 +23,7 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
   const requests: unknown[] = []
   const opts = { ...options(async (request) => {
     requests.push(request)
-    return { ActivePromptSteered: { prompt: { id: "steer" } } }
+    return { ActivePromptSteered: { steer_id: "steer" } }
   }), attachmentId: "attachment", inlineLocalAttachments: false }
   const turns: { id: string, method?: string, params?: { turn: { id: string } } }[] = []
   const projection = createCodexKernelOutputProjection({
@@ -45,7 +45,7 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
 })
 
 test("MP-08 MP-10 admitted steering returns its committed receipt to the requesting display", async () => {
-  const opts = { ...options(async () => ({ ActivePromptSteered: { prompt: { id: "steer-prompt" } } })),
+  const opts = { ...options(async () => ({ ActivePromptSteered: { steer_id: "steer-prompt" } })),
     attachmentId: "attachment", inlineLocalAttachments: false }
   bindCodexDisplayTurn(opts.bindState, "display-thread", "display-turn", "home-prompt")
   const input = [{ type: "text", text: "new direction" }]

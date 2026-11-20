@@ -228,7 +228,8 @@ import Testing
     let client = SequencedMockKernelClient(responses: [
         .sessionAttached(RuntimeAttachment(id: "attachment-1", sessionID: session.id)),
         .sessionHistory([]),
-        .promptSubmitted(session),
+        .promptSubmitted(sessionID: session.id),
+        .sessionState(session),
     ])
     let defaults = UserDefaults(suiteName: "CharioxAppModelTests.submit")!
     defaults.removePersistentDomain(forName: "CharioxAppModelTests.submit")
