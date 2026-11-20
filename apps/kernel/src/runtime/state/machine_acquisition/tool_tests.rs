@@ -428,7 +428,7 @@ async fn acquire_without_a_class_takes_the_first_option_in_stock() {
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"request_id":"r1"}),
+            serde_json::json!({"reason":"Run the build","request_id":"r1"}),
         )
         .await
         .unwrap();
@@ -444,7 +444,11 @@ async fn acquire_with_nothing_in_stock_is_refused_before_the_service_is_asked() 
     let service = service(vec![option("big", "north", false)], &[]).await;
     let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
     let error = state
-        .machine_tool(&token, "chariox.machines.acquire", serde_json::json!({}))
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"reason":"Run the build"}),
+        )
         .await
         .unwrap_err()
         .to_string();
@@ -465,7 +469,7 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"class_id":"big","region":"north"}),
+            serde_json::json!({"reason":"Run the build","class_id":"big","region":"north"}),
         )
         .await
         .unwrap_err()
@@ -495,7 +499,7 @@ async fn a_refused_class_leaves_the_same_class_in_other_regions_in_stock() {
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"class_id":"small","region":"north"}),
+            serde_json::json!({"reason":"Run the build","class_id":"small","region":"north"}),
         )
         .await
         .unwrap_err()
@@ -516,7 +520,7 @@ async fn a_retry_keeps_the_option_its_request_took_after_the_stock_changed() {
         state.machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"request_id":"r1"}),
+            serde_json::json!({"reason":"Run the build","request_id":"r1"}),
         )
     };
     acquire().await.unwrap();
@@ -618,7 +622,7 @@ fn choose_big(state: &KernelRuntimeState, agent: &str, request_id: &str, at_ms: 
 }
 
 fn acquire_args(request_id: &str) -> serde_json::Value {
-    serde_json::json!({ "request_id": request_id })
+    serde_json::json!({ "request_id": request_id, "reason": "Run the build" })
 }
 
 /// The stock the retries below start from: two options in stock.
@@ -908,7 +912,7 @@ async fn a_closed_refusal_while_another_try_waits_to_be_sent_leaves_one_machine(
             assert_closed(&refused, "r1");
             // The caller follows the guidance while the first try of r1 still waits to be sent.
             let other =
-                acquire(serde_json::json!({"request_id":"r2","class_id":"big","region":"south"}))
+                acquire(serde_json::json!({"request_id":"r2","class_id":"big","region":"south","reason":"Run the build"}))
                     .await;
             release.notify_one();
             other
@@ -1022,7 +1026,7 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"request_id":"r1","class_id":"big","region":"south"}),
+            serde_json::json!({"reason":"Run the build","request_id":"r1","class_id":"big","region":"south"}),
         )
         .await
         .unwrap_err()
@@ -1041,7 +1045,7 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"request_id":"r1","class_id":"small"}),
+            serde_json::json!({"reason":"Run the build","request_id":"r1","class_id":"small"}),
         )
         .await
         .unwrap();
@@ -1345,6 +1349,77 @@ fn require_owner_approval(state: &KernelRuntimeState, token: &str) -> String {
         })
         .unwrap();
     room.id().into()
+}
+
+#[tokio::test]
+async fn direct_rental_names_the_asker_and_only_raises_one_card_for_the_id() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let mut agent = state
+        .owned
+        .agent_store
+        .get_agent(&agent_of(&state, &token))
+        .unwrap();
+    agent.set_alias(Some("builder".into()));
+    state.owned.agent_store.restore_agent(agent);
+    {
+        let mut sessions = state.owned.session_store.write();
+        let mut session = sessions.get_session(&room).unwrap();
+        session.set_alias(Some("Build Room".into()));
+        sessions.restore_session(session);
+    }
+    let acquire = |args| state.machine_tool(&token, "chariox.machines.acquire", args);
+    for args in [
+        serde_json::json!({"request_id":"r1"}),
+        serde_json::json!({"request_id":"r1", "reason":"  "}),
+        serde_json::json!({"request_id":"r1", "reason":"a\nb"}),
+        serde_json::json!({"request_id":"r1", "reason":"a".repeat(161)}),
+    ] {
+        assert!(acquire(args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Give a reason"));
+    }
+    let args = acquire_args("r1");
+    let (first, retry) = tokio::join!(acquire(args.clone()), acquire(args.clone()));
+    let first = first.unwrap().payload;
+    assert_eq!(first["status"], "waiting");
+    assert_eq!(retry.unwrap().payload, first);
+    assert_eq!(acquire(args.clone()).await.unwrap().payload, first);
+    let changed = serde_json::json!({"request_id":"r1", "reason":"Run something else"});
+    assert_eq!(acquire(changed).await.unwrap().payload, first);
+
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    let expected = "builder in Build Room · Run the build";
+    assert_eq!(card.title(), Some(expected));
+    let listed = state.list_owner_interactions(session.owner_user_id());
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].interaction_id, card.id());
+    assert_eq!(listed[0].title.as_deref(), Some(expected));
+    assert!(listed[0].person_only.is_none());
+
+    state
+        .resolve_terminal_runtime_interaction(
+            &room,
+            card.id(),
+            "approve",
+            None,
+            Some(session.owner_user_id()),
+        )
+        .await
+        .unwrap();
+    let sent = acquire(args).await.unwrap();
+    assert_eq!(sent.payload["allocation"]["allocation_ref"], "allocation-1");
+    assert!(state
+        .list_owner_interactions(session.owner_user_id())
+        .is_empty());
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires.len(), 1);
+    assert!(acquires[0].get("reason").is_none());
 }
 
 #[tokio::test]

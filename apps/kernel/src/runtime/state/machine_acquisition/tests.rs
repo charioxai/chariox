@@ -302,6 +302,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap(),
     );
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "manual".into(),
         class_id: None,
@@ -381,12 +382,16 @@ fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
         .iter()
         .find(|spec| spec.name == "chariox.machines.acquire")
         .unwrap();
-    for field in ["request_id", "class_id", "region"] {
+    for field in ["request_id", "class_id", "region", "reason"] {
         assert!(
             acquire.input_schema["properties"][field].is_object(),
             "{field}"
         );
     }
+    assert_eq!(
+        acquire.input_schema["required"],
+        serde_json::json!(["reason"])
+    );
     assert_eq!(
         acquire.input_schema["additionalProperties"],
         serde_json::json!(false)
@@ -398,6 +403,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     let (state, command, _, mut caps, _workspace) = fixture(false);
     caps.offers = vec![option("agent-vm-s", "auto", true)];
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "chosen".into(),
         class_id: Some("agent-vm-s".into()),
@@ -431,6 +437,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     // A retry of an accepted request must reach the service whatever the list says now.
     let (state, command, _, caps, _workspace) = fixture(false);
     let request = ControlPlaneRequest::Acquire {
+        reason: None,
         capability_revision: "v1".into(),
         request_id: "retry".into(),
         class_id: Some("gone".into()),

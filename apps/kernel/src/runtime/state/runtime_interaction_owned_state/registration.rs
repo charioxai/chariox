@@ -335,6 +335,14 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         }
+        // Acquisition may have settled between its initial lookup and registration.
+        if super::super::machine_acquisition::approval::is_machine_approval(&interaction)
+            && self
+                .machine_decision(interaction.id(), session.owner_user_id())?
+                .is_some()
+        {
+            return Err(interaction_error("Machine approval already settled"));
+        }
         // Where the user sees a card is the kernel's: a restored question is the same question
         // whichever panel lists it.
         if session.active_interactions().iter().any(|existing| {
