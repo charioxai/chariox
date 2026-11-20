@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "../lib/drill-docker-owner.mjs"
 // MP-08 / MP-10 / MP-11: real Git metadata, supplementary harness regressions.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -34,7 +35,7 @@ test('MP-08 / MP-10 / MP-11: linked worker mounts exactly its source and Git com
 }));
 
 test('MP-08 / MP-10 / MP-11: isolated real worker can read linked HEAD and status', { skip: !process.env.CHARIOX_WORKER_GIT_TEST_IMAGE }, () => repository(({ linked, head }) => {
-  const run = (...command) => execFileSync('docker', ['run', '--rm', '--label', 'chariox.lane=amfix', '--cpus', '1', '--memory', '256m', ...readOnlyWorktreeMounts(linked), '--workdir', linked, '--entrypoint', 'git', process.env.CHARIOX_WORKER_GIT_TEST_IMAGE, '-c', `safe.directory=${linked}`, ...command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const run = (...command) => execFileSync('docker', ['run', '--rm', ...drillDockerLabels(import.meta.url), '--label', 'chariox.lane=amfix', '--cpus', '1', '--memory', '256m', ...readOnlyWorktreeMounts(linked), '--workdir', linked, '--entrypoint', 'git', process.env.CHARIOX_WORKER_GIT_TEST_IMAGE, '-c', `safe.directory=${linked}`, ...command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   assert.equal(run('rev-parse', 'HEAD'), head);
   assert.equal(run('status', '--porcelain'), '');
 }));

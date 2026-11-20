@@ -3,16 +3,18 @@
 # Host needs only docker and node: dex's bcrypt hashes come from the stack's own Postgres (pgcrypto).
 set -euo pipefail
 cd "$(dirname "$0")"; . ./env.sh
+. ../../lib/drill-docker-owner.sh
+drill_docker_environment detached fa-regression
 umask 077; mkdir -p "$FA_STATE_DIR"
 if [ ! -f "$FA_STATE_DIR/secrets.env" ]; then
   node -e "const c=require('node:crypto');console.log(['FA_DB_PASSWORD','FA_OIDC_CLIENT_SECRET','FA_ALICE_PASSWORD','FA_BOB_PASSWORD'].map(k=>k+'='+c.randomBytes(18).toString('base64url')).join('\n'))" > "$FA_STATE_DIR/secrets.env"
 fi
 set -a; . "$FA_STATE_DIR/secrets.env"; set +a
 docker compose -f compose.yml up -d postgres
-until docker exec amunblock-fa-postgres pg_isready -q -h 127.0.0.1 -U app -d app; do sleep 1; done
+until docker exec "${COMPOSE_PROJECT_NAME}-postgres" pg_isready -q -h 127.0.0.1 -U app -d app; do sleep 1; done
 # Passwords go to psql on stdin and the local socket is trusted, so no secret reaches an argv.
 hashes=$(printf "create extension if not exists pgcrypto;\nselect crypt('%s', gen_salt('bf', 10));\nselect crypt('%s', gen_salt('bf', 10));\n" "$FA_ALICE_PASSWORD" "$FA_BOB_PASSWORD" \
-  | docker exec -i amunblock-fa-postgres psql -q -U app -d postgres -tA -v ON_ERROR_STOP=1)
+  | docker exec -i "${COMPOSE_PROJECT_NAME}-postgres" psql -q -U app -d postgres -tA -v ON_ERROR_STOP=1)
 FA_ALICE_HASH=$(sed -n 1p <<<"$hashes") FA_BOB_HASH=$(sed -n 2p <<<"$hashes") node - "$FA_STATE_DIR" "$FA_OIDC_ISSUER" "$FA_REDIRECT_URIS" <<'JS'
 const [d, issuer, uris] = process.argv.slice(2), e = process.env
 const user = (name, hash) => ({ email: `${name}@fa.invalid`, hash, username: name, userID: `fa-${name}` })

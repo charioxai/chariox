@@ -15,12 +15,12 @@ const fixtureSources = [
   new URL("./browser-computer-fixture-mail.mjs", import.meta.url),
 ]
 
-export function browserStateFixtureSidecarArgs({ name, image, runId }) {
+export function browserStateFixtureSidecarArgs({ name, image, runId, ownership = [] }) {
   assert.match(name, /^m20-fixture-[a-z0-9-]+$/)
   assert.match(runId, /^m20-docker-state-[A-Za-z0-9-]+$/)
   assert.ok(image && !/\s/.test(image), "sidecar image must be explicit")
   return [
-    "run", "-d", "--rm", "--name", name,
+    "run", "-d", "--rm", "--name", name, ...ownership,
     "--label", `io.chariox.drill-run=${runId}`,
     "--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5",
     "--pids-limit", "64", "--security-opt", "no-new-privileges",
@@ -66,7 +66,9 @@ export async function startBrowserStateFixtureSidecar({
   }
 
   try {
-    containerId = (await dockerText(browserStateFixtureSidecarArgs({ name, image, runId }))).trim()
+    const { drillDockerLabels } = await import("../../../../scripts/lib/drill-docker-owner.mjs")
+    const ownership = drillDockerLabels(import.meta.url, { run: runId })
+    containerId = (await dockerText(browserStateFixtureSidecarArgs({ name, image, runId, ownership }))).trim()
     assert.match(containerId, /^[a-f0-9]{64}$/, "Docker did not return a sidecar identity")
     await docker(["exec", "-u", "slice", name, "mkdir", "-m", "700", sidecarDir])
     for (const source of fixtureSources) {
