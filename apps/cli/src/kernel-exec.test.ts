@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
@@ -40,6 +41,52 @@ test("a one-shot command opens a kernel terminal, waits, prints its output, retu
   assert.deepEqual(sent.map(body => Object.keys(body)[0]), ["KernelTerminal", "KernelTerminal", "KernelTerminal", "KernelTerminal"])
   assert.deepEqual(sent.map(body => body.KernelTerminal.operation.operation), ["open", "wait", "read_output", "close"])
   assert.deepEqual(sent[0].KernelTerminal.operation.command, ["uptime"])
+})
+
+for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+  test(`kernel exec closes a terminal interrupted by ${signal} while open is pending`, async () => {
+    const { sent, send } = kernel("", 0)
+    const signals = new EventEmitter() as NodeJS.Process
+    const code = await runKernelExec({ command: ["sleep", "60"], timeoutSeconds: 30, signals }, async (body) => {
+      const reply = await send(body)
+      if (sent.length === 1) {
+        signals.emit(signal)
+        signals.emit("SIGINT")
+      }
+      return reply
+    }, sink().stream)
+    assert.equal(code, exitCode)
+    assert.deepEqual(sent.map(body => body.KernelTerminal.operation.operation), ["open", "close"])
+    assert.equal(sent[1].KernelTerminal.operation.terminal_id, "t1")
+    for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) assert.equal(signals.listenerCount(name), 0)
+  })
+}
+
+test("kernel exec closes a known terminal without waiting for the interrupted wait request", async () => {
+  const { sent, send } = kernel("", 0)
+  const signals = new EventEmitter() as NodeJS.Process
+  const code = await runKernelExec({ command: ["sleep", "60"], timeoutSeconds: 30, signals }, async body => {
+    const reply = await send(body)
+    if (sent.at(-1).KernelTerminal.operation.operation === "wait") {
+      signals.emit("SIGTERM")
+      return new Promise<never>(() => {})
+    }
+    return reply
+  }, sink().stream)
+  assert.equal(code, 143)
+  assert.deepEqual(sent.map(body => body.KernelTerminal.operation.operation), ["open", "wait", "close"])
+  assert.equal(sent[2].KernelTerminal.operation.terminal_id, "t1")
+})
+
+test("kernel exec detaches signal listeners when open fails", async () => {
+  const signals = new EventEmitter() as NodeJS.Process
+  let requests = 0
+  await assert.rejects(runKernelExec({ command: ["sleep", "60"], timeoutSeconds: 30, signals }, async () => {
+    requests++
+    throw new Error("open refused")
+  }, sink().stream), /open refused/)
+  assert.equal(requests, 1)
+  for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) assert.equal(signals.listenerCount(name), 0)
 })
 
 test("a command killed by a signal is not reported as success", async () => {
