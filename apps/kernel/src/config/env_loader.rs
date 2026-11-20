@@ -14,6 +14,15 @@ use super::{
     DaemonConfig, KernelRuntimeRole, DEFAULT_RELAY_HEARTBEAT_MS,
 };
 
+pub(crate) fn kernel_listen_address() -> (String, u16) {
+    let host = env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("CHARIOX_KERNEL_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(43118);
+    (host, port)
+}
+
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
         Self::load_from_env_with_identity_loader(|host, port| {
@@ -31,15 +40,10 @@ impl DaemonConfig {
     ) -> Self {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
-        let kernel_websocket_host =
-            env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let (kernel_websocket_host, kernel_websocket_port) = kernel_listen_address();
         let runtime_mcp_port = env::var("CHARIOX_MCP_PORT")
             .ok()
             .and_then(|value| value.parse::<u16>().ok());
-        let kernel_websocket_port = env::var("CHARIOX_KERNEL_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(43118);
         let runtime_identity = load_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
         let persisted_cloud_relay = persisted_config

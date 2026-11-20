@@ -443,6 +443,13 @@ export CHARIOX_KERNEL_HOST=127.0.0.1
 export CHARIOX_KERNEL_PORT=43118
 ```
 
+
+Agent processes on Linux and macOS get a short private temporary directory.
+The kernel exposes each agent's own directory and sets `TMPDIR`, `TMP` and
+`TEMP` for its provider. Idle scratch files are cleared. Removing the agent or
+ending its Room removes the directory, and a cold kernel restart clears
+scratch left by the previous process.
+
 ### 12.4 Logging
 
 - `CHARIOX_LOG_DIR`

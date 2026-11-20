@@ -16,6 +16,7 @@ pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod daemon_config_lock;
 mod env_loader;
+pub(crate) use env_loader::kernel_listen_address;
 mod identity;
 mod kernel_access;
 mod kernel_cloud_state;
