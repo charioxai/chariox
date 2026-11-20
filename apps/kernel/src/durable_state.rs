@@ -3179,21 +3179,24 @@ mod tests {
 
     #[test]
     fn durable_state_store_appends_events_and_loads_latest_snapshot() {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-durable-state-{}-{}.db",
-            std::process::id(),
-            unix_epoch_ms()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let temp = crate::test_support::TestTempDir::new("durable-state-round-trip");
+        let path = temp.path().join("kernel.db");
         let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let room = crate::session::RuntimeSession::new(
+            "session-1",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
 
         let first = store
             .append_event(
                 "session.created",
-                Some("session-1".to_string()),
-                serde_json::json!({"session_id": "session-1"}),
+                Some(room.id().to_string()),
+                serde_json::json!({"session_id": room.id()}),
             )
             .expect("first event should append");
         let second = store
@@ -3212,21 +3215,19 @@ mod tests {
                 .len(),
             1
         );
+        let payload = serde_json::json!({"sessions": [room]});
         store
-            .save_snapshot(
-                second.sequence,
-                serde_json::json!({"sessions": ["session-1"]}),
-            )
+            .save_snapshot(second.sequence, payload.clone())
             .expect("snapshot should save");
 
         drop(store);
-        let store = DurableKernelStateStore::open(path.clone()).expect("store should reopen");
+        let store = DurableKernelStateStore::open(path).expect("store should reopen");
         let latest = store
             .latest_snapshot()
             .expect("latest snapshot should load")
             .expect("snapshot should exist");
         assert_eq!(latest.sequence, second.sequence);
-        assert_eq!(latest.payload["sessions"][0], "session-1");
+        assert_eq!(latest.payload, payload);
         assert_eq!(
             store
                 .latest_event_sequence()
@@ -3239,10 +3240,6 @@ mod tests {
                 .expect("latest snapshot sequence should load"),
             second.sequence
         );
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]
