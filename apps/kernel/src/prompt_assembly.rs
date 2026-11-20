@@ -1518,14 +1518,18 @@ mod tests {
     }
 
     fn claude_run(sub_agent: bool) -> RuntimeProviderRun {
-        let request = LaunchProviderRequest::new("session", "agent", "claude", "default", "sonnet")
+        provider_run("claude", "sonnet", sub_agent)
+    }
+
+    fn provider_run(provider: &str, model: &str, sub_agent: bool) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new("session", "agent", provider, "default", model)
             .with_sub_agent(sub_agent);
         RuntimeProviderRun::new(
             "provider-run",
             &request,
             ProviderLaunchResult {
                 endpoint_mode: AgentEndpointMode::Managed,
-                process_label: "claude".to_string(),
+                process_label: provider.to_string(),
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
@@ -1535,6 +1539,38 @@ mod tests {
                 structured_endpoint: Some("stdio://claude".to_string()),
             },
         )
+    }
+
+    #[test]
+    fn worker_context_guides_bounded_reads_across_providers() {
+        let root = temp_prompt_root("bounded-worker-reads");
+        let registry = PromptTemplateRegistry::new(root.to_path_buf());
+        registry.materialize_bundled_defaults().unwrap();
+        let service = PromptAssemblyService::new(registry);
+        let guidance =
+            "Search narrowly and read bounded ranges. Reuse earlier reads until files change.";
+        for (provider, model) in [
+            ("claude", "sonnet"),
+            ("codex", "gpt-6.2-sol"),
+            ("opencode", "opencode-go/glm-5.3"),
+        ] {
+            for sub_agent in [false, true] {
+                let envelope = service
+                    .assemble_provider_turn(
+                        &provider_run(provider, model, sub_agent),
+                        "Verify the source",
+                        None,
+                        Vec::new(),
+                        PromptAssemblyMode::NormalProviderTurn,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    envelope.hidden_base.contains(guidance),
+                    sub_agent,
+                    "{provider}"
+                );
+            }
+        }
     }
 
     /// An agent another agent started reads its task, answers and asks for help;
