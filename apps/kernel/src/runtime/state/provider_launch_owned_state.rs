@@ -1619,7 +1619,7 @@ mod tests {
         std::env::set_var("CHARIOX_HOME", &root);
         std::env::set_var("HOME", root.join("unrelated-home"));
 
-        let config = crate::config::DaemonConfig::load_from_env();
+        let config = crate::config::DaemonConfig::load_from_env().unwrap();
         let workflow_root = config
             .workflow_runtime_artifact_root()
             .join("instances")

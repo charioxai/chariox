@@ -428,6 +428,8 @@ export BUN_BIN=/absolute/path/to/bun
 
 If you override the kernel host/port, both processes must use the same values or the CLI must be launched with a matching `CHARIOX_KERNEL_URL`.
 
+If the kernel home contains a Cloud link for a different kernel ID, startup exits with status 1. Start that home at its original host and port, or use a new kernel home and link it to Cloud.
+
 Example:
 
 ```bash

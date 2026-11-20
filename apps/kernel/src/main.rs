@@ -130,7 +130,25 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     chariox_kernel::hot_reload::receive();
     let process_started = Instant::now();
     let config_started = Instant::now();
-    let config = DaemonConfig::load_from_env();
+    let config = match DaemonConfig::load_from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            if chariox_kernel::logging::init_process_logger("daemon").is_ok() {
+                chariox_kernel::logging::error_with_fields(
+                    "daemon.startup",
+                    "kernel startup refused",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+            let reason = match error {
+                chariox_kernel::DaemonError::LocalTransport { message, .. } => message,
+                _ => error.to_string(),
+            };
+            eprintln!("Cannot start kernel. {reason}");
+            drop(_process_logs);
+            std::process::exit(1);
+        }
+    };
     for name in [
         "CHARIOX_RELAY_TOKEN",
         "CHARIOX_CLOUD_RELAY_CONFIG_JSON",

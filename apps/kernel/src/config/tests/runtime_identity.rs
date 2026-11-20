@@ -66,12 +66,12 @@ fn runtime_identity_is_stable_per_host_port() {
         env::set_var("CHARIOX_KERNEL_PORT", "43118");
     }
 
-    let default_identity = DaemonConfig::load_from_env();
-    let restarted_default = DaemonConfig::load_from_env();
+    let default_identity = DaemonConfig::load_from_env().unwrap();
+    let restarted_default = DaemonConfig::load_from_env().unwrap();
     unsafe {
         env::set_var("CHARIOX_KERNEL_PORT", "43119");
     }
-    let other_port = DaemonConfig::load_from_env();
+    let other_port = DaemonConfig::load_from_env().unwrap();
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -110,7 +110,7 @@ fn kernels_in_two_homes_on_one_computer_share_the_os_machine_id() {
         unsafe {
             env::set_var("CHARIOX_HOME", root.join(name));
         }
-        DaemonConfig::load_from_env()
+        DaemonConfig::load_from_env().unwrap()
     };
     let main = load_in("main");
     let reviewer = load_in("reviewer-b");
@@ -227,6 +227,7 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
                 relay_private_key: "synthetic-private-sentinel".to_string(),
             }
         })
+        .unwrap()
     };
     let first = load();
     let restarted = load();
@@ -381,6 +382,7 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
             relay_public_key: "synthetic-public".to_string(),
             relay_private_key: "synthetic-private-sentinel".to_string(),
         })
+        .unwrap()
     };
     // The home discovers the worker by its canonical per-creation ref; the
     // retained keys and machine identity stay authoritative.
@@ -436,7 +438,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
         env::set_var("XDG_STATE_HOME", temp_home.join("unrelated-state"));
     }
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env().unwrap();
     let durable_state_path = config.durable_state_path();
     let expected_socket = DaemonConfig::default_local_socket_path(&config.daemon_id);
 
@@ -576,7 +578,7 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
     )
     .expect("daemon config should write");
 
-    let mut config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env().unwrap();
     config
         .persist_relay_config()
         .expect("local relay config should persist");
@@ -586,7 +588,7 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
         .persist_cloud_relay_profile(None)
         .expect("explicit Cloud sign-out should persist");
     assert!(load_persisted_daemon_config().cloud_relay.is_some());
-    assert!(DaemonConfig::load_from_env().cloud_relay.is_none());
+    assert!(DaemonConfig::load_from_env().unwrap().cloud_relay.is_none());
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -674,7 +676,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
         );
     }
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env().unwrap();
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -721,7 +723,7 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
         );
     }
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env().unwrap();
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -790,7 +792,7 @@ fn load_from_env_never_imports_cli_cloud_credentials() {
     )
     .expect("CLI preferences should write");
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env().unwrap();
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -872,7 +874,7 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     )
     .expect("CLI preferences should write");
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env().unwrap();
 
     unsafe {
         restore_env_var("HOME", old_home);

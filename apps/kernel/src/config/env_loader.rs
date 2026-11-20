@@ -1,3 +1,4 @@
+use crate::error::DaemonError;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -15,7 +16,7 @@ use super::{
 };
 
 impl DaemonConfig {
-    pub fn load_from_env() -> Self {
+    pub fn load_from_env() -> Result<Self, DaemonError> {
         Self::load_from_env_with_identity_loader(|host, port| {
             if protected_slice_identity_required() {
                 load_retained_slice_identity(host, port)
@@ -28,7 +29,7 @@ impl DaemonConfig {
 
     pub(super) fn load_from_env_with_identity_loader(
         load_identity: impl FnOnce(&str, u16) -> super::identity::RuntimeIdentity,
-    ) -> Self {
+    ) -> Result<Self, DaemonError> {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
         let kernel_websocket_host =
@@ -228,8 +229,8 @@ impl DaemonConfig {
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
         };
-        loaded.load_kernel_cloud_state(env_relay_configured);
-        loaded
+        loaded.try_load_kernel_cloud_state(env_relay_configured)?;
+        Ok(loaded)
     }
 }
 
