@@ -13,6 +13,7 @@ impl KernelRuntimeOwnedState {
         let obligation = request
             .parent_agent_id
             .as_ref()
+            .filter(|_| !request.stall_recovery)
             .map(crate::agent::AgentRef::agent_id)
             .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
             .transpose()?

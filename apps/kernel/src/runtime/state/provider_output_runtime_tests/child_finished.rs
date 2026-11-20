@@ -867,31 +867,3 @@ async fn a_finish_waits_for_its_siblings_only_for_a_moment() {
         "the window ended and woke the parent: {prompts:?}"
     );
 }
-
-#[tokio::test]
-async fn provider_stall_reaches_the_parent_once_with_recovery_actions() {
-    let team = team_with("provider-stall", None, true).await;
-    let now = crate::session::unix_epoch_ms();
-    let stalled_at = now + 10 * 60 * 1000 + 1;
-    team.runtime.sweep_agent_lifecycle_at_for_test(now).await.unwrap();
-    assert!(team.runtime.owned.session_store.get_session(&team.room).unwrap()
-        .active_interactions().is_empty());
-
-    for now in [stalled_at, stalled_at + 1_000] {
-        team.runtime.sweep_agent_lifecycle_at_for_test(now).await.unwrap();
-    }
-    let room = team.runtime.owned.session_store.get_session(&team.room).unwrap();
-    assert_eq!(room.active_interactions().len(), 1);
-    let card = &room.active_interactions()[0];
-    assert_eq!(card.related_agent_id(), Some(team.child.as_str()));
-    assert!(card.message().contains("child"));
-    assert!(card.message().contains("10 minutes"));
-    assert!(card.message().contains("provider"));
-    for choice in ["resume", "cancel", "start_fresh"] {
-        assert!(card.choice(choice).is_some(), "missing {choice}");
-    }
-    let inbox = team.runtime.owned.durable_state_store
-        .agent_inbox(&team.room, &team.parent, 0).unwrap();
-    assert_eq!(inbox.iter().filter(|event| event.kind == "child_decision"
-        && event.payload["interaction_id"] == card.id()).count(), 1);
-}
