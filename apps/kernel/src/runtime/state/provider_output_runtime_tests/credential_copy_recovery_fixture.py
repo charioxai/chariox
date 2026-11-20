@@ -23,6 +23,8 @@ home = Path(os.environ['CODEX_HOME'])
 (Path(__file__).parent / ('synthetic-home-' + str(os.getpid()))).write_text(str(home))
 state_path = home / 'synthetic-turns.json'
 login_marker = home / 'synthetic-login-complete'
+LOGIN_ID = 'synthetic-login'
+login_completed = threading.Event()
 # MP-08/MP-10/MP-11: fail the next replacement process, including every
 # initialization probe. Existing login/status connections must not consume it.
 failure_marker = home / 'synthetic-relaunch-failure'
@@ -41,8 +43,9 @@ class OAuth(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b'{"error":"refresh_token_reused"}')
     def do_GET(self):
         if self.path == '/consent':
-            login_marker.write_text('synthetic-login')
             (home / 'auth.json').write_text('{"tokens":{"refresh_token":"synthetic-worker-login"}}')
+            login_marker.write_text(LOGIN_ID)
+            login_completed.set()
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'Synthetic provider login')
@@ -64,10 +67,24 @@ class Handler(socketserver.StreamRequestHandler):
         body = json.dumps(value).encode() if opcode == 1 else value
         length = len(body)
         head = bytes([128 | opcode, length]) if length < 126 else bytes([128 | opcode, 126]) + struct.pack('!H', length)
-        self.wfile.write(head + body)
-        self.wfile.flush()
+        with self.send_lock:
+            self.wfile.write(head + body)
+            self.wfile.flush()
+
+    def notify_login_completed(self):
+        if not login_completed.wait(120):
+            return
+        try:
+            self.send({
+                'method': 'account/login/completed',
+                'params': {'loginId': LOGIN_ID, 'success': True},
+            })
+        except (OSError, ValueError):
+            # The client can leave before consent completes.
+            return
 
     def handle(self):
+        self.send_lock = threading.Lock()
         try:
             request_line = self.rfile.readline()
             if request_line.startswith(b'GET /readyz '):
@@ -125,7 +142,7 @@ class Handler(socketserver.StreamRequestHandler):
                         if (home / 'auth.json').exists():
                             (home / 'synthetic-copied-auth-at-login').touch()
                         (home / 'synthetic-official-login-invoked').write_text('account/login/start')
-                        result = {'type':'chatgptDeviceCode', 'loginId':'synthetic-login', 'verificationUrl':oauth_url + '/device', 'userCode':'SYNTHETIC'}
+                        result = {'type':'chatgptDeviceCode', 'loginId':LOGIN_ID, 'verificationUrl':oauth_url + '/device', 'userCode':'SYNTHETIC'}
                     elif method == 'thread/start':
                         refusal = home / 'synthetic-thread-refusal'
                         if refusal.exists():
@@ -162,6 +179,8 @@ class Handler(socketserver.StreamRequestHandler):
                     if resumed:
                         (home / 'synthetic-resumed').write_text(resumed)
                 self.send({'id': request['id'], 'result': result})
+                if method == 'account/login/start':
+                    threading.Thread(target=self.notify_login_completed, daemon=True).start()
                 if notification: self.send(notification)
         except (EOFError, BrokenPipeError, ConnectionResetError):
             return
