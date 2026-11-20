@@ -710,13 +710,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Ok(());
         }
-        // A worker that lost the account says so with its own code, so the home
-        // hands the account over again before the prompt is fenced.
-        self.resolve_leased_profile_account(
-            &leased_agent,
-            backing_agent.provider(),
-            backing_agent.provider_account_profile(),
-        )?;
         self.app
             .provider_account_profiles
             .require_agent_authenticated(
