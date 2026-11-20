@@ -35,6 +35,7 @@ pub struct ProviderPromptSignalBatch {
     pub skill_tool_delivery_acknowledgements: Vec<super::SkillToolDeliveryAcknowledgement>,
     /// Claude's prompt hook reported its additionalContext delivered to the model.
     pub hook_context_delivered: bool,
+    pub(crate) claude_notification_context: Option<ClaudeNotificationContext>,
     /// Claude streamed these native compactions, by the ID its transcript observer uses.
     pub native_compactions: Vec<String>,
     pub chunks: Vec<ProviderPromptChunk>,
@@ -63,6 +64,13 @@ pub struct ProviderPromptSignalBatch {
     /// What this batch reports of a turn the provider runs with no prompt asking for it, such as
     /// Claude reporting a finished background command.
     pub provider_own_turn: ProviderOwnTurnSignal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudeNotificationContext {
+    pub(crate) request_id: String,
+    pub(crate) deadline_ms: u64,
+    pub(crate) ended_tool_use_id: Option<String>,
 }
 
 /// A batch's report of the provider's own turn: its start edge as well as its level, so a turn

@@ -1460,7 +1460,8 @@ async fn a_pending_held_turn_is_released_when_the_provider_ends_without_its_own_
             .runtime
             .owned
             .prompt_state_owner
-            .provider_turn_running(&session, &team.child,),
+            .adopted_provider_turn(&session, &team.child, &team.child_run)
+            .is_some(),
         "the sweep cannot adopt the ended notification turn"
     );
     assert_eq!(finishes_of_task(&team).len(), 1);
