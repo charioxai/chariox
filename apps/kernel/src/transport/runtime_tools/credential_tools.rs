@@ -154,7 +154,7 @@ pub struct RequestPopupArgs {
     /// Person cards: one kernel request the kernel runs the moment the person approves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<RequestPopupActionArgs>,
-    /// With wait:false: a retry with the same key is the same ask, not a second card.
+    /// With wait:false: a key identifies one ask within the current turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
 }
@@ -581,7 +581,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
-                    "idempotency_key": {"type": "string", "minLength": 1, "description": "With wait:false only. Retrying with the same key returns the same interaction_id with deduplicated:true instead of raising a second card."},
+                    "idempotency_key": {"type": "string", "minLength": 1, "description": "With wait:false only. Retrying with the same key in this turn returns the same interaction_id with deduplicated:true. Reuse in a later turn opens a new card."},
                     "view": {
                         "type": "object", "required": ["browser_region"], "additionalProperties": false,
                         "properties": {"browser_region": {

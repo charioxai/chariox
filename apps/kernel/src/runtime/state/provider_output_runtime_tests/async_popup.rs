@@ -326,6 +326,71 @@ async fn async_popup_returns_while_pending_and_uses_the_existing_wake_registry()
     );
 }
 
+#[tokio::test]
+async fn async_popup_reuses_a_key_for_a_fresh_ask_in_the_next_turn() {
+    let f = fixture("async-popup-key-next-turn", true).await;
+    let args = serde_json::json!({"idempotency_key": "deploy"});
+    let first_task = f.begin(&f.prompt_id);
+    let first = ask(&f, args.clone()).await;
+    let first_id = first["interaction_id"].as_str().unwrap();
+    answer_through_router(&f, first_id, "local", "owner-client")
+        .await
+        .unwrap();
+    assert_eq!(answers(&f, first_id).len(), 1);
+
+    let prompt = f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_prompt_for_agent(&f.agent)
+        .unwrap()
+        .clone();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    {
+        let mut app = f.app.lock().await;
+        crate::test_support::admit_room_test_turn(&mut app, &f.room, &f.agent);
+    }
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let second_task = f.begin(session.active_prompt_for_agent(&f.agent).unwrap().id());
+    assert_ne!(first_task.task_id, second_task.task_id);
+
+    let second = ask(&f, args.clone()).await;
+    let second_id = second["interaction_id"].as_str().unwrap();
+    assert_ne!(first_id, second_id, "a later turn must raise a new card");
+    assert_ne!(first["registration_id"], second["registration_id"]);
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let [card] = session.active_interactions() else {
+        panic!("one new card must be open")
+    };
+    assert_eq!(card.id(), second_id);
+    assert_eq!(card.asking_task_id(), Some(second_task.task_id.as_str()));
+
+    let retry = ask(&f, args).await;
+    assert_eq!(retry["deduplicated"], true);
+    assert_eq!(retry["interaction_id"], second_id);
+    assert_eq!(retry["registration_id"], second["registration_id"]);
+
+    answer_through_router(&f, second_id, "local", "owner-client")
+        .await
+        .unwrap();
+    let wake = f.store().agent_wake(second_id).unwrap().unwrap();
+    assert_eq!(wake.task_id, second_task.task_id);
+    assert_eq!(second["registration_id"], wake.registration_id);
+    assert_eq!(wake.state, "exited");
+    let told = answers(&f, second_id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["reply"], "Exact reply: continue.");
+}
+
 fn answers(f: &Fixture, id: &str) -> Vec<serde_json::Value> {
     f.store()
         .agent_inbox(&f.room, &f.agent, 0)
