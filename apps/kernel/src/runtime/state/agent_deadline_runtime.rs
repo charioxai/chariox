@@ -5,6 +5,17 @@ use crate::local::{
     AgentDeadlineState, GetAgentDeadlineRequest, LocalDaemonResponse, SetAgentDeadlineRequest,
 };
 
+/// A deadline as the person reads it, in the form the reached-deadline refusal uses.
+fn utc_time(deadline_ms: u64) -> String {
+    i64::try_from(deadline_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || format!("{deadline_ms} ms"),
+            |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        )
+}
+
 fn refusal(code: &str, message: &str) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -44,22 +55,30 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
-        // A deadline is never later than an ancestor's: the parent's deadline ends its team.
+        // A deadline is never later than the nearest ancestor limit still running: the
+        // parent's deadline ends its team. An ancestor whose limit has ended bounds nothing.
         let agents = self.owned.agent_store.list_agents();
         for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
-            if self
+            let Some(parent) = self
                 .owned
                 .durable_state_store
                 .agent_deadline(ancestor.session_id(), ancestor.id())?
-                .is_some_and(|parent| {
-                    request
-                        .deadline_ms
-                        .is_none_or(|time| time > parent.deadline_ms)
-                })
+                .filter(|parent| parent.state == AgentDeadlineState::Armed)
+            else {
+                continue;
+            };
+            if request
+                .deadline_ms
+                .is_none_or(|time| time > parent.deadline_ms)
             {
+                let name = ancestor.alias().unwrap_or_else(|| ancestor.id());
+                let until = utc_time(parent.deadline_ms);
                 return Err(refusal(
                     "agent_deadline_after_parent",
-                    "an agent deadline cannot be later than its parent's; use a shorter time or clear the ancestor deadline first",
+                    &format!(
+                        "agent {name}'s deadline ({until}) bounds this agent: choose a time at or before it. \
+                         To go further, the owner or {name}'s parent extends {name} first (agent deadline {name} <duration>)"
+                    ),
                 ));
             }
         }

@@ -448,10 +448,15 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({
                 "status": audit_status,
+                "prompt_id": prompt_id,
                 "outcome": summarize_metaagent_command_prompt_outcome(&submission.outcome),
                 "target_agent_id": target_agent_id,
                 "provider_run_id": audit_provider_run_id,
-                "agent_activity": summarize_metaagent_command_agent_activity(&agent_activity),
+                "target_activity": agent_activity.get(target_agent_id).map(|state| serde_json::json!({
+                    "status": state.status,
+                    "prompt_status": state.prompt_status,
+                    "busy": state.busy,
+                })),
             }),
         })
     }
@@ -522,24 +527,6 @@ fn summarize_metaagent_command_prompt(
         "status": prompt.status(),
         "workflow_run_id": prompt.workflow_run_id(),
         "workflow_node_run_id": prompt.workflow_node_run_id(),
-    })
-}
-
-fn summarize_metaagent_command_agent_activity(
-    activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "agents": activity
-            .iter()
-            .map(|(agent_id, state)| {
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "status": state.status,
-                    "prompt_status": state.prompt_status,
-                    "busy": state.busy,
-                })
-            })
-            .collect::<Vec<_>>(),
     })
 }
 

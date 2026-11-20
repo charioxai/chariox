@@ -431,6 +431,19 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
+        // The worker's stop is final: neither a home's edit nor the shift of a restart revives
+        // an agent that already ended here.
+        if self
+            .owned
+            .durable_state_store
+            .agent_deadline(&backing.0, &backing.1)?
+            .is_some_and(|ended| ended.state == crate::local::AgentDeadlineState::Reached)
+        {
+            return Err(DaemonError::MachineRequest {
+                code: crate::error::AGENT_DEADLINE_REACHED.into(),
+                message: "the worker already ended this leased agent at its time limit; a leased agent cannot be extended after that, start a new agent".into(),
+            });
+        }
         self.owned.durable_state_store.agent_lifecycle(
             crate::durable_state::agent_lifecycle::Operation::SetDeadline {
                 room: backing.0,
