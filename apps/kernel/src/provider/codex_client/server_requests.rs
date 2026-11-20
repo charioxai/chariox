@@ -180,6 +180,10 @@ impl CodexClient {
             }),
         );
         let body = command_execution_approval_body(&params);
+        let body = match &self.unavailable_workspace_sandbox {
+            Some(sandbox) => sandbox.approval_body(&params, body),
+            None => body,
+        };
         self.request_native_permission_interaction(
             &params,
             "codex-command-approval",

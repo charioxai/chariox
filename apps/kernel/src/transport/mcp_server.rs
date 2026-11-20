@@ -181,17 +181,20 @@ async fn handle_http_request_inner(
             "not found".to_string(),
         ));
     }
-    if let Some(token) = parse_bearer_token(request.headers()) {
-        catalogs.seed(&router, &token).await;
-    }
-
     match *request.method() {
-        Method::GET => Ok(catalog_notification_stream(
-            router,
-            &catalogs,
-            request.headers(),
-            shutdown,
-        )),
+        Method::GET => {
+            // Only notification streams need a catalog baseline. The provider
+            // must be able to initialize while a catalog worker is busy.
+            if let Some(token) = parse_bearer_token(request.headers()) {
+                catalogs.seed(&router, &token).await;
+            }
+            Ok(catalog_notification_stream(
+                router,
+                &catalogs,
+                request.headers(),
+                shutdown,
+            ))
+        }
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),

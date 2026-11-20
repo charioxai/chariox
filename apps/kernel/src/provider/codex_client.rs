@@ -24,6 +24,8 @@ mod server_requests;
 mod skills;
 mod socket_io;
 mod thread_runtime;
+mod workspace_sandbox;
+pub(in crate::provider) use workspace_sandbox::UnavailableWorkspaceSandbox;
 
 mod mcp_config;
 
@@ -73,6 +75,7 @@ pub struct CodexClient {
     runtime_mcp_auth_token: Option<String>,
     native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     native_approval_turn_id: Option<String>,
+    unavailable_workspace_sandbox: Option<UnavailableWorkspaceSandbox>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<CharioxMcpServerConfig>,
     provider_config_overrides: BTreeMap<String, Value>,
@@ -114,6 +117,7 @@ impl CodexClient {
             native_interaction_bridge: None,
             native_approval_origin: None,
             native_approval_turn_id: None,
+            unavailable_workspace_sandbox: None,
             mcp_servers: Vec::new(),
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
@@ -161,6 +165,14 @@ impl CodexClient {
     ) -> Self {
         self.native_approval_origin = origin;
         self.native_approval_turn_id = turn_id;
+        self
+    }
+
+    pub(in crate::provider) fn with_unavailable_workspace_sandbox(
+        mut self,
+        sandbox: Option<UnavailableWorkspaceSandbox>,
+    ) -> Self {
+        self.unavailable_workspace_sandbox = sandbox;
         self
     }
 

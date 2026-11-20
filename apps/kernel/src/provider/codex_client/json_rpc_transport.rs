@@ -49,6 +49,36 @@ impl CodexClient {
         Ok((socket, info))
     }
 
+    pub(in crate::provider) fn workspace_sandbox_is_unavailable(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        cwd: &std::path::Path,
+    ) -> bool {
+        let result = self.send_request_buffering_notifications_with_timeout::<Value>(
+            socket,
+            next_request_id,
+            "command/exec",
+            json!({
+                "command": ["/bin/true"],
+                "cwd": cwd,
+                "sandboxPolicy": {"type":"workspaceWrite"},
+                "timeoutMs": 1000,
+                "outputBytesCap": 4096,
+            }),
+            &mut Vec::new(),
+            Duration::from_secs(3),
+        );
+        result.is_ok_and(|result| {
+            result["exitCode"].as_i64().is_some_and(|code| code != 0)
+                && result["stderr"].as_str().is_some_and(|stderr| {
+                    stderr.contains("bwrap:")
+                        && (stderr.contains("No permissions to create a new namespace")
+                            || stderr.contains("Operation not permitted"))
+                })
+        })
+    }
+
     pub fn send_request<T: for<'de> Deserialize<'de>>(
         &self,
         socket: &mut CodexSocket,
