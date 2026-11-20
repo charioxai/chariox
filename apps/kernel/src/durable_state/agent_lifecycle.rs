@@ -28,7 +28,7 @@ mod inbox_lookup_tests;
 mod unread_steer_tests;
 mod unread_steers;
 mod worker_stops;
-pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub use leased_processes::{LeasedJobStatus, LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 mod audit;
 #[cfg(test)]

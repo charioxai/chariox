@@ -14,6 +14,8 @@ pub struct LeasedProcessBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeasedProcessReceipt {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<LeasedJobStatus>,
     pub binding: LeasedProcessBinding,
     pub wake: AgentWake,
     pub command_digest: String,
@@ -24,6 +26,14 @@ pub struct LeasedProcessReceipt {
     pub revision: u64,
     pub backing_room: String,
     pub backing_agent: String,
+}
+
+/// The worker owns execution and the saved result. Only the home delivers the wake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedJobStatus {
+    pub state: String,
+    pub running_at_ms: Option<u64>,
+    pub result: Option<crate::local::JobResult>,
 }
 
 #[derive(Clone)]
@@ -158,14 +168,22 @@ pub(super) fn create_home_wake(
     tx: &Transaction<'_>,
     task: String,
     prompt: String,
-    wake: AgentWake,
+    mut wake: AgentWake,
     binding: LeasedProcessBinding,
 ) -> Result<Outcome, DaemonError> {
     let id = wake.id.clone();
-    if wake.kind != "process" || binding.home_prompt_id != prompt {
+    if !matches!(wake.kind.as_str(), "process" | "job") || binding.home_prompt_id != prompt {
         return Err(error("leased wake origin mismatch"));
     }
-    let outcome = super::wakes::apply(tx, Operation::CreateWake { task, prompt, wake })?;
+    wake.state = "starting".into();
+    let outcome = super::wakes::apply(
+        tx,
+        Operation::ArmWake {
+            task,
+            prompt,
+            wake: Box::new(wake),
+        },
+    )?;
     tx.execute(
         "INSERT INTO agent_leased_wake_bindings VALUES(?1,?2)",
         params![id, encode(&binding)?],
