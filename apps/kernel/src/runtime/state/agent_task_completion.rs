@@ -9,6 +9,12 @@ impl KernelRuntimeState {
         failure: Option<&crate::provider::TurnOutcome>,
         mut public_answer: Option<serde_json::Value>,
     ) -> Result<(), DaemonError> {
+        let recovered = if failure.is_none() {
+            self.owned.recover_background_answer_outcome(task)?
+        } else {
+            None
+        };
+        let failure = failure.or(recovered.as_ref());
         let interrupted = if failure.is_none()
             && task.state == ExecutionState::Done
             && self

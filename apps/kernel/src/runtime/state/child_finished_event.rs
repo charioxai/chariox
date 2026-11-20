@@ -74,7 +74,10 @@ impl KernelRuntimeState {
                 "child_agent_id": child.id(),
                 "child_alias": child.alias(),
                 "child_task_id": task.task_id,
-                "success": outcome.kind == crate::provider::TurnOutcomeKind::Completed,
+                "success": matches!(
+                    outcome.kind,
+                    crate::provider::TurnOutcomeKind::Completed | crate::provider::TurnOutcomeKind::AnsweredInTurn
+                ),
                 "outcome": outcome,
                 "deadline_reached": deadline_reached,
                 "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {

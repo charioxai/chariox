@@ -1,7 +1,7 @@
 //! A native background notification may be consumed by the prompt's already-open provider turn.
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
-use crate::provider::{AnsweredTurnReceipt, ProviderBackgroundNotification};
+use crate::provider::{AnsweredTurnReceipt, ProviderBackgroundNotification, TurnOutcome};
 
 impl KernelRuntimeOwnedState {
     fn background_call_records(
@@ -88,6 +88,31 @@ impl KernelRuntimeOwnedState {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn background_answer_outcome(
+        &self,
+        receipt: AnsweredTurnReceipt,
+        answer: &AgentTaskExecution,
+    ) -> TurnOutcome {
+        if answer.state == ExecutionState::Cancelled {
+            let mut outcome = self.finished_task_outcome(answer, None);
+            outcome.answered_in_turn = Some(receipt);
+            outcome
+        } else {
+            TurnOutcome::answered_in_turn(receipt)
+        }
+    }
+
+    /// The ledger can be terminal before its receipt-bearing history append.
+    pub(super) fn recover_background_answer_outcome(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<Option<TurnOutcome>, DaemonError> {
+        Ok(self
+            .background_answer_target(task)?
+            .filter(|(_, answer)| answer.state == task.state)
+            .map(|(receipt, answer)| self.background_answer_outcome(receipt, &answer)))
     }
 
     /// A receipt is ready only after every background notification was consumed and its answering task ended.

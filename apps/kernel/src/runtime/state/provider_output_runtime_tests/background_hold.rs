@@ -1655,7 +1655,10 @@ async fn a_merged_notification_settles_its_held_delivery_by_the_answer_turn_rece
     );
 }
 
-async fn restart_recovers_a_merged_notification_receipt(cancelled: bool) {
+async fn restart_recovers_a_merged_notification_receipt(
+    cancelled: bool,
+    held_already_terminal: bool,
+) {
     let mut team = child_with_a_call_running("background-held-answer-restart").await;
     let message_prompt = status_message(&team, false).await;
     wait_for_prompt_delivery(&team, &message_prompt).await;
@@ -1727,11 +1730,53 @@ async fn restart_recovers_a_merged_notification_receipt(cancelled: bool) {
     // Crash after Q's terminal ledger write, before publishing it or releasing H.
     assert!(child_finished(&team).is_empty());
     assert!(working(&team));
+    if held_already_terminal {
+        let (held, _) = team
+            .runtime
+            .owned
+            .settle_agent_task_answered_by(
+                &team.room,
+                &team.child,
+                &team.child_prompt,
+                &team.child_run,
+                &team.child_run,
+                cancelled,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.state, answer.state);
+        assert!(
+            team.runtime
+                .owned
+                .operational_history_store
+                .load_prompt_settlement_event(&team.room, &team.child, team.child_prompt.id())
+                .unwrap()
+                .is_none_or(
+                    |entry| entry.metadata[crate::history::TURN_OUTCOME_METADATA_KEY]
+                        ["answered_in_turn"]
+                        .is_null()
+                ),
+            "crash after the held task's terminal ledger write but before its history outcome"
+        );
+    }
     let state_path = team.runtime.owned.durable_state_store.path().to_path_buf();
     team.runtime.owned.durable_state_store =
         crate::durable_state::DurableKernelStateStore::open(state_path).unwrap();
     team.runtime.owned.background_holds = Default::default();
     sweep(&team).await;
+    if held_already_terminal && cancelled {
+        // The cancellation sweep publishes from its own task.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !child_finished(&team)
+                .iter()
+                .any(|event| event.payload["child_task_id"] == team.task.task_id)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     let events = child_finished(&team);
     let held = events
@@ -1755,17 +1800,19 @@ async fn restart_recovers_a_merged_notification_receipt(cancelled: bool) {
     assert_eq!(outcome["answered_in_turn"]["session_id"], team.room);
     assert_eq!(outcome["answered_in_turn"]["agent_id"], team.child);
     assert!(held[0].payload["public_answer"].is_null());
-    let history = team
-        .runtime
-        .owned
-        .operational_history_store
-        .load_prompt_settlement_event(&team.room, &team.child, team.child_prompt.id())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        history.metadata[crate::history::TURN_OUTCOME_METADATA_KEY],
-        *outcome
-    );
+    if !held_already_terminal {
+        let history = team
+            .runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&team.room, &team.child, team.child_prompt.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            history.metadata[crate::history::TURN_OUTCOME_METADATA_KEY],
+            *outcome
+        );
+    }
     sweep(&team).await;
     assert_eq!(
         child_finished(&team)
@@ -1778,10 +1825,20 @@ async fn restart_recovers_a_merged_notification_receipt(cancelled: bool) {
 
 #[tokio::test]
 async fn restart_keeps_the_completed_answer_turn_receipt_without_an_in_memory_hold() {
-    restart_recovers_a_merged_notification_receipt(false).await;
+    restart_recovers_a_merged_notification_receipt(false, false).await;
 }
 
 #[tokio::test]
 async fn restart_keeps_the_cancelled_answer_turn_receipt_without_reporting_success() {
-    restart_recovers_a_merged_notification_receipt(true).await;
+    restart_recovers_a_merged_notification_receipt(true, false).await;
+}
+
+#[tokio::test]
+async fn restart_recovers_the_receipt_after_the_held_task_completes() {
+    restart_recovers_a_merged_notification_receipt(false, true).await;
+}
+
+#[tokio::test]
+async fn restart_recovers_the_receipt_after_the_held_task_is_cancelled() {
+    restart_recovers_a_merged_notification_receipt(true, true).await;
 }

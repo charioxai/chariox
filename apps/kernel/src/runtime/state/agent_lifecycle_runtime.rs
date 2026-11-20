@@ -294,13 +294,7 @@ impl KernelRuntimeOwnedState {
             .filter(|(settled, _)| settled.revision != task.revision);
         if settlement.is_some() {
             if let Some((receipt, answer)) = target {
-                let outcome = if cancelled {
-                    let mut outcome = self.finished_task_outcome(&answer, None);
-                    outcome.answered_in_turn = Some(receipt);
-                    outcome
-                } else {
-                    crate::provider::TurnOutcome::answered_in_turn(receipt)
-                };
+                let outcome = self.background_answer_outcome(receipt, &answer);
                 // Both live release and restart supervision publish this same durable outcome.
                 self.operational_history_store.record_prompt_settlement(
                     self.config_projection
