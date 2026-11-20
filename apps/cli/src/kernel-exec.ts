@@ -50,21 +50,33 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   // The folder is chosen when the terminal opens; the kernel refuses it on every later operation.
   const opening: KernelTerminalTarget = { kernelTerminal: true, ...(options.directory ? { directory: options.directory } : {}) }
   const target: KernelTerminalTarget = { kernelTerminal: true }
-  const { terminal } = expectRoomTerminalResult(await send(openRoomTerminalRequest(opening, { cols: COLS, rows: ROWS }, { command: options.command, ...(options.stdin ? { stdin: options.stdin } : {}) })), "opened")
-  const terminalId = terminal.terminal_id
+  let terminalId: string | undefined
   let failed = true
-  // An interrupt ends the command with the terminal: Ctrl-C must not leave a shell running on the kernel.
-  const interrupt = (signal: number) => () => { void send(closeRoomTerminalRequest(target, terminalId)).finally(() => process.exit(128 + signal)) }
+  let signalExit: number | undefined
+  let wakeInterrupted!: () => void
+  const interrupted = new Promise<void>(resolve => { wakeInterrupted = resolve })
+  // The kernel may have started the command by the time a signal arrives.
+  // Keep waiting for the terminal ID so the finally block can close it.
+  const interrupt = (signal: number) => () => {
+    signalExit ??= 128 + signal
+    wakeInterrupted()
+  }
   const onInt = interrupt(2), onTerm = interrupt(15), onHup = interrupt(1)
   options.signals?.on("SIGINT", onInt); options.signals?.on("SIGTERM", onTerm); options.signals?.on("SIGHUP", onHup)
-  const deadline = Date.now() + options.timeoutSeconds * 1000
+  const sendUntilInterrupted: SendRequest = body => Promise.race([send(body), interrupted])
   try {
+    const { terminal } = expectRoomTerminalResult(await send(openRoomTerminalRequest(opening, { cols: COLS, rows: ROWS }, { command: options.command, ...(options.stdin ? { stdin: options.stdin } : {}) })), "opened")
+    terminalId = terminal.terminal_id
+    if (signalExit !== undefined) return signalExit
+    const deadline = Date.now() + options.timeoutSeconds * 1000
     let ended: unknown
     for (;;) {
       const timeoutMs = Math.max(0, Math.min(WAIT_CHUNK_MS, deadline - Date.now()))
-      const { waited } = expectRoomTerminalResult(await send(roomTerminalRequest(target, {
+      const reply = await sendUntilInterrupted(roomTerminalRequest(target, {
         operation: "wait", terminal_id: terminalId, watches: [{ kind: "finished" }] as never, timeout_ms: timeoutMs,
-      })), "waited")
+      }))
+      if (signalExit !== undefined) return signalExit
+      const { waited } = expectRoomTerminalResult(reply, "waited")
       if (waited.fired) { ended = waited.terminal.status; break }
       if (Date.now() >= deadline) {
         throw new CommandFailure("kernel_request_timeout", `the command is still running after ${options.timeoutSeconds} s and was stopped; raise --timeout, or run it in a terminal (chariox terminal open ... --kernel)`)
@@ -82,7 +94,9 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
       if (body) stdout.write(body.replace(/\r\n/g, "\n"))
     }
     for (;;) {
-      const { output } = expectRoomTerminalResult(await send(readRoomTerminalOutputRequest(target, terminalId, offset)), "output")
+      const reply = await sendUntilInterrupted(readRoomTerminalOutputRequest(target, terminalId, offset))
+      if (signalExit !== undefined) return signalExit
+      const { output } = expectRoomTerminalResult(reply, "output")
       if (output.gap) throw new CommandFailure("kernel_output_lost", "the command wrote more than the terminal keeps; run it in a terminal and read as it goes")
       const bytes = Buffer.from(output.data_base64, "base64")
       if (bytes.length) emit(decoder.write(bytes))
@@ -100,11 +114,16 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     }
     throw new CommandFailure("exec_failed", `the command did not exit normally (${(status.outcome as { reason?: string } | undefined)?.reason ?? status.state})`)
   } finally {
-    options.signals?.off("SIGINT", onInt); options.signals?.off("SIGTERM", onTerm); options.signals?.off("SIGHUP", onHup)
-    // The command never outlives this call: a terminal that cannot be closed is named, with the way to close it.
-    await send(closeRoomTerminalRequest(target, terminalId)).catch((error: unknown) => {
-      if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close --terminal ${terminalId}` } })}\n`)
-      else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close --terminal ${terminalId}` })
-    })
+    try {
+      if (terminalId !== undefined) {
+        // Name the terminal and how to close it if cleanup fails.
+        await send(closeRoomTerminalRequest(target, terminalId)).catch((error: unknown) => {
+          if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close --terminal ${terminalId}` } })}\n`)
+          else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close --terminal ${terminalId}` })
+        })
+      }
+    } finally {
+      options.signals?.off("SIGINT", onInt); options.signals?.off("SIGTERM", onTerm); options.signals?.off("SIGHUP", onHup)
+    }
   }
 }
