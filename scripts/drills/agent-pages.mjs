@@ -112,9 +112,10 @@ async function main() {
     crowd.push(...(await k.rpc(spawnAgentsRequest(room, batch))).AgentsSpawned.agents)
   }
   note("crowd", { lanes: crowd.length })
+  // A team holds at most 64 sub-agents below its room agent: 60 lanes get a parent (the boss and the
+  // scout, 30 each); the rest stay room agents of their own.
   const parents = [boss, scout.id]
-  for (const [index, lane] of crowd.entries()) {
-    // Two parents keep every team under the 64 sub-agent cap.
+  for (const [index, lane] of crowd.slice(0, 60).entries()) {
     await k.rpc({ SetAgentParent: { session_id: room, agent_id: lane.id, parent_agent_id: parents[index % 2] } })
   }
   await k.rpc({ LaunchProviderRun: { session_id: room, agent_id: scout.id, adapter_key: "claude", provider: "claude", account_profile: "default", model, variant: null, native_tui: false } })
