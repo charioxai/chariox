@@ -281,11 +281,24 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // cannot strand the button (as for a click).
           onDispatch?.();
           const steps = 8, at = i => ({ x: from[0] + (to[0] - from[0]) * i / steps, y: from[1] + (to[1] - from[1]) * i / steps });
-          const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
-          for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
-          sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
-          const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
-          if (failed) throw failed.reason;
+          // An HTML5 drag-and-drop the moves start never completes from CDP mouse events: with drags intercepted, Chrome
+          // hands the drag's data over (Input.dragIntercepted) and the kernel finishes it at the end point with drag
+          // events, as a person's mouse would. The release stays queued with the press; a text-selection drag starts
+          // no drag-and-drop and is unchanged.
+          let dragData = null;
+          const unsubscribe = typeof connection.subscribe === "function" ? connection.subscribe(message => { if (message?.method === "Input.dragIntercepted" && message.sessionId === sessionId) dragData = message.params?.data ?? null; }) : null;
+          try {
+            const intercepting = unsubscribe ? connection.send("Input.setInterceptDrags", { enabled: true }, sessionId).then(() => true, () => false) : false;
+            const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
+            for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
+            sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
+            const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
+            if (failed) throw failed.reason;
+            if (await intercepting) {
+              if (dragData) for (const type of ["dragEnter", "dragOver", "drop"]) await connection.send("Input.dispatchDragEvent", { type, ...at(steps), data: dragData }, sessionId);
+              await connection.send("Input.setInterceptDrags", { enabled: false }, sessionId).catch(() => {});
+            }
+          } finally { unsubscribe?.(); }
           assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }

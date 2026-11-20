@@ -378,6 +378,25 @@ test("MP-08/MP-11 (530): a page drag presses, moves and releases in the view sca
   } finally { ack.resolve(); await pending; }
   await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 1, y: 1, to_x: 99999, to_y: 1 }), /outside viewport/);
 });
+// r15 B5: an HTML5 drag-and-drop never completes from CDP mouse events alone; intercepted, the kernel finishes it with drag events.
+test("B5: an intercepted drag-and-drop drops at the end point after the queued release; a selection drag gets no drag events", async () => {
+  for (const intercepted of [true, false]) {
+    const { browser, sent } = fixture(false);
+    const { connection } = await browser.resolvePageTarget();
+    const listeners = new Set(), send = connection.send; let moves = 0;
+    connection.subscribe = listener => { listeners.add(listener); return () => listeners.delete(listener); };
+    connection.send = async (method, params) => {
+      const reply = await send(method, params);
+      if (intercepted && params?.type === "mouseMoved" && ++moves === 3) for (const l of listeners) l({ method: "Input.dragIntercepted", sessionId: "s", params: { data: { items: [{ mimeType: "text/plain", data: "payload" }], dragOperationsMask: 1 } } });
+      return reply;
+    };
+    await inputHostTab(browser, tab, { kind: "drag", x: 100, y: 40, to_x: 300, to_y: 60 }, { viewScale: 0.5 });
+    const steps = sent.filter(x => x.method.startsWith("Input.")).map(x => x.method === "Input.dispatchMouseEvent" ? x.params.type : x.method === "Input.dispatchDragEvent" ? `drag:${x.params.type}` : `${x.method.slice(6)}:${x.params.enabled}`);
+    assert.deepEqual(steps, ["setInterceptDrags:true", "mousePressed", ...Array(8).fill("mouseMoved"), "mouseReleased", ...(intercepted ? ["drag:dragEnter", "drag:dragOver", "drag:drop"] : []), "setInterceptDrags:false"]);
+    if (intercepted) { const drop = sent.find(x => x.params?.type === "drop").params; assert.deepEqual([drop.x, drop.y, drop.data.items[0].data], [150, 30, "payload"]); }
+    assert.equal(listeners.size, 0, "the drag listener is removed");
+  }
+});
 test("A-L24: a drag from or onto a protected field is dispatched like any other", async () => {
   const { browser, sent } = fixture(true);
   await inputHostTab(browser, tab, { kind: "drag", x: 10, y: 10, to_x: 200, to_y: 10 });
