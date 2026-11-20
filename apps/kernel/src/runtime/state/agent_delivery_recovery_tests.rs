@@ -71,7 +71,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn refused_start_ends_with_a_typed_failure_and_the_next_message_starts_a_turn() {
+async fn card_rules_refused_start_settles_without_an_owner_decision() {
     let f = Fixture::with_child_provider("dev-stub");
     let moved = f.remove_workspace();
     let first = f.message("while-the-directory-is-gone", true, false);
@@ -87,11 +87,15 @@ async fn refused_start_ends_with_a_typed_failure_and_the_next_message_starts_a_t
     // No provider I/O happened, so the message is definitively undelivered: it
     // ends as failed and tells its sender, instead of fencing the recipient.
     assert_eq!(f.state_of(first.sequence), "failed");
-    assert_eq!(
-        f.blocked_delivery_tasks(),
-        1,
-        "the owner is asked about the undelivered message"
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let room = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(
+        room.active_interactions()
+            .iter()
+            .all(|card| !card.id().starts_with("task-blocked-delivery-")),
+        "the failed receipt already settled the delivery"
     );
+    assert_eq!(f.blocked_delivery_tasks(), 0);
     let told = f
         .runtime
         .owned
@@ -397,39 +401,6 @@ async fn a_due_timer_starts_a_turn_after_an_earlier_start_failed() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert_eq!(f.state_of(sequence), "handled");
-    assert!(f.child_is_running());
-}
-
-#[tokio::test]
-async fn resume_on_the_card_of_an_undelivered_message_sends_it_again() {
-    let f = Fixture::with_child_provider("dev-stub");
-    let moved = f.remove_workspace();
-    let lost = f.message("while-the-directory-is-gone", true, false);
-    f.runtime
-        .deliver_agent_inbox(&f.room, &f.child)
-        .await
-        .unwrap_err();
-    f.sweep_after_delivery_window();
-    assert_eq!(f.state_of(lost.sequence), "failed");
-    std::fs::rename(&moved, f._worktree.path()).unwrap();
-    let card = f
-        .runtime
-        .owned
-        .durable_state_store
-        .agent_tasks(Some(&f.room), Some(&f.child))
-        .unwrap()
-        .into_iter()
-        .find(|t| t.task_id.starts_with("delivery-"))
-        .expect("the owner is asked about the undelivered message");
-
-    f.runtime
-        .resolve_agent_task_owner_action(
-            &card,
-            super::agent_task_owner_resolution::OwnerTaskAction::Resume,
-        )
-        .await;
-
-    assert_eq!(f.state_of(lost.sequence), "acknowledged");
     assert!(f.child_is_running());
 }
 

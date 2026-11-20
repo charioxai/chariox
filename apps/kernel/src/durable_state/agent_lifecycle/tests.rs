@@ -1839,7 +1839,7 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
 
 // MP-08/MP-10/MP-11: rejected attempts must not renew their timeout indefinitely.
 #[test]
-fn a02_r3_rejected_first_message_escalates_without_task_rows() {
+fn a02_r3_rejected_first_message_settles_without_task_rows() {
     let f = Fixture::new();
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
         "room",
@@ -1889,13 +1889,11 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     }) else {
         panic!()
     };
-    assert_eq!(
-        changed.len(),
-        1,
-        "a repeatedly refused message must reach the owner"
+    assert!(
+        changed.is_empty(),
+        "a failed start cannot create an owner decision"
     );
-    assert_eq!(changed[0].state, ExecutionState::Blocked);
-    assert_eq!(changed[0].task_id, format!("delivery-{}", e.sequence));
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
     assert_eq!(
         f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
         "failed",
@@ -1916,7 +1914,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     };
     assert!(
         changed.is_empty(),
-        "one timeout must emit one owner transition"
+        "the terminal delivery does not emit an owner transition"
     );
 }
 
@@ -2349,8 +2347,8 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     };
     assert_eq!(
         changed.len(),
-        2,
-        "one damaged row must not stop another Room's owner transition"
+        1,
+        "only the damaged delivery requires an owner transition"
     );
     let damaged = changed
         .iter()

@@ -2003,7 +2003,7 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
 }
 
 #[test]
-fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them() {
+fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
     use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
     let mut service = SessionService::new(&test_config());
     let mut session = service
@@ -2032,9 +2032,23 @@ fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them
     );
     session.add_active_interaction(decision.clone());
     session.add_active_interaction(agent_approval);
+    for (id, title) in [
+        ("task-blocked-old-attempt-2", "Agent needs your action"),
+        ("task-blocked-answered-question-3", "Question"),
+    ] {
+        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+            id,
+            id,
+            title,
+            "Saved without a live responder",
+            vec![RuntimeInteractionChoice::new(
+                "cancel", "Dismiss", "cancel", None,
+            )],
+        ));
+    }
     let persisted = serde_json::to_value(&session).expect("persist actual session shape");
     let mut restored: RuntimeSession = serde_json::from_value(persisted).expect("restore session");
-    assert_eq!(restored.active_interactions().len(), 2);
+    assert_eq!(restored.active_interactions().len(), 4);
     let reconciliation = restored.reconcile_after_kernel_restart();
     assert!(
         restored.active_interaction_for_agent("agent-1").is_none(),

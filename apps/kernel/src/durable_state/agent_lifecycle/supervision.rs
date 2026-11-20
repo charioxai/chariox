@@ -532,17 +532,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // kernel before this sweep (`settle_interrupted_deliveries`). What is
                     // left refused before any provider I/O: nothing is unconfirmed, so it
                     // ends as failed and cannot fence the recipient's later wakes.
-                    let reason = if clock_quarantined {
-                        format!(
-                            "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
-                            e.sequence
-                        )
-                    } else {
-                        format!(
-                            "Delivery {} failed: the agent did not start. Resume sends it again, or Cancel",
-                            e.sequence
-                        )
-                    };
                     if !clock_quarantined {
                         super::delivery_failure::fail_undelivered(
                             tx,
@@ -550,10 +539,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             DelegateGoneReason::FailedStart,
                             now,
                         )?;
-                    } else {
-                        e.state = "blocked".into();
-                        save_event(tx, &e)?;
+                        continue;
                     }
+                    let reason = format!(
+                        "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
+                        e.sequence
+                    );
+                    e.state = "blocked".into();
+                    save_event(tx, &e)?;
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
@@ -674,25 +667,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             if resume {
                 registrations(tx, &t.task_id)?;
-            }
-            if resume {
-                // The card exists only for this delivery: Resume is the owner's word to send it again.
-                let own = t
-                    .task_id
-                    .strip_prefix("delivery-")
-                    .and_then(|n| n.parse::<u64>().ok());
-                if let Some(own) = own {
-                    let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
-                    if event.state == "failed" {
-                        super::delivery_failure::send_again(tx, &mut event, now)?;
-                        t.state = ExecutionState::Done;
-                        t.reason = "Delivery sent again".into();
-                        t.owner_action = None;
-                        t.revision += 1;
-                        save(tx, &t)?;
-                        return Ok(Outcome::Task(t));
-                    }
-                }
             }
             let mut q = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q

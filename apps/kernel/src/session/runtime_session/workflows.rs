@@ -736,14 +736,13 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
-        // Agent decisions wait on process-local responders. A restored popup
-        // cannot answer the old provider or unlock request and must not block
-        // a new one. Recovered turns request fresh permission; no approval is
-        // carried across a kernel restart. Kernel operation decisions retain
-        // their existing owner-controlled supersession path.
+        // Agent decisions have process-local responders. Task decisions must
+        // be projected afresh by supervision from the current ledger revision.
         let interaction_count = self.active_interactions.len();
-        self.active_interactions
-            .retain(|interaction| interaction.agent_id().is_none());
+        self.active_interactions.retain(|interaction| {
+            interaction.agent_id().is_none()
+                && !crate::session::is_blocked_task_decision(interaction.id())
+        });
         reconciliation.cleared_agent_interaction_count =
             interaction_count - self.active_interactions.len();
         let terminal_workflow_run_ids = self

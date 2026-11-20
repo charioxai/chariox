@@ -1181,11 +1181,13 @@ damaged interrupted row is skipped and logged without stopping the pass. A task 
 only open work is finished sources with an unacknowledged outcome ends done after the
 one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
-window. Repeated refusals while idle have a separate bounded escalation clock;
+window. Repeated refusals while idle have a separate bounded retry clock;
 an active recipient turn clears that clock. Unsupported or refused steering
 stays queued through long turns and retries when the recipient becomes idle.
 Steer rejections do not start the idle-refusal clock; idle refusals start it at
-receipt time. A damaged refusal clock is retained and quarantines only its
+receipt time. An exhausted idle refusal ends as a failed delivery, with a receipt
+for the sender or wake and without an owner decision. A damaged refusal clock is
+retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
 `chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
