@@ -514,6 +514,37 @@ mod tests {
         );
     }
 
+    // The cellsweep scenario on L12.1 (`agent children` against the tree), one label each: a stale
+    // Working mark with no prompt, a stale processing flag with no admitted turn (the tree and the
+    // clients show both idle), a child whose new turn is admitted (running everywhere, `agent
+    // children` showed it idle) and a parked child.
+    #[test]
+    fn the_children_of_one_room_read_as_the_tree_and_the_clients_read_them() {
+        let mut was_working = stored_idle_agent();
+        was_working.set_state(crate::agent::AgentState::Working);
+        let mut stale_processing_flag = stored_idle_agent();
+        stale_processing_flag.set_processing(true);
+        let admitted_new_turn = stored_idle_agent();
+        let parked = stored_idle_agent();
+        let parked_activity: AgentRuntimeActivity = serde_json::from_value(serde_json::json!({
+            "status":"idle","prompt_status":"none","busy":false,
+            "active_prompt_count":0,"queued_prompt_count":0,
+            "liveness":{"waiting_on":{"kind":"timer","detail":"t","since_ms":1}}
+        }))
+        .unwrap();
+        assert_eq!(agent_state_label(&was_working, None, false), "idle");
+        assert_eq!(
+            agent_state_label(&stale_processing_flag, None, false),
+            "idle",
+            "a processing flag with no admitted turn"
+        );
+        assert_eq!(agent_state_label(&admitted_new_turn, None, true), "working");
+        assert_eq!(
+            agent_state_label(&parked, Some(&parked_activity), false),
+            "waiting"
+        );
+    }
+
     fn row(agent: &str, state: SessionProcessState) -> SessionProcess {
         SessionProcess {
             remote_available: false,
