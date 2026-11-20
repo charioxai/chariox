@@ -1361,8 +1361,11 @@ impl DaemonApp {
                             message: error.to_string(),
                         })?;
                 let session = match self.sessions.get_session(&prompt_state.session_id) {
-                    Ok(session) => session,
-                    Err(DaemonError::SessionNotFound { .. }) => {
+                    Ok(session) if session.status() != crate::session::SessionStatus::Ended => {
+                        session
+                    }
+                    Ok(_) | Err(DaemonError::SessionNotFound { .. }) => {
+                        // A retired Room is readable after its runtime agents are gone.
                         diagnostics.record_missing_prompt_session(prompt_state.session_id);
                         return Ok(());
                     }
@@ -2389,6 +2392,53 @@ mod tests {
             .expect("Room restores");
         assert_eq!(restored.project_id(), project_id);
         assert!(app.sessions().get_project(&project_id).is_ok());
+    }
+
+    #[test]
+    fn durable_restore_ignores_late_prompt_state_for_a_retired_room() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let (session_id, agent_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    "workspace-1",
+                    "workspace-1",
+                ))
+                .expect("Room should be created");
+            crate::app::KernelSessionService::new(&mut app)
+                .end_session(session.id())
+                .expect("Room should end");
+
+            let mut late = DurablePromptStateEventPayload::capture(&session, agent.id());
+            late.active_prompt = Some(crate::session::PromptQueueItem::new(
+                "late-prompt",
+                "attachment-1",
+                agent.id(),
+                "late prompt",
+                crate::session::PromptStatus::Running,
+            ));
+            app.durable_state_store()
+                .append_event(
+                    DURABLE_PROMPT_STATE_EVENT_KIND,
+                    Some(session.id().to_string()),
+                    serde_json::to_value(late).expect("prompt state should encode"),
+                )
+                .expect("late prompt state should persist");
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("late prompt must not prevent boot");
+        let retired = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("retired Room should remain readable");
+        assert_eq!(retired.status(), crate::session::SessionStatus::Ended);
+        assert!(retired.active_prompt_for_agent(&agent_id).is_none());
+        assert!(!app.sessions().has_session(&session_id));
+        assert!(matches!(
+            app.agents.get_agent(&agent_id),
+            Err(DaemonError::AgentNotFound { .. })
+        ));
     }
 
     #[test]
