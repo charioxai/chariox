@@ -1,3 +1,4 @@
+use super::never_fit::Shortfall;
 use super::pending_return::PendingReturn;
 use super::remote::Remote;
 use super::*;
@@ -305,9 +306,16 @@ impl KernelRuntimeState {
                 .expect("job move")
                 .remove(&record.job_id)
         });
+        // A job this machine can never run still asks other machines first, whatever the policy.
+        let shortfall = Shortfall::of(
+            &record.request.needs,
+            admission.capacity(),
+            std::thread::available_parallelism().map_or(u32::MAX, |cpus| cpus.get() as u32),
+        );
         let remote = self.remote_jobs_enabled()
             && (force_remote
                 || requested
+                || shortfall.is_some()
                 || match policy {
                     OffloadPolicy::Off => false,
                     OffloadPolicy::WhenBusy => busy,
@@ -315,6 +323,14 @@ impl KernelRuntimeState {
                 });
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
+        }
+        if let (Some(shortfall), false) = (&shortfall, remote) {
+            return self.refuse_never_fit(
+                record,
+                output,
+                shortfall,
+                "remote jobs are switched off on this kernel (CHARIOX_REMOTE_JOBS)",
+            );
         }
         if remote {
             let requested_origin = self.job_wake_driver.as_ref().and_then(|driver| {
@@ -377,6 +393,15 @@ impl KernelRuntimeState {
                         .complete_remote_job(record, output, result, was_cancelled)
                         .await;
                 }
+                Err(error) if shortfall.is_some() => {
+                    let answer = if is_capacity_failure(&error) {
+                        "no other machine can take it".into()
+                    } else {
+                        format!("asking another machine failed: {error}")
+                    };
+                    let shortfall = shortfall.as_ref().expect("guarded");
+                    return self.refuse_never_fit(record, output, shortfall, &answer);
+                }
                 Err(error) if is_capacity_failure(&error) => {
                     record.placement = JobPlacement::Local;
                     record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
@@ -403,6 +428,27 @@ impl KernelRuntimeState {
             }
             result => result,
         }
+    }
+
+    /// The one result every client shows for a job no machine can ever run.
+    fn refuse_never_fit(
+        &self,
+        record: &mut Record,
+        output: &mut Output,
+        shortfall: &Shortfall,
+        answer: &str,
+    ) -> Result<JobResult, DaemonError> {
+        record.placement = JobPlacement::Local;
+        record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
+        output.push(
+            self,
+            &record.room_id,
+            shortfall.refusal(answer).as_bytes(),
+            true,
+        )?;
+        let mut result = failed(record, String::new());
+        result.outcome = JobOutcome::CapacityUnavailable;
+        Ok(result)
     }
 
     pub(super) async fn complete_remote_job(
