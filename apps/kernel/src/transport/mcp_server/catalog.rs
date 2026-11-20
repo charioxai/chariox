@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use futures_util::stream;
+use futures_util::{stream, StreamExt as _};
 use http_body_util::StreamBody;
 use hyper::body::Frame;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -223,12 +223,15 @@ pub(super) fn stream_response(
             }
         }
     });
-    let body = StreamBody::new(stream::unfold(receiver, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
-    }))
+    let body = StreamBody::new(
+        stream::unfold(receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
+        })
+        .fuse(),
+    )
     .boxed_unsync();
     Response::builder()
         .status(StatusCode::OK)
