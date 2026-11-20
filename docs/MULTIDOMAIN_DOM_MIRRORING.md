@@ -193,6 +193,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   reconciled every drain. A frame document is laid out in the compat mode of its source (981): the viewer builds it
   in standards mode unless its record says `compat: "quirks"` (a frame's initial viewer document is quirks mode, which
   stretches `height: 100%` tables such as an image grid's rows); a top-level quirks page stays in the standards-mode sandbox.
+  The sandbox runs no scripts while the kernel page does, so the viewer evaluates `scripting` media tests as the kernel
+  page does: in `@media` preludes and `<style media>` it reads `(scripting: none)` as false and `(scripting)`/`(scripting: enabled)` as true.
 - **UA state (492).** State without an attribute footprint is sampled from a
   declared set (elements with `popover`, dialogs, checkboxes, custom elements)
   on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:

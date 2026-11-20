@@ -19,6 +19,19 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
+// The mirror document runs no scripts, so `(scripting: none)` matches in it while the kernel page runs scripts: a
+// page's no-JS variants (Tailwind `js-disabled:`) would show and its scripted ones hide. The viewer evaluates each
+// scripting test as the kernel page does: none -> enabled (false here), enabled or bare -> none (true here).
+const scriptingFeature = /\(\s*scripting\s*(?::\s*(none|enabled)\s*)?\)/gi
+export function kernelScriptingMedia(media: string): string {
+  return media.replace(scriptingFeature, (_match, value?: string) => value?.toLowerCase() === 'none' ? '(scripting: enabled)' : '(scripting: none)')
+}
+// CSS text from the kernel is CSSOM-serialized: a condition sits in an `@media ... {` prelude (imports and adopted media lists
+// arrive wrapped as one); selectors and declarations are left alone.
+export function kernelScriptingCss(css: string): string {
+  return css.includes('scripting') ? css.replace(/@media\b[^{};]*\{/g, prelude => prelude.includes('scripting') ? kernelScriptingMedia(prelude) : prelude) : css
+}
+const attrValue = (element: Element, name: string, value: string): string => name === 'popover' ? 'manual' : name === 'media' && element.localName === 'style' ? kernelScriptingMedia(value) : value
 // One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to
 // window / round trip packets a second: 4 credits over a 74 ms round trip were 54 a second (the drill's DOM mirror
 // animated at 49 against Selkies' 60). Eight cover 60 a second up to 130 ms. The window shrinks to the old four
@@ -429,7 +442,7 @@ export class BrowserMirror2Renderer {
   // A face whose bytes have not arrived points at an empty Blob: Chromium fetches a face only for text in its unicode-range,
   // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
   // Each resource has its own Blob: Chromium shares a font fetch by URL, so one failed face would fail every face naming the same URL.
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
+  private substitute(raw: string): string { return kernelScriptingCss(raw).replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
   private placeholder(key: string): string {
     let url = this.placeholders.get(key)
     if (!url) { url = URL.createObjectURL(new Blob([])); this.placeholders.set(key, url) }
@@ -520,7 +533,7 @@ export class BrowserMirror2Renderer {
     for (const [name, value] of Object.entries(record.attrs ?? {})) {
       if (name === 'style') this.setStyled(record.id, { kind: 'attr', raw: value, node: element, keys: [] })
       // The kernel opens and closes popovers (state ops): the viewer's copy never light-dismisses itself.
-      else try { element.setAttribute(name, name === 'popover' ? 'manual' : value) } catch { /* invalid names were refused by validation */ }
+      else try { element.setAttribute(name, attrValue(element, name, value)) } catch { /* invalid names were refused by validation */ }
     }
     if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
@@ -989,7 +1002,7 @@ export class BrowserMirror2Renderer {
         const element = node as Element; const record = this.records.get(op.id)!
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
-        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
+        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, attrValue(element, op.name, op.value)) }
         if (op.name === 'style' && op.value === null) this.opaqueLayout(record, element)
         if (op.name === 'href' && record.res !== undefined && element.localName === 'use') this.image(op.id, element, record.res) // its sprite file + the new fragment
         if (op.name === 'chariox-density' && record.res !== undefined && element.localName === 'img') this.image(op.id, element, record.res)
