@@ -24,6 +24,12 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if let Some(identity) = self
+            .kernel_identity_command(provider_run.is_some(), session, caller, command, tokens)
+            .await
+        {
+            return Ok(Some(identity));
+        }
         if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
             return Ok(Some(listed));
         }

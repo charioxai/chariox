@@ -208,6 +208,9 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
             Ok(())
         }
         Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
+        Some("kernel") if matches!(tokens, [_, verb] if verb == "status" || verb == "list-local") => {
+            Ok(())
+        }
         // What `--room` and `--slice` accept for the caller; the slice lifecycle stays out.
         Some("room")
             if matches!(

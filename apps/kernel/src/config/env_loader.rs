@@ -193,6 +193,7 @@ impl DaemonConfig {
             } else {
                 env_cloud_relay.or(persisted_cloud_relay)
             },
+            former_cloud_kernel_id: None,
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("CHARIOX_RELAY_HEARTBEAT_MS")

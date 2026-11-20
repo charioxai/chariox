@@ -1824,3 +1824,59 @@ async fn room_own_schedule() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].id(), own[1].id());
 }
+
+#[test]
+fn kernel_map_returns_this_kernel_through_the_room_command() {
+    run_large_stack_async_test("room-kernel-map", || async {
+        let env = TestMetaRuntimeEnv::new("room-kernel-map");
+        let workspace = env.root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        config.daemon_id = "kernel-fixture".to_owned();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-kernel-map-grant".into()),
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+            ..Default::default()
+        });
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "room-model",
+        );
+        let auth = run.runtime_mcp_auth_token().unwrap().to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let result = room_command(&router, &auth, "kernel status").await;
+        assert!(result.ok, "{result:?}");
+        let response = &result.payload["response"];
+        assert_eq!(response["kernel"]["kernel_id"], "kernel-fixture");
+        assert_eq!(response["kernel"]["cloud"]["kernel_id"], "kernel-fixture");
+        assert_eq!(response["kernel"]["label"], "fixture-machine");
+        assert_eq!(response["kernel"]["running"], true);
+        assert!(response["kernel"]["workload"]["last_room_activity_at_ms"]
+            .as_u64()
+            .is_some());
+        assert!(!response.to_string().contains("synthetic-kernel-map-grant"));
+        let list = room_command(&router, &auth, "kernel list-local").await;
+        assert!(list.ok, "{list:?}");
+        assert!(list.payload["response"]["kernels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["kernel"]["cloud"]["kernel_id"] == "kernel-fixture" }));
+        let invalid = room_command(&router, &auth, "kernel list-local --machine remote").await;
+        assert!(!invalid.ok);
+    });
+}

@@ -32,6 +32,16 @@ impl DaemonConfig {
         &mut self,
         profile: Option<PersistedCloudRelayProfile>,
     ) -> Result<(), DaemonError> {
+        let unlinked_id = self.cloud_relay.as_ref().and_then(|current| {
+            current
+                .kernel_credential
+                .as_ref()
+                .filter(|credential| !credential.is_empty())?;
+            current.kernel_id.clone()
+        });
+        if profile.is_none() && unlinked_id.is_some() {
+            self.former_cloud_kernel_id = unlinked_id;
+        }
         self.cloud_relay = profile.map(PersistedCloudRelayProfile::canonicalized);
         self.persist_kernel_cloud_state()?;
         // Keep a predecessor machine credential only as a pinned migration source

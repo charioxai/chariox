@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 struct KernelCloudState {
     kernel_id: String,
     profile: Option<PersistedCloudRelayProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    former_cloud_kernel_id: Option<String>,
     relay_url: Option<String>,
     relay_token: Option<String>,
 }
@@ -57,6 +59,7 @@ impl DaemonConfig {
             );
         }
         self.cloud_relay = state.profile;
+        self.former_cloud_kernel_id = state.former_cloud_kernel_id;
         self.relay_url = state.relay_url;
         self.relay_token = state.relay_token;
         Ok(())
@@ -93,6 +96,7 @@ impl DaemonConfig {
         let bytes = serde_json::to_vec_pretty(&KernelCloudState {
             kernel_id: self.daemon_id.clone(),
             profile: self.cloud_relay.clone(),
+            former_cloud_kernel_id: self.former_cloud_kernel_id.clone(),
             relay_url: self.relay_url.clone(),
             relay_token: self.relay_token.clone(),
         })
@@ -157,10 +161,13 @@ mod tests {
 
     #[test]
     fn kernel_cloud_state_is_private_independent_and_unlink_is_durable() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-kernel-cloud-store-{}",
             rand::random::<u64>()
         ));
+        std::env::set_var("CHARIOX_HOME", &root);
         let make = |id: &str| {
             let mut config = DaemonConfig::new(id, "machine-fixture", "fixture");
             config.user_config.state.path =
@@ -201,7 +208,7 @@ mod tests {
                 0o600
             );
         }
-        a.cloud_relay = None;
+        a.persist_cloud_relay_profile(None).unwrap();
         a.relay_url = None;
         a.relay_token = None;
         a.persist_kernel_cloud_state().unwrap();
@@ -209,6 +216,7 @@ mod tests {
         restarted.cloud_relay = b.cloud_relay.clone(); // legacy fallback must not resurrect authority
         restarted.load_kernel_cloud_state();
         assert!(restarted.cloud_relay.is_none());
+        assert_eq!(restarted.former_cloud_kernel_id.as_deref(), Some("a"));
         b.load_kernel_cloud_state();
         assert_eq!(b.cloud_relay.unwrap().kernel_id.as_deref(), Some("b"));
         std::fs::remove_dir_all(root).unwrap();
