@@ -78,15 +78,13 @@ async fn registration_by_a_child_under_a_lowered_parent_asks_the_person() {
 async fn the_room_agent_list_shows_a_child_at_its_parent_chain_limit() {
     let (runtime, session, child) = lowered_parent().await;
 
-    let listed = runtime.handle_list_session_agents_runtime_tool(&session, &child);
+    let listed = runtime.handle_get_session_agent_runtime_tool(
+        &session,
+        &child,
+        serde_json::json!({ "agent": child.id() }),
+    );
 
-    let entry = listed.payload["agents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|agent| agent["id"] == child.id())
-        .unwrap()
-        .clone();
+    let entry = listed.payload["agent"].clone();
     assert_eq!(
         (
             entry["permission_level"].clone(),
@@ -96,6 +94,6 @@ async fn the_room_agent_list_shows_a_child_at_its_parent_chain_limit() {
             serde_json::json!(Level::Required.as_str()),
             serde_json::json!(Mode::Plan.as_str())
         ),
-        "the room agent list shows the child's own setting, not what it runs under"
+        "the room agent inspection shows the child's own setting, not what it runs under"
     );
 }

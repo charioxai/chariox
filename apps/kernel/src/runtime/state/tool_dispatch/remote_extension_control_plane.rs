@@ -600,6 +600,7 @@ impl KernelRuntimeState {
                         .owned
                         .session_snapshot_without_projection_update(session_id)?,
                     &agent,
+                    arguments,
                 )),
             crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok(self
                 .handle_get_session_agent_runtime_tool(

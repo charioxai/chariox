@@ -9,6 +9,7 @@ mod agent_events;
 pub(super) mod agent_inbox_read;
 mod agent_messaging;
 mod agent_peek;
+mod agent_rows;
 pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
 pub(super) mod agent_wakes;
