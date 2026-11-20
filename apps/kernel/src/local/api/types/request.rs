@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    GetAgentReleaseNotes {},
     SubscribeEvents(SubscribeEventsRequest),
     UnsubscribeEvents(UnsubscribeEventsRequest),
     GetEventSubscription(GetEventSubscriptionRequest),

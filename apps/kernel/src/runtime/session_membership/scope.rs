@@ -814,6 +814,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListMetaagentEvents(_)
         | LocalDaemonRequest::ReadMetaagentEvent(_)
         | LocalDaemonRequest::AckMetaagentEvents(_)
+        | LocalDaemonRequest::GetAgentReleaseNotes { .. }
         | LocalDaemonRequest::GetTerminalCommandCatalog(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)

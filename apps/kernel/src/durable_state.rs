@@ -109,6 +109,7 @@ pub struct DurableKernelStateStore {
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
     skill_catalog_owner: bool,
+    agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -439,8 +440,17 @@ impl DurableKernelStateStore {
                 message: "cannot open the owned startup connection".into(),
             })?;
         store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        if config.kernel_runtime_role != crate::config::KernelRuntimeRole::RemoteLeaseWorker {
+            store.agent_release_delivery = Some(Arc::new(
+                crate::agent_release_notes::Delivery::open(&store)?,
+            ));
+        }
         Ok(store)
     }
+    pub(crate) fn agent_release_delivery(&self) -> Option<&crate::agent_release_notes::Delivery> {
+        self.agent_release_delivery.as_deref()
+    }
+
     pub(crate) fn owns_skill_catalog(&self) -> bool {
         self.skill_catalog_owner
     }
@@ -625,6 +635,7 @@ impl DurableKernelStateStore {
             workflow_history_authority: Default::default(),
             outside_followed,
             skill_catalog_owner: false,
+            agent_release_delivery: None,
         })
     }
 

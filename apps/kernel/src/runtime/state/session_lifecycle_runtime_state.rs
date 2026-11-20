@@ -453,6 +453,9 @@ impl KernelRuntimeState {
         let attachment = self.owned.attach(request)?;
         self.refresh_kernel_browser_audience(&attachment).await?;
         if terminal_caller {
+            self.owned.announce_agent_release_to_client(&attachment);
+        }
+        if terminal_caller {
             if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
                 self.owned.kernel_browser_host.set_focus(
                     &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),

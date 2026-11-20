@@ -847,6 +847,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PauseMetaagentTask(_) => "metaagent.task.pause",
         LocalDaemonRequest::ResumeMetaagentTask(_) => "metaagent.task.resume",
         LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
+        LocalDaemonRequest::GetAgentReleaseNotes { .. } => "agent_release_notes.read",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",

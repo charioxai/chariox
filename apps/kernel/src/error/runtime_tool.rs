@@ -1,36 +1,38 @@
-//! MP-08 / MP-11: project only existing, trusted policy codes to providers.
+//! Provider-facing errors start with guidance. Transport details stay in the kernel log.
 use crate::error::DaemonError;
-pub(super) fn message(error: &DaemonError) -> String {
+pub(crate) fn message(error: &DaemonError) -> String {
     match error {
         DaemonError::UserDomainRefused { reason } => {
             format!("{}: User-domain request refused", reason.code())
         }
-        // A room tool refused on another kernel in its own sentence; the relay wrapper
-        // around it is not for the agent.
-        DaemonError::RelayTransport { code, message, .. }
-            if crate::runtime::room_tool_admission::is_public_code(code) =>
-        {
+        DaemonError::LocalTransport { operation, message } => {
+            log_transport_failure(operation, None);
             message.clone()
         }
-        // A browser controller refused in its own sentence; the transport wrapper
-        // around it, here or on the worker, is not for the agent.
-        DaemonError::RelayTransport { code, message, .. }
-            if code
-                == crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE =>
-        {
-            message.clone()
-        }
-        DaemonError::LocalTransport {
-            operation: "browser_controller.route",
+        DaemonError::RelayTransport {
+            operation,
+            code,
             message,
-        } if crate::runtime::browser_controller_process::controller_failure_code(message)
-            .is_some() =>
-        {
+            retryable,
+        } => {
+            log_transport_failure(operation, Some((code.as_str(), *retryable)));
             message.clone()
         }
         _ => error.to_string(),
     }
 }
+fn log_transport_failure(operation: &str, relay: Option<(&str, bool)>) {
+    crate::logging::warn_with_fields(
+        "daemon.runtime_mcp",
+        "runtime MCP request failed",
+        serde_json::json!({
+            "operation": operation,
+            "relay_code": relay.map(|(code, _)| code),
+            "retryable": relay.map(|(_, retryable)| retryable),
+        }),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +64,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn room_command_refusal_starts_with_its_guidance() {
+        let guidance = "Unknown room command. Use chariox.commands.list to see available commands.";
+        let error = DaemonError::LocalTransport {
+            operation: "runtime_tool_meta.run_command",
+            message: guidance.into(),
+        };
+        assert_eq!(message(&error), guidance);
+    }
+
     const STALE_ELEMENT: &str =
         "browser controller `browser.action` failed with stale_element_reference: the element is stale";
 
@@ -85,6 +97,6 @@ mod tests {
             message: STALE_ELEMENT.to_string(),
             retryable: true,
         };
-        assert_ne!(message(&wrapped), STALE_ELEMENT);
+        assert_eq!(message(&wrapped), STALE_ELEMENT);
     }
 }
