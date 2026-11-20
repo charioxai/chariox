@@ -351,6 +351,7 @@ response_policies! {
         CredentialSecretStored,
         CredentialSecretDeleted,
         StateBundleKeyCreated,
+        StateBundleKeySealed,
         StateBundleKeyChallengeAnswered,
         CredentialVaultStatus,
         CredentialVaultLocked,

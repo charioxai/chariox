@@ -4,8 +4,8 @@ use crate::local::{
     AnswerStateBundleKeyChallengeRequest, CreateStateBundleKeyRequest,
     DeleteCredentialSecretRequest, GetCredentialVaultStatusRequest, GetUserConfigRequest,
     GetUserConfigSchemaRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LockCredentialVaultRequest, ManageCredentialVaultRequest, SetCredentialSecretRequest,
-    SetProviderAccountCredentialRequest, SetUserConfigValueRequest,
+    LockCredentialVaultRequest, ManageCredentialVaultRequest, SealStateBundleKeyRequest,
+    SetCredentialSecretRequest, SetProviderAccountCredentialRequest, SetUserConfigValueRequest,
     SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest, UserConfigMutationEffect,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
@@ -63,6 +63,15 @@ pub(crate) async fn execute_user_config_request(
         }
         LocalDaemonRequest::CreateStateBundleKey(request) => {
             execute_create_state_bundle_key_request(
+                config_projection,
+                runtime_state,
+                command,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::SealStateBundleKey(request) => {
+            execute_seal_state_bundle_key_request(
                 config_projection,
                 runtime_state,
                 command,
@@ -227,6 +236,33 @@ async fn execute_create_state_bundle_key_request(
         key_id: request.key_id,
         recipient,
     })
+}
+
+async fn execute_seal_state_bundle_key_request(
+    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: SealStateBundleKeyRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner = runtime_state.owner_client_user_id(command)?;
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(command, None, None, "state_bundle_key_seal")
+        .await?;
+    let config = config_projection.snapshot();
+    let secrets = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &config.user_config.credential_vault,
+    )?;
+    let sealed = crate::state_bundle_key::seal_from_vault(
+        &config,
+        &secrets,
+        &owner,
+        &request.key_id,
+        &request.launch_id,
+        &request.target_kernel_id,
+        &request.target_public_key,
+    )?;
+    Ok(LocalDaemonResponse::StateBundleKeySealed { sealed })
 }
 
 async fn execute_answer_state_bundle_key_challenge_request(

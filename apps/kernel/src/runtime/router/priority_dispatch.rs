@@ -434,6 +434,7 @@ impl CommandRouter {
             | LocalDaemonRequest::DeleteCredentialSecret(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::CreateStateBundleKey(_)
+            | LocalDaemonRequest::SealStateBundleKey(_)
             | LocalDaemonRequest::AnswerStateBundleKeyChallenge(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)

@@ -8,6 +8,14 @@
       }
     },
     {
+      "SealStateBundleKey": {
+        "key_id": "key-1",
+        "launch_id": "launch-1",
+        "target_kernel_id": "kernel-2",
+        "target_public_key": "cHVibGlj"
+      }
+    },
+    {
       "AnswerStateBundleKeyChallenge": {
         "key_id": "key-1",
         "recovery_id": "recovery-1",

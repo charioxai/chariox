@@ -223,6 +223,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateStateBundleKey(_) => {
             LocalRequestMetadata::new("state_bundle_key.create", Normal)
         }
+        LocalDaemonRequest::SealStateBundleKey(_) => {
+            LocalRequestMetadata::new("state_bundle_key.seal", Normal)
+        }
         LocalDaemonRequest::AnswerStateBundleKeyChallenge(_) => {
             LocalRequestMetadata::new("state_bundle_key.answer", Normal)
         }
@@ -913,6 +916,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
         LocalDaemonRequest::CreateStateBundleKey(_) => "state_bundle_key.create",
+        LocalDaemonRequest::SealStateBundleKey(_) => "state_bundle_key.seal",
         LocalDaemonRequest::AnswerStateBundleKeyChallenge(_) => "state_bundle_key.answer",
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => "provider_account.copy",
         LocalDaemonRequest::ListProviderAccountCopyOffers(_) => "provider_account.copy_offers",

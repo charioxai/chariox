@@ -217,7 +217,7 @@ pub use api::{
     RunAgentUtilityRequest, RunProjectEnvironmentSetupRequest,
     RunRemoteProjectEnvironmentSetupRequest, RunShellCapabilityRequest,
     RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest, RunWorkflowRegistryEntryRequest,
-    SaveProjectEnvironmentRequest, SealCredentialVaultKeyRequest,
+    SaveProjectEnvironmentRequest, SealCredentialVaultKeyRequest, SealStateBundleKeyRequest,
     SearchEventGeneratorCatalogRequest, SearchMetaagentCommandsRequest, SearchRecallRequest,
     SearchWorkspaceDirectoriesRequest, SemanticRecallMatch, SemanticRecallSearchUtilityInput,
     SemanticSearchRecallMode, SemanticSearchRecallRequest, SendProviderLoginInputRequest,

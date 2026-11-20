@@ -42,6 +42,7 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }
         LocalDaemonRequest::CreateStateBundleKey(_)
+        | LocalDaemonRequest::SealStateBundleKey(_)
         | LocalDaemonRequest::AnswerStateBundleKeyChallenge(_) => {
             (Who::Owner, "vault_change_owner_only", wording::CHANGE)
         }

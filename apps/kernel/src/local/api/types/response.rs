@@ -270,6 +270,7 @@ pub enum LocalDaemonResponse {
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
     StateBundleKeyCreated { key_id: String, recipient: String, },
+    StateBundleKeySealed { sealed: crate::state_bundle_key::BundleKeyMaterialization, },
     StateBundleKeyChallengeAnswered { recovery_id: String, verified_at: String, },
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, unlock: crate::local::VaultUnlockOptions, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },

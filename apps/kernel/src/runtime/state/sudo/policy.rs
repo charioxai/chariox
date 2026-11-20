@@ -301,6 +301,7 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::CreateStateBundleKey(_)
+            | LocalDaemonRequest::SealStateBundleKey(_)
             | LocalDaemonRequest::AnswerStateBundleKeyChallenge(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)

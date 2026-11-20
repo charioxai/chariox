@@ -833,6 +833,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CopyProviderAccountFromKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::CreateStateBundleKey(_)
+        | LocalDaemonRequest::SealStateBundleKey(_)
         | LocalDaemonRequest::AnswerStateBundleKeyChallenge(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)

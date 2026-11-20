@@ -67,6 +67,15 @@ pub struct CreateStateBundleKeyRequest {
     pub key_id: String,
 }
 
+/// Seals a stored bundle key for one destination kernel, bound to the launch that restores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealStateBundleKeyRequest {
+    pub key_id: String,
+    pub launch_id: String,
+    pub target_kernel_id: String,
+    pub target_public_key: String,
+}
+
 /// Answers Cloud's recovery challenge with a stored bundle key, proving this kernel's Vault
 /// holds it. The kernel presents its own Cloud credential; the answer never reaches a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

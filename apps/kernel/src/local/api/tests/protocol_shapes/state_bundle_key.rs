@@ -7,7 +7,7 @@ fn state_bundle_key_1013_snapshot_and_hash() {
     let bytes = include_bytes!("state-bundle-key-1013.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "160d6ee06912b11e9202734a322ba1a094dea7ed1d3c4c474424ec905c927d90"
+        "0f0cb684c66ebce97a74a88f8a60554db7463366ef93b410638e72bc2b997b5a"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

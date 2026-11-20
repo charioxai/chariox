@@ -194,6 +194,32 @@ pub(crate) fn read_from_vault(
         .ok_or_else(|| error("this Vault does not hold the bundle key"))
 }
 
+/// The owner kernel hands the stored key to one destination kernel, sealed from its relay key to
+/// the destination's and bound to the launch, so no other kernel or launch can open it.
+pub(crate) fn seal_from_vault(
+    config: &crate::config::DaemonConfig,
+    secrets: &crate::secret::RuntimeSecretService,
+    owner_user_id: &str,
+    key_id: &str,
+    launch_id: &str,
+    target_kernel_id: &str,
+    target_public_key: &str,
+) -> Result<BundleKeyMaterialization, DaemonError> {
+    let identity = read_from_vault(secrets, owner_user_id, key_id)?;
+    let binding = BundleKeyBinding {
+        key_id: key_id.to_string(),
+        launch_id: launch_id.to_string(),
+        source_kernel_id: config.daemon_id.clone(),
+        target_kernel_id: target_kernel_id.to_string(),
+    };
+    seal(
+        &config.relay_private_key,
+        target_public_key,
+        &binding,
+        &identity,
+    )
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct VerifiedRecovery {
     pub(crate) recovery_id: String,
