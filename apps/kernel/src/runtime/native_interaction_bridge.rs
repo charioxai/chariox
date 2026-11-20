@@ -55,45 +55,12 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         session_id: &str,
         interaction: RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-        let Some(origin) = interaction.native_origin().cloned() else {
-            return Ok(ProviderNativeInteractionResolution {
-                status: "timed_out".into(),
-                choice_id: None,
-                reply: None,
-            });
-        };
-        let session_id = session_id.to_string();
-        let interaction_agent_id = interaction
-            .agent_id()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "provider_native_interaction_bridge",
-                message: "Provider interactions require an agent subject".into(),
-            })?
-            .to_string();
-        let state = self.state.clone();
-        let remote_target = self.handle.block_on(async {
-            state
-                .remote_native_interaction_context(&session_id, &interaction_agent_id, &origin)
-                .await
-        })?;
-        if let Some(target) = remote_target {
-            return self.handle.block_on(forward_native_interaction_to_home(
-                &state,
-                &session_id,
-                &origin,
-                target,
-                interaction,
-            ));
-        }
-        let state = self.state.clone();
-        self.handle
-            .block_on(request_runtime_interaction_with_timeout(
-                &state,
-                &session_id,
-                interaction,
-                "provider_native_interaction_bridge",
-                None,
-            ))
+        self.handle.block_on(request_provider_native_interaction(
+            &self.state,
+            session_id,
+            interaction,
+            "provider_native_interaction_bridge",
+        ))
     }
 }
 
@@ -239,28 +206,35 @@ pub(crate) async fn request_provider_native_interaction(
     interaction: RuntimeInteraction,
     operation: &'static str,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    let agent_id = interaction
-        .agent_id()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation,
-            message: "Provider interactions require an agent subject".into(),
-        })?
-        .to_string();
-    let Some(origin) = interaction.native_origin().cloned() else {
-        return Ok(ProviderNativeInteractionResolution {
+    tokio::select! {
+        biased;
+        () = state.wait_for_provider_decisions_closed() => Ok(ProviderNativeInteractionResolution {
             status: "timed_out".into(),
             choice_id: None,
             reply: None,
-        });
-    };
-    if let Some(target) = state
-        .remote_native_interaction_context(session_id, &agent_id, &origin)
-        .await?
-    {
-        return forward_native_interaction_to_home(state, session_id, &origin, target, interaction)
-            .await;
+        }),
+        resolution = async {
+            let Some(origin) = interaction.native_origin().cloned() else {
+                return Ok(ProviderNativeInteractionResolution {
+                    status: "timed_out".into(),
+                    choice_id: None,
+                    reply: None,
+                });
+            };
+            let agent_id = interaction.agent_id().ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "Provider interactions require an agent subject".into(),
+            })?;
+            if let Some(target) = state
+                .remote_native_interaction_context(session_id, agent_id, &origin)
+                .await?
+            {
+                return forward_native_interaction_to_home(state, session_id, &origin, target, interaction)
+                    .await;
+            }
+            request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
+        } => resolution,
     }
-    request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }
 
 struct AbandonedInteractionGuard(Option<(KernelRuntimeState, String, String)>);

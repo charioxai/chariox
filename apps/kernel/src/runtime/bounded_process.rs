@@ -88,7 +88,7 @@ pub(crate) fn with_test_command_limit<T>(limit: Duration, run: impl FnOnce() -> 
     let _reset = Reset;
     run()
 }
-const REAP_LIMIT: Duration = Duration::from_secs(1);
+pub(crate) const REAP_LIMIT: Duration = Duration::from_secs(1);
 
 pub(crate) trait BoundedCommandExt {
     #[track_caller]
