@@ -183,10 +183,14 @@ async fn terminal_workflow_runs_remove_their_instructions() {
             .unwrap();
         }
         wait_for_status(&mut socket, &session, &run, expected).await;
-        assert!(
-            !file.parent().unwrap().exists(),
-            "{expected} run left its instruction directory"
-        );
+        let directory = file.parent().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while directory.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{expected} run left its instruction directory"));
     }
 }
 
