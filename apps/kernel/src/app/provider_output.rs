@@ -799,14 +799,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 if let Some(prompt) = prompt.filter(|prompt| {
                     prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
                 }) {
-                    self.app.operational_history_store().save_model_usage(
+                    if let Err(error) = self.app.operational_history_store().save_model_usage(
                         session_id,
                         agent_id,
                         prompt.id(),
                         provider_run_id,
                         projected_provider_run.adapter_key(),
                         &poll_result.model_usage,
-                    )?;
+                    ) {
+                        tracing::warn!(session_id, agent_id, %error, "could not record model usage");
+                    }
                 }
             }
         }

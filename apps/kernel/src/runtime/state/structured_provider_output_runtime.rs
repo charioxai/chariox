@@ -616,7 +616,7 @@ impl KernelRuntimeState {
                     prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
                 })
             {
-                if provider_run.adapter_key() == "claude" {
+                let recorded = if provider_run.adapter_key() == "claude" {
                     owned.operational_history_store.save_claude_model_usage(
                         session_id,
                         agent_id,
@@ -626,7 +626,7 @@ impl KernelRuntimeState {
                             .provider_session_id()
                             .unwrap_or(provider_run_id),
                         &poll_result.model_usage,
-                    )?;
+                    )
                 } else {
                     owned.operational_history_store.save_model_usage(
                         session_id,
@@ -635,7 +635,11 @@ impl KernelRuntimeState {
                         provider_run_id,
                         provider_run.adapter_key(),
                         &poll_result.model_usage,
-                    )?;
+                    )
+                };
+                if let Err(error) = recorded {
+                    // Usage is advisory. A failed write must not consume the reply's completion.
+                    tracing::warn!(session_id, agent_id, %error, "could not record model usage");
                 }
             }
         }

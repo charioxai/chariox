@@ -837,12 +837,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .as_deref()
                 .or(workflow_backing_prompt_id.as_deref());
             if let Some(worker_prompt) = worker_prompt {
-                let model_usage = history_store.turn_model_usage(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                    worker_prompt,
-                    provider_run_id,
-                )?;
+                let model_usage = history_store
+                    .turn_model_usage(
+                        &leased_agent.backing_session_id,
+                        &leased_agent.backing_agent_id,
+                        worker_prompt,
+                        provider_run_id,
+                    )
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "could not read leased model usage");
+                        Vec::new()
+                    });
                 if let Some(completion) = completions.iter_mut().find(|completion| {
                     !completion.is_notification_end()
                         && completion.home_prompt_id.as_deref() == home_prompt_id.as_deref()
@@ -1296,14 +1301,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some((prompt, adapter)) = active_prompt.as_ref().zip(worker_adapter.as_deref()) {
             for completion in &matching_completions {
                 if completion.home_prompt_id.as_deref() == Some(prompt.id()) {
-                    self.app.operational_history_store().save_model_usage(
+                    if let Err(error) = self.app.operational_history_store().save_model_usage(
                         session_id,
                         agent_id,
                         prompt.id(),
                         &projected_provider_run_id,
                         adapter,
                         &completion.model_usage,
-                    )?;
+                    ) {
+                        tracing::warn!(session_id, agent_id, %error, "could not record leased model usage");
+                    }
                 }
             }
         }
