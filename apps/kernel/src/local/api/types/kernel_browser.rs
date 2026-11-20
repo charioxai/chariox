@@ -4,6 +4,22 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// A person's navigation or input originating in a Room.
+    Room {
+        session_id: String,
+        command: Box<KernelBrowserCommand>,
+    },
+    DownloadsWait {
+        session_id: String,
+        #[serde(default)]
+        after: String,
+        wait_ms: u32,
+    },
+    RevealDownload {
+        session_id: String,
+        download_id: String,
+    },
+
     /// Protocol 941: a person fills the focused page field by Vault handle.
     PasteSecret {
         credential_id: String,
