@@ -1138,6 +1138,7 @@ async fn dispatch_on_behalf_of(
                     request,
                     Some(command_id.clone()),
                     command_result_cache,
+                    false,
                 )
                 .await
             };

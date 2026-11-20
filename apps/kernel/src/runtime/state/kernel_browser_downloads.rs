@@ -83,10 +83,13 @@ impl KernelRuntimeState {
 }
 
 async fn reveal_in_file_manager(path: &Path) -> bool {
-    if !tokio::fs::symlink_metadata(path)
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
+    let target = path.to_path_buf();
+    let is_file = tokio::task::spawn_blocking(move || {
+        std::fs::symlink_metadata(target).is_ok_and(|entry| entry.is_file())
+    })
+    .await
+    .unwrap_or(false);
+    if !is_file {
         return false;
     }
     #[cfg(target_os = "macos")]

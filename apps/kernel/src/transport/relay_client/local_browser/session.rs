@@ -102,13 +102,15 @@ pub(super) async fn run<S, E>(
                 identity = lease.borrow().identity.clone();
                 match guarded_io(&lease, &mut authority, &mut shutdown, handle_client_frame(
                     &direct,
-                    &identity,
+                    FrameCaller {
+                        identity: &identity,
+                        same_computer: datagram_is_local.as_ref().is_none_or(|local| local.load(std::sync::atomic::Ordering::Relaxed)),
+                    },
                     &outgoing_tx,
                     &subscription_tasks,
                     &input_order,
                     &mut requests,
                     &payload,
-                    datagram_is_local.as_ref().is_none_or(|local| local.load(std::sync::atomic::Ordering::Relaxed)),
                 )).await
                 {
                     Some(Ok(())) => {},
@@ -182,16 +184,24 @@ fn lease_remaining(lease: &watch::Receiver<LocalBrowserLeaseState>) -> Duration 
     )
 }
 
+struct FrameCaller<'a> {
+    identity: &'a RelayCallerIdentity,
+    same_computer: bool,
+}
+
 async fn handle_client_frame(
     direct: &Arc<LocalBrowserDirect>,
-    identity: &RelayCallerIdentity,
+    caller: FrameCaller<'_>,
     outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
     payload: &str,
-    same_computer: bool,
 ) -> Result<(), &'static str> {
+    let FrameCaller {
+        identity,
+        same_computer,
+    } = caller;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload)
         .map_err(|_| "local browser sent an invalid frame")?;
     match envelope {
