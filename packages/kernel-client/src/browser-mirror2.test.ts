@@ -57,9 +57,10 @@ test('F17: scripting media tests evaluate as in the kernel page (scripts on), no
 })
 
 test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
-  for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080]] as const)
+  // BH: up to the largest kernel page bound, 3840 per side and 3840x2400 in area.
+  for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080], [2560, 1600], [1452, 1866], [3840, 2400], [1600, 3840]] as const)
     assert.doesNotThrow(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()))
-  for (const [css_width, css_height] of [[319, 200], [320, 199], [1921, 1080], [1920, 1081], [900.5, 600]] as const)
+  for (const [css_width, css_height] of [[319, 200], [320, 199], [3842, 1080], [1920, 3842], [3840, 2402], [900.5, 600]] as const)
     assert.throws(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()), /mirror packet bounds/)
 })
 
