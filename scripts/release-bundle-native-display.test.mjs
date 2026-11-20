@@ -23,7 +23,7 @@ test('macOS release kernels stay featureless', () => {
 
 // MP-08/MP-10: exercise the actual ELF on a base image with no display stack.
 test('the Linux release job executes the bundled kernel on minimal Ubuntu', () => {
-  assert.match(workflow, /docker run --rm -v "\$PWD\/unsigned\/bin:\/bundle:ro" ubuntu:22\.04 \/bundle\/chariox-kernel --help/);
+  assert.match(workflow, /docker run --rm "\$\{labels\[@\]\}" -v "\$PWD\/unsigned\/bin:\/bundle:ro" ubuntu:22\.04 \/bundle\/chariox-kernel --help/);
 });
 
 // MP-08/MP-09: a release kernel opens the WASM App worker only beside itself, so each platform's kernel build also

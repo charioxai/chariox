@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "./lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -90,6 +91,7 @@ exec /usr/local/bin/chariox-publication-container standalone
     const failure = await execFileAsync("docker", [
       "run",
       "--rm",
+      ...drillDockerLabels(import.meta.url),
       "--security-opt",
       "no-new-privileges",
       "--cap-drop",
@@ -255,6 +257,7 @@ exec /usr/local/bin/chariox-publication-container standalone
       const failure = await execFileAsync("docker", [
         "run",
         "--rm",
+        ...drillDockerLabels(import.meta.url),
         "--security-opt",
         "no-new-privileges",
         "--cap-drop",
@@ -346,6 +349,7 @@ printf 'split kernel and gateway rejected missing local auth files\n'
     const { stdout } = await execFileAsync("docker", [
       "run",
       "--rm",
+      ...drillDockerLabels(import.meta.url),
       "--entrypoint",
       "/test/run.sh",
       "-e",

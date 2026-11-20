@@ -40,7 +40,9 @@ git -C "$SOURCE" rev-parse HEAD
 sha256sum "$KERNEL" "$NODE" "$BUILDX" /usr/bin/docker
 "$KERNEL" --print-local-daemon-protocol-version
 docker image inspect --format '{{.Id}} {{index .Config.Labels "io.chariox.runtime-source-revision"}}' "$WORKER_IMAGE"
-docker run --rm --read-only --network none --memory 64m --pids-limit 16 \
+drill_label_lines="$("$NODE" "$SOURCE/scripts/lib/drill-docker-owner.mjs" labels storage-restore-replay "$$")"
+mapfile -t drill_labels <<< "$drill_label_lines"
+docker run --rm "${drill_labels[@]}" --read-only --network none --memory 64m --pids-limit 16 \
   --entrypoint /usr/bin/sha256sum "$WORKER_IMAGE" /opt/chariox-slice/bin/chariox-kernel
 useradd --create-home --shell /bin/bash --groups docker b201replay
 python3 "$SOURCE/deploy/local-linux/provision-docker-admission-locks.py"
@@ -114,7 +116,9 @@ mkdir -m 0700 -p /root/.codex/evidence
 mkdir -m 0700 "$OPERATOR_EVIDENCE"
 export SENTINEL=chariox-b201-delete-foreign-home
 test -z "$(docker volume ls --format '{{.Name}}' --filter name="^${SENTINEL}$")"
-docker volume create --label io.chariox.slice.id=b201-delete-foreign \
+drill_label_lines="$(node "$SOURCE/scripts/lib/drill-docker-owner.mjs" labels storage-restore-replay-inventory "$$")"
+mapfile -t drill_labels <<< "$drill_label_lines"
+docker volume create "${drill_labels[@]}" --label io.chariox.slice.id=b201-delete-foreign \
   --label io.chariox.slice.owner-kernel-id=b201-delete-foreign \
   --label io.chariox.slice.owner-machine-id=b201-delete-foreign "$SENTINEL"
 while test ! -e "$OPERATOR_EVIDENCE/stop-inventory"; do

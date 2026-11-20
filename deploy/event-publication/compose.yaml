@@ -1,7 +1,14 @@
 name: chariox-event-publication
 
+x-drill-labels: &drill-labels
+  io.chariox.drill.run: ${CHARIOX_DRILL_RUN:-}
+  io.chariox.drill.started: ${CHARIOX_DRILL_STARTED:-}
+  io.chariox.drill.harness: ${CHARIOX_DRILL_HARNESS:-}
+  io.chariox.drill.process: ${CHARIOX_DRILL_PROCESS:-}
+
 services:
   aeds:
+    labels: *drill-labels
     image: chariox-aeds:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../chariox-aeds
@@ -29,7 +36,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43131/readyz"]
       interval: 5s
@@ -43,6 +49,7 @@ services:
           memory: 256M
 
   dummy-aegs:
+    labels: *drill-labels
     profiles: ["dummy"]
     image: chariox-aegs-dummy:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -68,7 +75,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -85,6 +91,7 @@ services:
           memory: 128M
 
   github-aegs:
+    labels: *drill-labels
     profiles: ["github"]
     image: chariox-aegs-github:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -112,7 +119,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -129,6 +135,7 @@ services:
           memory: 128M
 
   jira-aegs:
+    labels: *drill-labels
     profiles: ["jira"]
     image: chariox-aegs-jira:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -156,7 +163,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -173,6 +179,7 @@ services:
           memory: 128M
 
   linear-aegs:
+    labels: *drill-labels
     profiles: ["linear"]
     image: chariox-aegs-linear:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -200,7 +207,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -217,6 +223,7 @@ services:
           memory: 128M
 
   gitlab-aegs:
+    labels: *drill-labels
     profiles: ["gitlab"]
     image: chariox-aegs-gitlab:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -244,7 +251,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -261,6 +267,7 @@ services:
           memory: 128M
 
   sentry-aegs:
+    labels: *drill-labels
     profiles: ["sentry"]
     image: chariox-aegs-sentry:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -288,7 +295,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -305,6 +311,7 @@ services:
           memory: 128M
 
   slack-aegs:
+    labels: *drill-labels
     profiles: ["slack"]
     image: chariox-aegs-slack:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
@@ -332,7 +339,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    restart: unless-stopped
     depends_on:
       aeds:
         condition: service_healthy
@@ -349,18 +355,28 @@ services:
           memory: 128M
 
 networks:
-  kernel-delivery: {}
-  producer-delivery: {}
+  kernel-delivery:
+    labels: *drill-labels
+  producer-delivery:
+    labels: *drill-labels
 
 volumes:
   aeds-data:
+    labels: *drill-labels
   dummy-aegs-data:
+    labels: *drill-labels
   github-aegs-data:
+    labels: *drill-labels
   jira-aegs-data:
+    labels: *drill-labels
   linear-aegs-data:
+    labels: *drill-labels
   gitlab-aegs-data:
+    labels: *drill-labels
   sentry-aegs-data:
+    labels: *drill-labels
   slack-aegs-data:
+    labels: *drill-labels
 
 secrets:
   aeds_producer_capabilities:

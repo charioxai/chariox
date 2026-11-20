@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
@@ -136,7 +137,7 @@ test("a paused container flattens with its changes and a running one is refused"
   const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", timeout: 600_000, maxBuffer: 16 * 1024 * 1024 }).trim()
   const name = `chariox-depth-paused-${process.pid}`, tag = `chariox-depth-test:${name}`
   try {
-    docker("run", "-d", "--name", name, "--user", "0", "--entrypoint", "/bin/sh", process.env.CHARIOX_SLICE_TEST_IMAGE,
+    docker("run", "-d", ...drillDockerLabels(import.meta.url), "--name", name, "--user", "0", "--entrypoint", "/bin/sh", process.env.CHARIOX_SLICE_TEST_IMAGE,
       "-c", "echo paused > /opt/chariox-depth-paused && exec sleep infinity")
     for (let n = 0; n < 50 && docker("exec", name, "sh", "-c", "cat /opt/chariox-depth-paused 2>/dev/null || true") !== "paused"; n++) {
       await new Promise((resolve) => setTimeout(resolve, 200))
@@ -147,7 +148,7 @@ test("a paused container flattens with its changes and a running one is refused"
     assert.equal(captured.flattened, true)
     assert.equal(captured.image.RootFS.Layers.length, 1)
     assert.equal(docker("inspect", "--format", "{{.State.Paused}}", name), "true")
-    assert.equal(docker("run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "/bin/cat", tag, "/opt/chariox-depth-paused"), "paused")
+    assert.equal(docker("run", "--rm", ...drillDockerLabels(import.meta.url), "--network", "none", "--user", "0", "--entrypoint", "/bin/cat", tag, "/opt/chariox-depth-paused"), "paused")
   } finally {
     execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" })
     execFileSync("docker", ["image", "rm", "-f", tag], { stdio: "ignore" })
@@ -170,7 +171,7 @@ test("repeated captures stay within the depth bound and keep every saved change"
   const depths = []
   try {
     for (let round = 1; round <= rounds; round++) {
-      const container = docker("create", "--name", `${run}-${round}`, "--label", `io.chariox.depth-test=${run}`,
+      const container = docker("create", ...drillDockerLabels(import.meta.url, { run }), "--name", `${run}-${round}`, "--label", `io.chariox.depth-test=${run}`,
         "--user", "0", "--entrypoint", "/bin/sh", current, "-c", `echo ${round} > /opt/chariox-depth-${round}`)
       created.push(container)
       docker("start", "-a", container)
@@ -183,7 +184,7 @@ test("repeated captures stay within the depth bound and keep every saved change"
     }
     assert.deepEqual(depths.map(([, n]) => n), [1, 2, 3, 1, 2, 3])
     assert.deepEqual(depths.map(([flat]) => flat), [true, false, false, true, false, false])
-    const saved = docker("run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "/bin/sh", current,
+    const saved = docker("run", "--rm", ...drillDockerLabels(import.meta.url), "--network", "none", "--user", "0", "--entrypoint", "/bin/sh", current,
       "-c", "cat /opt/chariox-depth-*")
     assert.deepEqual(saved.split(/\s+/), ["1", "2", "3", "4", "5", "6"])
     const finalConfig = JSON.parse(docker("image", "inspect", "--format", "{{json .Config}}", current))
