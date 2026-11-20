@@ -941,6 +941,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
         if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
+            // Outside steering can submit a new prompt after a proven non-delivery.
+            // A recorded attempt (including an unresolved one) keeps its existing error.
+            if self
+                .worker_steer_receipt(leased_agent_id, steer_id)
+                .is_none()
+                && !leased_agent
+                    .applied_home_steer_ids
+                    .iter()
+                    .any(|id| id == steer_id)
+            {
+                return Err(DaemonError::NoActivePrompt {
+                    session_id: leased_agent.backing_session_id.clone(),
+                });
+            }
             return Err(DaemonError::LocalTransport {
                 operation: "steer leased prompt",
                 message: format!(

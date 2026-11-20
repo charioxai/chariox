@@ -61,7 +61,7 @@ async fn prompt_cancel_queued_uses_owned_runtime_state_without_app_lock() {
         owned_runtime_state(&app).await,
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
-        session_projection,
+        session_projection.clone(),
         agent_runtime_projection,
         prompt_state_owner,
         crate::session::PromptIdAllocator::default(),
@@ -92,16 +92,15 @@ async fn prompt_cancel_queued_uses_owned_runtime_state_without_app_lock() {
 
     let LocalDaemonResponse::QueuedPromptCancelled {
         prompt,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     assert_eq!(prompt.id(), queued_prompt.id());
     assert_eq!(prompt.status(), PromptStatus::Cancelled);
-    assert!(agent_activity.contains_key(&agent_id));
     assert_eq!(
         session
             .active_prompt_for_agent(&agent_id)
@@ -179,7 +178,7 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
         owned_runtime_state(&app).await,
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
-        session_projection,
+        session_projection.clone(),
         agent_runtime_projection,
         prompt_state_owner,
         crate::session::PromptIdAllocator::default(),
@@ -211,16 +210,14 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
 
     let LocalDaemonResponse::QueuedPromptUpdated {
         prompt,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     assert_eq!(prompt.id(), queued_prompt.id());
-    assert_eq!(prompt.prompt(), "updated queued prompt");
-    assert!(agent_activity.contains_key(&agent_id));
     assert_eq!(
         session
             .active_prompt_for_agent(&agent_id)
@@ -313,7 +310,7 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
         owned_runtime_state(&app).await,
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
-        session_projection,
+        session_projection.clone(),
         agent_runtime_projection,
         prompt_state_owner,
         crate::session::PromptIdAllocator::default(),
@@ -343,11 +340,14 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
     drop(app_guard);
 
     let LocalDaemonResponse::QueuedPromptSteered {
-        prompt, session, ..
+        prompt,
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     assert_eq!(prompt.id(), queued_prompt.id());
     assert_eq!(
         session

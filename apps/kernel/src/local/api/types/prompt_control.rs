@@ -1,4 +1,72 @@
 use super::*;
+use crate::session::PromptStatus;
+
+/// Confirmation of a prompt mutation. Content belongs to the Room feed and history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptReceipt {
+    id: String,
+    target_agent_id: String,
+    status: PromptStatus,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl PromptReceipt {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn target_agent_id(&self) -> &str {
+        &self.target_agent_id
+    }
+
+    pub fn status(&self) -> PromptStatus {
+        self.status
+    }
+}
+
+impl From<&PromptQueueItem> for PromptReceipt {
+    fn from(prompt: &PromptQueueItem) -> Self {
+        Self {
+            id: prompt.id().to_owned(),
+            target_agent_id: prompt.target_agent_id().to_owned(),
+            status: prompt.status(),
+            created_at_ms: prompt.created_at_ms(),
+            updated_at_ms: prompt.updated_at_ms(),
+        }
+    }
+}
+
+impl From<PromptSubmissionOutcome> for PromptSubmissionOutcome<PromptReceipt> {
+    fn from(outcome: PromptSubmissionOutcome) -> Self {
+        match outcome {
+            PromptSubmissionOutcome::Started { prompt } => Self::Started {
+                prompt: (&prompt).into(),
+            },
+            PromptSubmissionOutcome::Queued { prompt } => Self::Queued {
+                prompt: (&prompt).into(),
+            },
+        }
+    }
+}
+
+impl From<PromptCompletion> for PromptCompletion<PromptReceipt> {
+    fn from(completion: PromptCompletion) -> Self {
+        Self {
+            completed: (&completion.completed).into(),
+            started_next: completion.started_next.as_ref().map(PromptReceipt::from),
+        }
+    }
+}
+
+impl From<PromptCancellation> for PromptCancellation<PromptReceipt> {
+    fn from(cancellation: PromptCancellation) -> Self {
+        Self {
+            prompt: (&cancellation.prompt).into(),
+            started_next: cancellation.started_next.as_ref().map(PromptReceipt::from),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitPromptRequest {
@@ -35,7 +103,7 @@ pub struct SubmitPromptsRequestItem {
 pub struct PromptBatchSubmissionResult {
     pub index: usize,
     pub agent_id: String,
-    pub outcome: PromptSubmissionOutcome,
+    pub outcome: PromptSubmissionOutcome<PromptReceipt>,
 }
 
 impl SubmitPromptsRequestItem {
@@ -114,13 +182,15 @@ pub struct SteerQueuedPromptRequest {
     pub prompt_id: String,
 }
 
-/// MP-08 / MP-10: Compare-and-steer a home turn, without queue/start fallback.
+/// Steer the current home turn or submit the next prompt. Native turn controls can require an exact turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SteerActivePromptRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub target_agent_id: String,
     pub expected_active_prompt_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_exact_turn: bool,
     pub prompt: String,
     #[serde(default)]
     pub attachments: Vec<PromptAttachment>,

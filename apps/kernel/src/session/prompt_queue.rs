@@ -1247,9 +1247,9 @@ impl PromptQueueItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PromptSubmissionOutcome {
-    Started { prompt: PromptQueueItem },
-    Queued { prompt: PromptQueueItem },
+pub enum PromptSubmissionOutcome<T = PromptQueueItem> {
+    Started { prompt: T },
+    Queued { prompt: T },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1281,15 +1281,15 @@ impl AgentPromptState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptCompletion {
-    pub completed: PromptQueueItem,
-    pub started_next: Option<PromptQueueItem>,
+pub struct PromptCompletion<T = PromptQueueItem> {
+    pub completed: T,
+    pub started_next: Option<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptCancellation {
-    pub prompt: PromptQueueItem,
-    pub started_next: Option<PromptQueueItem>,
+pub struct PromptCancellation<T = PromptQueueItem> {
+    pub prompt: T,
+    pub started_next: Option<T>,
 }
 
 #[cfg(test)]

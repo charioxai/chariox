@@ -581,13 +581,16 @@ must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
 the cancellation. Peer 101 is the paired admission generation; worker aborts
 retain the existing lease, home-prompt and provider-run fences.
 
-MP-08 / MP-10: local protocol **491** adds `SteerActivePrompt` with session,
-attachment, agent, required `expected_active_prompt_id`, visible prompt and
-attachments. The home agent actor admits it only against that exact running
-Chariox prompt; stale, cancelled, external or settled targets fail without
-creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
-admission through shared prompt assembly/history and local or leased provider
-dispatch. Relay peer 101 carries the exact home target.
+SteerActivePrompt takes a session, attachment, agent, the client-observed
+`expected_active_prompt_id`, visible prompt and attachments. Ordinary steering
+selects the current running Chariox prompt at admission. If there is no eligible
+turn, or delivery was definitively declined, the kernel submits the input as the
+next prompt. `ActivePromptSteered` reports the actual turn and steer IDs.
+`PromptSubmitted` confirms the next prompt was queued or started. An uncertain
+provider result never creates a second prompt. Native controls set
+`require_exact_turn: true` to admit only the named running prompt and never
+submit a new one. The worker still checks the exact home turn selected by the
+kernel.
 Codex native `turn/steer` maps both reply and projected display turn IDs to
 home prompt IDs; its response retains the display turn ID. Utility threads
 keep their provider-native controls. `thread/compact/start` resolves the live
@@ -6327,8 +6330,8 @@ this metadata too; relay peer 181 is unchanged.
 A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
 has been taken by the agent's provider (the home provider or the leased worker),
 the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
-where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
-stale or rejected steer records nothing. If the event cannot be recorded after
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused or rejected steer records nothing. A steer admitted as the next
+prompt produces the normal prompt lifecycle events. If the event cannot be recorded after
 delivery, the request fails with the code `prompt_steer_event_unrecorded` and a
 message that names the steer id, says it was delivered and must not be sent again;
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.

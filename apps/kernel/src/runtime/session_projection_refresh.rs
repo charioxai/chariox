@@ -184,18 +184,20 @@ pub(crate) async fn apply_session_projection_refresh(
         Err(_) => return,
     };
 
-    let mut refreshed_session_ids = Vec::new();
+    let mut refreshed_session_ids = match response {
+        LocalDaemonResponse::PromptSubmitted { session_id, .. }
+        | LocalDaemonResponse::QueuedPromptSteered { session_id, .. }
+        | LocalDaemonResponse::QueuedPromptCancelled { session_id, .. }
+        | LocalDaemonResponse::QueuedPromptUpdated { session_id, .. } => vec![session_id.clone()],
+        _ => Vec::new(),
+    };
     for session in response_sessions(response) {
         refreshed_session_ids.push(session.id().to_string());
-        if should_update_agent_runtime_projection_from_response(response) {
-            publish_session_runtime_projection(
-                context.session_projection,
-                context.agent_runtime_projection,
-                &session,
-            );
-        } else {
-            context.session_projection.update(session);
-        }
+        publish_session_runtime_projection(
+            context.session_projection,
+            context.agent_runtime_projection,
+            &session,
+        );
     }
     if let LocalDaemonResponse::SessionsListed { sessions } = response {
         for session in sessions {
@@ -251,10 +253,6 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
-        | LocalDaemonResponse::PromptSubmitted { session, .. }
-        | LocalDaemonResponse::QueuedPromptSteered { session, .. }
-        | LocalDaemonResponse::QueuedPromptCancelled { session, .. }
-        | LocalDaemonResponse::QueuedPromptUpdated { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::MetaagentTaskUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
@@ -325,16 +323,6 @@ pub(crate) fn redact_agent_activity_for_session(
     agent_activity
 }
 
-pub(crate) fn should_update_agent_runtime_projection_from_response(
-    response: &LocalDaemonResponse,
-) -> bool {
-    !matches!(
-        response,
-        LocalDaemonResponse::PromptSubmitted { .. }
-            | LocalDaemonResponse::QueuedPromptSteered { .. }
-    )
-}
-
 pub(crate) fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
     match response {
         LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
@@ -358,7 +346,6 @@ mod tests {
         AliasAgentRequest, CompletePromptRequest, DestroyAgentRequest, SendTerminalInputRequest,
         SpawnAgentRequest, SpawnAgentsRequest,
     };
-    use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
     // MP-08 / MP-10 / MP-11: hidden roster entries never admit active/completed private turn metadata.
     #[test]
@@ -483,80 +470,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prompt_responses_with_session_snapshots_refresh_session_projection() {
-        let session = runtime_session("session-prompt");
-        let prompt = PromptQueueItem::new(
-            "prompt-1",
-            "attachment-1",
-            "agent-1",
-            "hello",
-            PromptStatus::Running,
-        );
-
-        let submitted = LocalDaemonResponse::PromptSubmitted {
-            outcome: PromptSubmissionOutcome::Started {
-                prompt: prompt.clone(),
-            },
-            session: session.clone(),
-            agent_activity: BTreeMap::new(),
-            agent_activity_revision: 0,
-        };
-        let steered = LocalDaemonResponse::QueuedPromptSteered {
-            prompt: prompt.clone(),
-            session: session.clone(),
-            agent_activity: BTreeMap::new(),
-            agent_activity_revision: 0,
-        };
-        let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
-            prompt: prompt.clone(),
-            session: session.clone(),
-            agent_activity: BTreeMap::new(),
-            agent_activity_revision: 0,
-        };
-        let updated = LocalDaemonResponse::QueuedPromptUpdated {
-            prompt,
-            session: session.clone(),
-            agent_activity: BTreeMap::new(),
-            agent_activity_revision: 0,
-        };
-
-        for response in [submitted, steered, cancelled, updated] {
-            assert_eq!(response_sessions(&response), vec![session.clone()]);
-        }
-    }
-
-    #[test]
-    fn prompt_submit_and_steer_do_not_overwrite_agent_runtime_projection_from_response() {
-        let session = runtime_session("session-agent-runtime");
-        let prompt = PromptQueueItem::new(
-            "prompt-1",
-            "attachment-1",
-            "agent-1",
-            "hello",
-            PromptStatus::Running,
-        );
-
-        assert!(!should_update_agent_runtime_projection_from_response(
-            &LocalDaemonResponse::PromptSubmitted {
-                outcome: PromptSubmissionOutcome::Started {
-                    prompt: prompt.clone(),
-                },
-                session: session.clone(),
-                agent_activity: BTreeMap::new(),
-                agent_activity_revision: 0,
-            },
-        ));
-        assert!(!should_update_agent_runtime_projection_from_response(
-            &LocalDaemonResponse::QueuedPromptSteered {
-                prompt,
-                session,
-                agent_activity: BTreeMap::new(),
-                agent_activity_revision: 0,
-            },
-        ));
-    }
-
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
             initial_task: None,
@@ -577,17 +490,5 @@ mod tests {
             worktree_placement: None,
             metaagent: false,
         }
-    }
-
-    fn runtime_session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(
-            id,
-            crate::session::ProjectId::test(),
-            None,
-            "workspace",
-            "worktree",
-            "machine",
-            "kernel",
-        )
     }
 }

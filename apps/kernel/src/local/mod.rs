@@ -173,7 +173,7 @@ pub use api::{
     ProjectEnvironmentFilePath, ProjectEnvironmentFilePresenceKind, ProjectEnvironmentFileView,
     ProjectEnvironmentSecretName, ProjectEnvironmentSecretView, ProjectEnvironmentSetupField,
     ProjectEnvironmentSetupState, ProjectEnvironmentView, PromptBatchSubmissionResult,
-    PromptInputHistoryEntry, PromptInputHistoryEntryKind, PromptSettingVersion,
+    PromptInputHistoryEntry, PromptInputHistoryEntryKind, PromptReceipt, PromptSettingVersion,
     ProviderAccountTransferProfile, ProviderAccountTransferSelection,
     ProviderCapabilityImportDuplicate, ProviderCapabilityImportEntry,
     ProviderCapabilityImportReport, ProviderCapabilityImportSummary, ProviderLoginProcessState,

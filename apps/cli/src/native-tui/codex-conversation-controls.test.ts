@@ -23,7 +23,7 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
   const requests: unknown[] = []
   const opts = { ...options(async (request) => {
     requests.push(request)
-    return { ActivePromptSteered: { prompt: { id: "steer" } } }
+    return { ActivePromptSteered: { steer_id: "steer" } }
   }), attachmentId: "attachment", inlineLocalAttachments: false }
   const turns: { id: string, method?: string, params?: { turn: { id: string } } }[] = []
   const projection = createCodexKernelOutputProjection({
@@ -39,13 +39,13 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
   } }, opts, (m) => responses.push(m))
   assert.deepEqual(requests, [{ SteerActivePrompt: {
     session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-    expected_active_prompt_id: "projected-home-prompt", prompt: "new direction", attachments: [],
+    expected_active_prompt_id: "projected-home-prompt", require_exact_turn: true, prompt: "new direction", attachments: [],
   } }])
   assert.deepEqual(responses.filter((value: any) => value.id !== undefined), [{ id: "steer", result: { turnId } }])
 })
 
 test("MP-08 MP-10 admitted steering returns its committed receipt to the requesting display", async () => {
-  const opts = { ...options(async () => ({ ActivePromptSteered: { prompt: { id: "steer-prompt" } } })),
+  const opts = { ...options(async () => ({ ActivePromptSteered: { steer_id: "steer-prompt" } })),
     attachmentId: "attachment", inlineLocalAttachments: false }
   bindCodexDisplayTurn(opts.bindState, "display-thread", "display-turn", "home-prompt")
   const input = [{ type: "text", text: "new direction" }]

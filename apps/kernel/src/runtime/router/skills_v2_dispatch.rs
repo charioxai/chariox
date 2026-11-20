@@ -40,11 +40,15 @@ impl CommandRouter {
                 )
                 .await?;
             match response {
-                LocalDaemonResponse::PromptSubmitted { outcome, .. } => {
-                    Ok(LocalDaemonResponse::SkillsV2 {
-                        result: SkillsV2Response::Submitted { outcome },
-                    })
-                }
+                LocalDaemonResponse::PromptSubmitted {
+                    session_id,
+                    outcome,
+                } => Ok(LocalDaemonResponse::SkillsV2 {
+                    result: SkillsV2Response::Submitted {
+                        session_id,
+                        outcome,
+                    },
+                }),
                 _ => Err(DaemonError::LocalTransport {
                     operation: "skills.v2.submit",
                     message: "ordinary prompt admission returned an unexpected response".into(),

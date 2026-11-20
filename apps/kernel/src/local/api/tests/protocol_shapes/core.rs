@@ -11,6 +11,7 @@ fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
         attachment_id: "attachment".into(),
         target_agent_id: "agent".into(),
         expected_active_prompt_id: "home-prompt".into(),
+        require_exact_turn: false,
         prompt: "change direction".into(),
         attachments: vec![],
     });
@@ -25,21 +26,10 @@ fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
         format!("{hash:x}"),
         "98c8cd14cd20061709d76b8aa2e2094b715e96044df6842a40189ca978f915b1"
     );
-    let prompt: crate::session::PromptQueueItem = serde_json::from_value(serde_json::json!({
-        "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
-        "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
-        "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
-    })).unwrap();
-    assert_eq!(
-        serde_json::to_value(LocalDaemonResponse::ActivePromptSteered { prompt }).unwrap(),
-        serde_json::json!({
-            "ActivePromptSteered": { "prompt": {
-                "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
-                "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
-                "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
-            } }
-        })
-    );
+    let mut exact = expected.clone();
+    exact["SteerActivePrompt"]["require_exact_turn"] = serde_json::json!(true);
+    let exact_request = serde_json::from_value::<LocalDaemonRequest>(exact.clone()).unwrap();
+    assert_eq!(serde_json::to_value(exact_request).unwrap(), exact);
     let mut missing_expected = expected;
     missing_expected["SteerActivePrompt"]
         .as_object_mut()
@@ -864,77 +854,6 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
     assert_eq!(
         external_prompt_snapshot.pointer("/external_provider_turn_id"),
         Some(&serde_json::json!("user-1"))
-    );
-
-    let prompt = crate::session::PromptQueueItem::new(
-        "prompt-queued",
-        "attachment-1",
-        "agent-1",
-        "queued text",
-        crate::session::PromptStatus::Queued,
-    );
-    let session = crate::session::RuntimeSession::new(
-        "session-1",
-        crate::session::ProjectId::test(),
-        None,
-        "workspace-1",
-        "worktree-1",
-        "machine-1",
-        "daemon-1",
-    );
-    let steer_response = LocalDaemonResponse::QueuedPromptSteered {
-        prompt: prompt.clone(),
-        session: session.clone(),
-        agent_activity: std::collections::BTreeMap::new(),
-        agent_activity_revision: 7,
-    };
-    let steer_response_snapshot =
-        serde_json::to_value(steer_response).expect("steer response should encode");
-    assert_eq!(
-        steer_response_snapshot.pointer("/QueuedPromptSteered/prompt/id"),
-        Some(&serde_json::json!("prompt-queued"))
-    );
-    assert_eq!(
-        steer_response_snapshot.pointer("/QueuedPromptSteered/prompt/prompt_origin"),
-        Some(&serde_json::json!("chariox"))
-    );
-    assert_eq!(
-        steer_response_snapshot.pointer("/QueuedPromptSteered/agent_activity_revision"),
-        Some(&serde_json::json!(7))
-    );
-
-    let cancel_response = LocalDaemonResponse::QueuedPromptCancelled {
-        prompt: prompt.clone(),
-        session: session.clone(),
-        agent_activity: std::collections::BTreeMap::new(),
-        agent_activity_revision: 8,
-    };
-    let cancel_response_snapshot =
-        serde_json::to_value(cancel_response).expect("cancel response should encode");
-    assert_eq!(
-        cancel_response_snapshot.pointer("/QueuedPromptCancelled/session/id"),
-        Some(&serde_json::json!("session-1"))
-    );
-    assert_eq!(
-        cancel_response_snapshot.pointer("/QueuedPromptCancelled/agent_activity_revision"),
-        Some(&serde_json::json!(8))
-    );
-
-    let update_response = LocalDaemonResponse::QueuedPromptUpdated {
-        prompt,
-        session,
-        agent_activity: std::collections::BTreeMap::new(),
-        agent_activity_revision: 9,
-    };
-    let update_response_snapshot =
-        serde_json::to_value(update_response).expect("update response should encode");
-    assert_eq!(
-        update_response_snapshot.pointer("/QueuedPromptUpdated/prompt/prompt"),
-        Some(&serde_json::json!("queued text"))
-    );
-    assert_eq!(
-        update_response_snapshot.pointer("/QueuedPromptUpdated/agent_activity_revision"),
-        Some(&serde_json::json!(9))
     );
 }
 

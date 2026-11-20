@@ -1,12 +1,6 @@
-import type { PromptAttachmentPart, PromptQueueItem, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
-import { promptQueueItemTranscriptMetadata, type TranscriptPromptMetadata } from "./transcript-entry-state.js"
-import {
-  normalizeRuntimeSessionWithAgentActivity,
-} from "./runtime-session-normalization.js"
-import {
-  sessionActivePromptIdForAgent,
-  sessionPromptForAgent,
-} from "./session-prompt-identity.js"
+import type { PromptAttachmentPart, PromptReceipt, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
+import type { TranscriptPromptMetadata } from "./transcript-entry-state.js"
+import { sessionActivePromptIdForAgent } from "./session-prompt-identity.js"
 import {
   sessionHasTurnWork,
   sessionProjectedStreamingAgentId,
@@ -20,17 +14,7 @@ export type PromptAgentAliasRoute = {
   readonly prompt: string
 }
 
-type SparsePromptSubmissionPromptPayload = {
-  readonly outcome?: Record<string, unknown> | null
-  readonly session?: RuntimeSession | null
-}
-
-export type PromptSubmittedResponsePayload = {
-  readonly outcome?: Record<string, unknown> | null
-  readonly session?: RuntimeSession | null
-  readonly agent_activity?: PromptSubmittedPayload["agent_activity"] | null
-  readonly agent_activity_revision?: number | null
-}
+export type PromptSubmittedResponsePayload = PromptSubmittedPayload
 
 export type PromptSubmitPreparationDecision =
   | { readonly action: "clear_empty" }
@@ -210,58 +194,30 @@ export function promptSubmittedPromptIdFromResponse(
   targetAgentId: string,
 ): string | null {
   const payload = promptSubmittedPayloadFromResponse(response)
-  if (!payload) {
-    return null
-  }
-  if (!payload.session) {
-    return promptSubmissionPrompt(payload, targetAgentId)?.id ?? null
-  }
-  const session = normalizeRuntimeSessionWithAgentActivity({
-    session: payload.session,
-    agent_activity: payload.agent_activity,
-    agent_activity_revision: payload.agent_activity_revision,
-  })
-  return promptSubmissionPrompt({
-    ...payload,
-    session,
-  }, targetAgentId)?.id ?? null
+  return payload ? promptSubmissionPrompt(payload, targetAgentId)?.id ?? null : null
 }
 
-export function promptSubmissionTargetAgentId(payload: PromptSubmittedPayload): string | null {
-  const prompt = promptSubmissionPromptFromOutcome(payload)
-  return typeof prompt?.target_agent_id === "string" ? prompt.target_agent_id : null
+export function promptSubmissionTargetAgentId(payload: Pick<PromptSubmittedPayload, "outcome">): string | null {
+  return promptSubmissionPrompt(payload)?.target_agent_id ?? null
 }
 
 export function promptSubmissionTranscriptMetadata(
-  payload: PromptSubmittedPayload,
+  payload: Pick<PromptSubmittedPayload, "outcome">,
   targetAgentId: string | null,
 ): TranscriptPromptMetadata {
   const prompt = promptSubmissionPrompt(payload, targetAgentId)
-  return prompt ? promptQueueItemTranscriptMetadata(prompt) : {}
+  return prompt ? { promptId: prompt.id } : {}
 }
 
 export function promptSubmissionPrompt(
-  payload: PromptSubmittedPayload | SparsePromptSubmissionPromptPayload,
-  targetAgentId: string | null,
-): PromptQueueItem | null {
-  return promptSubmissionPromptFromOutcome(payload)
-    ?? (payload.session && targetAgentId ? sessionPromptForAgent(payload.session, targetAgentId) : null)
-}
-
-function promptSubmissionPromptFromOutcome(payload: PromptSubmittedPayload | SparsePromptSubmissionPromptPayload): PromptQueueItem | null {
-  const outcome = payload.outcome && typeof payload.outcome === "object"
-    ? payload.outcome
-    : {}
-  for (const variant of Object.values(outcome)) {
-    if (!variant || typeof variant !== "object") {
-      continue
-    }
-    const prompt = (variant as { prompt?: unknown }).prompt
-    if (prompt && typeof prompt === "object" && !Array.isArray(prompt)) {
-      return prompt as PromptQueueItem
-    }
-  }
-  return null
+  payload: { readonly outcome?: Record<string, unknown> | null },
+  targetAgentId?: string | null,
+): PromptReceipt | null {
+  const variant = payload.outcome?.Started ?? payload.outcome?.Queued
+  if (!variant || typeof variant !== "object") return null
+  const prompt = (variant as { prompt?: Partial<PromptReceipt> }).prompt
+  if (!prompt || typeof prompt.id !== "string" || typeof prompt.target_agent_id !== "string") return null
+  return targetAgentId && prompt.target_agent_id !== targetAgentId ? null : prompt as PromptReceipt
 }
 
 export function formatPromptSubmissionStatusLine(options: {

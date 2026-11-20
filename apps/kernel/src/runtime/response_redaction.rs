@@ -165,62 +165,6 @@ pub(crate) fn redact_response_for_user(
                 effects,
             }
         }
-        LocalDaemonResponse::PromptSubmitted {
-            outcome,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::PromptSubmitted {
-                outcome,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptSteered {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptSteered {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptCancelled {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptCancelled {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptUpdated {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptUpdated {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
         LocalDaemonResponse::SessionConfigUpdated { config, session } => {
             LocalDaemonResponse::SessionConfigUpdated {
                 config,

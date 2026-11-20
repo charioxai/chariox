@@ -18,20 +18,6 @@ export function sessionStatePayload(value: Record<string, unknown>): Record<stri
   return mergeAgentActivityIntoSession({ ...payload.session, ...(payload.room_workflows ? { room_workflows: payload.room_workflows, room_workflows_fresh: true } : {}) }, payload.agent_activity, payload.agent_activity_revision)
 }
 
-export function promptSubmittedSessionPayload(value: Record<string, unknown>): Record<string, unknown> | null {
-  const payload = variantPayload<{
-    session?: Record<string, unknown>
-    agent_activity: Record<string, unknown>
-    agent_activity_revision?: number | null
-  }>(value, "PromptSubmitted")
-  if (
-    !payload?.session
-  ) {
-    return null
-  }
-  return mergeAgentActivityIntoSession(payload.session, payload.agent_activity, payload.agent_activity_revision)
-}
-
 export function mergeAgentActivityIntoSession(
   session: Record<string, unknown>,
   agentActivity: unknown,

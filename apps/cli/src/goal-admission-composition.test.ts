@@ -9,21 +9,28 @@ test("goal admission applies the home revision and repaints through the app rend
   let state = { id: "room", agents: [{ id: "agent", alias: "worker" }] } as RuntimeSession
   const admitted = { ...state, agent_tasks: [{ task_id: "prompt", revision: 2 }] } as RuntimeSession
   const calls: string[] = []
+  const requests: unknown[] = []
   const client = new LocalIpcClient("/unused-goal-test.sock")
   client.send = async <TResponse>(request: unknown): Promise<TResponse> => {
-    assert.deepEqual(request, { SubmitPrompt: { session_id: "room", attachment_id: "terminal", target_agent_id: "agent", prompt: "/goal Implement real work", attachments: [] } })
-    return { PromptSubmitted: { session: admitted } } as TResponse
+    requests.push(request)
+    if (requests.length === 1) {
+      assert.deepEqual(request, { SubmitPrompt: { session_id: "room", attachment_id: "terminal", target_agent_id: "agent", prompt: "/goal Implement real work", attachments: [] } })
+      return { PromptSubmitted: { session_id: "room" } } as TResponse
+    }
+    assert.deepEqual(request, { GetSessionState: { session_id: "room" } })
+    return { SessionState: { session: admitted, processes: [] } } as TResponse
   }
   const handlers = createCliCommandActionComposition({
     client, options: {}, preferencesState: () => ({}), isAttached: () => true,
     sessionState: () => state, attachmentState: () => ({ id: "terminal" }), focusedAgentId: () => "agent",
     applySessionState: (next: RuntimeSession) => { state = next; calls.push("apply") },
-    refreshAgentPanes: async (next: RuntimeSession) => { assert.equal(next, admitted); calls.push("panes") },
+    refreshAgentPanes: async (next: RuntimeSession) => { assert.deepEqual(next.agent_tasks, admitted.agent_tasks); calls.push("panes") },
     rebuildTranscript: () => calls.push("transcript"), requestRootRender: () => calls.push("render"),
     flashFooter: (message: string) => assert.fail(message),
   } as unknown as Parameters<typeof createCliCommandActionComposition>[0])
   await handlers.handleGoalCommand({ kind: "goal", raw: "/goal Implement real work", prompt: "Implement real work" })
-  assert.equal(state, admitted)
+  assert.deepEqual(state.agent_tasks, admitted.agent_tasks)
+  assert.equal(requests.length, 2)
   assert.deepEqual(calls, ["apply", "panes", "transcript", "render"])
 })
 

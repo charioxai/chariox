@@ -403,7 +403,7 @@ impl KernelRuntimeState {
             ));
         }
         if let Some(provider_run_id) = self
-            .steer_remote_agent_message(session.id(), &prompt, None)
+            .steer_remote_agent_message(session.id(), &prompt, None, false)
             .await?
         {
             let result = crate::transport::runtime_tools::RuntimeToolResult {

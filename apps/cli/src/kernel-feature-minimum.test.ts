@@ -3,10 +3,10 @@ import test from "node:test"
 import { issueOwnMachineEnrollmentRequest, ownMachineEnrollmentMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
-test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
+test("active steering requires the prompt receipt protocol", () => {
   const request = { SteerActivePrompt: {} }
-  assert.throws(() => requireKernelFeatureProtocol(request, 482), /Active prompt steering needs protocol ≥491/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+  assert.throws(() => requireKernelFeatureProtocol(request, 1090), /Active prompt steering needs protocol ≥1091/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1091))
 })
 
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
@@ -100,7 +100,7 @@ test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", ()
   for (const version of [undefined, 0, NaN, -1, 490.5, 490, 489]) {
     assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥491/)
   }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1091))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })

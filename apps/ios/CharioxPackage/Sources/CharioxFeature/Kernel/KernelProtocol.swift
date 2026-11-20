@@ -130,7 +130,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case runtimeCapabilities([String])
     case projectCreated(SkillsV2JSON)
     case skillsV2(SkillsV2Response)
-    case promptSubmitted(RuntimeSession)
+    case promptSubmitted(sessionID: String)
     case promptCancelled
     case nothingToStop
     case agentTaskUpdated(taskID: String)
@@ -227,7 +227,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "PromptSubmitted" }) {
             let payload = try container.decode(PromptSubmittedPayload.self, forKey: key)
-            self = .promptSubmitted(payload.session)
+            self = .promptSubmitted(sessionID: payload.sessionID)
             return
         }
         if container.allKeys.contains(where: { $0.stringValue == "PromptCancelled" }) {
@@ -482,7 +482,11 @@ private struct RuntimeCapabilitiesPayload: Decodable, Equatable, Sendable {
 }
 
 private struct PromptSubmittedPayload: Decodable, Equatable, Sendable {
-    let session: RuntimeSession
+    let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
 }
 
 private struct AgentTaskUpdatedPayload: Decodable, Equatable, Sendable {

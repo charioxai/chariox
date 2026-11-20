@@ -60,6 +60,7 @@ mod native_spawn_slice;
 mod notes;
 mod panes_history;
 mod project_environment;
+mod prompt_receipts;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;

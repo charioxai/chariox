@@ -169,279 +169,29 @@ test("resolvePromptSubmissionTargetAgentId keeps only live requested agents", ()
   }), null)
 })
 
-test("prompt submitted response helpers parse acknowledgement shape", () => {
-  const payload = {
-    outcome: { Started: {} },
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }
-
-  assert.equal(promptSubmittedPayloadFromResponse({ PromptSubmitted: payload }), payload)
-  assert.equal(promptSubmittedPayloadFromResponse({ SessionState: {} }), null)
-  assert.equal(expectPromptSubmittedPayload({ PromptSubmitted: payload }), payload)
-  assert.throws(
-    () => expectPromptSubmittedPayload({ SessionState: {} }),
-    /unexpected response variant: expected PromptSubmitted/,
-  )
-  assert.equal(promptSubmissionOutcomeName(payload), "Started")
-  assert.equal(promptSubmissionOutcomeName({ outcome: {} }), "unknown")
-  assert.equal(promptSubmissionOutcomeName({}), "unknown")
-})
-
-test("prompt submitted prompt id helper applies projected session activity", () => {
-  const stalePrompt = {
-    id: "prompt-stale",
-    source_attachment_id: "attachment-state",
+test("submission helpers read a prompt receipt and verify its target", () => {
+  const prompt = {
+    id: "prompt-1",
     target_agent_id: "agent-1",
-    prompt: "hello",
-    status: "running",
-  }
-
-  assert.equal(promptSubmittedPromptIdFromResponse({
-    PromptSubmitted: {
-      outcome: {},
-      session: makeSession({
-        active_prompt: stalePrompt,
-        prompt_states: {
-          "agent-1": {
-            active_prompt: stalePrompt,
-            queued_prompts: [],
-          },
-        },
-      }),
-      agent_activity: {
-        "agent-1": {
-          status: "idle",
-          prompt_status: "none",
-          busy: false,
-          unread_idle_output: false,
-        },
-      },
-      agent_activity_revision: 7,
-    },
-  }, "agent-1"), null)
-
-  assert.equal(promptSubmittedPromptIdFromResponse({
-    PromptSubmitted: {
-      outcome: {},
-      session: makeSession({
-        prompt_states: {
-          "agent-1": {
-            active_prompt: stalePrompt,
-            queued_prompts: [],
-          },
-        },
-      }),
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          unread_idle_output: false,
-          active_turn: {
-            prompt_id: "prompt-stale",
-            status: "running",
-            phase: "streaming",
-          },
-        },
-      },
-      agent_activity_revision: 8,
-    },
-  }, "agent-1"), "prompt-stale")
-})
-
-test("prompt submission target agent id reads outcome prompt identity", () => {
-  assert.equal(promptSubmissionTargetAgentId({
-    outcome: {
-      Started: {
-        prompt: {
-          id: "prompt-started",
-          source_attachment_id: "attachment-started",
-          target_agent_id: "agent-1",
-          prompt: "hello",
-          status: "Running",
-        },
-      },
-    },
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }), "agent-1")
-  assert.equal(promptSubmissionTargetAgentId({
-    outcome: {},
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }), null)
-})
-
-test("prompt submission prompt prefers outcome prompt then projected session prompt", () => {
-  const outcomePrompt = {
-    id: "prompt-started",
-    source_attachment_id: "attachment-started",
-    target_agent_id: "agent-1",
-    prompt: "hello",
     status: "Running",
+    created_at_ms: 1,
+    updated_at_ms: 2,
   }
-  const statePrompt = {
-    id: "prompt-state",
-    source_attachment_id: "attachment-state",
-    target_agent_id: "agent-1",
-    prompt: "hello",
-    status: "running",
-  }
-
-  assert.deepEqual(promptSubmissionPrompt({
-    outcome: {
-      Started: { prompt: outcomePrompt },
-    },
-  }, "agent-1"), outcomePrompt)
-
-  assert.deepEqual(promptSubmissionPrompt({
-    outcome: {
-      Started: { prompt: outcomePrompt },
-    },
-    session: makeSession({
-      active_prompt: statePrompt,
-    }),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), outcomePrompt)
-
-  assert.deepEqual(promptSubmissionPrompt({
-    outcome: {},
-    session: makeSession({
-      prompt_states: {
-        "agent-1": {
-          active_prompt: statePrompt,
-          queued_prompts: [],
-        },
-      },
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          unread_idle_output: false,
-          active_turn: {
-            prompt_id: "prompt-state",
-            status: "running",
-            phase: "streaming",
-          },
-        },
-      },
-    }),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), statePrompt)
-})
-
-test("prompt submission transcript metadata prefers outcome prompt identity", () => {
-  assert.deepEqual(promptSubmissionTranscriptMetadata({
-    outcome: {
-      Started: {
-        prompt: {
-          id: "prompt-started",
-          source_attachment_id: "attachment-started",
-          target_agent_id: "agent-1",
-          prompt: "hello",
-          status: "Running",
-          prompt_origin: " External ",
-        },
-      },
-    },
-    session: makeSession({
-      active_prompt: {
-        id: "prompt-state",
-        source_attachment_id: "attachment-state",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: "running",
-        prompt_origin: "chariox",
-      },
-    }),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), {
-    promptId: "prompt-started",
-    sourceAttachmentId: "attachment-started",
-    promptOrigin: "external",
-  })
-
-  assert.deepEqual(promptSubmissionTranscriptMetadata({
-    outcome: {
-      Started: {
-        prompt: {
-          id: "external:codex:thread-1:turn-1",
-          source_attachment_id: "attachment-external",
-          target_agent_id: "agent-1",
-          prompt: "hello from outside",
-          status: "Running",
-          prompt_origin: "external",
-        },
-      },
-    },
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), {
-    promptId: "external:codex:thread-1:turn-1",
-    sourceAttachmentId: "attachment-external",
-    promptOrigin: "external",
-  })
-
-  assert.deepEqual(promptSubmissionTranscriptMetadata({
-    outcome: {
-      Started: {
-        prompt: {
-          id: "external:codex:thread-2:turn-2",
-          source_attachment_id: "attachment-inferred",
-          target_agent_id: "agent-1",
-          prompt: "hello from outside",
-          status: "Running",
-          external_provider: "codex",
-          external_provider_session_id: "thread-2",
-          external_provider_turn_id: "turn-2",
-        },
-      },
-    },
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), {
-    promptId: "external:codex:thread-2:turn-2",
-    sourceAttachmentId: "attachment-inferred",
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-2",
-    externalProviderTurnId: "turn-2",
-  })
-
-  assert.deepEqual(promptSubmissionTranscriptMetadata({
-    outcome: {
-      Started: {
-        prompt: {
-          id: "external:codex:thread-3:from-id",
-          source_attachment_id: "attachment-explicit",
-          target_agent_id: "agent-1",
-          prompt: "hello from outside",
-          status: "Running",
-          external_provider: "opencode",
-          external_provider_session_id: "thread-explicit",
-          external_provider_turn_id: "turn-explicit",
-        },
-      },
-    },
-    session: makeSession(),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), {
-    promptId: "external:codex:thread-3:from-id",
-    sourceAttachmentId: "attachment-explicit",
-    externalProvider: "opencode",
-    externalProviderSessionId: "thread-explicit",
-    externalProviderTurnId: "turn-explicit",
-  })
+  const payload = { session_id: "session-1", outcome: { Started: { prompt } } }
+  const response = { PromptSubmitted: payload }
+  assert.equal(promptSubmittedPayloadFromResponse(response), payload)
+  assert.equal(expectPromptSubmittedPayload(response), payload)
+  assert.equal(promptSubmittedPayloadFromResponse({ SessionState: {} }), null)
+  assert.throws(() => expectPromptSubmittedPayload({ SessionState: {} }), /expected PromptSubmitted/)
+  assert.equal(promptSubmittedPromptIdFromResponse(response, "agent-1"), "prompt-1")
+  assert.equal(promptSubmittedPromptIdFromResponse(response, "agent-2"), null)
+  assert.equal(promptSubmissionTargetAgentId(payload), "agent-1")
+  assert.equal(promptSubmissionOutcomeName(payload), "Started")
+  assert.equal(promptSubmissionOutcomeName({}), "unknown")
+  assert.equal(promptSubmissionPrompt(payload), prompt)
+  assert.deepEqual(promptSubmissionTranscriptMetadata(payload, "agent-1"), { promptId: "prompt-1" })
+  assert.deepEqual(promptSubmissionTranscriptMetadata(payload, "agent-2"), {})
+  assert.equal(promptSubmissionPrompt({ outcome: {} }), null)
 })
 
 test("prompt queue item transcript metadata preserves explicit kernel ownership only", () => {
@@ -473,47 +223,6 @@ test("prompt queue item transcript metadata preserves explicit kernel ownership 
     externalProvider: "codex",
     externalProviderSessionId: "thread-2",
     externalProviderTurnId: "turn-2",
-  })
-})
-
-test("prompt submission transcript metadata falls back to projected session prompt", () => {
-  assert.deepEqual(promptSubmissionTranscriptMetadata({
-    outcome: {},
-    session: makeSession({
-      agents: [makeAgent({ id: "agent-1" })],
-      prompt_states: {
-        "agent-1": {
-          active_prompt: {
-            id: "prompt-state",
-            source_attachment_id: "attachment-state",
-            target_agent_id: "agent-1",
-            prompt: "hello",
-            status: "running",
-            prompt_origin: " External ",
-          },
-          queued_prompts: [],
-        },
-      },
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          unread_idle_output: false,
-          active_turn: {
-            prompt_id: "prompt-state",
-            status: "running",
-            phase: "streaming",
-          },
-        },
-      },
-    }),
-    agent_activity: {},
-    agent_activity_revision: 1,
-  }, "agent-1"), {
-    promptId: "prompt-state",
-    sourceAttachmentId: "attachment-state",
-    promptOrigin: "external",
   })
 })
 
