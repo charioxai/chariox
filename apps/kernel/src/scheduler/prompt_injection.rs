@@ -847,14 +847,20 @@ fn workflow_node_instruction_reference(
     workflow_node_run_id: &str,
     node_id: &str,
 ) -> Option<String> {
-    validate_workflow_node_run(app, session_id, workflow_run_id, workflow_node_run_id)?;
-    let workflow_run = app
-        .sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-        .ok()?;
-    let workflow = app
-        .sessions()
-        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+    let store = app.session_state_store();
+    let sessions = store.read();
+    let session = sessions.get_session(session_id).ok()?;
+    let run = session.workflow_run(workflow_run_id)?;
+    if run.status().is_terminal()
+        || !run
+            .node_runs()
+            .iter()
+            .any(|node| node.id() == workflow_node_run_id)
+    {
+        return None;
+    }
+    let workflow = sessions
+        .resolve_workflow_ref(session_id, run.workflow_id())
         .ok()?;
     crate::workflow_node_instructions::node_instruction_file(
         app.config(),

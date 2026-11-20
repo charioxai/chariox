@@ -200,6 +200,17 @@ impl KernelRuntimeOwnedState {
         node_id: &str,
         node_instructions: Option<&str>,
     ) -> Option<String> {
+        // A cancellation must take the session write lock before committing
+        // and deleting the files. Do not recreate them after that transition.
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id).ok()?;
+        if session
+            .workflow_run(workflow_run_id)?
+            .status()
+            .is_terminal()
+        {
+            return None;
+        }
         crate::workflow_node_instructions::node_instruction_file(
             &self.config_projection.snapshot(),
             session_id,

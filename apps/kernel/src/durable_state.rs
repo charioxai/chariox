@@ -110,6 +110,7 @@ pub struct DurableKernelStateStore {
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
     skill_catalog_owner: bool,
     agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
+    workflow_instruction_root: Option<Arc<Path>>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -445,6 +446,7 @@ impl DurableKernelStateStore {
                 crate::agent_release_notes::Delivery::open(&store)?,
             ));
         }
+        store.workflow_instruction_root = Some(Arc::from(config.workflow_instruction_root()));
         Ok(store)
     }
     pub(crate) fn agent_release_delivery(&self) -> Option<&crate::agent_release_notes::Delivery> {
@@ -636,6 +638,7 @@ impl DurableKernelStateStore {
             outside_followed,
             skill_catalog_owner: false,
             agent_release_delivery: None,
+            workflow_instruction_root: None,
         })
     }
 
