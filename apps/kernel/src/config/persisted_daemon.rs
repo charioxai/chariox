@@ -56,6 +56,8 @@ pub struct PersistedCloudRelayProfile {
     #[serde(default)]
     pub kernel_credential: Option<String>,
     #[serde(default)]
+    pub kernel_unlinked: bool,
+    #[serde(default)]
     pub kernel_public_key_thumbprint: Option<String>,
     #[serde(default)]
     pub cloud_session_token: Option<String>,

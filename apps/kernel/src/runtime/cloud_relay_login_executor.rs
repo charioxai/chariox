@@ -221,6 +221,7 @@ pub(crate) fn enrolled_profile(
         kernel_public_key_thumbprint: profile.public_key_thumbprint,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
         token_expires_at_ms: None,
     })
 }
