@@ -1274,6 +1274,10 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_provider_failure_persists_terminal_run_state_for_restart() {
+        crate::test_support::isolated_env_test!();
+        let _environment = crate::env_lock::lock();
+        let home = crate::test_temp_dir::TestTempDir::new("workflow-failure-instructions");
+        std::env::set_var("CHARIOX_HOME", home.path());
         let worktree = TestWorktree(crate::test_support::test_workspace_root().join(format!(
             "chariox-workflow-failure-{}-{:032x}",
             std::process::id(),
@@ -1335,6 +1339,14 @@ mod tests {
             .expect("a subsequent workflow invocation should queue");
         let session_id = session.id().to_string();
         let workflow_run_id = workflow_run.id().to_string();
+        let instruction = crate::workflow_node_instructions::node_instruction_file(
+            app.config(),
+            &session_id,
+            &workflow_run_id,
+            node.id(),
+            Some("Always check the terminal provider failure."),
+        )
+        .expect("the workflow's instruction is available during the run");
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let activity_lock = Arc::clone(&runtime.owned.managed_activity_mutation_lock);
@@ -1387,6 +1399,7 @@ mod tests {
             durable_run.status(),
             crate::session::WorkflowRunStatus::Failed,
         );
+        assert!(!std::path::Path::new(&instruction).exists());
     }
 
     /// The step as the Room admitted it.
