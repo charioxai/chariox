@@ -8274,6 +8274,17 @@ explicit removal or ungrouping instead. The normal 512-action limit applies.
 The TUI exposes `/skills repo-update <package>`; the Web update entry point is
 not implemented by this addition.
 
+
+Local **1014** adds `source: { kind: "recorded_folder" }` to the reviewed
+`update` action. Use the installed skill ID, expected digest, and catalog
+revision in the ordinary preview and publish requests. The home kernel reads
+the folder already recorded for that skill and previews the added, removed,
+and changed file manifests in `file_changes`. An unchanged folder reports
+that the skill is already current and needs no publish. If the recorded
+`SKILL.md` is unavailable, restore it at the reported path and preview again.
+The same owner and approval rules apply. Publish uses the reviewed package
+and the next turn can load its new digest.
+
 `SkillProjection.delivery` distinguishes Chariox delivery, verified native
 provision, content conflict and unverified native exposure. Equal complete
 content and compatible exposure produce one Chariox picker row with
