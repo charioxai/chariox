@@ -3,7 +3,7 @@ use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::local::KernelConnectionClass;
+use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 use crate::provider::{AgentEndpointMode, ProviderRunState, RuntimeProviderRun};
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
@@ -54,6 +54,28 @@ pub(super) fn caller(run: &RuntimeProviderRun) -> KernelCaller {
     caller.user_id = Some(run.owner_user_id().to_string());
     caller.metaagent_id = run.agent_instance_id().map(str::to_string);
     caller
+}
+
+pub(super) fn permits_peer_request(
+    router: &CommandRouter,
+    run: &RuntimeProviderRun,
+    request: &LocalDaemonRequest,
+) -> bool {
+    if !matches!(
+        request,
+        LocalDaemonRequest::SpawnAgent(_)
+            | LocalDaemonRequest::CancelActivePrompt(_)
+            | LocalDaemonRequest::GetAgentDeadline(_)
+            | LocalDaemonRequest::SetAgentDeadline(_)
+            | LocalDaemonRequest::DestroyAgent(_)
+    ) {
+        return false;
+    }
+    let state = router.runtime_state();
+    state.room_agent_tools_enabled()
+        && run
+            .agent_instance_id()
+            .is_some_and(|agent| state.authorize_room_agent_request(agent, request).is_ok())
 }
 
 pub(super) fn room_refusal(request_id: String) -> KernelOutgoingFrame {

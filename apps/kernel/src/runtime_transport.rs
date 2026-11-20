@@ -1137,13 +1137,16 @@ where
     loop {
         let message_result = tokio::select! {
             message = reader.next() => match message { Some(message) => message, None => break },
-            _ = access_tick.tick(), if peer.is_some() => {
-                router.runtime_state().pump_kernel_access();
+            _ = access_tick.tick(), if peer.is_some() || agent_run_id.is_some() => {
                 if agent_run_id.as_deref().is_some_and(|id| router.active_agent_cli_run(id).is_none()) {
                     break;
                 }
-                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant)
-                    && connection_state.lock().await.outside_wait_requests.is_empty() { break; }
+                if peer.is_some() {
+                    let state = router.runtime_state();
+                    state.pump_kernel_access();
+                    if !unix_access::delivery_live(&state, peer.as_ref(), &bound_grant)
+                        && connection_state.lock().await.outside_wait_requests.is_empty() { break; }
+                }
                 continue;
             }
         };
@@ -1532,7 +1535,9 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         .as_deref()
                         .and_then(|id| router.session_id_for_attachment_access(id))
                 });
-                if targeted_session.is_some_and(|session| session != run.session_id()) {
+                if targeted_session.is_some_and(|session| session != run.session_id())
+                    && !agent_cli::permits_peer_request(router, run, &request)
+                {
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
