@@ -40,7 +40,8 @@ pub fn drain_codex_events(
         .with_native_approval_context(
             state.native_approval_origin.clone(),
             state.active_turn_id.clone(),
-        );
+        )
+        .with_unavailable_workspace_sandbox(state.unavailable_workspace_sandbox.clone());
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
     } else {

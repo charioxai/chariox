@@ -51,8 +51,19 @@ pub fn initialize_codex_runtime(
             .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
     }
     let client = codex_client_for_run(run, &endpoint, None)?;
-    let socket = client.connect_initialized()?;
-    let next_request_id = 1;
+    let mut socket = client.connect_initialized()?;
+    let mut next_request_id = 1;
+    let unavailable_workspace_sandbox = cfg!(target_os = "linux")
+        && run.endpoint_mode() == AgentEndpointMode::Managed
+        && run.permission_level() == crate::provider::AgentPermissionLevel::Required
+        && run.execution_mode() == crate::provider::AgentExecutionMode::Build
+        && run.write_access_mode().is_unrestricted()
+        && !run.read_only_discovery()
+        && !run.metadata_only_discovery()
+        && !crate::provider::managed_isolation::managed_provider_isolation_required()
+        && run.working_directory().is_some_and(|cwd| {
+            client.workspace_sandbox_is_unavailable(&mut socket, &mut next_request_id, cwd)
+        });
     let resumable_thread_id = run.resume_state().codex_thread_id().map(str::to_string);
     let (mut state, selection) = match resumable_thread_id {
         Some(thread_id) if run.endpoint_mode() == AgentEndpointMode::External => {
@@ -100,6 +111,9 @@ pub fn initialize_codex_runtime(
             )
         }
     };
+    if unavailable_workspace_sandbox {
+        state.unavailable_workspace_sandbox = Some(Default::default());
+    }
     if run.read_only_discovery() {
         state.set_read_only_discovery_permissions(true);
     }
