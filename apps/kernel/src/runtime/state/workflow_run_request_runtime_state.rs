@@ -20,12 +20,7 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let before_admission_error = |error| {
-            owned.workflow_code_dispatch_refusal(
-                &request.session_id,
-                new_workflow_code,
-                None,
-                error,
-            )
+            owned.workflow_code_dispatch_refusal(&request.session_id, new_workflow_code, error)
         };
         if let Err(error) = self.authorize_current_external_command() {
             return (Err(before_admission_error(error)), None);
