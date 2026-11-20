@@ -4663,7 +4663,7 @@ mod tests {
         // A process no kernel launched, and one this kernel launched in this life.
         let mut unrelated = FixtureProcess::sleeping(None);
         let mut own_tool =
-            FixtureProcess::sleeping(crate::provider::process_owner::current_marker());
+            FixtureProcess::sleeping(crate::provider::process_owner::current_marker().as_deref());
         let (runtime, _session_id, _agent_id, _prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
         let targets = runtime.durable_restart_recovery_targets();
