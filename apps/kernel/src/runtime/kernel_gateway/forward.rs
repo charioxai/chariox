@@ -44,6 +44,14 @@ pub(crate) async fn forward_audited(
     } else {
         forwarded.await
     };
+    if matches!(request, LocalDaemonRequest::SteerActivePrompt(_))
+        && matches!(answered, Err(GatewayError::RequestTimeout { .. }))
+    {
+        // The target reserves the forwarded command ID before delivering the steer.
+        answered = Err(GatewayError::SteerUnconfirmed {
+            command_id: command_id.to_owned(),
+        });
+    }
     if matches!(
         answered,
         Err(GatewayError::Offline { .. } | GatewayError::Unknown { .. })
